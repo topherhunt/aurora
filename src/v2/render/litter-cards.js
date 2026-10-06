@@ -73,7 +73,7 @@ export function cardPicture(kind, bounds, core = { x: 0, y: 0 }) {
 
 export class LitterCards {
   /**
-   * @param capacity  instances the one mesh can hold; the layers' `claim`s must sum to no more.
+   * @param capacity  instances the one mesh can hold, drawn at once across every layer.
    */
   constructor(capacity) {
     if (!(capacity > 0)) throw new Error(`LitterCards: need a positive capacity, got ${capacity}`)
@@ -111,11 +111,8 @@ export class LitterCards {
     return 2
   }
 
-  /** Reserve `n` of the mesh's instances for `owner`; throws when the layers together want more than it holds. */
+  /** Record `n` instances as `owner`'s worst case. The sum may exceed the capacity -- every layer's pool full at once with all of it far away does not happen -- so a real overflow is reported when the mesh actually fills (PropMeshes._room), not here. */
   claim(owner, n) {
-    if (this.claimed + n > this.capacity) {
-      throw new Error(`LitterCards: ${owner} wants ${n} cards on top of ${this.claimed} already claimed, capacity is ${this.capacity}`)
-    }
     this.claimed += n
     this.owners.push(`${owner}:${n}`)
   }

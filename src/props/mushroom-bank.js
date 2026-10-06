@@ -65,7 +65,7 @@ export const MUSHROOM_SPECIES = {
       // Nearly a circle: `wavy` 0.02 on 2 lobes is a rim that is barely off
       // round, which is what an amanita's is. The undulation knobs are still
       // non-zero because a mathematically circular rim is the other tell.
-      height: 0.16, capRadius: 0.46, capRise: 0.30, capCurve: 2.4, margin: 0.02,
+      height: 0.21, capRadius: 0.46, capRise: 0.30, capCurve: 2.4, margin: 0.02,
       wavy: 0.02, lobes: 2, umbo: 0, inroll: 0.05,
       stemHeight: 0.66, stemRadius: 0.052, stemTaper: 0.30, bulb: 0.55,
       ring: 0.34, ringHeight: 0.74, ringDroop: 0.4,
@@ -77,7 +77,7 @@ export const MUSHROOM_SPECIES = {
     params: {
       // The whole identity is the STEM, not the cap: a bolete is a bun on a
       // barrel. stemRadius here is three times the agaric's.
-      height: 0.13, capRadius: 0.5, capRise: 0.34, capCurve: 2.9, margin: -0.02,
+      height: 0.186, capRadius: 0.5, capRise: 0.34, capCurve: 2.9, margin: -0.02,
       wavy: 0.1, lobes: 3, umbo: 0, inroll: 0.18,
       stemHeight: 0.5, stemRadius: 0.17, stemTaper: 0.55, bulb: 0.3,
       ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 1, fleshCell: 2,
@@ -93,7 +93,7 @@ export const MUSHROOM_SPECIES = {
       // `capLift` in mushroom.js exists to stop. It is only just negative: the
       // dish is carried by `margin` lifting the rim, and a deep bowl on top of
       // that read as a cup rather than a chanterelle.
-      height: 0.08, capRadius: 0.44, capRise: -0.02, capCurve: 1.6, margin: 0.10,
+      height: 0.12, capRadius: 0.44, capRise: -0.02, capCurve: 1.6, margin: 0.10,
       wavy: 0.30, lobes: 4, umbo: 0, inroll: 0,
       stemHeight: 0.55, stemRadius: 0.075, stemTaper: -0.30, bulb: 0,
       ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 3, fleshCell: 1,
@@ -102,7 +102,7 @@ export const MUSHROOM_SPECIES = {
   parasol: {
     impostorLayer: LAYER.IMPOSTOR_MUSHROOM_PARASOL,
     params: {
-      height: 0.28, capRadius: 0.55, capRise: 0.16, capCurve: 5.2, margin: 0.01,
+      height: 0.206, capRadius: 0.55, capRise: 0.16, capCurve: 5.2, margin: 0.01,
       wavy: 0.06, lobes: 7, umbo: 0.09, inroll: 0,
       stemHeight: 0.78, stemRadius: 0.032, stemTaper: 0.35, bulb: 0.35,
       ring: 0.3, ringHeight: 0.66, ringDroop: 0.5,
@@ -119,7 +119,7 @@ export const MUSHROOM_SPECIES = {
       // undulating, and a cap 21 cm across at full scale has no room for a wave
       // wide enough to read as one -- past about 0.08 the eight lobes stop being
       // a rim and start being a flower.
-      height: 0.12, capRadius: 0.21, capRise: 0.55, capCurve: 1.3, margin: -0.03,
+      height: 0.22, capRadius: 0.21, capRise: 0.55, capCurve: 1.3, margin: -0.03,
       wavy: 0.06, lobes: 8, umbo: 0, inroll: 0.12,
       stemHeight: 0.82, stemRadius: 0.026, stemTaper: 0.2, bulb: 0.1,
       ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 2, fleshCell: 3,

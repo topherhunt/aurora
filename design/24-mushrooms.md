@@ -119,11 +119,11 @@ Every member takes its height from the field itself, not from the anchor: the y 
 
 | Tier | What | Band |
 |---|---|---|
-| 0 | mesh at radial 16, 60-66 tris | the animals' view-arc rule, `PROP_STEPS[0]` rung |
-| 1 | mesh at radial 6, 30-36 tris | the next rung |
+| 0 | mesh at radial 16, 60-66 tris | to 2 x `distAt(span, LOD_DEG)` |
+| 1 | mesh at radial 6, 30-36 tris | to 8 x, the animals' last mesh rung |
 | 2 | the shared litter card: a spun quad, 2 tris | the card rung out to `propCull(span)` |
 
-**The bands are view-arc rungs over the prop's own span, not metres or pixels.** A span is `max(height, spread)`; a rung swaps when the span subtends the same angle (`LOD_DEG`, `PROP_STEPS`, hysteresis `LOD_HYSTERESIS`, as the animals do in `critters.js`), so a 8 cm cap and a cave mushroom a metre tall swap at the same apparent size. The far end is `propCull(span)`.
+**The bands are view-arc rungs over the prop's own span, not metres or pixels.** A span is `max(height, spread)`; a rung swaps when the span subtends the same angle (`LOD_DEG`, `MUSHROOM_STEPS` = 2, 8, 16, hysteresis `LOD_HYSTERESIS`, as the animals do in `critters.js`), so a 8 cm cap and a cave mushroom a metre tall swap at the same apparent size. The two mesh tiers share the animals' four mesh rungs, so a mesh holds until the cap subtends `LOD_DEG / 8` (a 30 cm parasol: mesh to 3 m, coarse mesh to 12 m, card to 23 m), the deer's own rule. The far end is `propCull(span)`.
 
 There is no crossed-planes tier between the coarse mesh and the card, which is where a tree and a fern both have one: a mushroom's mesh holds out to where the whole prop is a few pixels, past the size at which a second plane's silhouette is legible.
 
@@ -133,4 +133,4 @@ There is no crossed-planes tier between the coarse mesh and the card, which is w
 
 `ANCHOR_DENSITY` is how many anchors -- trees plus rocks -- this file ASSUMES are standing per square metre, used only to size the instance pool. It is an assumption about two other modules rather than a number this one controls, which is why the pool carries a fatter safety factor than its siblings': `trees.js` runs at 0.05 stems/m^2 today and the boulder beds add to that, and if either is turned up, this constant has to move with it. Running the pool dry throws, so the failure is loud rather than a bed that quietly stops appearing.
 
-`CLUMP_CHANCE` 0.32: every tree and every boulder having mushrooms at its foot reads as a set-dressing pass rather than as weather. A third is enough that a walk through the forest keeps finding some, and sparse enough that finding one still counts. Clump size is 1 to 5 skewed toward the small end (`CLUMP_SKEW`), so the common sight is a pair and the five-cap troop is the occasional one.
+`CLUMP_CHANCE` 0.16: every tree and every boulder having mushrooms at its foot reads as a set-dressing pass rather than as weather. One in six is enough that a walk through the forest keeps finding some, and sparse enough that finding one still counts. Clump size follows `CLUMP_WEIGHTS` (42, 28, 18, 9, 3 percent for 1 to 5), a mean of two, so a single, pair or trio is the common sight, four uncommon and a five-cap troop rare. Size jitter within a troop is 0.65 to 1.35 of the species' size.

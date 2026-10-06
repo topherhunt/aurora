@@ -294,7 +294,7 @@ export class RoomProps {
     return this.props.flatMap((h) => h.windows.map((w) => ({ ...w })))
   }
 
-  /** How unlit the panes are this frame: `breath` the lamps' mean glow, 0 by day (Lamps.breath), when they shade like the wall. */
+  /** How unlit the panes are this frame: `breath` the windows' flickering glow, 0 by day (Lamps.breath), when they shade like the wall. */
   setGlow(breath) {
     const k = (i) => GLOW.day[i] + (GLOW.color[i] * GLOW.night - GLOW.day[i]) * breath
     this.glowMaterial.color.setRGB(k(0), k(1), k(2))

@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
@@ -64,6 +64,44 @@ function saveTrace(req, res) {
       reply(200, { ok: true, id })
     } catch (err) {
       console.error('[trace] rejected', err)
+      reply(400, { error: String(err.message) })
+    }
+  })
+}
+
+// Client warnings (src/v2/log-ship.js reportWarning) are appended, one line each, to client-log.txt beside the traces, so `devops/fetch-traces.sh` brings them home too. Public endpoint: the body is capped, and past LOG_MAX_BYTES the file stops growing.
+const LOG_FILE = join(TRACE_DIR, 'client-log.txt')
+const LOG_BODY_MAX = 16 << 10
+const LOG_MAX_BYTES = 1 << 20
+
+function saveLog(req, res) {
+  const reply = (status, body) => {
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(body))
+  }
+  const chunks = []
+  let bytes = 0
+  req.on('data', (c) => {
+    bytes += c.length
+    if (bytes > LOG_BODY_MAX) {
+      reply(413, { error: 'log entry over 16 KB' })
+      req.destroy()
+      return
+    }
+    chunks.push(c)
+  })
+  req.on('end', () => {
+    try {
+      const { message } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (typeof message !== 'string') return reply(400, { error: 'a log entry has a message string' })
+      mkdirSync(TRACE_DIR, { recursive: true })
+      if (existsSync(LOG_FILE) && statSync(LOG_FILE).size >= LOG_MAX_BYTES) return reply(507, { error: 'log store full' })
+      const peer = req.headers['x-forwarded-for'] || req.socket.remoteAddress
+      const commit = buildInfo().commit
+      appendFileSync(LOG_FILE, `${new Date().toISOString()}  ${peer}  ${commit}  warn  ${message.replace(/\n/g, ' ')}\n`)
+      reply(200, { ok: true })
+    } catch (err) {
+      console.error('[log] rejected', err)
       reply(400, { error: String(err.message) })
     }
   })
@@ -469,6 +507,10 @@ const httpServer = http.createServer((req, res) => {
   }
   if (req.url === '/trace' && req.method === 'POST') {
     saveTrace(req, res)
+    return
+  }
+  if (req.url === '/log' && req.method === 'POST') {
+    saveLog(req, res)
     return
   }
   res.writeHead(404)

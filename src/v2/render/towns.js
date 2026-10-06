@@ -14,6 +14,120 @@ const BUILD_MS = 4
 // The distant box's colours. They MULTIPLY the far box's PLASTER texture (linear mean about 0.47, 0.43, 0.34), so each is the detail-1 building's area-weighted linear albedo (texture mean times vertex colour) divided by that mean, not the colour it reads as. A tint picked by eye comes out about twice as bright as the house it swaps for.
 const WALL_TINT = { log: [0.26, 0.25, 0.22], stave: [0.25, 0.23, 0.21], halfTimber: [0.53, 0.53, 0.52], stoneBase: [0.25, 0.24, 0.23], masonry: [0.24, 0.26, 0.26] }
 const ROOF_TINT = { thatch: [0.36, 0.28, 0.16], shake: [0.24, 0.23, 0.21], slate: [0.17, 0.19, 0.19], pantile: [0.28, 0.17, 0.15] }
+// Lit windows after dark (setGlow): the glass's own luminance times `color` times `night`, so the panes glow and the lead between them stays dark. The texel is sky-blue reflection, which the colour itself would turn green.
+// `flicker`: two slow sines (amplitude, Hz) whose phase drifts with world position at `drift` radians a metre, so windows a few metres apart waver out of step; compiled in, not live.
+// `far`: the distant box's painted windows, metres: one `w` x `h` every `every` along a wall, rows from `sill` up every `storey`, kept clear of corners and eaves by `margin`; `lum` stands in for the glass texel's mean luminance so near and far match at the swap.
+export const WINDOW_GLOW = {
+  color: [1, 0.8, 0.38],
+  night: 0.75,
+  flicker: { waves: [[0.24, 0.37], [0.12, 0.94]], drift: 0.8 },
+  far: { w: 0.8, h: 1.0, every: 5.2, sill: 1.0, storey: 2.8, margin: 0.4, lum: 0.25 },
+}
+const f1 = (x) => x.toFixed(4)
+
+/** The uniforms the near and far window patches share: the night colour and the clock. */
+export function windowUniforms() {
+  return { glow: { value: new THREE.Color(0, 0, 0) }, time: { value: 0 } }
+}
+
+/** Chains the near window glow, flickering per window, onto a prop material; returns the uniforms it reads. */
+export function windowGlow(material, u = windowUniforms()) {
+  const { waves, drift } = WINDOW_GLOW.flicker
+  const flicker = waves
+    .map(([a, hz], i) => `${f1(a)} * sin( uWindowTime * ${f1(2 * Math.PI * hz)} + dot( wgP, vec2( ${f1(drift * Math.cos(i * 2.2 + 0.6))}, ${f1(drift * Math.sin(i * 2.2 + 0.6))} ) ) )`)
+    .join(' + ')
+  const prev = material.onBeforeCompile
+  material.onBeforeCompile = (shader, renderer) => {
+    prev.call(material, shader, renderer)
+    shader.uniforms.uWindowGlow = u.glow
+    shader.uniforms.uWindowTime = u.time
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uWindowTime;\nvarying float vWinFlicker;')
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+        vec2 wgP = ( modelMatrix * vec4( transformed, 1.0 ) ).xz;
+        vWinFlicker = 1.0 + ${flicker};`
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 uWindowGlow;\nvarying float vWinFlicker;')
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        if ( abs( vTexLayer - ${LAYER.GLASS}.0 ) < 0.5 ) totalEmissiveRadiance += uWindowGlow * vWinFlicker * dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );`
+      )
+  }
+  const prevKey = material.customProgramCacheKey
+  material.customProgramCacheKey = () => `window-glow|${prevKey.call(material)}`
+  return u
+}
+
+/**
+ * Paints evenly spaced lit windows on the far box's walls (farBoxGeometry, scaled per instance to metres). Past a few hundred metres a window is under a pixel and a hard pattern sparkles, so each axis's pulse is
+ * blended toward its duty cycle as the pixel footprint (fwidth) approaches the spacing: far off a wall reads as an even warm wash of the same mean.
+ */
+export function farWindowGlow(material, u) {
+  const F = WINDOW_GLOW.far
+  const prev = material.onBeforeCompile
+  material.onBeforeCompile = (shader, renderer) => {
+    prev.call(material, shader, renderer)
+    shader.uniforms.uWindowGlow = u.glow
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec4 vFarWin;\nvarying float vFarWall;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vec3 fwS = vec3( length( instanceMatrix[ 0 ].xyz ), length( instanceMatrix[ 1 ].xyz ), length( instanceMatrix[ 2 ].xyz ) );
+        bool fwEnd = abs( normal.x ) > 0.5;
+        vFarWin = vec4( fwEnd ? position.z * fwS.z : position.x * fwS.x, position.y * fwS.y, 0.5 * ( fwEnd ? fwS.z : fwS.x ), ${f1(EAVE)} * fwS.y );
+        vFarWall = 1.0 - aRoof;`
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform vec3 uWindowGlow;
+        varying vec4 vFarWin;
+        varying float vFarWall;
+        float fwPulse( float c, float every, float width, float fw ) {
+          float d = abs( fract( c / every + 0.5 ) - 0.5 ) * every;
+          float sharp = 1.0 - smoothstep( 0.5 * width - fw, 0.5 * width + fw, d );
+          return mix( sharp, width / every, smoothstep( 0.25 * every, every, fw ) );
+        }`
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        {
+          float along = vFarWin.x, up = vFarWin.y - ${f1(F.sill + F.h / 2)};
+          float row = floor( up / ${f1(F.storey)} + 0.5 );
+          float rowTop = ${f1(F.sill + F.h)} + row * ${f1(F.storey)};
+          float keep = vFarWall * step( 0.0, row + 0.5 ) * step( rowTop, vFarWin.w - ${f1(F.margin)} ) * step( abs( along ), vFarWin.z - ${f1(F.margin + F.w / 2)} );
+          float lit = fwPulse( along, ${f1(F.every)}, ${f1(F.w)}, fwidth( along ) ) * fwPulse( up, ${f1(F.storey)}, ${f1(F.h)}, fwidth( up ) );
+          totalEmissiveRadiance += uWindowGlow * ( ${f1(F.lum)} * keep * lit );
+        }`
+      )
+  }
+  const prevKey = material.customProgramCacheKey
+  material.customProgramCacheKey = () => `far-window-glow|${prevKey.call(material)}`
+}
+
+/** The far box's material, before lighting: roof vertices take the instance colour (the roof tint), wall and gable vertices the instanced aWallTint, and the walls carry farWindowGlow. */
+export function farTownMaterial(textures, u) {
+  const material = createPropMaterial(textures, { vertexColors: true })
+  material.side = THREE.FrontSide
+  const prevCompile = material.onBeforeCompile
+  material.onBeforeCompile = (shader, renderer) => {
+    prevCompile.call(material, shader, renderer)
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aRoof;\nattribute vec3 aWallTint;')
+      .replace('#include <color_vertex>', '#include <color_vertex>\n  vColor.rgb = mix( aWallTint, vColor.rgb, aRoof );')
+  }
+  const prevKey = material.customProgramCacheKey
+  material.customProgramCacheKey = () => `town-far|${prevKey.call(material)}`
+  farWindowGlow(material, u)
+  return material
+}
 const EAVE = 0.55
 const OVER = 0.06
 const CELL = 32
@@ -127,20 +241,11 @@ export class Towns {
 
     this.material = createPropMaterial(textures, { vertexColors: true })
     this.material.side = THREE.FrontSide
+    // Candlelit glass: setGlow drives uniforms shared with the far box, so the merged mesh stays one draw.
+    this.windows = windowGlow(this.material)
     patch(this.material, 'v2-town-near')
 
-    // The far box: roof vertices take the instance colour (the roof tint), wall and gable vertices the instanced aWallTint.
-    this.farMaterial = createPropMaterial(textures, { vertexColors: true })
-    this.farMaterial.side = THREE.FrontSide
-    const prevCompile = this.farMaterial.onBeforeCompile
-    this.farMaterial.onBeforeCompile = (shader, renderer) => {
-      prevCompile.call(this.farMaterial, shader, renderer)
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float aRoof;\nattribute vec3 aWallTint;')
-        .replace('#include <color_vertex>', '#include <color_vertex>\n  vColor.rgb = mix( aWallTint, vColor.rgb, aRoof );')
-    }
-    const prevKey = this.farMaterial.customProgramCacheKey
-    this.farMaterial.customProgramCacheKey = () => `town-far|${prevKey.call(this.farMaterial)}`
+    this.farMaterial = farTownMaterial(textures, this.windows)
     patch(this.farMaterial, 'v2-town-far')
 
     let count = 0
@@ -184,6 +289,13 @@ export class Towns {
       }
     }
     this.stats = { towns: towns.length, buildings: this.buildings.length, instances: count, farShown: 0, nearTris: 0, builds: 0, buildMs: 0, merges: 0 }
+  }
+
+  /** How lit the windows are, 0 by day to 1 at full night, and the flicker clock in seconds. */
+  setGlow(night, t) {
+    const [r, g, b] = WINDOW_GLOW.color
+    this.windows.glow.value.setRGB(r, g, b).multiplyScalar(WINDOW_GLOW.night * night)
+    this.windows.time.value = t
   }
 
   // Each town's tier by the distance from (x, z) to its edge, its tiers' buildings placed under the frame budget, and a tier shown only once all of it is merged.

@@ -42,8 +42,8 @@ export function buildStickGeometry(seed = 7) {
     const z = -half + LENGTH_M * t
     // Crooked: the middle rings stray off the axis, the ends barely.
     const bend = Math.sin(Math.PI * t)
-    const cx = (rand() - 0.5) * 0.02 * bend
-    const cy = (rand() - 0.5) * 0.02 * bend
+    const cx = (rand() - 0.5) * 0.04 * bend
+    const cy = (rand() - 0.5) * 0.04 * bend
     const radius = RADIUS_M * (0.85 + rand() * 0.3) * (1 - 0.1 * t)
     ringBase.push(pos.length / 3)
     for (let s = 0; s < SIDES; s++) {

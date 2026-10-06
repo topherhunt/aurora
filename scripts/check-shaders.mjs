@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as THREE from 'three'
 import { createPropMaterial, createImpostorBakeMaterial } from '../src/material.js'
+import { farTownMaterial, windowGlow, windowUniforms } from '../src/v2/render/towns.js'
 import { Water } from '../src/water.js'
 import { Sky } from '../src/sky.js'
 import { WorldLighting } from '../src/lighting.js'
@@ -358,6 +359,20 @@ const PROP_VARIANTS = [
   ['plain, batched', createPropMaterial(atlas), { batched: true }, PROP_MARKS],
   ['plain, unbatched', createPropMaterial(atlas), { batched: false }, PROP_MARKS],
   ['vertexColors', createPropMaterial(atlas, { vertexColors: true }), { vertexColors: true }, PROP_MARKS],
+  // What a town draws near: the glass glows on a uniform after dark (towns.js windowGlow).
+  [
+    'window glow',
+    (() => { const m = createPropMaterial(atlas, { vertexColors: true }); windowGlow(m); return m })(),
+    { vertexColors: true },
+    { vert: [...PROP_MARKS.vert, 'vWinFlicker = 1.0 +'], frag: [...PROP_MARKS.frag, 'uniform vec3 uWindowGlow;', 'totalEmissiveRadiance += uWindowGlow * vWinFlicker'] },
+  ],
+  // The far box (towns.js farTownMaterial): instanced, and the painted windows read the instance scale and aRoof.
+  [
+    'far town box',
+    farTownMaterial(atlas, windowUniforms()),
+    { vertexColors: true, batched: false, instanced: true },
+    { vert: [...PROP_MARKS.vert, 'attribute float aRoof;', 'vFarWall = 1.0 - aRoof;'], frag: [...PROP_MARKS.frag, 'float fwPulse(', 'totalEmissiveRadiance += uWindowGlow * ('] },
+  ],
   [
     'billboardLayers',
     createPropMaterial(atlas, { billboardLayers: [0, 1, 2] }),

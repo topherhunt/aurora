@@ -5,11 +5,12 @@ import {
   buildMushroomBank,
   bakeMushroomImpostors,
   MUSHROOM_NAMES,
+  MUSHROOM_SPECIES,
 } from '../../props/mushroom-bank.js'
 import { createPropMaterial, setSnowLine } from '../../material.js'
 import { TEX_SIZE } from '../../textures.js'
 import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from './critters.js'
-import { PROP_STEPS, propCull } from './gen-props.js'
+import { propCull } from './gen-props.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -41,12 +42,11 @@ import { taken, TOLERANCE_M } from '../taken.js'
 //
 // THE LADDER, shorter than a fern's on purpose:
 //
-//   tier 0   the mesh at radial 16, 60 to 66 tris.    to 1 x distAt(span, LOD_DEG)
-//   tier 1   the mesh at radial 6, 30 to 36 tris.      to 2 x
-//   tier 2   one triangle, spun toward the eye, 1 tri. to 16 x, then culled
+//   tier 0   the mesh at radial 16, 60 to 66 tris.    to 2 x distAt(span, LOD_DEG)
+//   tier 1   the mesh at radial 6, 30 to 36 tris.      to 8 x
+//   tier 2   one card, spun toward the eye, 2 tris.    to 16 x, then culled
 //
-// THE LADDER IS THE ANIMALS' ARC RULE (critters.js ladderTier, gen-props.js
-// PROP_STEPS) over the instance's own span = max(height, spread) x its size jitter,
+// THE LADDER IS THE ANIMALS' ARC RULE (critters.js ladderTier) over the instance's own span = max(height, spread) x its size jitter,
 // so a 9 cm cap and a cave giant swap at the same apparent size. Each instance is
 // rim-culled at propCull(its span), and the layer's radius is the biggest of those.
 // ---------------------------------------------------------------------------
@@ -60,18 +60,12 @@ import { taken, TOLERANCE_M } from '../taken.js'
 // failure is loud rather than a bed that quietly stops appearing.
 const ANCHOR_DENSITY = 0.07
 
-// Fraction of anchors that host a clump at full density. Every tree and every
-// boulder having mushrooms at its foot reads as a set dressing pass rather than
-// as weather: a third of them is enough that a walk through the forest keeps
-// finding some, and sparse enough that finding one still counts.
-const CLUMP_CHANCE = 0.32
+// Fraction of anchors that host a clump at full density: one in six, so a walk through the forest still finds some and finding one counts.
+const CLUMP_CHANCE = 0.16
 
-// Members in a clump, and the roll is skewed toward the small end (see
-// CLUMP_SKEW) so the common sight is a pair and the five-cap troop is the
-// occasional one. The user's brief is 1 to 5 and this is exactly that.
-const CLUMP_MIN = 1
-const CLUMP_MAX = 5
-const CLUMP_SKEW = 1.6
+// Chance of a clump having 1, 2, ... CLUMP_MAX members: singles to trios are the common sight, four is uncommon and five rare.
+const CLUMP_WEIGHTS = [0.42, 0.28, 0.18, 0.09, 0.03]
+const CLUMP_MAX = CLUMP_WEIGHTS.length
 
 // How far the clump's centre sits from the anchor's own footprint edge, in
 // metres, and how wide the ring of members around that centre is, as a multiple of
@@ -96,12 +90,8 @@ const CLUMP_RADIUS = [0.35, 1.1]
 // blown over rather than as grown apart.
 const CLUMP_LEAN = 0.26
 
-// Per-instance scale jitter on top of the bank's own three sizes. The bank
-// already ships each species at 0.8 / 1.0 / 1.25 of its natural height, so this
-// is the fine grain between them rather than the size range itself, and it is
-// applied WITHIN a clump too: members of one troop are one organism at several
-// ages, so they should not be stamped out at one size.
-const SIZE_JITTER = [0.82, 1.18]
+// Per-instance scale jitter on the species' own size, applied within a clump too: members of one troop are one organism at several ages, so they are not stamped out at one size.
+const SIZE_JITTER = [0.65, 1.35]
 
 // Metres. Inside this every clump that rolled one is standing; past it the
 // keep-fraction decays as FULL_RADIUS / d exactly as the forest's does. Capped
@@ -130,6 +120,8 @@ const NEAR_MARGIN = TILE * 1.5
 
 // Mesh rungs on the ladder; the rung after them is the card.
 const MESH_RUNGS = 2
+// Rung k holds to distAt(span, LOD_DEG) * MUSHROOM_STEPS[k]. The animals keep a mesh to 8 x that distance (four halvings of the arc, LOD_RUNGS) and a card to 16 x; the two mushroom tiers split their four rungs, so the card is not seen until the cap is under LOD_DEG / 8.
+export const MUSHROOM_STEPS = [2, 8, 16]
 
 // Anchors read out of the sources per tile. 64 in a 10 m tile is 0.64/m^2, an
 // order of magnitude over the density this file expects, so the cap is a
@@ -162,6 +154,50 @@ const PLACEMENT = {
 // green on green and wants tying to its ground, while a fly agaric is scarlet
 // on brown and is worth finding. Above about 0.2 the reds visibly go to rust.
 const GROUND_CUE = 0.18
+
+// Per-species colour spread, multiplied onto the instance colour. `chroma` is the amplitude of a wander along a yellow-blue and a purple-green axis (a white cap tips cool or warm); `age` is a red-to-brown axis for a coloured cap, each end the multiplier at full roll. The lightness swing is the separate `v` in `_growTile`.
+const YELLOW_BLUE = [0.5, 0.5, -1]
+const PURPLE_GREEN = [0.5, -1, 0.5]
+const TINTS = {
+  'fly agaric': { chroma: 0.02, age: { redder: [1.08, 0.8, 0.8], browner: [0.88, 1.5, 1.2] } },
+  porcini: { chroma: 0.04 },
+  chanterelle: { chroma: 0.04 },
+  parasol: { chroma: 0.07 },
+  'ink cap': { chroma: 0.07 },
+}
+
+/** Members in a clump from a roll in [0, 1), by CLUMP_WEIGHTS. */
+function membersFor(r) {
+  let acc = 0
+  for (let n = 0; n < CLUMP_MAX; n++) {
+    acc += CLUMP_WEIGHTS[n]
+    if (r < acc) return n + 1
+  }
+  return CLUMP_MAX
+}
+
+/** The colour multiplier for a cap of `species` from three rolls in [0, 1), written into `out`. */
+export function tintFor(species, r0, r1, r2, out) {
+  const spec = TINTS[species]
+  if (!spec) throw new Error(`Mushrooms: no tint spread for species ${species}`)
+  const a = r0 * 2 - 1
+  const b = r1 * 2 - 1
+  for (let i = 0; i < 3; i++) out[i] = 1 + spec.chroma * (a * YELLOW_BLUE[i] + b * PURPLE_GREEN[i])
+  if (spec.age) {
+    const t = r2 * 2 - 1
+    const end = t < 0 ? spec.age.redder : spec.age.browner
+    for (let i = 0; i < 3; i++) out[i] *= 1 + Math.abs(t) * (end[i] - 1)
+  }
+  return out
+}
+
+/** A roll in [0, 1) from a seed and a stream index, with no state: the tint must not draw from the clump's stream, or every cap grown after it would move. */
+function roll(seed, k) {
+  let t = (seed + Math.imul(k + 1, 0x6d2b79f5)) >>> 0
+  t = Math.imul(t ^ (t >>> 15), t | 1)
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
 
 /** Deterministic 32-bit PRNG. Same one the rest of the project uses. */
 function mulberry32(a) {
@@ -346,7 +382,7 @@ export class Mushrooms {
     // Metres of mesh reach per metre of span, hysteresis included: a tile past
     // biggest x this + NEAR_MARGIN holds only cards, so it is priced with one
     // multiply instead of a walk. NEAR_MARGIN covers a diagonal half-tile (7.1 m).
-    this.nearSpans = distAt(1, LOD_DEG) * PROP_STEPS[MESH_RUNGS - 1] * (1 + LOD_HYSTERESIS)
+    this.nearSpans = distAt(1, LOD_DEG) * MUSHROOM_STEPS[MESH_RUNGS - 1] * (1 + LOD_HYSTERESIS)
 
     // `instancedFade` because the rim dissolve's timer has nowhere else to live
     // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
@@ -435,6 +471,7 @@ export class Mushrooms {
     this._axis = new THREE.Vector3()
     this._s = new THREE.Vector3()
     this._c = new THREE.Color()
+    this._tint = [1, 1, 1]
     this._up = new THREE.Vector3(0, 1, 0)
     this._gc = new Float32Array(3)
     // Told (x, z) of every cap take() pulls, or null: the leafkin's picks (leafkin.js).
@@ -594,7 +631,7 @@ export class Mushrooms {
         // Nothing to re-tier on a cap the rim is not drawing.
         if (this.rim.isHidden(i)) continue
 
-        const tier = ladderTier(distAt(this.instSpan[i], LOD_DEG), PROP_STEPS, MESH_RUNGS, Math.sqrt(d2), cur)
+        const tier = ladderTier(distAt(this.instSpan[i], LOD_DEG), MUSHROOM_STEPS, MESH_RUNGS, Math.sqrt(d2), cur)
 
         const variant = this.variantAt[i]
         if (tier !== cur) {
@@ -714,7 +751,7 @@ export class Mushrooms {
     c.u = rand()
     c.hosts = rand() < CLUMP_CHANCE
     c.species = (rand() * this.speciesList.length) | 0
-    c.members = CLUMP_MIN + ((Math.pow(rand(), CLUMP_SKEW) * (CLUMP_MAX - CLUMP_MIN + 1)) | 0)
+    c.members = membersFor(rand())
     const clumpAz = rand() * Math.PI * 2
     const gap = ANCHOR_GAP[0] + rand() * (ANCHOR_GAP[1] - ANCHOR_GAP[0])
     const spreadRoll = CLUMP_RADIUS[0] + rand() * (CLUMP_RADIUS[1] - CLUMP_RADIUS[0])
@@ -940,10 +977,12 @@ export class Mushrooms {
         const gl = 0.2126 * gc[0] + 0.7152 * gc[1] + 0.0722 * gc[2]
         const k1 = gl > 1e-5 ? GROUND_CUE / gl : 0
         const k0 = gl > 1e-5 ? 1 - GROUND_CUE : 1
+        const seed = (Math.imul((c.u * 4294967296) >>> 0, 0x9e3779b1) + mi) >>> 0
+        tintFor(this.bank.variants[variant].species, roll(seed, 0), roll(seed, 1), roll(seed, 2), this._tint)
         this._c.setRGB(
-          (k0 + gc[0] * k1) * v,
-          (k0 + gc[1] * k1) * v,
-          (k0 + gc[2] * k1) * v
+          (k0 + gc[0] * k1) * v * this._tint[0],
+          (k0 + gc[1] * k1) * v * this._tint[1],
+          (k0 + gc[2] * k1) * v * this._tint[2]
         )
         this.batch.setColorAt(id, this._c)
         this.batch.setLayerShiftAt(id, this.cardPicture[variant])
@@ -1179,18 +1218,22 @@ export class Mushrooms {
    * where the renderer is and because a bake before the array's first upload
    * would photograph black.
    */
-  bakeCards(renderer) {
+  /** Photograph the species into the atlas' impostor layers; once per atlas, since every room shares it. */
+  photographCards(renderer) {
+    return bakeMushroomImpostors(renderer, this.textureArray, { seed: this.seed })
+  }
+
+  /** Copy the atlas' photographed layers into this room's card pool; the pool is new every room, so this runs every room. */
+  fillCards() {
     const t0 = performance.now()
-    const baked = bakeMushroomImpostors(renderer, this.textureArray, { seed: this.seed })
     const stride = TEX_SIZE * TEX_SIZE * 4
     const atlas = this.textureArray.image.data
     this.bank.variants.forEach((v, i) => {
-      const layer = baked.find((b) => b.species === v.species).layer
+      const layer = MUSHROOM_SPECIES[v.species].impostorLayer
       this.cards.pixels(this.cardPicture[i]).set(atlas.subarray(layer * stride, (layer + 1) * stride))
     })
     this.cards.upload()
     this.cardBakeMs = performance.now() - t0
-    return baked
   }
 
   syncSnowLine(layers) {

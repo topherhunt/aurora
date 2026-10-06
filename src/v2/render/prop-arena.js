@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { reportWarning } from '../log-ship.js'
 
 // ---------------------------------------------------------------------------
 // THE PROP ARENA. A BatchedMesh-shaped facade over a GROUP of InstancedMeshes,
@@ -187,7 +188,7 @@ export class PropMeshes {
     this.refused++
     if (!this._warned[geometryId]) {
       this._warned[geometryId] = 1
-      console.warn(`PropMeshes: mesh ${this.meshes[geometryId].name} is full at ${this.capAt[geometryId]} instances; showing nothing more in it`)
+      reportWarning(`PropMeshes: mesh ${this.meshes[geometryId].name} is full at ${this.capAt[geometryId]} instances; showing nothing more in it`)
     }
     return false
   }

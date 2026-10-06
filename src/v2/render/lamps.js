@@ -37,7 +37,8 @@ export const LAMP = {
   reach: 9,
   gain: 0.3,
   // A window's light: how far it reaches, its gain against a lamp's, and how tightly it is coned out of the wall.
-  window: { reach: 6, gain: 0.5, cone: 2 },
+  // `phase`: the panes' own flicker, out of step with the three groups. Their mean would not do: the groups sit a third of a cycle apart and cancel.
+  window: { reach: 6, gain: 0.5, cone: 2, phase: 1 },
   // A campfire's light (the hearth's): its reach and gain against a lamp's, and the flicker group it breathes with. A channel saturates at a lamp's foot, so a gain over 1 widens the bright core rather than brightening it.
   fire: { reach: 14, gain: 1, group: 0 },
   // The lamp map's texel, metres, and the margin it runs past the last lamp.
@@ -109,7 +110,7 @@ export class Lamps {
     this.group = new THREE.Group()
     this.group.add(this.posts, this.postsFar, this.flames.group)
     scene.add(this.group)
-    // How lit the lamps are, 0..1; each group's glow this frame (lighting.js uLampGlow, the flames); and the groups' mean, the breath the windows glow by.
+    // How lit the lamps are, 0..1; each group's glow this frame (lighting.js uLampGlow, the flames); and the breath the windows glow by.
     this.lit = 0
     this.glow = new THREE.Vector3()
     this.breath = 0
@@ -193,7 +194,7 @@ export class Lamps {
     const [on, off] = LAMP.lit
     this.lit = 1 - Math.max(0, Math.min(1, (dayness - on) / (off - on)))
     for (let g = 0; g < 3; g++) this.glow.setComponent(g, this.lit * flicker(t, g * 2.1))
-    this.breath = (this.glow.x + this.glow.y + this.glow.z) / 3
+    this.breath = this.lit * flicker(t, LAMP.window.phase)
     this.flames.group.visible = this.lit > 0
     this.flames.update(t, [this.glow.x, this.glow.y, this.glow.z], eye)
   }

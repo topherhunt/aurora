@@ -95,3 +95,14 @@ export function installLogShip() {
   window.addEventListener('pagehide', flush)
   push('log', `log-ship: session start ${navigator.userAgent}`)
 }
+
+const reported = new Set()
+const REPORT_CAP = 20
+
+/** A warning that must reach the server in a production build too: console.warn here (dev ships it to /__log), and a POST to the relay's /log (deployed, stored in traces/client-log.txt). Each distinct message ships once, at most REPORT_CAP per page load. */
+export function reportWarning(message) {
+  console.warn(message)
+  if (typeof window === 'undefined' || import.meta.env.DEV || reported.has(message) || reported.size >= REPORT_CAP) return
+  reported.add(message)
+  fetch('/log', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }), keepalive: true }).catch(() => {})
+}

@@ -68,9 +68,10 @@ import {
   mushroomVariants, mushroomParams,
   buildMushroomBank, mushroomBankTriangles,
 } from '../src/props/mushroom-bank.js'
-import { propCull, propReach } from '../src/v2/render/gen-props.js'
+import { PROP_STEPS, propCull } from '../src/v2/render/gen-props.js'
 import { LAYER, LAYER_COUNT, buildTextureArray } from '../src/textures.js'
-import { Mushrooms } from '../src/v2/render/mushrooms.js'
+import { MUSHROOM_STEPS, Mushrooms, tintFor } from '../src/v2/render/mushrooms.js'
+import { LOD_DEG, distAt } from '../src/v2/render/critters.js'
 import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { taken, TOLERANCE_M } from '../src/v2/taken.js'
 import { readFileSync } from 'node:fs'
@@ -1311,10 +1312,16 @@ console.log('\ndistance bands')
     geo.dispose()
     return { species: v.species, span: Math.max(u.height, u.spread) }
   })
+  const spans = rows.map((r) => r.span)
+  check(Math.max(...spans) / Math.min(...spans) < 1.5,
+    'the species are of one size class, so none is a wasted mesh and none dwarfs the rest in view', rows.map((r) => `${r.species} ${r.span.toFixed(3)}`).join(', '))
+  const reach = (span, k) => distAt(span, LOD_DEG) * MUSHROOM_STEPS[k]
+  check(MUSHROOM_STEPS[2] === PROP_STEPS[2] && MUSHROOM_STEPS[1] === 8,
+    'the coarse mesh holds to the animals\' last mesh rung (8 x) and the card is culled where propCull culls it', `${MUSHROOM_STEPS.join(' ')}`)
   for (const r of rows) {
-    console.log(`        ${r.species.padEnd(13)} span ${r.span.toFixed(3)} m: mesh to ${propReach(r.span, 0).toFixed(2)}, coarse to ${propReach(r.span, 1).toFixed(2)}, card to ${propCull(r.span).toFixed(1)} m`)
+    console.log(`        ${r.species.padEnd(13)} span ${r.span.toFixed(3)} m: mesh to ${reach(r.span, 0).toFixed(2)}, coarse to ${reach(r.span, 1).toFixed(2)}, card to ${propCull(r.span).toFixed(1)} m`)
   }
-  check(rows.every((r) => propReach(r.span, 0) < propReach(r.span, 1) && propReach(r.span, 1) < propCull(r.span)),
+  check(rows.every((r) => reach(r.span, 0) < reach(r.span, 1) && reach(r.span, 1) < propCull(r.span)),
     'every variant has mesh, coarse and card rungs in increasing reach', rows.length + ' variants')
 
   const src = readFileSync(new URL('../src/v2/render/mushrooms.js', import.meta.url), 'utf8')
@@ -1448,6 +1455,33 @@ console.log('\ndistance bands')
   again.dispose()
   whole.dispose()
   m.dispose()
+
+  // Each cap's colour wanders a little from its species' own: every channel stays within a modest band of 1, and the wander is real.
+  const mul = [0, 0, 0]
+  for (const name of MUSHROOM_NAMES) {
+    const lo = [9, 9, 9], hi = [0, 0, 0]
+    for (let i = 0; i < 400; i++) {
+      tintFor(name, (i * 0.618) % 1, (i * 0.414) % 1, (i * 0.732) % 1, mul)
+      for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], mul[k]); hi[k] = Math.max(hi[k], mul[k]) }
+    }
+    const spread = Math.max(...hi.map((h, k) => h - lo[k]))
+    check(spread > 0.02 && Math.min(...lo) > 0.75 && Math.max(...hi) < 1.55, `${name}: the tint varies from cap to cap but stays a minor shift`, `channels ${lo.map((l, k) => `${l.toFixed(2)}-${hi[k].toFixed(2)}`).join(' ')}`)
+  }
+
+  // The card pool is new every room while the atlas photographs are taken once: fillCards must carry them into a fresh pool.
+  const room2 = grow()
+  const atlas = textures.image.data
+  const stride = room2.cards.stride
+  for (const name of MUSHROOM_NAMES) atlas.fill(200, MUSHROOM_SPECIES[name].impostorLayer * stride, (MUSHROOM_SPECIES[name].impostorLayer + 1) * stride)
+  room2.fillCards()
+  const blank = room2.cardPicture.filter((i) => room2.cards.pixels(i)[0] !== 200)
+  check(blank.length === 0, 'fillCards copies the photographed atlas layers into a fresh pool\'s pictures', `${blank.length} blank of ${room2.cardPicture.length}`)
+  const tight = new LitterCards(1)
+  tight.claim('a', 1)
+  let overflowed = null
+  try { tight.claim('b', 5) } catch (err) { overflowed = err }
+  check(overflowed === null, 'a claim past the pool\'s capacity is only recorded, not thrown')
+  room2.dispose()
 }
 
 console.log(`\n${failures === 0 ? 'all mushroom checks passed' : `${failures} FAILED`}\n`)

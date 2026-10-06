@@ -8,7 +8,7 @@ import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { townsOccupyAt } from './layers/towns.js'
 import { loadWorldPlan, planWorld, unpackWorldPlan, worldPlanKey } from './layers/world-plan.js'
-import { Towns } from './render/towns.js'
+import { Towns, WINDOW_GLOW } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
 import { WILD, WildStriders } from './render/wild-striders.js'
 import { Journeys } from './render/journeys.js'
@@ -2019,9 +2019,16 @@ function strikeFlint(key, fromPack = false) {
   lightTorchNear(flintAt.x, flintAt.y, flintAt.z)
 }
 
+/** 0 by day to 1 at full night, on the lamps' clock (LAMP.lit), for the hearths and the town windows. */
+function lampNight() {
+  const [on, off] = LAMP.lit
+  return 1 - THREE.MathUtils.clamp((dayness - on) / (off - on), 0, 1)
+}
+
 const litTipList = []
 const torchSorted = []
 window.v2hearthLight = HEARTH_LIGHT // console: `v2hearthLight.on = 0` puts the hearths' live light out, for an A/B
+window.v2windowGlow = WINDOW_GLOW // console: `v2windowGlow.night = 5`, read every frame
 let townHearths = null
 /** Every frame: torches put out under water, the flames and torch flames drawn, the nearest torches and town hearths fed to the lighting, and each town's baked glow dimmed by however much of it a live slot now carries. */
 function updateFire(dt) {
@@ -2043,8 +2050,7 @@ function updateFire(dt) {
   player.headPosition(headTmp)
   torchSorted.length = 0
   for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), reach: TORCH_REACH, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
-  const [lampOn, lampOff] = LAMP.lit
-  const night = 1 - THREE.MathUtils.clamp((dayness - lampOn) / (lampOff - lampOn), 0, 1)
+  const night = lampNight()
   const hearthGain = HEARTH_LIGHT.gain * (HEARTH_LIGHT.day + (1 - HEARTH_LIGHT.day) * night)
   const far = lighting.uniforms.uHearthFar.value
   far.fill(0)
@@ -3478,7 +3484,8 @@ function bakeImpostors() {
   const baked = once('trees', () => trees.bakeCards(renderer))
   once('ferns', () => ferns.bakeCards(renderer))
   once(`grass-${grassStyle}`, () => grass.bakeCards(renderer))
-  once('mushrooms', () => mushrooms.bakeCards(renderer))
+  once('mushrooms', () => mushrooms.photographCards(renderer))
+  mushrooms.fillCards()
   // The rock cards: one photograph per SHAPE in the bank, the boulder and the
   // cap. Unlike the four above this is not a method on the scatter, because
   // there is nothing per-bed about it -- a bed picks a shape and the shape's
@@ -4360,8 +4367,8 @@ async function buildRoom(room, at) {
   const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
   // The village's garden plots, wanted here before the trees: nothing grows on a planted plot but its rows (render/carrots.js).
   let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) })) : []
-  // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); each layer claims its share, and a claim past 4096 throws.
-  litterCards = new LitterCards(4096)
+  // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); 2048 is the most it draws at once (the beds' worst cases run near 550 deadwood and 500 mushrooms); a full mesh warns and shows nothing more.
+  litterCards = new LitterCards(2048)
   scene.add(litterCards.group)
   lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card' })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds, cards: litterCards })
@@ -7733,7 +7740,10 @@ function stepOverworld(dt, now) {
   spikes.lap('rocks')
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
-  if (towns) towns.update(headTmp.x, headTmp.z)
+  if (towns) {
+    towns.update(headTmp.x, headTmp.z)
+    towns.setGlow(lampNight(), (now / 1000) % 1024)
+  }
   spikes.lap('towns')
   if (signposts) signposts.update(headTmp)
   spikes.lap('signposts')

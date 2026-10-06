@@ -66,7 +66,7 @@ export const FIRE = {
 export const CAMPFIRE = { ...FIRE, height: 0.78, radius: 0.77, width: 0.47, speed: 2.4, stretch: 1.0, turb: 0.73, cut: 1.0, sway: 0.1, edge: 0.5, core: 0.71, gain: 1.4, sheets: 1 }
 
 // The three flicker groups: each a slow and a fast sine about a mean, on the seconds clock. lamps.js flickers the lamp map's channels by the same numbers, so a flame and its pool of light breathe together.
-export const FLICKER = { mean: 0.84, slow: 0.16, slowHz: 11.3, fast: 0.09, fastHz: 24.7 }
+export const FLICKER = { mean: 0.84, slow: 0.16, slowHz: 5.65, fast: 0.09, fastHz: 24.7 }
 
 export const flicker = (t, phase) => FLICKER.mean + FLICKER.slow * Math.sin(t * FLICKER.slowHz + phase) + FLICKER.fast * Math.sin(t * FLICKER.fastHz + phase * 2.3)
 
