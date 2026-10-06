@@ -43,6 +43,7 @@ import { CARRIERS, CARRY_MAX } from '../src/v2/hands.js'
 import { rollInterior } from '../src/v2/rooms/interior.js'
 import { COWER_WHIMPER_S, Residents } from '../src/v2/render/residents.js'
 import { houseUniforms } from '../src/v2/render/interior.js'
+import { TORCHES } from '../src/lighting.js'
 import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
@@ -897,7 +898,7 @@ console.log('\nat home')
 {
   const room = rollInterior({ seed: spec.seed, index: 0, height: 5 })
   const sitY = make().sitY
-  const view = { uniforms: houseUniforms() }
+  const view = { uniforms: houseUniforms({ value: Array.from({ length: TORCHES }, () => new THREE.Vector4()) }) }
   const at = (trusts) => {
     const hands = fakeHands()
     // No carrier free, so a feast never asks the stand-in for the fist it lacks.

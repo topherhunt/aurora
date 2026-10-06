@@ -99,6 +99,7 @@ export class PerfTrace {
    *   spikes(),                       the Spikes instance, whose laps for the current frame are summed per stage
    *   toggles,                        main.js questToggles, read only
    *   setToggle(key, on),             flip a row to `on` the way its button would
+   *   present(key),                   whether the row's layer exists in this room; drills on absent layers are skipped
    *   anyPress(),                     whether any controller button went down this frame
    *   hidePanel(),                    close the menu, whose stats texture would be measured too
    *   context(),                      what to record about where and how the run happened
@@ -168,6 +169,8 @@ export class PerfTrace {
     this.n = 0
     this.js = this.render = this.calls = this.tris = 0
     this.stages = {}
+    this.worstMs = 0
+    this.worstStages = {}
     this.host.gpuTake()
     this.moveM = this.turnRad = 0
     this.pos0 = null
@@ -228,6 +231,11 @@ export class PerfTrace {
       this.tris += f.tris
       const { names, ms: lapMs, n: laps } = this.host.spikes()
       for (let i = 0; i < laps; i++) this.stages[names[i]] = (this.stages[names[i]] ?? 0) + lapMs[i]
+      if (ms > this.worstMs) {
+        this.worstMs = ms
+        this.worstStages = {}
+        for (let i = 0; i < laps; i++) this.worstStages[names[i]] = (this.worstStages[names[i]] ?? 0) + lapMs[i]
+      }
       this.moveM = Math.max(this.moveM, _pos.distanceTo(this.pos0))
       this.turnRad = Math.max(this.turnRad, _quat.angleTo(this.quat0))
       this.n++
@@ -257,6 +265,8 @@ export class PerfTrace {
       gpuMs: this.gpuMs(),
       waitMs: r2(Math.max(0, mean - this.js / n - this.render / n)),
       stages,
+      // The slowest frame of the sample and where its laps went: what a stall was, without a record trace.
+      worst: { ms: r2(this.worstMs), stages: Object.fromEntries(Object.entries(this.worstStages).filter(([, v]) => v >= SPIKES.floor).map(([k, v]) => [k, r2(v)])) },
       calls: Math.round(this.calls / n), tris: Math.round(this.tris / n),
       moveCm: Math.round(this.moveM * 100), turnDeg: Math.round(THREE.MathUtils.radToDeg(this.turnRad)),
     })
@@ -293,6 +303,7 @@ export class PerfTrace {
       .filter(({ saved }) => saved >= DRILL_MIN_MS)
       .sort((a, b) => b.saved - a.saved)
       .flatMap(({ g }) => g.drill.map((d) => ({ kind: 'drill', name: `${g.name}/${d.name}`, off: d.off })))
+      .filter((d) => d.off.some((k) => this.host.present(k)))
     this.trace.drillSkipped = drill.slice(MAX_DRILL).map((d) => d.name)
     if (drill.length) this.queue.push(...this.withBaselines(drill.slice(0, MAX_DRILL), false))
   }

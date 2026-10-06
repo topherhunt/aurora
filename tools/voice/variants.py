@@ -5,6 +5,8 @@
 """Voice-conversion sampler: renders a few takes through Praat presets so they can be heard side by side.
 
     uv run tools/voice/variants.py [take ...]
+    uv run tools/voice/variants.py --reel variants/eleven-jessica.wav   # CHILD presets over an existing reel
+    uv run tools/voice/variants.py --bake f-bright                       # every human take -> work/voices/f-bright/
 
 Writes tools/voice/work/variants/<preset>.wav, each one reel of the same lines with a pause between, plus
 original.wav. Originals are only read. Presets move four knobs of Praat's Change Gender (PSOLA pitch plus a
@@ -33,6 +35,14 @@ PRESETS = {
     "m-young": (2, 1.15, 1.06, 0.95),
     "m-flat": (0, 0.5, 1.0, 1.0),
     "m-lively": (1, 1.6, 1.03, 0.97),
+    "kid-from-man": (10, 1.3, 1.28, 0.95),
+    "teen-from-man": (4, 1.2, 1.10, 0.97),
+}
+
+# Applied to an already converted adult female reel: a child is a short step up from a young woman.
+CHILD = {
+    "kid": (3, 1.15, 1.08, 0.97),
+    "kid-small": (4, 1.2, 1.13, 0.95),
 }
 
 
@@ -61,7 +71,32 @@ def reel(sounds, rate):
     return parselmouth.Sound(y, sampling_frequency=rate)
 
 
+def bake(name):
+    knobs = PRESETS[name]
+    dest = WORK / "voices" / name
+    dest.mkdir(parents=True, exist_ok=True)
+    takes = sorted(p for p in WORK.glob("*.base.wav") if not p.name.startswith("sp."))
+    for p in takes:
+        out = convert(parselmouth.Sound(str(p)), *knobs)
+        out.scale_peak(0.89)
+        out.save(str(dest / p.name.replace(".base.wav", ".wav")), "WAV")
+    print(f"{name}: {len(takes)} takes -> {dest}")
+
+
 def main():
+    if sys.argv[1:2] == ["--bake"]:
+        for name in sys.argv[2:]:
+            bake(name)
+        return
+    if sys.argv[1:2] == ["--reel"]:
+        src = WORK / sys.argv[2]
+        snd = parselmouth.Sound(str(src))
+        for name, knobs in CHILD.items():
+            out = convert(snd, *knobs)
+            out.scale_peak(0.89)
+            out.save(str(OUT / f"{src.stem}-{name}.wav"), "WAV")
+            print(f"{src.stem}-{name}")
+        return
     takes = sys.argv[1:] or DEFAULT_TAKES
     paths = [WORK / f"{t}.base.wav" for t in takes]
     missing = [p.name for p in paths if not p.exists()]

@@ -9,29 +9,27 @@ export const SETTLE_MS = 1000
 export const MEASURE_MS = 3000
 
 /** A baseline is re-measured after this many states, so thermal drift can be divided out. */
-export const BASELINE_EVERY = 3
+export const BASELINE_EVERY = 4
 
 /** A group whose removal saves at least this many median frame ms (mean of both rounds) is drilled into. */
 export const DRILL_MIN_MS = 1
 /** Cap on drilled states, so a run with many guilty groups still ends inside two minutes. */
-export const MAX_DRILL = 6
+export const MAX_DRILL = 8
 
-const EVERYTHING = ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire']
+const VILLAGE = ['huts', 'towns', 'townsfolk']
+const EVERYTHING = ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire', ...VILLAGE]
+
+/**
+ * Cumulative-removal drill: rung k turns off the first k+1 `parts`, so each rung's saving minus the one before is
+ * that part's marginal cost with the earlier ones already gone. The last rung is the group itself and is left out.
+ * Order the parts by expected cost, costliest first. trace-report prints the marginals.
+ */
+const ladder = (parts) => parts.slice(0, -1).map((_, k) => ({ name: parts.slice(0, k + 1).join('+'), off: parts.slice(0, k + 1) }))
 
 // Each group is measured twice (forward, then reverse); its `drill` states
 // once, and only when the group crossed DRILL_MIN_MS.
 export const GROUPS = [
-  {
-    name: 'scatter', off: ['trees', 'boulders', 'grass', 'ferns', 'litter'],
-    drill: [
-      { name: 'trees', off: ['trees'] },
-      { name: 'boulders', off: ['boulders'] },
-      { name: 'grass', off: ['grass'] },
-      { name: 'ferns', off: ['ferns'] },
-      { name: 'litter', off: ['litter'] },
-      { name: 'wind', off: ['wind'] },
-    ],
-  },
+  { name: 'scatter', off: ['litter', 'boulders', 'ferns', 'grass', 'trees'], drill: ladder(['litter', 'boulders', 'ferns', 'grass', 'trees']) },
   {
     name: 'animals', off: ['animals'],
     drill: [
@@ -52,6 +50,9 @@ export const GROUPS = [
     ],
   },
   { name: 'water', off: ['water', 'reflections'], drill: [{ name: 'reflections', off: ['reflections'] }] },
+  // A Leafkin village's fixtures, a human town's buildings, and a town's people and striders. Drills for layers the
+  // current room lacks are skipped (host.present).
+  { name: 'village', off: VILLAGE, drill: VILLAGE.map((k) => ({ name: k, off: [k] })) },
   // The floor: what a frame costs with the world taken away. Its per-stage laps (samples[].stages) and
   // waitMs say where that cost is when no layer is drawing; `floor+terrain` puts only the ground back.
   { name: 'everything', off: EVERYTHING, drill: [] },

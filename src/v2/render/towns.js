@@ -234,6 +234,7 @@ export class Towns {
   constructor(scene, { towns, field, textures, patch }) {
     this.scene = scene
     this.towns = towns
+    this.shown = true
     this.ground = (x, z) => field.heightAt(x, z)
     this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t })))
     // Per town: the tier shown and wanted, each tier's merged geometry once built, the placed buildings of a tier still being built, and its far boxes.
@@ -289,6 +290,13 @@ export class Towns {
       }
     }
     this.stats = { towns: towns.length, buildings: this.buildings.length, instances: count, farShown: 0, nearTris: 0, builds: 0, buildMs: 0, merges: 0 }
+  }
+
+  /** Draws every town's buildings, near and far, or none; the debug panel's `towns` row. */
+  setShown(on) {
+    this.shown = on
+    this.far.visible = on
+    for (const s of this.sites) if (s.mesh !== null) s.mesh.visible = on
   }
 
   /** How lit the windows are, 0 by day to 1 at full night, and the flicker clock in seconds. */
@@ -355,6 +363,7 @@ export class Towns {
       s.mesh = new THREE.Mesh(s.geo[tier], this.material)
       s.mesh.name = `town-near-${s.town.id}`
       s.mesh.position.set(s.town.x, 0, s.town.z)
+      s.mesh.visible = this.shown
     }
     s.mesh.geometry = s.geo[tier]
     if (s.mesh.parent === null) this.scene.add(s.mesh)

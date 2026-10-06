@@ -2,13 +2,15 @@
 //
 //   node scripts/check-town-interiors.mjs
 //
-// Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at S times the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; a shop has its counter, an inn a taproom of tables and its bedrooms upstairs; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go.
+// Every building kind over many seeds: a house rolls the same twice; its floor plan is the outside's at S times the size; the hall and the kitchen are on the ground floor and an upper floor has the most of the beds; every room has a light; there is a bed, a table with seats and a hearth to cook at; a shop has its counter, an inn a taproom of tables and its bedrooms upstairs; she lands on the floor inside the door, walks to every resident's place and up the stair, and never out through a wall; the residents' ways join the door to every place they go; a body is lit by where it stands and by a torch carried up to it.
 
 import { planBuilding, KINDS } from '../src/buildings/plan.js'
 import { CELLAR, S, TownInteriorStone, navRoute, rollTownInterior, townFloorAt, within } from '../src/v2/rooms/town-interior.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import * as THREE from 'three'
 import { LOCOMOTION, Player } from '../src/player.js'
+import { townLight } from '../src/v2/render/town-interior.js'
+import { heldTorchAt } from '../src/v2/render/interior.js'
 
 let failures = 0
 const check = (ok, what) => {
@@ -230,6 +232,23 @@ function flood(room) {
   check(screenC.length === 0, `a board wall screens the cellar stair along its length${show(screenC)}`)
   check(wallsC.length === 0, `a cellar house never lets her out through a wall${show(wallsC)}`)
   check(spotsC.length === 0, `a cellar house still reaches every resident's place${show(spotsC)}`)
+}
+
+{
+  // A body is lit by the bake where it stands (townLight) and by a torch carried up to it (heldTorchAt), so a resident darkens walking away from the lights.
+  const dim = []
+  for (const r of houses) {
+    const at = townLight(r), f = r.hearth.fire, byFire = at(f.x, 1.2, f.z)[1]
+    let least = Infinity
+    for (const rm of r.rooms) if (rm.level === 0) for (let x = rm.rect.x0 + 0.3; x < rm.rect.x1 - 0.3; x += 0.5) for (let z = rm.rect.z0 + 0.3; z < rm.rect.z1 - 0.3; z += 0.5) least = Math.min(least, at(x, 1.2, z)[1])
+    if (!(byFire > 3 * least)) dim.push(`${r.kind}/${r.index} ${byFire.toFixed(2)} vs ${least.toFixed(2)}`)
+  }
+  check(dim.length === 0, `a body by the hearth has thrice the firelight of one in the house's darkest corner${dim.length ? ` -- ${dim.slice(0, 4).join(', ')}` : ''}`)
+  const o = { x: 100, y: 250, z: -40 }, torches = [new THREE.Vector4(101, 251.2, -40, 1), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()]
+  const near = heldTorchAt(torches, o, 1.4, 1.2, 0, 0, 0, 0), far = heldTorchAt(torches, o, 7, 1.2, 0, 0, 0, 0)
+  torches[0].w = 0
+  const out = heldTorchAt(torches, o, 1.4, 1.2, 0, 0, 0, 0)
+  check(near > 0.5 && far < 0.15 * near && out === 0, `a carried torch lights a body beside it and barely one 6 m off, and not at all put out (${near.toFixed(2)}, ${far.toFixed(2)}, ${out})`)
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')

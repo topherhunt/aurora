@@ -3,6 +3,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TriFlames, TRI_CANDLE } from './fire-tris.js'
+import { TORCHES } from '../../lighting.js'
 import { FILLET, HAMPER_H, STOOL_H, angDiff, ceilingAt, loftDepthAt, rAt, smooth } from '../rooms/interior.js'
 
 const TAU = 2 * Math.PI
@@ -30,8 +31,25 @@ export function glaze(m) {
 // The light through glass by dayness (clock.js daynessOfElev; 0.6 is the sun on the horizon): none at night, blue in the twilight, warm at sunrise and sunset, white by day.
 const GLASS_SKY = [[0, 0, 0, 0], [0.3, 0.06, 0.08, 0.18], [0.6, 0.8, 0.45, 0.28], [0.85, 1.0, 0.82, 0.62], [1, 1, 1, 1]]
 
-/** The house shaders' uniforms, `uSky` the colour of the light through the glass. */
-export const houseUniforms = () => ({ uAmb: { value: LEVELS.amb }, uCandle: { value: LEVELS.candle }, uWin: { value: LEVELS.win }, uSky: { value: new THREE.Color(1, 1, 1) }, uFlicker: { value: 1 } })
+// A torch carried in (lighting.js uTorch): a candle of `gain` times its strength, falling by e every `reach` metres, in `color`, saturating at `cap` as a candle's bake does.
+export const HELD_TORCH = { gain: 2.9, reach: 2.2, cap: 1.8, color: [1.0, 0.8, 0.6] }
+
+/** The house shaders' uniforms, `uSky` the colour of the light through the glass; `uTorch` is lighting.js's, shared by reference. */
+export const houseUniforms = (uTorch) => {
+  if (!uTorch || uTorch.value.length !== TORCHES) throw new Error('houseUniforms: needs lighting.uniforms.uTorch')
+  return { uAmb: { value: LEVELS.amb }, uCandle: { value: LEVELS.candle }, uWin: { value: LEVELS.win }, uSky: { value: new THREE.Color(1, 1, 1) }, uFlicker: { value: 1 }, uTorch }
+}
+
+/** The held torches' light at room point `p` of normal `n` (zero for a body, lit alike from every side), `torches` the uTorch value and `o` the room's anchor; as heldTorch in FRAG. */
+export function heldTorchAt(torches, o, px, py, pz, nx, ny, nz) {
+  let sum = 0
+  for (const t of torches) {
+    if (t.w <= 0) continue
+    const dx = t.x - o.x - px, dy = t.y - o.y - py, dz = t.z - o.z - pz, d = Math.max(Math.hypot(dx, dy, dz), 1e-3)
+    sum += t.w * Math.exp(-d / HELD_TORCH.reach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d))
+  }
+  return HELD_TORCH.cap * (1 - Math.exp((-HELD_TORCH.gain * sum) / HELD_TORCH.cap))
+}
 
 /** Sets colour `out` to the light through a window at `dayness`. */
 export function skyThroughGlass(dayness, out) {
@@ -92,6 +110,7 @@ uniform float uWin;
 uniform vec3 uSky;
 uniform float uFlicker;
 uniform sampler2D speckMap;
+uniform vec4 uTorch[${TORCHES}];
 varying vec2 vUv;
 varying vec3 vTint;
 varying vec3 vLight;
@@ -107,6 +126,18 @@ float glint(vec3 n, vec3 e, vec3 d) {
   float l = length(d);
   return l < 1e-4 ? 0.0 : pow(max(0.0, dot(n, normalize(d / l + e))), ${SHINE.exp.toFixed(1)});
 }
+// heldTorchAt's, in world metres.
+float heldTorch(vec3 p, vec3 n) {
+  float sum = 0.0;
+  for (int i = 0; i < ${TORCHES}; i++) {
+    float s = uTorch[i].w;
+    if (s <= 0.0) continue;
+    vec3 l = uTorch[i].xyz - p;
+    float d = max(length(l), 1e-3);
+    sum += s * exp(-d / ${HELD_TORCH.reach.toFixed(2)}) * (0.35 + 0.65 * max(dot(n, l / d), 0.0));
+  }
+  return ${HELD_TORCH.cap.toFixed(2)} * (1.0 - exp(-${(HELD_TORCH.gain / HELD_TORCH.cap).toFixed(4)} * sum));
+}
 void main() {
   vec3 an = abs(vNrm);
   vec2 sp = an.y >= an.x && an.y >= an.z ? vPos.xz : an.x >= an.z ? vPos.zy : vPos.xy;
@@ -114,6 +145,7 @@ void main() {
   float mot = mix(1.0, 2.0 * texture2D(speckMap, sp * ${(1 / SPECK.m).toFixed(4)}).r, vSpeck);
   vec3 t = texture2D(map, vUv).rgb * mot;
   vec3 lit = vec3(uAmb * vLight.x + uCandle * vLight.y * uFlicker) + uWin * vLight.z * uSky;
+  lit += heldTorch(vView + cameraPosition, normalize(vNrm)) * vec3(${HELD_TORCH.color.map((v) => v.toFixed(2)).join(', ')});
   vec3 c = t * vTint * lit;
   if (vShine > 0.0) {
     vec3 n = normalize(vNrm), e = -normalize(vView);
@@ -455,15 +487,15 @@ function kit(rng) {
 }
 
 /**
- * The meshes for `room`, set at (ox, oy, oz); its potted mushrooms are drawn from `mushrooms`, the island's own bank and material. `update(t, dayness, eye)` flickers the candles (their LODs measured from `eye`) and brings the windows up with the day.
+ * The meshes for `room`, set at (ox, oy, oz), lit too by the torches in `uTorch` (lighting.uniforms'); its potted mushrooms are drawn from `mushrooms`, the island's own bank and material. `update(t, dayness, eye)` flickers the candles (their LODs measured from `eye`) and brings the windows up with the day.
  */
 export class InteriorView {
-  constructor(room, tex, ox, oy, oz, mushrooms) {
+  constructor(room, tex, ox, oy, oz, mushrooms, uTorch) {
     if (!mushrooms?.bank || !mushrooms.material) throw new Error('InteriorView: needs the island\'s mushrooms for the pots')
     this.room = room
     this.group = new THREE.Group()
     this.group.position.set(ox, oy, oz)
-    this.uniforms = houseUniforms()
+    this.uniforms = houseUniforms(uTorch)
     const rng = mulberry32(hash32(room.seed, room.index, 0x1d1))
     const K = kit(rng)
     const M = Object.fromEntries(TEX.map((id) => [id, new Mesher()]))

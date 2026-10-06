@@ -21,7 +21,7 @@ import { CARRIERS } from '../hands.js'
 import { CARRY_SPAN } from './leafkin.js'
 import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
-import { DARK_FILL } from './interior.js'
+import { DARK_FILL, HELD_TORCH } from './interior.js'
 import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, gripAt } from './villagers.js'
 
 // The house's own leafkin, beyond its villagers indoors: up to this many, trusted under ids from HOMEBODY_ID (trust.js keeps ids under 256).
@@ -59,6 +59,17 @@ export function residentLight(u, out) {
   const k = LIGHT.amb * u.uAmb.value * DARK_FILL + LIGHT.candle * u.uCandle.value * u.uFlicker.value
   const w = LIGHT.amb * u.uAmb.value * (1 - DARK_FILL) + LIGHT.win * u.uWin.value, sky = u.uSky.value
   return out.set(LIGHT.tint.r * (k + w * sky.r), LIGHT.tint.g * (k + w * sky.g), LIGHT.tint.b * (k + w * sky.b))
+}
+
+// A body lit by the bake where it stands is the walls' own sum times this, which keeps the townsfolk on average as bright as residentLight's.
+const BODY_GAIN = 1.35
+/** Sets colour `out` to a body's light in a house of uniforms `u` from the bake `L` at its chest (town-interior.js townLight) and the held torches' light there (heldTorchAt). */
+export function residentLightAt(u, L, torch, out) {
+  const k = u.uAmb.value * L[0] + u.uCandle.value * u.uFlicker.value * L[1], w = u.uWin.value * L[2], sky = u.uSky.value, T = HELD_TORCH.color
+  return out.setRGB(
+    BODY_GAIN * LIGHT.tint.r * (k + w * sky.r + torch * T[0]),
+    BODY_GAIN * LIGHT.tint.g * (k + w * sky.g + torch * T[1]),
+    BODY_GAIN * LIGHT.tint.b * (k + w * sky.b + torch * T[2]))
 }
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()

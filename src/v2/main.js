@@ -1238,6 +1238,10 @@ const QUEST_TOGGLE_ROWS = [
   // all three are ground scatters that only exist inside ~100 m -- so a
   // measurement that separated them would be three readings of the same number.
   { key: 'litter', text: 'litter, fungi & deadfall' },
+  // The built places and their people, split by what exists where: `huts` is a Leafkin village's huts, lamp posts and stools; `towns` the human towns' buildings (drawn and stepped); `townsfolk` their people and striders (drawn and stepped). Rows with no layer in the current room do nothing.
+  { key: 'huts', text: 'village huts & lamps' },
+  { key: 'towns', text: 'town buildings' },
+  { key: 'townsfolk', text: 'townsfolk & striders' },
   // ONE ROW OVER THE THREE BELOW, so a stutter can be blamed on the fauna as a
   // whole in one press before it is chased into a species. Off, no animal is
   // drawn, stepped or followed -- see the tick -- and the same holds for
@@ -1356,6 +1360,7 @@ function applyQuestToggle(key) {
       bones.batch.visible = enabled
       litterCards.group.visible = enabled
       break
+    case 'huts': case 'towns': case 'townsfolk': applyVillageVisibility(); break
     // Back on, every animal layer is put down fresh at her feet: the ground
     // may have moved under it while it was frozen, and a frozen layer is
     // skipped by replacePropsOnMovedGround. Expect a hitch on the frame you
@@ -1409,6 +1414,18 @@ function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
   if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
+}
+
+/** The `huts`, `towns` and `townsfolk` rows. The village hearth is left to `fire`: its own update decides when its group shows. */
+function applyVillageVisibility() {
+  if (roomProps) {
+    roomProps.mesh.visible = roomProps.glowMesh.visible = lamps.group.visible = stools.mesh.visible = questToggles.huts
+  }
+  if (towns) towns.setShown(questToggles.towns)
+  if (townsfolk) {
+    townsfolk.batch.visible = questToggles.townsfolk
+    if (townsfolk.striders) townsfolk.striders.batch.visible = questToggles.townsfolk
+  }
 }
 
 // Repaint one row's cell from the live state, in whichever grid holds it.
@@ -3088,7 +3105,7 @@ let ready = false
 // wearer would see is on -- and the rows exist to take one away for a
 // measurement.
 const questToggles = {
-  terrain: true,
+  terrain: true, huts: true, towns: true, townsfolk: true,
   trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, fireflies: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
   water: true, reflections: true, aurora: true, clouds: true, precip: true, fire: true, sound: true,
   // Off until the summit wreaths are redone; the menu row still turns them on.
@@ -3107,6 +3124,8 @@ const perfTrace = new PerfTrace({
   gpuTake: () => gpuTimer.take(),
   toggles: questToggles,
   setToggle: (key, on) => { if (questToggles[key] !== on) activateQuestButton(key) },
+  // Whether `key` has a layer in this room, so the battery skips drills that would measure nothing.
+  present: (key) => (key === 'huts' ? roomProps !== null : key === 'towns' ? towns !== null : key === 'townsfolk' ? townsfolk !== null : true),
   anyPress: () => ['left', 'right'].some((hand) => Object.values(input.state[hand].buttons).some((b) => b.justPressed)),
   hidePanel: () => { if (questPanelGroup.visible) toggleQuestPanel() },
   context: () => {
@@ -3683,7 +3702,7 @@ async function openHouse(e) {
   let top = -Infinity
   for (let x = -room.R - 1; x <= room.R + 1; x += 0.5) for (let z = -room.R - 1; z <= room.R + 1; z += 0.5) top = Math.max(top, height.heightAt(ox + x, oz + z))
   const oy = top + 0.5
-  const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz, mushrooms)
+  const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz, mushrooms, lighting.uniforms.uTorch)
   scene.add(view.group)
   const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const home = villagers.graph.doorNodes[e.k]
@@ -3719,7 +3738,7 @@ async function openTownHouse(t, i) {
   const cellar = caveSites.cellarOf.has(t * 256 + i) ? caveSites.cellarOf.get(t * 256 + i) : null
   const room = rollTownInterior({ seed: SEED, index: t * 256 + i, plan: b.plan, wealth: b.wealth, shop: b.trade === 'potions' || b.trade === 'inn' ? b.trade : null, cellar: cellar !== null })
   const ox = b.x, oy = b.y + 250, oz = b.z
-  const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz)
+  const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz, lighting.uniforms.uTorch)
   scene.add(view.group)
   const inner = new WalkSurface({ heightAt: (x, z) => oy + townFloorAt(room, x - ox, z - oz) }, new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
@@ -5034,6 +5053,7 @@ async function buildRoom(room, at) {
   bones.batch.visible = questToggles.litter
   litterCards.group.visible = questToggles.litter
   applyAnimalVisibility()
+  applyVillageVisibility()
   // THE EDITOR OVERLAY, drawn only where there is an editor. Markers is three
   // InstancedMeshes of authoring handles -- 96 triangles a spline point, 8 a
   // snow point, 168 a lake -- and the shipped document carries 37 river points,
@@ -7743,7 +7763,7 @@ function stepOverworld(dt, now) {
   spikes.lap('rocks')
   // The gathering place's rung and its flame's flicker: not under any toggle, the fire is the village's one light that never goes out.
   if (hearth) hearth.update(headTmp.x, headTmp.y, headTmp.z, (now / 1000) % 1024)
-  if (towns) {
+  if (towns && questToggles.towns) {
     towns.update(headTmp.x, headTmp.z)
     towns.setGlow(lampNight(), (now / 1000) % 1024)
   }
@@ -7751,7 +7771,7 @@ function stepOverworld(dt, now) {
   if (signposts) signposts.update(headTmp)
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
-  if (townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
+  if (townsfolk && questToggles.townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
   spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('trees')

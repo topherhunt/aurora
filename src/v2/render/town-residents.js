@@ -5,7 +5,9 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
-import { residentLight, roomLit } from './residents.js'
+import { residentLight, residentLightAt, roomLit } from './residents.js'
+import { heldTorchAt } from './interior.js'
+import { townLight } from './town-interior.js'
 import { TOWNSFOLK } from './townsfolk.js'
 import { SIT, SIT_CUT, TALKS, TURN_RATE } from './villagers.js'
 import { navRoute } from '../rooms/town-interior.js'
@@ -19,6 +21,8 @@ const NEAR_M = 0.05
 // Who keeps a `shop` spot: the potion master's counter, the innkeeper's bar.
 const KEEPERS = ['alchemist', 'innkeeper'].map((b) => TOWNSFOLK.bodies.indexOf(b))
 const FADE_S = 0.25
+// Where a body is lit from: this share of its height above its feet.
+const CHEST = 0.7
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -41,6 +45,8 @@ export class TownResidents {
     this.group.position.set(ox, oy, oz)
     scene.add(this.group)
     this.light = { value: new THREE.Vector3(1, 1, 1) }
+    this.lightAt = townLight(room)
+    this.u = null
     this.plain = bodies.map((b, i) => {
       const m = roomLit(makeSettledMaterial(`town-residents-${i}`), this.light)
       m.map = b.asset.map
@@ -246,7 +252,8 @@ export class TownResidents {
   }
 
   update(dt, view) {
-    residentLight(view.uniforms, this.light.value)
+    this.u = view.uniforms
+    residentLight(this.u, this.light.value)
     for (const r of this.all.slice()) this._step(r, dt)
   }
 
@@ -336,6 +343,12 @@ export class TownResidents {
     _scl.setScalar(r.k)
     p.group.matrix.compose(_pos, _quat, _scl)
     p.group.matrixWorldNeedsUpdate = true
+    // A baked body is lit where it stands by its tint over the house's shared light, so the batch stays one draw; a skinned one has no tint and keeps the house's.
+    if (p.baked) {
+      const cy = y + CHEST * r.size, o = this.group.position, L = this.light.value
+      residentLightAt(this.u, this.lightAt(x, cy, z), heldTorchAt(this.u.uTorch.value, o, x, cy, z, 0, 0, 0), p.tint)
+      p.tint.setRGB(p.tint.r / L.x, p.tint.g / L.y, p.tint.b / L.z)
+    }
   }
 
   dispose() {

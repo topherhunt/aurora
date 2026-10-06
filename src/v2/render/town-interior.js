@@ -1036,62 +1036,74 @@ function roomOfVertex(room, x, y, z) {
   return best
 }
 
-/** Per vertex: x the night's fill, y candle and hearth, z window and the daylit fill; `m.cdir` and `m.wdir` the ways its candle and window light come from, weighted by each light's share. */
+/** The bake at room point `p` of normal `n` (zero for a body, lit alike from every side): into `L` at `i` x the night's fill, y candle and hearth, z window and the daylit fill; added into `C` and `W` at `i` the ways its candle and window light come from, weighted by each light's share. */
+function shade(room, plan, px, py, pz, nx, ny, nz, L, C, W, i) {
+  const rm = roomOfVertex(room, px, py, pz), R = plan.rooms[rm.id], r = rm.rect
+  const up = py - rm.floor
+  let amb = SHADE.amb * (0.8 + 0.2 * ny)
+  const edge = Math.max(0, Math.min(px - r.x0, r.x1 - px, pz - r.z0, r.z1 - pz))
+  amb *= 1 - (1 - SHADE.corner) * (1 - smooth(0, 0.6, up)) * (1 - smooth(0, 0.8, edge))
+  let shaded = 1
+  for (const t of plan.tops) if (py < t.y && px > t.x0 - 0.05 && px < t.x1 + 0.05 && pz > t.z0 - 0.05 && pz < t.z1 + 0.05) { shaded = SHADE.under; break }
+  amb *= shaded
+  let cand = 0
+  for (const l of R.cand) {
+    const dx = l.x - px, dy = l.y - py, dz = l.z - pz, d = Math.hypot(dx, dy, dz) || 1
+    if (d > 6 * l.reach) continue
+    const got = SHADE.candle * l.i * Math.exp(-d / l.reach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d)) * (dy > 0 ? shaded : 1)
+    cand += got
+    C[i * 3] += (got * dx) / d; C[i * 3 + 1] += (got * dy) / d; C[i * 3 + 2] += (got * dz) / d
+  }
+  let win = 0
+  for (const w of R.win) {
+    const dx = px - w.p[0], dy = py - w.p[1], dz = pz - w.p[2], along = dx * w.ax[0] + dz * w.ax[2]
+    if (along <= -0.1) continue
+    const dl = Math.hypot(dx, dy, dz) || 1, facing = Math.max(0, -(nx * dx + ny * dy + nz * dz) / dl)
+    const got = w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
+    win += got
+    W[i * 3] -= (got * dx) / dl; W[i * 3 + 1] -= (got * dy) / dl; W[i * 3 + 2] -= (got * dz) / dl
+  }
+  for (const b of R.borrowed) {
+    const dx = b.p[0] - px, dy = b.p[1] - py, dz = b.p[2] - pz, d = Math.hypot(dx, dy, dz) || 1
+    const k = Math.exp(-d / SHADE.doorReach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d))
+    cand += SHADE.candle * b.c * k
+    win += b.w * k
+    for (let a = 0; a < 3; a++) { const u = [dx, dy, dz][a] / d; C[i * 3 + a] += SHADE.candle * b.c * k * u; W[i * 3 + a] += b.w * k * u }
+  }
+  L[i * 3] = amb * DARK_FILL
+  L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap))
+  L[i * 3 + 2] = win * (0.5 + 0.5 * shaded) * smooth(0, 0.6, edge + 0.3) + amb * (R.fill - DARK_FILL) * LEVELS.amb / LEVELS.win
+}
+
+/** Per vertex, shade's three terms into `m.lit` and its two directions into `m.cdir` and `m.wdir`. */
 function bake(room, m, plan) {
   const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm, C = new Float32Array(n * 3), W = new Float32Array(n * 3)
-  for (let i = 0; i < n; i++) {
-    const px = P[i * 3], py = P[i * 3 + 1], pz = P[i * 3 + 2], nx = N[i * 3], ny = N[i * 3 + 1], nz = N[i * 3 + 2]
-    const rm = roomOfVertex(room, px, py, pz), R = plan.rooms[rm.id], r = rm.rect
-    const up = py - rm.floor
-    let amb = SHADE.amb * (0.8 + 0.2 * ny)
-    const edge = Math.max(0, Math.min(px - r.x0, r.x1 - px, pz - r.z0, r.z1 - pz))
-    amb *= 1 - (1 - SHADE.corner) * (1 - smooth(0, 0.6, up)) * (1 - smooth(0, 0.8, edge))
-    let shaded = 1
-    for (const t of plan.tops) if (py < t.y && px > t.x0 - 0.05 && px < t.x1 + 0.05 && pz > t.z0 - 0.05 && pz < t.z1 + 0.05) { shaded = SHADE.under; break }
-    amb *= shaded
-    let cand = 0
-    for (const l of R.cand) {
-      const dx = l.x - px, dy = l.y - py, dz = l.z - pz, d = Math.hypot(dx, dy, dz) || 1
-      if (d > 6 * l.reach) continue
-      const got = SHADE.candle * l.i * Math.exp(-d / l.reach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d)) * (dy > 0 ? shaded : 1)
-      cand += got
-      C[i * 3] += (got * dx) / d; C[i * 3 + 1] += (got * dy) / d; C[i * 3 + 2] += (got * dz) / d
-    }
-    let win = 0
-    for (const w of R.win) {
-      const dx = px - w.p[0], dy = py - w.p[1], dz = pz - w.p[2], along = dx * w.ax[0] + dz * w.ax[2]
-      if (along <= -0.1) continue
-      const dl = Math.hypot(dx, dy, dz) || 1, facing = Math.max(0, -(nx * dx + ny * dy + nz * dz) / dl)
-      const got = w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
-      win += got
-      W[i * 3] -= (got * dx) / dl; W[i * 3 + 1] -= (got * dy) / dl; W[i * 3 + 2] -= (got * dz) / dl
-    }
-    for (const b of R.borrowed) {
-      const dx = b.p[0] - px, dy = b.p[1] - py, dz = b.p[2] - pz, d = Math.hypot(dx, dy, dz) || 1
-      const k = Math.exp(-d / SHADE.doorReach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d))
-      cand += SHADE.candle * b.c * k
-      win += b.w * k
-      for (let a = 0; a < 3; a++) { const u = [dx, dy, dz][a] / d; C[i * 3 + a] += SHADE.candle * b.c * k * u; W[i * 3 + a] += b.w * k * u }
-    }
-    L[i * 3] = amb * DARK_FILL
-    L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap))
-    L[i * 3 + 2] = win * (0.5 + 0.5 * shaded) * smooth(0, 0.6, edge + 0.3) + amb * (R.fill - DARK_FILL) * LEVELS.amb / LEVELS.win
-  }
+  for (let i = 0; i < n; i++) shade(room, plan, P[i * 3], P[i * 3 + 1], P[i * 3 + 2], N[i * 3], N[i * 3 + 1], N[i * 3 + 2], L, C, W, i)
   m.lit = L
   m.cdir = C
   m.wdir = W
 }
 
+/** Town house `room`'s bake at any room point, for a body standing in it: `(x, y, z) => [night fill, candle, window]`, one array rewritten per call. */
+export function townLight(room) {
+  const plan = lightPlan(room), L = new Float32Array(3), C = new Float32Array(3), W = new Float32Array(3)
+  return (x, y, z) => {
+    C.fill(0); W.fill(0)
+    shade(room, plan, x, y, z, 0, 0, 0, L, C, W, 0)
+    return L
+  }
+}
+
 /**
- * The meshes for town house `room`, set at (ox, oy, oz). `tex` is loadInteriorTextures()'s. `update(t, dayness, eye)` flickers the candles and the hearth and brings the windows up with the day.
+ * The meshes for town house `room`, set at (ox, oy, oz), lit too by the torches in `uTorch` (lighting.uniforms'). `tex` is loadInteriorTextures()'s. `update(t, dayness, eye)` flickers the candles and the hearth and brings the windows up with the day.
  */
 export class TownInteriorView {
-  constructor(room, tex, ox, oy, oz) {
+  constructor(room, tex, ox, oy, oz, uTorch) {
     if (!room.town) throw new Error('TownInteriorView: needs a rollTownInterior room')
     this.room = room
     this.group = new THREE.Group()
     this.group.position.set(ox, oy, oz)
-    this.uniforms = houseUniforms()
+    this.uniforms = houseUniforms(uTorch)
     const rng = mulberry32(hash32(room.seed, room.index, 0x70e1))
     const K = kit(rng)
     const M = Object.fromEntries(MESHES.map((id) => [id, new Mesher()]))
