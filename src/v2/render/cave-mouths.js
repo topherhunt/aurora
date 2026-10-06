@@ -6,11 +6,11 @@ import { MOUTH } from '../caves/sites.js'
 const HOLE_S = MOUTH.wall - HOLE.proud * MOUTH.scale
 
 export class CaveMouths {
-  /** `mouths` from siteMouths; the rest as Entrances takes them, `bank` loadMouthBank's. */
-  constructor(mouths, scene, field, water, rocks, bank) {
+  /** `mouths` from siteMouths; the rest as Entrances takes them, `bank` loadMouthBank's, `cards` the LitterCards that draws its far rung. */
+  constructor(mouths, scene, field, water, rocks, bank, cards) {
     this.mouths = mouths
     const fixed = mouths.map((m) => ({ key: `cave:${m.id}`, x: m.x - m.nx * MOUTH.wall, z: m.z - m.nz * MOUTH.wall, nx: m.nx, nz: m.nz, scale: MOUTH.scale }))
-    this.arches = new Entrances(scene, field, water, rocks, { bank, fixed })
+    this.arches = new Entrances(scene, field, water, rocks, { bank, fixed, cards })
     this.arches.place(0, 0)
   }
 

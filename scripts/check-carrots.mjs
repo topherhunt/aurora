@@ -13,6 +13,7 @@ import * as THREE from 'three'
 import path from 'node:path'
 import { CARROT_TUNING, Carrots, carrotsBankFrom } from '../src/v2/render/carrots.js'
 import { propCull } from '../src/v2/render/gen-props.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { taken } from '../src/v2/taken.js'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 
@@ -38,7 +39,7 @@ const flatField = (h) => ({
 })
 const NO_ROCKS = { blockTopAt: () => -Infinity }
 const place = (rocks = NO_ROCKS, seed = 5) => {
-  const c = new Carrots(new THREE.Scene(), flatField(100), DRY, LAYERS, rocks, { seed, bank: bank() })
+  const c = new Carrots(new THREE.Scene(), flatField(100), DRY, LAYERS, rocks, { seed, bank: bank(), cards: new LitterCards(4096) })
   c.place(0, 0)
   return c
 }
@@ -138,7 +139,25 @@ console.log('carrots: the bunch')
   check(c.tris === 0, 'nothing is drawn before the first update', `${c.tris}`)
   c.update(0, 101.6, 0)
   const drawn = plants.length - c.rim.hiddenCount
-  check(c.tris === plantsOf(c).filter((p) => !c.rim.isHidden(p.id)).reduce((s, p) => s + c.variantTris[c.variantAt[p.id]], 0), 'the triangle count is the drawn carrots\' own', `${drawn} drawn, ${c.tris} tris`)
+  const reach = (p) => Math.hypot(p.x, p.y - 101.6, p.z)
+  const live = plantsOf(c).filter((p) => !c.rim.isHidden(p.id))
+  check(c.tris === live.reduce((s, p) => s + (reach(p) <= 10.8 ? c.variantTris[c.variantAt[p.id]] : c.cardTris), 0), 'the triangle count is the drawn carrots\' own, a card for the far ones', `${drawn} drawn, ${c.tris} tris`)
+  const near = live.filter((p) => reach(p) < 10)
+  const far = live.filter((p) => reach(p) > 14)
+  check(near.length > 0 && far.length > 0, 'the bed spans both rungs from the origin', `${near.length} near, ${far.length} far`)
+  check(near.every((p) => c.batch.vis[p.id] === 1 && c.cards.vis[p.id] === 0), 'a near carrot is its mesh and not its card')
+  check(far.every((p) => c.batch.vis[p.id] === 0 && c.cards.vis[p.id] === 1), 'a far carrot is its card and not its mesh')
+  const stats = c.litterCards.stats
+  check(stats.used === live.filter((p) => c.cards.vis[p.id] === 1).length && stats.used >= far.length, 'the far cards are instances of the shared pool', `${stats.used} used`)
+  c.setShown(false)
+  check(live.every((p) => c.cards.vis[p.id] === 0) && c.litterCards.stats.used === 0 && !c.batch.visible, 'setShown(false) hides the cards and the mesh alike')
+  c.setShown(true)
+  check(far.every((p) => c.cards.vis[p.id] === 1) && c.batch.visible, 'and setShown(true) puts them back')
+  const walker = near[0]
+  c.update(walker.x + 30, 101.6, walker.z)
+  check(c.batch.vis[walker.id] === 0 && c.cards.vis[walker.id] === 1, 'a carrot she walks 30 m from goes back to its card')
+  c.update(walker.x + 2, 101.6, walker.z)
+  check(c.batch.vis[walker.id] === 1 && c.cards.vis[walker.id] === 0, 'and to its mesh when she comes back')
 }
 
 console.log('carrots: the neighbours')

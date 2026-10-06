@@ -9,7 +9,7 @@ import { PropMeshes } from './prop-arena.js'
 // ---------------------------------------------------------------------------
 // THE LITTER CARDS. Every far card of the ground litter (stumps, logs, skeletons, skulls, mushrooms) is one instance of ONE unit quad in ONE InstancedMesh, so the whole band is a single draw call however many kinds there are. A layer's instance carries its picture index in `aLayerShift` (PropArena `cards`); the quad's extents come from a uniform row per picture and its picture from a layer of one 128 px array.
 //
-// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex) or AXIAL: the piece lies along its own Z and its card turns only about that axis, to the eye as seen in the piece's own frame. One axial quad stands in for the crossed pair a log used to need.
+// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), AXIAL (the piece lies along its own Z and its card turns only about that axis, to the eye as seen in the piece's own frame; one quad stands in for the crossed pair a log used to need) or FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall).
 //
 // Pictures are stored top row first (the prop atlas's order); critter bakes arrive bottom row first and `setCritterPixels` flips them.
 // ---------------------------------------------------------------------------
@@ -18,6 +18,7 @@ export const MAX_PICTURES = 32
 
 const SPUN = 0
 const AXIAL = 1
+const FIXED = 2
 
 const VERTEX_COMMON = /* glsl */ `
   #define PROP_FADE_ATTRIBUTE
@@ -31,7 +32,7 @@ const VERTEX_COMMON = /* glsl */ `
   flat varying float vCardLayer;
   ${HEAD_EYE_DECL}`
 
-// uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame. Spun: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z, centred on the axis through (cx, cy) and turned about it to face the eye.
+// uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame. Spun and fixed: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z, centred on the axis through (cx, cy) and turned about it to face the eye.
 const VERTEX_BODY = /* glsl */ `
   {
     float cardId = floor( aLayerShift + 0.5 );
@@ -39,7 +40,9 @@ const VERTEX_BODY = /* glsl */ `
     vec4 cb = uCardBox[ ci ];
     vCardLayer = cardId;
     vCardUv = vec2( position.x + 0.5, 0.5 - position.y );
-    if ( uCardKind[ ci ] > 0.5 ) {
+    if ( uCardKind[ ci ] > 1.5 ) {
+      transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
+    } else if ( uCardKind[ ci ] > 0.5 ) {
       mat4 cim = modelMatrix * instanceMatrix;
       vec3 cd = ${HEAD_EYE_GLSL} - cim[ 3 ].xyz;
       vec2 ce = vec2( dot( cim[ 0 ].xyz, cd ) / dot( cim[ 0 ].xyz, cim[ 0 ].xyz ), dot( cim[ 1 ].xyz, cd ) / dot( cim[ 1 ].xyz, cim[ 1 ].xyz ) ) - cb.xy;
@@ -61,8 +64,12 @@ const FRAGMENT_COMMON = /* glsl */ `
   uniform highp sampler2DArray uCardPics;
   ${IGN_GLSL}`
 
-/** The extents of the card for a piece of `bounds` (setCritterAsset's): `{ kind, cx, cy, hw, hh }` for `addPicture`. `core` is where an axial piece's axis runs in its frame. */
+/** The extents of the card for a piece of `bounds` (setCritterAsset's): `{ kind, cx, cy, hw, hh }` for `addPicture`. `core` is where an axial piece's axis runs in its frame. A fixed card is the side view as it stands, `bounds` already the width it spans. */
 export function cardPicture(kind, bounds, core = { x: 0, y: 0 }) {
+  if (kind === 'fixed') {
+    const ext = critterCardExtents(bounds)
+    return { kind, cx: 0, cy: (ext.y0 + ext.y1) / 2, hw: ext.hx, hh: (ext.y1 - ext.y0) / 2 }
+  }
   if (kind === 'axial') {
     const ext = critterCardExtents(bounds)
     return { kind, cx: core.x, cy: core.y, hw: ext.hz, hh: (ext.y1 - ext.y0) / 2 }
@@ -119,18 +126,25 @@ export class LitterCards {
 
   /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. */
   addPicture({ kind, cx, cy, hw, hh }) {
-    if (kind !== 'spun' && kind !== 'axial') throw new Error(`LitterCards: a picture is 'spun' or 'axial', not ${kind}`)
+    if (kind !== 'spun' && kind !== 'axial' && kind !== 'fixed') throw new Error(`LitterCards: a picture is 'spun', 'axial' or 'fixed', not ${kind}`)
     if (this.pictures >= MAX_PICTURES) throw new Error(`LitterCards: ${MAX_PICTURES} pictures is the table's size`)
     if (!(hw > 0) || !(hh > 0)) throw new Error(`LitterCards: need a positive half width and height, got ${hw} x ${hh}`)
     const i = this.pictures++
     this.box[i].set(cx, cy, hw, hh)
-    this.kind[i] = kind === 'axial' ? AXIAL : SPUN
+    this.kind[i] = kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : SPUN
     return i
   }
 
   /** Picture `i`'s texels, top row first, for a bake to write in place; call `upload` after. */
   pixels(i) {
     return this.texture.image.data.subarray(i * this.stride, (i + 1) * this.stride)
+  }
+
+  /** Copy texels already top row first (another layer of the prop atlas) into picture `i`. */
+  setPixels(i, data) {
+    if (data.length !== this.stride) throw new Error(`LitterCards: a picture is ${TEX_SIZE} px square, got ${data.length / 4} texels`)
+    this.pixels(i).set(data)
+    this.upload()
   }
 
   /** Copy a critter bake (bottom row first, TEX_SIZE square) into picture `i`. */
@@ -144,8 +158,7 @@ export class LitterCards {
 
   /** Photograph `geometry` (wearing `map`) into picture `i`, as the `kind` of card it was added as. */
   bake(renderer, i, geometry, map, bounds, kind) {
-    const spun = kind === 'spun'
-    const texture = bakeCritterCard(renderer, geometry, map, spun ? spunBounds(bounds) : bounds, spun ? SPUN_VIEWS : AXIS_VIEWS)
+    const texture = bakeCritterCard(renderer, geometry, map, kind === 'spun' ? spunBounds(bounds) : bounds, kind === 'axial' ? AXIS_VIEWS : SPUN_VIEWS)
     this.setCritterPixels(i, texture.image.data)
     texture.dispose()
   }

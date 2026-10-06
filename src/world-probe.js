@@ -112,6 +112,12 @@ export const WORLD_PROBE = {
   // on this timescale is the light and the wind in the trees, not the land.
   refreshFrames: 150,
 
+  // Frames of rest after each face. A face is a whole scene submission -- as
+  // dear as an eye's own render on the Quest -- so five in a row is five
+  // over-budget frames in a row; spaced out it is one hitch of that size every
+  // few frames, and a refresh takes 5 * (faceGap + 1) frames to land.
+  faceGap: 5,
+
   // How far she can move from the anchor before the capture is re-taken from
   // where she is now, in metres, without waiting for the timer. The case this
   // exists for is walking along a river bank, where the whole reflection is
@@ -230,8 +236,9 @@ export class WorldProbe {
     // always anchors.
     this.origin = new THREE.Vector3(Infinity, Infinity, Infinity)
 
-    // Faces still owed on the cube being filled. Counted down one per frame.
+    // Faces still owed on the cube being filled, and frames to rest before the next.
     this.burst = 0
+    this.rest = 0
 
     // Objects hidden for the duration of every capture. See the header.
     this.hidden = []
@@ -341,6 +348,10 @@ export class WorldProbe {
     }
 
     if (this.filling < 0) return
+    if (this.rest > 0) {
+      this.rest--
+      return
+    }
     this.burst--
     const target = this.filling === 0 ? this.a : this.b
 
@@ -414,6 +425,7 @@ export class WorldProbe {
 
     this.face = (this.face + 1) % FACES.length
     this.captures++
+    this.rest = WORLD_PROBE.faceGap
 
     // BURST COMPLETE: hand the finished cube to the shader. `live` is what the
     // fade walks toward, so moving it is the entire handover -- and it is set

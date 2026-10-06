@@ -8,6 +8,7 @@ import {
   setPropFadeTimerAt, setPropSolidAt, getPropClock, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { InstancedArena } from './instanced-arena.js'
+import { PropArena } from './prop-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -37,13 +38,13 @@ import { taken, TOLERANCE_M } from '../taken.js'
 //   uniform scale over SCALE_RANGE, a small tilt off vertical, and the ground
 //   cue below.
 //
-//   ONE ARENA PER RING. Three meshes -- LOD0, LOD2, card -- where the forest has
-//   one, and an instance CHANGES TIER BY MOVING between them. Three draw calls
-//   for the layer, which is the price of the fifty fps.
+//   ONE ARENA PER RING. Two meshes -- LOD0 and LOD2 -- and the far card, which
+//   is an instance of the shared litter quad (litter-cards.js) and costs no
+//   call of its own. An instance CHANGES TIER BY MOVING between them.
 //
-//   THE CARD ARENA IS EVERY FERN'S HOME. Its ids are the bed's ids: `tile.ids`,
+//   THE CARD VIEW IS EVERY FERN'S HOME. Its ids are the bed's ids: `tile.ids`,
 //   instX/instY/instZ and the rim all address it and nothing else, and a fern is
-//   only ever on LOAN to a mesh ring.
+//   only ever on LOAN to a mesh ring. The card does not sway.
 //
 //   NOTHING HIDDEN IS BILLED. The arena packs its live instances densely and
 //   `count` is the population actually on screen, so a fern the rim has
@@ -429,8 +430,9 @@ export class Ferns {
     water,
     layers,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null, plants = [] } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null, plants = [], cards = null } = {}
   ) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Ferns: needs the LitterCards its far card is drawn by')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
       throw new Error('Ferns: needs a V2Height with heightAt and heightAndSlopeAt')
     }
@@ -545,24 +547,8 @@ export class Ferns {
     const card = shipFernCard({ planes: 1, billboard: true })
     this.card = card
 
-    // The billboard list is what ties the material to the card's impostor
-    // layer. The mesh rings wear frond layers and are left alone, so all three
-    // rings share ONE material -- which is what keeps the layer at three draw
-    // calls rather than three materials' worth of state changes, and the reason
-    // the card is a shader trick rather than a mesh with a material of its own.
-    // The whole bed is inside DRAW_RADIUS 65, which is inside the wind's own
-    // 100 m reach, so every fern sways -- billboards included. A spun card takes
-    // the screen-parallel cheat (material.js's windVertex explains why it is the
-    // right one on a 0.5 m plant at 14 m and out).
-    // `instancedFade` declares `aPropFade`, which is what both dissolves write
-    // through: the rim's, and the LOD cross-fade below. It is a program cache
-    // key, so it has to be on for every arena wearing this material -- and every
-    // arena is an InstancedArena, which makes the attribute in addGeometry.
-    // `leafThrough`: a fern can be carried, dropped and rolled, and a frond
-    // turned toward the ground would otherwise light black -- see material.js's
-    // leafThroughApply.
+    // All the mesh rings share ONE material, which is what keeps the rings at two draw calls. `instancedFade` declares `aPropFade`, which the rim's and the LOD cross-fade's dissolves write through, so it is on for every arena wearing this material. The whole bed is inside DRAW_RADIUS 65, inside the wind's 100 m reach, so every ring fern sways. `leafThrough`: a fern can be carried, dropped and rolled, and a frond turned toward the ground would otherwise light black -- see material.js's leafThroughApply.
     this.material = createPropMaterial(textureArray, {
-      billboardLayers: [card.layer],
       instancedFade: true,
       wind: 'fern',
       leafThrough: 0.6,
@@ -578,14 +564,17 @@ export class Ferns {
     // The card ring is the one past the last mesh ring, in tierAt and in the
     // band walk in `update` alike.
     this.cardTier = this.ringCount
-    this.cardTris = triangleCount(card.geometry)
+    this.cardTris = cards.cardTris
 
-    // THE CARD ARENA, and every fern in the bed owns an id in it for as long as
+    // THE CARD VIEW, and every fern in the bed owns an id in it for as long as
     // it stands. Everything that addresses a fern by id -- tile.ids, instX/Y/Z,
-    // variantAt, the rim -- means an id in HERE.
-    this.cards = new InstancedArena(this.maxInstances, this.material)
-    this.cards.name = 'v2-ferns-card'
-    this.cards.addGeometry(card.geometry)
+    // variantAt, the rim -- means an id in HERE. Its picture is the shipped fern's impostor, the card's own extents.
+    cards.claim('ferns', this.maxInstances)
+    card.geometry.computeBoundingBox()
+    const box = card.geometry.boundingBox
+    this.cardPicture = cards.addPicture({ kind: 'spun', cx: 0, cy: (box.min.y + box.max.y) / 2, hw: (box.max.x - box.min.x) / 2, hh: (box.max.y - box.min.y) / 2 })
+    this.litterCards = cards
+    this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-ferns-card')
 
     // THE MESH RINGS, finest first, each with a pool sized to its OWN disc at
     // the pushed-out band boundary rather than to the bed. That is the whole
@@ -605,7 +594,7 @@ export class Ferns {
       return { name, mesh, tris: triangleCount(tier.geometry), cap, free, freeCount: cap }
     })
 
-    this.meshes = [...this.rings.map((r) => r.mesh), this.cards]
+    this.meshes = this.rings.map((r) => r.mesh)
     // The rosette's span at unit scale, the ball a hand reaches for and the size a held one is. Off the LOD0 ring's own geometry, since the bank's copy is disposed below.
     const lod0Geo = this.rings[0].mesh.geometry
     lod0Geo.computeBoundingBox()
@@ -629,7 +618,9 @@ export class Ferns {
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
     for (let i = 0; i < this.maxInstances; i++) {
-      this.free[this.maxInstances - 1 - i] = this.cards.addInstance(0)
+      const id = this.cards.addInstance(0)
+      this.cards.setLayerShiftAt(id, this.cardPicture)
+      this.free[this.maxInstances - 1 - i] = id
     }
 
     this.tierAt = new Int8Array(this.maxInstances).fill(-1)
@@ -1579,16 +1570,24 @@ export class Ferns {
   }
 
   /**
-   * Photograph the shipping fern into its impostor layer. Call ONCE, after
+   * Photograph the shipping fern into its impostor layer and copy that into the shared card picture. Call ONCE, after
    * loadImageLayers() has resolved -- until then the card draws a fully
-   * transparent layer, which alphaTest discards, so distant ferns fade in
+   * transparent picture, which alphaTest discards, so distant ferns fade in
    * rather than flashing.
    */
   bakeCards(renderer) {
     const t0 = performance.now()
     const baked = bakeShipFernImpostor(renderer, this.textureArray)
+    const stride = this.litterCards.stride
+    this.litterCards.setPixels(this.cardPicture, this.textureArray.image.data.subarray(baked.layer * stride, (baked.layer + 1) * stride))
     this.cardBakeMs = performance.now() - t0
     return baked
+  }
+
+  /** Draw the whole bed or none of it; the far cards are shared instances, so the rings' `visible` alone would leave them. */
+  setShown(shown) {
+    for (const mesh of this.meshes) mesh.visible = shown
+    this.cards.setShown(shown)
   }
 
   /** Match the props' snow to the terrain's, so a fern and its ground agree. */
@@ -1611,7 +1610,7 @@ export class Ferns {
       // `drawn` is the arenas' own live counts, so it is what the GPU was
       // handed rather than what this class thinks it asked for -- the two
       // disagreeing is the bug the dense packing exists to make visible.
-      drawn: this.meshes.reduce((n, m) => n + m.count, 0),
+      drawn: this.meshes.reduce((n, m) => n + m.count, 0) + this.cards.vis.reduce((n, v) => n + v, 0),
       fading: this.fades.length,
       rings: this.rings.map((r) => `${r.name} ${r.cap - r.freeCount}/${r.cap}`),
       density: this.density,

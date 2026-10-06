@@ -16,6 +16,7 @@
 // the same stone comes up under two centres.
 // With `nearX,nearZ` the sites are listed nearest that spot first.
 
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import * as THREE from 'three'
 
 import { Rocks } from '../src/v2/render/rocks.js'
@@ -49,7 +50,7 @@ const rocks = new Rocks(new THREE.Scene(), height, water, layers, buildTextureAr
 const hollowBed = rocks.beds.find((b) => b.cfg.hollow)
 // The screens walked over the field, water and rocks alone: the census counts mouths, not which end of a screen is open.
 const trees = new Trees(new THREE.Scene(), height, water, buildTextureArray(), { seed: SEED, plantRoom: SCREEN_POOL })
-const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field: height, water, rocks }), trees })
+const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')), cards: new LitterCards(512), ground: new LeafkinGround({ field: height, water, rocks }), trees })
 
 const hollows = new Map()
 const sites = new Map()

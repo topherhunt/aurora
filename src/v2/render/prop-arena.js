@@ -373,8 +373,29 @@ export class PropArena extends THREE.Group {
     return true
   }
 
-  /** Show or hide. A show into a full mesh leaves the instance hidden and returns false. */
+  /** Show or hide. A show into a full mesh leaves the instance hidden and returns false. While the arena is not shown (`setShown`) every instance stays hidden and the ask is kept. */
   setVisibleAt(instanceId, visible) {
+    if (this._want) {
+      this._want[instanceId] = visible ? 1 : 0
+      if (!this._shown) return true
+    }
+    return this._display(instanceId, visible)
+  }
+
+  /**
+   * Draw none of this view's instances while `shown` is false, whichever mesh set holds them, and put back what was asked when it is true again. A group's `visible` cannot do this for a view over a set other layers share (the litter cards).
+   */
+  setShown(shown) {
+    if (!this._want) {
+      this._want = this.vis.slice()
+      this._shown = true
+    }
+    if (this._shown === shown) return
+    this._shown = shown
+    for (let i = 0; i < this._next; i++) this._display(i, shown && this._want[i] === 1)
+  }
+
+  _display(instanceId, visible) {
     const want = visible ? 1 : 0
     if (this.vis[instanceId] === want) return true
     const g = this.geoAt[instanceId]

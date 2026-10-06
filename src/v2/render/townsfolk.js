@@ -130,6 +130,8 @@ export const TOWNSFOLK = {
     child: [['visit', 0.4], ['home', 0.1], ['sit', 0.1], ['wander', 0.4]],
   },
   childPace: 1.2,
+  // The hours' pulls (TownLife._pull), each eased up over its first two hours and down over its last two: to the fire from dusk, home through the night. The fire's weighs a `fire` errand (a stool, else a stand on the ring facing it) and stretches a sit by up to `sitLonger`; home's weighs a `home` errand by `home`, cuts a trade's round by up to `work`, stretches a time indoors by up to `longer`, and keeps one indoors on with up to `stay` odds.
+  night: { fire: [16.5, 18, 21.5, 23], home: [21, 23, 5, 7], weight: { fire: 1.2, home: 1.2 }, gather: [20, 60], sitLonger: 1, work: 0.6, longer: 3, stay: 0.75 },
   // An errand's chance of being its trade's round instead; a shopkeeper's (potions, inn) times indoors are `keep` times as long. The smith's round is `rounds` heats, each held at the forge, struck on an anvil, quenched at the tub and struck again; a farmer tends `spots` places along the carrot rows; the woodcutter splits at the stump and stacks, `rounds` times. Each mark is held for its seconds.
   trade: {
     work: 0.65, keep: 3,
@@ -167,6 +169,13 @@ const SHY_WIRE = 'ts:'
 const SHY_PHASES = ['run', 'wait', 'back', 'turn']
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
+const ease = (x) => { const t = clamp(x, 0, 1); return t * t * (3 - 2 * t) }
+/** 0..1 at hour `h` over `[up, full, fade, gone]`, which may run past midnight. */
+const pullAt = (h, [up, full, fade, gone]) => {
+  const at = (x) => ((x - up) % 24 + 24) % 24
+  const d = at(h)
+  return Math.min(ease(d / at(full)), 1 - ease((d - at(fade)) / (at(gone) - at(fade))))
+}
 const pick = (rand, pairs) => {
   let r = rand() * pairs.reduce((s, [, w]) => s + w, 0)
   for (const [name, w] of pairs) if ((r -= w) < 0) return name
@@ -271,10 +280,11 @@ export function townGraph(town) {
  * `index` is the town's in `journeys` (journeys.js), which with `strider`,
  * `{ walk, fidget }` (its walk in m/s, its fidget clip's seconds), brings the
  * striders at the rails and the travellers leaving and arriving; without
- * them the rails stand empty.
+ * them the rails stand empty. `hourAt(seconds)` is the hour of day at a room
+ * time (clock.js WorldClock.hourAt), noon when absent.
  */
 export class TownLife {
-  constructor(town, { index, seed, bodies, seats, heightAt, journeys = null, strider = null }) {
+  constructor(town, { index, seed, bodies, seats, heightAt, journeys = null, strider = null, hourAt = () => 12 }) {
     if (!Array.isArray(bodies) || bodies.length === 0) throw new Error('TownLife: needs the bodies')
     if (typeof heightAt !== 'function') throw new Error('TownLife: needs heightAt')
     if (!journeys !== !strider) throw new Error('TownLife: the journeys and the strider come together')
@@ -286,6 +296,8 @@ export class TownLife {
     this.strider = strider
     this.bodies = bodies
     this.heightAt = heightAt
+    this.hourAt = hourAt
+    this.pull = { fire: 0, home: 0 }
     this.graph = townGraph(town)
     const { nodes, ring } = this.graph
     this.seats = seats.map((s) => {
@@ -353,6 +365,7 @@ export class TownLife {
     for (let t = from + 1; t <= end; t++) {
       if (t >= this.turnTick) { this._placeAll(t / TICK_HZ); continue }
       this.tick = t
+      this._pull(t / TICK_HZ)
       this.homing = t >= this.turnTick - TOWNSFOLK.homing * TICK_HZ
       // The ground is only for drawing, so a replay reads it on the last two ticks alone, the pair the frame lerps between.
       this.grounded = t >= tick - 1
@@ -396,9 +409,17 @@ export class TownLife {
     c.k = c.size / this.bodies[c.body].height
   }
 
+  /** The hour's pulls to the fire and home (TOWNSFOLK.night) at room time `seconds`. */
+  _pull(seconds) {
+    const h = this.hourAt(seconds), N = TOWNSFOLK.night
+    this.pull.fire = pullAt(h, N.fire)
+    this.pull.home = pullAt(h, N.home)
+  }
+
   _placeAll(seconds) {
     const { index, start } = chapterOf(seconds, this.key)
     this.tick = tickOf(start)
+    this._pull(start)
     this.turnTick = tickAfter(start + CHAPTER_S)
     this.homing = false
     for (const s of this.seats) s.by = null
@@ -428,7 +449,7 @@ export class TownLife {
       c.seat = null
       c.talked = 0
       c.phase = ''
-      this._inside(c, c.rand() * TOWNSFOLK.inside[1])
+      this._inside(c, c.rand() * TOWNSFOLK.inside[1] * (1 + this.pull.home * TOWNSFOLK.night.longer))
     }
     if (this.journeys) this._plan(index, start)
   }
@@ -598,9 +619,12 @@ export class TownLife {
 
   _errand(c) {
     if (this.homing) { this._go(c, c.home, 'enter'); return }
-    const kind = pick(c.rand, TOWNSFOLK.errands[c.role])
+    const N = TOWNSFOLK.night, { fire, home } = this.pull
+    const pairs = TOWNSFOLK.errands[c.role].map(([k, w]) => [k, k === 'home' ? w + home * N.weight.home : w])
+    if (fire > 0) pairs.push(['fire', fire * N.weight.fire])
+    const kind = pick(c.rand, pairs)
     if (kind === 'lead' && this._lead(c)) return
-    if (c.work !== null && c.rand() < TOWNSFOLK.trade.work) { this._trade(c); return }
+    if (c.work !== null && c.rand() < TOWNSFOLK.trade.work * (1 - home * N.work)) { this._trade(c); return }
     const { doors, targets } = this.graph
     if (kind === 'visit') {
       let door = doors[(c.rand() * doors.length) | 0]
@@ -608,9 +632,15 @@ export class TownLife {
       if (door !== c.at) { this._go(c, door, 'enter'); return }
     }
     if (kind === 'home' && c.at !== c.home) { this._go(c, c.home, 'enter'); return }
-    if (kind === 'sit') {
+    if (kind === 'sit' || kind === 'fire') {
       const free = this.seats.filter((s) => s.by === null)
       if (free.length > 0) { this._seat(c, free[(c.rand() * free.length) | 0]); return }
+    }
+    if (kind === 'fire') {
+      let node = this.graph.ring[(c.rand() * this.graph.ring.length) | 0]
+      if (node === c.at) node = this.graph.ring[(this.graph.ring.indexOf(node) + 1) % this.graph.ring.length]
+      this._go(c, node, 'gather')
+      return
     }
     let node = targets[(c.rand() * targets.length) | 0]
     if (node === c.at) node = targets[(targets.indexOf(node) + 1) % targets.length]
@@ -647,7 +677,7 @@ export class TownLife {
     switch (phase) {
       case 'turn': c.aim = this._toward(c, c.seat.lookX, c.seat.lookZ); this._play(c, 'idle', STEP_S); break
       case 'down': this._play(c, 'sit', SIT_CUT[0] / c.pace); break
-      case 'hold': c.hold = between(c.rand, TOWNSFOLK.sit); this._play(c, 'idle-sit', STEP_S); break
+      case 'hold': c.hold = between(c.rand, TOWNSFOLK.sit) * (1 + this.pull.fire * TOWNSFOLK.night.sitLonger); this._play(c, 'idle-sit', STEP_S); break
       case 'up': this._play(c, 'sit', (sit - SIT_CUT[1]) / c.pace, SIT_CUT[1]); break
       default: throw new Error(`TownLife: no sit phase named ${phase}`)
     }
@@ -656,12 +686,18 @@ export class TownLife {
   _arrive(c) {
     switch (c.then) {
       case 'stand': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.stand); this._play(c, 'idle', STEP_S); break
+      case 'gather': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.night.gather); c.aim = this._toward(c, this.town.x, this.town.z); this._play(c, 'idle', STEP_S); break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
-      case 'enter': this._inside(c, between(c.rand, TOWNSFOLK.inside) * (c.trade === 'potions' || c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1)); break
+      case 'enter': this._inside(c, this._indoors(c)); break
       case 'errand': this._errand(c); break
       case 'job': this._jobStep(c); break
       default: throw new Error(`TownLife: a route ends in ${c.then}`)
     }
+  }
+
+  /** Seconds for a time indoors: a shopkeeper's `keep` times as long, and longer by the night's pull home. */
+  _indoors(c) {
+    return between(c.rand, TOWNSFOLK.inside) * (c.trade === 'potions' || c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1) * (1 + this.pull.home * TOWNSFOLK.night.longer)
   }
 
   _talk(a, b) {
@@ -1054,7 +1090,9 @@ export class TownLife {
     switch (c.state) {
       case 'inside':
         c.hold -= dt
-        if (c.hold <= 0 && !this.homing) { c.hidden = false; this._errand(c) }
+        if (c.hold > 0 || this.homing) break
+        if (c.at === c.home && this.pull.home > 0 && c.rand() < this.pull.home * TOWNSFOLK.night.stay) c.hold = this._indoors(c)
+        else { c.hidden = false; this._errand(c) }
         break
       case 'walk':
         if (tick % TOWNSFOLK.talk.everyTicks === 0) {
@@ -1065,6 +1103,7 @@ export class TownLife {
         break
       case 'stand':
         c.hold -= dt
+        this._turn(c, dt)
         if (tick % TOWNSFOLK.talk.everyTicks === 0) {
           const o = this._meet(c)
           if (o) { this._talk(c, o); break }
@@ -1148,9 +1187,12 @@ export class Townsfolk {
    * @param opts.journeys  journeys.js Journeys over the roads, if any: the striders at the rails and the travellers
    * @param opts.bond      wild-striders.js's { trusted, grown }: a tied strider fed a fish trusts her, as a wild one does
    * @param opts.eat       (lure) => true once her hand holding it has lost it
+   * @param opts.hourAt    (seconds) => the hour of day at a room time (clock.js WorldClock.hourAt), for the evening's fire and the night's homes
    */
-  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false } = {}) {
+  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false, hourAt } = {}) {
     if (!Array.isArray(towns)) throw new Error('Townsfolk: needs the towns')
+    if (typeof hourAt !== 'function') throw new Error('Townsfolk: needs hourAt')
+    this.hourAt = hourAt
     if (!walk || typeof walk.heightAt !== 'function') throw new Error('Townsfolk: needs the WalkSurface')
     if (typeof patch !== 'function') throw new Error('Townsfolk: needs the lighting patch')
     this.scene = scene
@@ -1291,7 +1333,7 @@ export class Townsfolk {
     const hearth = new Hearth(this.scene, this.hearthOpts.field, { ...this.hearthOpts, at: town, seed: hash32(this.seed, i, 0x4ea7), scale: s })
     const seats = hearth.stools.map((st) => ({ x: hearth.x + st.x * s, z: hearth.z + st.z * s, top: hearth.y + st.top * s, r: st.r * s, lookX: hearth.x, lookZ: hearth.z }))
     const J = this.striders ? { journeys: this.journeys, strider: this.striders.sim } : {}
-    const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), ...J })
+    const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), hourAt: this.hourAt, ...J })
     for (const c of life.all) this._entity(c)
     for (const m of life.mounts) {
       const key = `town:${i}:${m.id}`

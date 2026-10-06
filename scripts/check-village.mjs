@@ -21,6 +21,7 @@
 // the build says, the huts stone to the walker, and the lake's creatures --
 // grasshoppers, crabs, frogs and fish -- finding somewhere to live.
 
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -982,7 +983,7 @@ console.log('\nthe boot')
     }
   }
   check(footless === 0 && spilt === 0, 'each is a column from its foot to its crown and nothing past its plan radius', `${footless} without a foot, ${spilt} points past one`)
-  const e = new Entrances(scene, field, water, rocks, { seed: SEED, bank: mouthBankFrom(readShippedLadder('cave-mouth')), fixed: [room.exit] })
+  const e = new Entrances(scene, field, water, rocks, { seed: SEED, bank: mouthBankFrom(readShippedLadder('cave-mouth')), cards: new LitterCards(512), fixed: [room.exit] })
   e.place(room.spawn.x, room.spawn.z)
   check(e.resident.size === 1 && e.resident.has('exit'), 'the exit mouth is seated where the build says', `${e.resident.size} resident`)
   const site = e.resident.get('exit')

@@ -480,6 +480,8 @@ check(
     render: () => {},
   }
   const DT = 1 / 72
+  // Five faces, each followed by faceGap frames of rest.
+  const BURST_FRAMES = 5 * (WORLD_PROBE.faceGap + 1)
   const head = new THREE.Vector3()
 
   // SHE IS STANDING ON A BANK 5 m ABOVE A LAKE, and the lake's dilated polygon
@@ -523,11 +525,23 @@ check(
   // from an empty target would show a second of flat silhouette every reload.
   const p3 = new WorldProbe()
   head.set(0, 105, 0)
-  for (let k = 0; k < 5; k++) p3.update(stub, scene2, head, null, DT)
+  for (let k = 0; k < BURST_FRAMES; k++) p3.update(stub, scene2, head, null, DT)
   check(
     p3.blend === p3.live && p3.filling < 0,
     'the first cube snaps in rather than fading up from an empty one',
     `blend ${p3.blend}, live ${p3.live}`
+  )
+
+  // THE FACES ARE SPACED, not back to back: a face is a whole scene submission.
+  const p3b = new WorldProbe()
+  head.set(0, 105, 0)
+  for (let k = 0; k < 5; k++) p3b.update(stub, scene2, head, null, DT)
+  const early = p3b.captures
+  for (let k = 5; k < BURST_FRAMES; k++) p3b.update(stub, scene2, head, null, DT)
+  check(
+    early === 1 && p3b.captures === 5,
+    'a refresh spreads its five faces over frames rather than taking them back to back',
+    `${early} faces in the first 5 frames, ${p3b.captures} after ${BURST_FRAMES}`
   )
 
   // NOW MOVE HER. Past moveRefresh, so the second cube fills -- and the shader's
@@ -535,7 +549,7 @@ check(
   head.set(0, 105, WORLD_PROBE.moveRefresh + 5)
   const wasLive = p3.live
   const walk = []
-  for (let k = 0; k < 5; k++) p3.update(stub, scene2, head, null, DT)   // fill the spare
+  for (let k = 0; k < BURST_FRAMES; k++) p3.update(stub, scene2, head, null, DT)   // fill the spare
   // Parity-agnostic on purpose: which of the two cubes is live alternates, and
   // pinning it to a number would make this a test of the ping-pong's phase
   // rather than of the invariant, which is that the fill lands in the cube that
@@ -561,7 +575,7 @@ check(
   // ending in the snap this exists to remove. Deferring is the whole policy.
   const p4 = new WorldProbe()
   head.set(0, 105, 0)
-  for (let k = 0; k < 5; k++) p4.update(stub, scene2, head, null, DT)
+  for (let k = 0; k < BURST_FRAMES; k++) p4.update(stub, scene2, head, null, DT)
   const before = p4.captures
   for (let k = 0; k < 200; k++) {
     head.set(0, 105, k * (WORLD_PROBE.moveRefresh + 1))
@@ -581,7 +595,7 @@ check(
   // wind in the trees is a visible blink.
   const p7 = new WorldProbe()
   head.set(0, 105, 0)
-  for (let k = 0; k < 5; k++) p7.update(stub, scene2, head, null, DT)
+  for (let k = 0; k < BURST_FRAMES; k++) p7.update(stub, scene2, head, null, DT)
   const shown = p7.live
   const anchorBefore = p7.anchor.clone()
   written.length = 0
@@ -610,14 +624,14 @@ check(
   let asked = 0
   p5.setVantage((h, out) => { asked++; out.set(h.x + 10, 100 + WORLD_PROBE.height, h.z); return true })
   head.set(0, 105, 0)
-  for (let k = 0; k < 5; k++) p5.update(stub, scene2, head, 100, DT)
+  for (let k = 0; k < BURST_FRAMES; k++) p5.update(stub, scene2, head, 100, DT)
   check(
     asked === 1 && p5.anchor.x === 10 && Math.abs(p5.anchor.y - (100 + WORLD_PROBE.height)) < 1e-6,
     'a vantage puts the capture where the host says, asked once per re-anchor',
     `asked ${asked}x, anchor (${p5.anchor.x}, ${p5.anchor.y.toFixed(2)}, ${p5.anchor.z})`
   )
   head.set(0, 105, WORLD_PROBE.moveRefresh - 1)
-  for (let k = 0; k < 5; k++) p5.update(stub, scene2, head, 100, DT)
+  for (let k = 0; k < BURST_FRAMES; k++) p5.update(stub, scene2, head, 100, DT)
   check(
     asked === 1,
     'and walking short of moveRefresh from where she stood does not re-anchor, however far out the capture sits',

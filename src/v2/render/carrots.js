@@ -4,7 +4,8 @@ import { boundedRadius, eyeLift, tileOutOfBounds } from './tile-pool.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
 import { createGenPropMaterial, propCull } from './gen-props.js'
-import { loadCritterGlb } from './critters.js'
+import { ladderTier, loadCritterGlb } from './critters.js'
+import { cardPicture } from './litter-cards.js'
 import { CARROT_DEFAULTS, buildCarrotLeaves } from '../../props/carrot.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
@@ -23,10 +24,12 @@ import { taken, TOLERANCE_M } from '../taken.js'
 // from the bunch's centre, the outer ones furthest, and no carrot stands dead
 // vertical.
 //
-// ONE RUNG. A carrot is ~0.6 m of leaves and 128 triangles; it is drawn as its
-// mesh to the props' cull (gen-props.js propCull, 72 sizes: ~54 m) and dissolved
-// out through the rim there. No card and no cross-dissolve: the bed inside that
-// reach is a few dozen clumps, and at the cull a carrot is under a degree of arc.
+// TWO RUNGS. A carrot is ~0.6 m of leaves and 128 triangles. It is the mesh to
+// NEAR_M and an instance of the shared litter quad (litter-cards.js) beyond,
+// dissolved out through the rim at the props' cull (gen-props.js propCull, 72
+// sizes: ~54 m). The swap is a hard cut and the card does not sway. Every
+// carrot owns an id in the card view for as long as it stands; the rim drives
+// that view, and the mesh instance is shown only while the carrot is near.
 //
 // ONE MAP. The root's 128 px Tripo map and the leaf cut (gen-props/carrot-leaf.png)
 // are painted side by side into one 256 x 128 atlas so a variant is one geometry
@@ -70,6 +73,11 @@ const CROWN_DROP = 0.05
 // Metres of orange shoulder above the ground, rolled per carrot: enough to
 // read through the grass blades from standing height.
 const POKE = [0.023, 0.03]
+
+// Metres to the mesh's edge, and the rung it leaves for the card (critters.js ladderTier).
+const NEAR_M = 12
+const RUNG_MESH = 0
+const RUNG_CARD = 1
 
 // Leaf seeds, one geometry each. Three keeps the layer at three draw calls.
 const LEAF_SEEDS = [1, 2, 3]
@@ -219,7 +227,8 @@ export class Carrots {
    * @param bank     loadCarrotsBank's answer, with its map.
    * @param plots    Garden plots `[{ x, z, r, spots: [[x, z]] }]` planted on top of the wild bed.
    */
-  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [] } = {}) {
+  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [], cards = null } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Carrots: needs the LitterCards its far card is drawn by')
     if (!bank || !Array.isArray(bank.tiers) || !bank.map) throw new Error('Carrots: needs the bank from loadCarrotsBank')
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
       throw new Error('Carrots: needs a V2Height with heightAt, heightAndSlopeAt and snowLineAt')
@@ -285,12 +294,31 @@ export class Carrots {
       this.maxInstances, bank.tiers, [this.maxInstances], (_t, v) => this.materials[v], 'v2-carrots'
     )
     this.variantTris = bank.tiers[0].geometries.map(triangleCount)
+    this.cardTris = cards.cardTris
+
+    // The picture is variant 0 with its buried root, drawn from y = 0 at the root's tip (bakeCards), so a card sits ROOT_DROP below its carrot's crown.
+    const first = bank.tiers[0].geometries[0]
+    first.computeBoundingBox()
+    const box = first.boundingBox
+    this.cardDrop = ROOT_HEIGHT * (1 - CROWN_DROP)
+    this.cardBounds = {
+      halfX: Math.max(Math.abs(box.min.x), Math.abs(box.max.x)),
+      halfZ: Math.max(Math.abs(box.min.z), Math.abs(box.max.z)),
+      height: box.max.y + this.cardDrop,
+    }
+    cards.claim('carrots', this.maxInstances)
+    this.litterCards = cards
+    this.cardPicture = cards.addPicture(cardPicture('spun', this.cardBounds))
+    this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-carrots-card')
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
     for (let i = 0; i < this.maxInstances; i++) {
       const id = this.batch.addInstance(0)
       this.batch.setVisibleAt(id, false)
+      if (this.cards.addInstance(0) !== id) throw new Error('Carrots: the card view and the mesh arena disagree on ids')
+      this.cards.setLayerShiftAt(id, this.cardPicture)
+      this.cards.setVisibleAt(id, false)
       this.free[this.maxInstances - 1 - i] = id
     }
 
@@ -298,8 +326,9 @@ export class Carrots {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
-    // The rim owns the one fade slot; there is no tier swap to share it with.
-    this.rim = new RimFade(this.batch, this.maxInstances, () => {})
+    // The rim drives the card view; the mesh is the near rung, shown by `update`.
+    this.rungAt = new Uint8Array(this.maxInstances).fill(RUNG_CARD)
+    this.rim = new RimFade(this.cards, this.maxInstances, () => {})
 
     // key -> { tx, tz, ids, n }
     this.tiles = new Map()
@@ -307,6 +336,8 @@ export class Carrots {
     this.camTileZ = null
 
     this._m = new THREE.Matrix4()
+    this._mc = new THREE.Matrix4()
+    this._pc = new THREE.Vector3()
     this._p = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._qYaw = new THREE.Quaternion()
@@ -347,11 +378,29 @@ export class Carrots {
       this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       for (let k = 0; k < tile.n; k++) {
         const i = tile.ids[k]
-        if (this.rim.isHidden(i)) continue
-        tris += this.variantTris[this.variantAt[i]]
+        if (this.rim.isHidden(i)) {
+          this._setRung(i, RUNG_CARD, false)
+          continue
+        }
+        const dist = Math.hypot(this.instX[i] - camX, this.instY[i] - camY, this.instZ[i] - camZ)
+        const rung = ladderTier(NEAR_M, [1], 1, dist, this.rungAt[i])
+        this._setRung(i, rung, true)
+        tris += rung === RUNG_MESH ? this.variantTris[this.variantAt[i]] : this.cardTris
       }
     }
     this.tris = tris
+  }
+
+  /** Put carrot `i` on `rung`: the mesh or the card. A card the rim is not hiding (`drawn`) is shown on the card rung; the rim alone shows it otherwise. */
+  _setRung(i, rung, drawn) {
+    if (rung === RUNG_MESH) {
+      if (this.cards.vis[i]) this.cards.setVisibleAt(i, false)
+      if (this.rungAt[i] !== RUNG_MESH) this.batch.setVisibleAt(i, true)
+    } else if (this.rungAt[i] !== RUNG_CARD) {
+      this.batch.setVisibleAt(i, false)
+      if (drawn) this.cards.setVisibleAt(i, true)
+    }
+    this.rungAt[i] = rung
   }
 
   /** Evict what has fallen out of range and grow what has come in. Runs on a tile crossing or eyeLift step only. */
@@ -502,6 +551,9 @@ export class Carrots {
     this._p.set(mx, y, mz)
     this._s.set(scale, scale, scale)
     this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
+    // The card stands on the picture's feet, the root's tip, under the crown.
+    this._pc.set(mx, y - this.cardDrop * scale, mz)
+    this.cards.setMatrixAt(id, this._mc.compose(this._pc, this._q, this._s))
 
     // The terrain's own colour underfoot, renormalised to unit luminance so
     // only the hue survives (ferns.js), and a value swing so two carrots differ.
@@ -513,7 +565,9 @@ export class Carrots {
     const v = 0.88 + tintV * 0.2
     this._c.setRGB((k0 + gc[0] * k1) * v, (k0 + gc[1] * k1) * v, (k0 + gc[2] * k1) * v)
     this.batch.setColorAt(id, this._c)
+    this.cards.setColorAt(id, this._c)
     this.batch.setGeometryIdAt(id, variant)
+    this.rungAt[id] = RUNG_CARD
 
     // Hidden until the rim's sweep has looked at it, which the tile is marked due for.
     this.rim.place(id, Math.min(this.radius, propCull(this.size * scale)))
@@ -565,6 +619,7 @@ export class Carrots {
     tile.n--
     if (tile.n === 0) this.clumps--
     this.batch.setVisibleAt(id, false)
+    this.cards.setVisibleAt(id, false)
     this.rim.drop(id)
     this.free[this.freeCount++] = id
     this.placed--
@@ -612,6 +667,7 @@ export class Carrots {
     for (let k = 0; k < tile.n; k++) {
       const id = tile.ids[k]
       this.batch.setVisibleAt(id, false)
+      this.cards.setVisibleAt(id, false)
       this.rim.drop(id)
       this.free[this.freeCount++] = id
       this.placed--
@@ -619,6 +675,19 @@ export class Carrots {
     if (tile.n > 0) this.clumps--
     tile.n = 0
     this.rim.releaseTile(tile)
+  }
+
+  /** Photograph variant 0, root and all, into the carrot's picture. */
+  bakeCards(renderer) {
+    const geometry = this.bank.tiers[0].geometries[0].clone().translate(0, this.cardDrop, 0)
+    this.litterCards.bake(renderer, this.cardPicture, geometry, this.bank.map, this.cardBounds, 'spun')
+    geometry.dispose()
+  }
+
+  /** Draw the whole bed or none of it; the far cards are shared instances, so the mesh's `visible` alone would leave them. */
+  setShown(shown) {
+    this.batch.visible = shown
+    this.cards.setShown(shown)
   }
 
   get stats() {

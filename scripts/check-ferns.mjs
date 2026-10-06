@@ -30,6 +30,7 @@
 // then checks the lush rule itself -- a quarter carpet on plain ground, full
 // within reach of water or a boulder.
 
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import * as THREE from 'three'
 
 import { Ferns, FERN_TUNING, FERN_PERCH_STRIDE } from '../src/v2/render/ferns.js'
@@ -60,7 +61,7 @@ const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: () =
 const layers = { dirtAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null } }
 const textures = buildTextureArray()
 
-const build = (w = water, opts = {}) => new Ferns(new THREE.Scene(), field, w, layers, textures, { seed: 7, ...opts })
+const build = (w = water, opts = {}) => new Ferns(new THREE.Scene(), field, w, layers, textures, { seed: 7, cards: new LitterCards(8192), ...opts })
 
 /** The three counts that have to agree, or an id has gone missing. */
 const audit = (ferns) => {
@@ -235,7 +236,7 @@ plain.place(0, 0)
   const FEATHER = 8
   const { pathClearance } = FERN_TUNING.PLACEMENT
   const roaded = { ...layers, paths: { nearest: (x, z, kind) => (kind === 'road' && Math.abs(x) <= HW + FEATHER ? { dist: Math.abs(x), halfWidth: HW } : null) } }
-  const verge = new Ferns(new THREE.Scene(), field, { ...water, shoreDistAt: (x, z, reach) => reach }, roaded, textures, { seed: 7 })
+  const verge = new Ferns(new THREE.Scene(), field, { ...water, shoreDistAt: (x, z, reach) => reach }, roaded, textures, { seed: 7, cards: new LitterCards(8192) })
   verge.place(0, 0)
   const on = countIn(verge, -HW - pathClearance, HW + pathClearance, -R, R)
   const band = countIn(verge, HW + pathClearance, HW + LUSH.roadReach, -R, R)
@@ -401,11 +402,11 @@ console.log('\n6. the ferns a room plants\n')
   const flood = { isSubmerged: () => true, levelAt: () => GROUND + 5, shoreDistAt: () => 0 }
   const plants = [{ x: 3.5, z: 4.25, scale: 1.1 }, { x: -6.5, z: 2.5, scale: 2, y: GROUND + 7 }, { x: 40.5, z: -18.5, scale: 0.9 }]
   const { sink } = FERN_TUNING.PLACEMENT
-  const nothing = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7 })
+  const nothing = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, cards: new LitterCards(8192) })
   nothing.place(0, 0)
   check(nothing.placed === 0, 'no wild fern takes ground this steep, this high and this wet', `${nothing.placed} placed`)
   taken.clear()
-  const bed = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, plants })
+  const bed = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, cards: new LitterCards(8192), plants })
   bed.place(0, 0)
   const standing = plants.map((p) => {
     for (const tile of bed.tiles.values()) for (let k = 0; k < tile.n; k++) {
@@ -425,7 +426,7 @@ console.log('\n6. the ferns a room plants\n')
   const wild = build()
   wild.place(0, 0)
   taken.clear()
-  const both = new Ferns(new THREE.Scene(), field, water, layers, textures, { seed: 7, plants })
+  const both = new Ferns(new THREE.Scene(), field, water, layers, textures, { seed: 7, cards: new LitterCards(8192), plants })
   both.place(0, 0)
   let moved = 0, wildN = 0
   for (const tile of wild.tiles.values()) {
@@ -455,6 +456,25 @@ console.log('\n6. the ferns a room plants\n')
   check(stands && home.n < before / 4, 'a plant survives the thinning that cuts the ferns rolled beside it', `${home.n} of ${before} left in its tile seventy-four metres off`)
   nothing.dispose(); bed.dispose(); wild.dispose(); both.dispose()
   taken.clear()
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n7. the far cards are the shared pool\'s\n')
+{
+  const pool = new LitterCards(8192)
+  const ferns = new Ferns(new THREE.Scene(), field, water, layers, textures, { seed: 7, cards: pool })
+  ferns.place(0, 0)
+  let t = 0
+  for (let f = 0; f < 120; f++) { t += 1 / 72; setPropClock(t); ferns.update(0, GROUND + 1.6, 0) }
+  const standing = [...ferns.tiles.values()].reduce((n, tile) => n + tile.n, 0)
+  const cardsDrawn = pool.stats.used
+  check(ferns.meshes.length === ferns.ringCount, 'the bed owns only its mesh rings; the cards are not a mesh of its own', `${ferns.meshes.length} meshes, ${ferns.ringCount} rings`)
+  check(cardsDrawn > 0 && cardsDrawn <= standing, 'the far ferns are instances of the shared pool', `${cardsDrawn} of ${standing} standing`)
+  ferns.setShown(false)
+  check(pool.stats.used === 0 && ferns.meshes.every((m) => !m.visible), 'setShown(false) takes its cards out of the shared pool and hides its rings')
+  ferns.setShown(true)
+  check(pool.stats.used === cardsDrawn && ferns.meshes.every((m) => m.visible), 'and setShown(true) puts the same cards back', `${pool.stats.used} of ${cardsDrawn}`)
+  ferns.dispose()
 }
 
 // ---------------------------------------------------------------------------

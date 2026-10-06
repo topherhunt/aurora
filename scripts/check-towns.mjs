@@ -367,6 +367,24 @@ let frames = 0
 while (!late.caught) { late.advance(T0 + 588, TOWNSFOLK.replay); frames++ }
 check(frames > 1 && a.all.every((c, i) => c.x === late.all[i].x && c.z === late.all[i].z && c.state === late.all[i].state), 'a town woken late catches up over several frames to the same day', `${frames} frames`)
 check(new Set(a.all.map((c) => c.seat).filter(Boolean)).size === a.all.filter((c) => c.seat).length, 'no two townsfolk hold one stool')
+// One town held at one hour, sampled across a chapter clear of its opening indoors and its homing: folk-samples indoors, at the fire (sat, or stood on the ring), and about the town.
+const atHour = (h) => {
+  const L = new TownLife(t, { index: 0, seed: SEED, bodies, seats, heightAt, hourAt: () => h })
+  const n = { inside: 0, fire: 0, about: 0 }
+  for (let s = 120; s < 520; s += 2) {
+    L.advance(T0 + s)
+    for (const c of L.all) {
+      if (c.state === 'inside') n.inside++
+      else if (c.state === 'sit' || (c.state === 'stand' && Math.hypot(c.x - t.x, c.z - t.z) < TOWNSFOLK.ring.r + 0.5)) n.fire++
+      else if (c.state !== 'away') n.about++
+    }
+  }
+  return n
+}
+const noon = atHour(12), dusk = atHour(20), small = atHour(1)
+check(dusk.fire > 1.5 * noon.fire, 'come nightfall more of the town gathers at the fire than at noon', `fire ${dusk.fire} at 20:00, ${noon.fire} at noon`)
+check(small.inside > 1.5 * noon.inside, 'deep in the night more of the town is indoors than at noon', `inside ${small.inside} at 01:00, ${noon.inside} at noon`)
+check(small.about > 0 && dusk.inside > 0, 'and neither is a curfew: someone is still about at 01:00, someone indoors at 20:00', `about ${small.about} at 01:00, inside ${dusk.inside} at 20:00`)
 
 // --- the striders at the rails, and the travellers leaving and arriving ---
 check(towns.every((town) => town.posts.length >= 3 && town.posts.every((p) => p.tethers.length > 0)), 'every town has at least 3 hitching posts, each with a tether')

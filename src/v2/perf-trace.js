@@ -144,7 +144,7 @@ export class PerfTrace {
       samples: [],
     }
     this.queue = this.withBaselines(GROUPS.map((g) => ({ kind: 'group', name: g.name, off: g.off, round: 1 })), true)
-    this.queue.push(...this.withBaselines(GROUPS.map((g) => ({ kind: 'group', name: g.name, off: g.off, round: 2 })).reverse(), false))
+    this.queue.push(...this.withBaselines(GROUPS.filter((g) => !g.once).map((g) => ({ kind: 'group', name: g.name, off: g.off, round: 2 })).reverse(), false))
     this.drilled = false
     this.state = 'running'
     this.host.play('uiPop', 1, 0.4)
@@ -298,12 +298,17 @@ export class PerfTrace {
       const rows = saved.filter((r) => r.kind === 'group' && r.name === name)
       return rows.reduce((s, r) => s + r.savedP50, 0) / rows.length
     }
-    const drill = GROUPS
+    const guilty = GROUPS
       .map((g) => ({ g, saved: meanSaved(g.name) }))
       .filter(({ saved }) => saved >= DRILL_MIN_MS)
       .sort((a, b) => b.saved - a.saved)
-      .flatMap(({ g }) => g.drill.map((d) => ({ kind: 'drill', name: `${g.name}/${d.name}`, off: d.off })))
-      .filter((d) => d.off.some((k) => this.host.present(k)))
+      .map(({ g }) => g.drill
+        .map((d) => ({ kind: 'drill', name: `${g.name}/${d.name}`, off: d.off }))
+        .filter((d) => d.off.some((k) => this.host.present(k))))
+    // Round-robin across the guilty groups, costliest first within each, so the cap trims every group's tail and no
+    // group is starved by a bigger one ahead of it. A ladder's rungs are nested, so any prefix is still valid.
+    const drill = []
+    for (let rung = 0; guilty.some((d) => rung < d.length); rung++) for (const d of guilty) if (rung < d.length) drill.push(d[rung])
     this.trace.drillSkipped = drill.slice(MAX_DRILL).map((d) => d.name)
     if (drill.length) this.queue.push(...this.withBaselines(drill.slice(0, MAX_DRILL), false))
   }

@@ -1,7 +1,8 @@
 import THREE from '../../three-instance.js'
 
-import { GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, ladderTris, loadGenProp, propCull } from './gen-props.js'
-import { LOD_DEG, distAt, ladderTier } from './critters.js'
+import { GEN_PROP_LODS, PROP_RUNGS, createGenPropMaterial, ladderTris, loadGenProp, propCull } from './gen-props.js'
+import { ladderTier } from './critters.js'
+import { cardPicture } from './litter-cards.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { keyHash } from '../../sim/score.js'
 import { PropArena } from './prop-arena.js'
@@ -30,18 +31,23 @@ import { WALK } from '../walk.js'
 // ring it is a black shape on the boulder, and wherever it falls short a rim
 // of stone shows inside the ring.
 //
-// Drawn on the props' ladder (gen-props.js) with the shipped T3 in the card's
-// place: an arch is on a wall, and a card spun to her would stand out of it.
-// A rung switch is a plain swap -- a few dozen instances, none nearer than a
-// boulder apart. A screen's stone is the rocks' own boulder on the rocks' own
+// Drawn on ENTRANCE_REACH_M's ladder: the shipped T0 and T2, then a FIXED card
+// of the arch and its hole seen from the front (litter-cards.js), set
+// CARD_OUT_M out of the face so it never fights the stone. An arch is on a
+// wall, and a card spun to her would stand out of it. A rung switch is a
+// plain swap -- a few dozen instances, none nearer than a boulder apart. A screen's stone is the rocks' own boulder on the rocks' own
 // material and ladder, stone to the trees and ferns as a boulder is (their
 // addStone), and its pine the trees' own (Trees.plant).
 // ---------------------------------------------------------------------------
 
 export const MOUTH_GLB = 'gen-props/cave-mouth.glb'
-// Shipped tiers drawn, in rung order, on PROP_STEPS.
-export const MOUTH_TIERS = [0, 2, 3]
+// Shipped tiers drawn as meshes, in rung order; the card is the rung after them.
+export const MOUTH_TIERS = [0, 2]
 export const RUNGS = PROP_RUNGS
+// Metres a 1x arch holds each rung to (T0, T2, card), times the site's scale; past the last it is not drawn.
+export const ENTRANCE_REACH_M = [8, 20, 100]
+// How far out of the face, per unit of scale and on top of its bulge, the far card stands.
+export const CARD_OUT_M = 1
 
 // The arch, metres tall over its floor, and how far its centre is set into the face.
 export const MOUTH_HEIGHT_M = 1.5
@@ -132,6 +138,7 @@ export function mouthBankFrom(ladder) {
     tiers: geometries.map((g) => ({ geometries: [g] })),
     tris: ladderTris(geometries),
     scale,
+    bounds: b,
     // Metres the arch reaches out of the face and across it at that scale.
     depth: b.width * scale,
     width: b.long * scale,
@@ -165,9 +172,11 @@ export class Entrances {
    * @param opts.fixed  a room's own mouths in place of the rocks' hollows: `[{ key, x, z, nx, nz }]`, the face point and its outward normal, seated once.
    * @param opts.ground  LeafkinGround (cell), which every screen is walked over; required unless `fixed`.
    * @param opts.trees  Trees (plant, unplant, plantShape, addStone, restone), booted with `plantRoom` SCREEN_POOL, for the screen's pines and to stand on its stones; required unless `fixed`.
+   * @param opts.cards  the LitterCards that draws the far rung; required.
    * @param opts.ferns  Ferns, optional: the screen's stones are stone to them as to the trees (addStone, restone).
    */
-  constructor(scene, field, water, rocks, { seed = 1, radius = null, bank = null, fixed = null, ground = null, trees = null, ferns = null } = {}) {
+  constructor(scene, field, water, rocks, { seed = 1, radius = null, bank = null, fixed = null, ground = null, trees = null, ferns = null, cards = null } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Entrances: needs the LitterCards its far rung is drawn by')
     if (!bank || !Array.isArray(bank.tiers)) throw new Error('Entrances: needs the bank from loadMouthBank (or mouthBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Entrances: needs a V2Height with heightAt')
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Entrances: needs WaterSurfaces with isSubmerged')
@@ -200,7 +209,17 @@ export class Entrances {
     this.material = createGenPropMaterial()
     this.material.map = bank.map
     this.materials = [this.material]
-    this.batch = new PropArena(pool, bank.tiers, new Array(bank.tiers.length).fill(pool), () => this.material, 'v2-entrances')
+    if (RUNGS !== bank.tiers.length + 1) throw new Error(`Entrances: ${bank.tiers.length} mesh tiers and a card are not ${RUNGS} rungs`)
+    this.cards = cards
+    this.cardTier = bank.tiers.length
+    cards.claim('entrances', pool)
+    this.cardBounds = { halfX: bank.width / 2, halfZ: bank.width / 2, height: MOUTH_HEIGHT_M }
+    this.cardPicture = cards.addPicture(cardPicture('fixed', this.cardBounds))
+    this.batch = new PropArena(pool, bank.tiers, new Array(bank.tiers.length).fill(pool), () => this.material, 'v2-entrances', { cards: cards.meshes, cardBase: this.cardTier })
+    this.archM = new Float32Array(pool * 16)
+    this.cardM = new Float32Array(pool * 16)
+    // False draws nothing (the boulders row).
+    this.shown = true
     this.free = new Int32Array(pool)
     this.freeCount = pool
     for (let i = 0; i < pool; i++) {
@@ -242,7 +261,6 @@ export class Entrances {
     this.resident = new Map()
     this.memory = new Map()
     this.cull = propCull(MOUTH_HEIGHT_M)
-    this.base = distAt(MOUTH_HEIGHT_M, LOD_DEG)
     this.hollows = new Float32Array(POOL * HOLLOW_STRIDE)
     this.seen = new Set()
     this._m = new THREE.Matrix4()
@@ -298,17 +316,22 @@ export class Entrances {
       const ey = site.ay - camY
       const ez = site.az - camZ
       const cur = this.tierAt[i]
-      const tier = ladderTier(this.base, PROP_STEPS, RUNGS, Math.sqrt(ex * ex + ey * ey + ez * ez), cur)
+      const tier = this.shown ? ladderTier(site.scale, ENTRANCE_REACH_M, RUNGS, Math.sqrt(ex * ex + ey * ey + ez * ez), cur) : RUNGS
+      const meshed = tier < this.cardTier
       if (tier !== cur) {
         this.tierAt[i] = tier
         const drawn = tier < RUNGS
+        if (drawn) {
+          this.batch.setMatrixAt(i, this._m.fromArray(meshed ? this.archM : this.cardM, i * 16))
+          this.batch.setGeometryIdAt(i, tier)
+        }
         this.batch.setVisibleAt(i, drawn)
-        if (drawn) this.batch.setGeometryIdAt(i, tier)
-        if (site.shadow !== null) site.shadow.visible = drawn
-        this.holes.setMatrixAt(i, drawn ? this._m.fromArray(this.holeM, i * 16) : this._zero)
+        if (site.shadow !== null) site.shadow.visible = meshed
+        this.holes.setMatrixAt(i, meshed ? this._m.fromArray(this.holeM, i * 16) : this._zero)
         this.holes.instanceMatrix.needsUpdate = true
       }
-      if (tier < RUNGS) tris += this.bank.tris[tier] + HOLE.outline.length - 2
+      if (meshed) tris += this.bank.tris[tier] + HOLE.outline.length - 2
+      else if (tier === this.cardTier) tris += this.cards.cardTris
       // The screen stands while the boulder does, each piece on the rung its own size and distance earn; a stone leaves a rung 12% further out than it came in. The trees draw the pines.
       for (const f of site.flank) {
         if (f.kind === 'pine') continue
@@ -329,6 +352,25 @@ export class Entrances {
       }
     }
     this.tris = tris
+  }
+
+  /** Photograph the arch and its hole, from the front, into the card's picture. Call once the renderer is up. */
+  bakeCards(renderer) {
+    const bank = this.bank
+    const archMaterial = new THREE.MeshBasicMaterial({ map: bank.map, side: this.material.side, toneMapped: false })
+    const holeMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide })
+    const arch = new THREE.Mesh(bank.tiers[0].geometries[0], archMaterial)
+    arch.scale.setScalar(bank.scale)
+    const hole = new THREE.Mesh(holeGeometry(), holeMaterial)
+    hole.position.x = MOUTH_SINK_M + HOLE.proud
+    // The arch's passage runs along +X; the bake looks down -Z from +Z.
+    const view = new THREE.Group()
+    view.add(arch, hole)
+    view.rotation.y = -Math.PI / 2
+    this.cards.bake(renderer, this.cardPicture, view, bank.map, this.cardBounds, 'fixed')
+    hole.geometry.dispose()
+    archMaterial.dispose()
+    holeMaterial.dispose()
   }
 
   _reseat(cx, cz) {
@@ -494,13 +536,19 @@ export class Entrances {
     // Yawed so the pick's +X, the passage, runs along the normal.
     this._q.setFromAxisAngle(this._up, Math.atan2(-nz, nx))
     this._s.setScalar(bank.scale * scale)
-    this.batch.setMatrixAt(id, this._m.compose(this._p.set(ax, ay, az), this._q, this._s))
+    this._m.compose(this._p.set(ax, ay, az), this._q, this._s).toArray(this.archM, id * 16)
+    this.batch.setMatrixAt(id, this._m)
+    this.batch.setLayerShiftAt(id, this.cardPicture)
     // The hole's outline is over the arch's base, so it stays inside the ring where the ground steps.
     this._s.setScalar(scale)
     const hole = bulge + HOLE.proud * scale
     const holeX = hx + nx * hole, holeZ = hz + nz * hole
     this._m.compose(this._p.set(holeX, ay, holeZ), this._q, this._s)
     this._m.toArray(this.holeM, id * 16)
+    // The card faces out along the normal, CARD_OUT_M * scale clear of the face.
+    const out = bulge + CARD_OUT_M * scale
+    this._q.setFromAxisAngle(this._up, Math.atan2(nx, nz))
+    this._m.compose(this._p.set(hx + nx * out, ay, hz + nz * out), this._q, this._s).toArray(this.cardM, id * 16)
     this.tierAt[id] = -1
     let state = this.memory.get(key)
     if (!state) {

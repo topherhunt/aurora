@@ -1347,18 +1347,12 @@ function applyQuestToggle(key) {
     // cannot hold the ladder in one object.
     // The carrots ride on this row: bushes, to the wearer, is the greenery underfoot.
     case 'ferns':
-      ferns.meshes.forEach((m) => { m.visible = enabled })
-      carrots.batch.visible = enabled
+      applyFernVisibility()
       break
     // Three layers on one row. Each is a prop arena -- a Group of
     // InstancedMeshes -- so `visible` on the group is the whole layer.
     case 'litter':
-      litter.batch.visible = enabled
-      mushrooms.batch.visible = enabled
-      deadwood.batch.visible = enabled
-      sticks.batch.visible = enabled
-      bones.batch.visible = enabled
-      litterCards.group.visible = enabled
+      applyLitterVisibility()
       break
     case 'huts': case 'towns': case 'townsfolk': applyVillageVisibility(); break
     // Back on, every animal layer is put down fresh at her feet: the ground
@@ -1410,10 +1404,22 @@ function applyQuestToggle(key) {
   }
 }
 
+// The far cards of ferns, litter and entrances are instances of the one shared card mesh, so a row hides its own instances (PropArena.setShown) and never the shared group.
+function applyFernVisibility() {
+  ferns.setShown(questToggles.ferns)
+  carrots.setShown(questToggles.ferns)
+}
+
+function applyLitterVisibility() {
+  const on = questToggles.litter
+  for (const l of [litter, sticks, mushrooms, deadwood, bones]) l.batch.visible = on
+  for (const l of [mushrooms, deadwood, bones]) l.batch.setShown(on)
+}
+
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
-  if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = questToggles.boulders
+  if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = entrances.shown = questToggles.boulders
 }
 
 /** The `huts`, `towns` and `townsfolk` rows. The village hearth is left to `fire`: its own update decides when its group shows. */
@@ -4388,7 +4394,7 @@ async function buildRoom(room, at) {
   // The village's garden plots, wanted here before the trees: nothing grows on a planted plot but its rows (render/carrots.js).
   let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) })) : []
   // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); 2048 is the most it draws at once (the beds' worst cases run near 550 deadwood and 500 mushrooms); a full mesh warns and shows nothing more.
-  litterCards = new LitterCards(2048)
+  litterCards = new LitterCards(8192)
   scene.add(litterCards.group)
   lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card' })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds, cards: litterCards })
@@ -4532,7 +4538,7 @@ async function buildRoom(room, at) {
   if (towns) {
     walk.addStone(towns)
     const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies }) : null
-    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure) })
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure), hourAt: (s) => clock.hourAt(s) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
     if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addStone(townsfolk)
@@ -4577,7 +4583,7 @@ async function buildRoom(room, at) {
   // flattening as well as the path exclusions.
   await bootStep('ferns')
   // The village's own ferns come in as plants: the ones leaning on a wall, and the ones seated on a roof, which carry their own y.
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds, plants: room.village ? [...roomSpec.decor.ferns, ...roofPlants] : [] })
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds, cards: litterCards, plants: room.village ? [...roomSpec.decor.ferns, ...roofPlants] : [] })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
   ferns.place(spawn.x, spawn.z)
@@ -4709,8 +4715,9 @@ async function buildRoom(room, at) {
   // trees and rocks already standing, like the mushrooms; every tile in a
   // village, and its gardens planted in rows on top of the wild bed.
   await bootStep('carrots')
-  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds, plots })
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds, plots, cards: litterCards })
   for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+  carrots.bakeCards(renderer)
   carrots.place(spawn.x, spawn.z)
   const cs = carrots.stats
   console.log(
@@ -4943,13 +4950,15 @@ async function buildRoom(room, at) {
   // the one each screen is walked over.
   await bootStep('entrances')
   const ground = room.village ? null : new LeafkinGround({ field: height, water: waterSurfaces, trees, rocks, deadwood, mushrooms })
-  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground, trees, ferns })
+  entrances = new Entrances(scene, height, waterSurfaces, rocks, { seed, bank: await banks.mouth, fixed: room.village ? [roomSpec.exit] : null, ground, trees, ferns, cards: litterCards })
   for (const m of entrances.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+  entrances.bakeCards(renderer)
   entrances.place(spawn.x, spawn.z)
   walk.addStone(entrances)
   console.log(`[v2] entrances ${entrances.stats.placed} mouths in ${entrances.placeMs.toFixed(1)} ms, refused ${JSON.stringify(entrances.stats.rejected)}`)
   if (caveSites !== null) {
-    caveMouths = new CaveMouths(caveSites.mouths, scene, height, waterSurfaces, rocks, await banks.mouth)
+    caveMouths = new CaveMouths(caveSites.mouths, scene, height, waterSurfaces, rocks, await banks.mouth, litterCards)
+    caveMouths.arches.bakeCards(renderer)
     for (const m of caveMouths.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   }
   window.v2entrances = entrances
@@ -5040,20 +5049,25 @@ async function buildRoom(room, at) {
   rocks.setHollowTint(questToggles.critterTint)
   applyRockVisibility()
   grass.batch.visible = questToggles.grass
-  ferns.meshes.forEach((m) => { m.visible = questToggles.ferns })
-  carrots.batch.visible = questToggles.ferns
+  applyFernVisibility()
   water.group.visible = questToggles.water
   rowboats.batch.visible = questToggles.water
   water.setCubeReflections(questToggles.reflections)
   aurora.mesh.visible = questToggles.aurora
-  litter.batch.visible = questToggles.litter
-  sticks.batch.visible = questToggles.litter
-  mushrooms.batch.visible = questToggles.litter
-  deadwood.batch.visible = questToggles.litter
-  bones.batch.visible = questToggles.litter
-  litterCards.group.visible = questToggles.litter
+  applyLitterVisibility()
   applyAnimalVisibility()
   applyVillageVisibility()
+  // The reflection is a 128 px silhouette of the skyline: ground clutter, the
+  // near fern rings and every creature are sub-pixel in it and each is a draw
+  // call per captured face.
+  worldProbe.exclude(
+    ...[
+      grass, litter, mushrooms, deadwood, sticks, bones, carrots, frogs, crabs, butterflies, grasshoppers,
+      fireflies, spiders, wildlife, snowmen, leafkin, villagers, hobs, dragons, roosts, townsfolk, townsfolk?.striders,
+    ].filter(Boolean).map((l) => l.batch),
+    litterCards.group,
+    ...ferns.meshes.slice(0, ferns.ringCount)
+  )
   // THE EDITOR OVERLAY, drawn only where there is an editor. Markers is three
   // InstancedMeshes of authoring handles -- 96 triangles a spline point, 8 a
   // snow point, 168 a lake -- and the shipped document carries 37 river points,

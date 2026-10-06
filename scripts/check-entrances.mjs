@@ -11,13 +11,13 @@
 // it. The world is check-rocks' flat forest: the real biome field over flat
 // ground, so the hollow bed grows where the wood is deep and nowhere else.
 
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import * as THREE from 'three'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { OPEN, STONE, LeafkinGround } from '../src/v2/render/leafkin-ground.js'
 import {
-  Entrances, HOLE, SCREEN, SCREEN_POOL, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
+  CARD_OUT_M, ENTRANCE_REACH_M, Entrances, HOLE, SCREEN, SCREEN_POOL, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
 } from '../src/v2/render/entrances.js'
-import { PROP_STEPS, propReach } from '../src/v2/render/gen-props.js'
 import { Trees } from '../src/v2/render/trees.js'
 import { Ferns } from '../src/v2/render/ferns.js'
 import { WALK, WalkSurface } from '../src/v2/walk.js'
@@ -51,7 +51,7 @@ const boot = (cx, cz, { seed = 7, radius = null } = {}) => {
   rocks.place(cx, cz)
   const scene = new THREE.Scene()
   const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed, plantRoom: SCREEN_POOL })
-  const e = new Entrances(scene, field, water, rocks, { seed, radius, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field, water, rocks }), trees })
+  const e = new Entrances(scene, field, water, rocks, { seed, radius, bank: mouthBankFrom(readShippedLadder('cave-mouth')), cards: new LitterCards(512), ground: new LeafkinGround({ field, water, rocks }), trees })
   e.place(cx, cz)
   return { rocks, e, scene, trees }
 }
@@ -319,7 +319,7 @@ console.log('\nthe face')
   // Ground walled in past FINAL_M, or open only OUT_FAR_M / 2 about one mouth (any face of its boulder): no leafkin could come home, so the mouth is not seated.
   const bareTrees = () => new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, plantRoom: SCREEN_POOL })
   const sealed = (cell) => {
-    const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, ground: { cell }, trees: bareTrees() })
+    const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, cards: new LitterCards(512), ground: { cell }, trees: bareTrees() })
     shut.place(-900, -900)
     return shut
   }
@@ -351,9 +351,9 @@ console.log('\nthe screens\' stones grow what a boulder does')
   rocks.place(site0.x, site0.z)
   const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, rocks, plantRoom: SCREEN_POOL })
   trees.place(site0.x, site0.z)
-  const ferns = new Ferns(new THREE.Scene(), field, water, { ...layers, paths: { nearest: () => null } }, texArray, { seed: 7, rocks })
+  const ferns = new Ferns(new THREE.Scene(), field, water, { ...layers, paths: { nearest: () => null } }, texArray, { seed: 7, rocks, cards: new LitterCards(8192) })
   ferns.place(site0.x, site0.z)
-  const e = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: mouthBankFrom(readShippedLadder('cave-mouth')), ground: new LeafkinGround({ field, water, rocks }), trees, ferns })
+  const e = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: mouthBankFrom(readShippedLadder('cave-mouth')), cards: new LitterCards(512), ground: new LeafkinGround({ field, water, rocks }), trees, ferns })
   e.place(site0.x, site0.z)
   // Every resident of `layer` standing over a screen's stone where no rock of the wood's is higher: [id, stone top].
   const over = (layer, ids) => ids.flatMap((id) => {
@@ -424,18 +424,32 @@ console.log('\nthe ladder')
 {
   const { e } = boot(0, 0, { radius: 600 })
   const site = e.sites()[0]
-  const reach = (k) => propReach(MOUTH_HEIGHT_M, k)
-  const tiersAt = []
-  for (const d of [reach(0) * 0.5, reach(0) * 1.5, reach(1) * 1.5, reach(2) * 1.5]) {
-    e.update(site.ax + site.nx * d, site.ay, site.az + site.nz * d)
-    tiersAt.push(e.tierAt[site.id])
-  }
-  check(tiersAt.join(' ') === '0 1 2 3', 'an arch steps down its three tiers and out past the props\' cull', `tiers ${tiersAt.join(' ')} at rungs ${PROP_STEPS.join('/')}`)
-  const hidden = tiersAt[3] === RUNGS && !e.batch.getVisibleAt(site.id)
-  check(hidden, 'culled, the arch is hidden', '')
-  e.update(site.ax + site.nx * reach(0) * 0.5, site.ay, site.az + site.nz * reach(0) * 0.5)
+  const at = (d) => { e.update(site.ax + site.nx * d, site.ay, site.az + site.nz * d); return e.tierAt[site.id] }
+  const fresh = (d) => { e.tierAt[site.id] = -1; return at(d) }
+  const [r0, r1, r2] = ENTRANCE_REACH_M
+  const tiersAt = [at(r0 * 0.5), at(r0 * 1.5), at(r1 * 1.5), at(r2 * 1.5)]
+  check(tiersAt.join(' ') === '0 1 2 3', 'an arch steps down T0, T2, the card, then out', `tiers ${tiersAt.join(' ')} at ${ENTRANCE_REACH_M.join('/')} m`)
+  check([r0 - 0.5, r0 + 0.5, r1 - 0.5, r1 + 0.5, r2 - 0.5, r2 + 0.5].map(fresh).join(' ') === '0 1 1 2 2 3', 'a 1x arch swaps at 8, 20 and 100 m', '')
+  check(RUNGS === ENTRANCE_REACH_M.length, 'one reach per rung', '')
+  at(r1 * 1.5)
+  const cardM = e.batch.getMatrixAt(site.id, new THREE.Matrix4())
+  const pos = new THREE.Vector3().setFromMatrixPosition(cardM)
+  const along = (pos.x - site.holeX) * site.nx + (pos.z - site.holeZ) * site.nz
+  check(e.batch.getVisibleAt(site.id) && e.batch.geoAt[site.id] === RUNGS - 1 && e.cards.stats.used >= 1, 'on the card rung the arch is a shared card instance', `geo ${e.batch.geoAt[site.id]}, ${e.cards.stats.used} cards drawn`)
+  check(Math.abs(along - (CARD_OUT_M * site.scale - HOLE.proud * site.scale)) < 1e-3, 'the card stands CARD_OUT_M out of the face', `${along.toFixed(3)} m past the hole plane`)
+  const facing = new THREE.Vector3(0, 0, 1).transformDirection(cardM)
+  check(Math.abs(facing.x - site.nx) < 1e-3 && Math.abs(facing.z - site.nz) < 1e-3, 'facing out along the normal', `${facing.x.toFixed(2)},${facing.z.toFixed(2)} vs ${site.nx.toFixed(2)},${site.nz.toFixed(2)}`)
+  check(site.shadow === null || !site.shadow.visible, 'with no shadow sheet on the card', '')
+  at(r0 * 0.5)
+  check(e.batch.geoAt[site.id] === 0 && e.cards.stats.used === 0, 'and back at T0 the card instance is gone', `${e.cards.stats.used} cards drawn`)
+  at(r2 * 1.5)
+  check(e.tierAt[site.id] === RUNGS && !e.batch.getVisibleAt(site.id), 'culled, the arch is hidden', '')
+  at(r0 * 0.5)
   check(e.batch.getVisibleAt(site.id) && e.tris > 0, 'and back in, drawn', `${e.tris} tris`)
-  check(e.stats.cull > 100, 'the props\' cull for a 1.5 m arch is past a hundred metres', `${e.stats.cull.toFixed(0)} m`)
+  e.shown = false
+  at(r0 * 0.5)
+  check(!e.batch.getVisibleAt(site.id), 'a row that is off draws nothing', '')
+  e.shown = true
   // A screen's stone is on the rocks' ladder, not the arch's: a rock of size s
   // is T0 within ROCK_LOD_AT[0] * s and stands when the arch is culled.
   const stoned = e.sites().find((s) => s.flank.some((f) => f.kind === 'boulder'))

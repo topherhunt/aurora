@@ -27,8 +27,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 ### Tasks
 
 - [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
-  - [ ] Run a perf trace, in overworld and in the glen.
-  - [ ] Run another perf trace.
+  - [ ] 
 - [ ] Fix the netplay system to not require reconstructing the whole routine since "chapter start".
   - Creatures / NPCs spawn in plausible, legal places
   - The first player to see it spawn "declares" that creature to the room relay, with its identity, position, seed, and timestamp.
@@ -95,11 +94,9 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] SOTC
   - Behemoths which stalk the land. You can chase after them, but on foot it's almost impossible to catch them; you need a strider. With a strider, ride up to one of their feet and grab on to the rungs going up it. And from then on you're in climbing mode -- riding along with this beast.
 - [ ] terrain-v3
-  - [ ] Simpler approach to hydrology:
-    - [x] Identify all sealed water pockets that are > 1m deep at their deepest point. (Shallower doesn't count and can be skipped.)
-    - [x] Gaah it doesn't work. Maybe random jittering doesn't work with hydrology.
-  - IF we take that simpler approach to the hydrology, then, maybe we only need to store coarser elevation map (8m / texel) and smaller-scale detail can be procedurally generated just-in-time?
-- [ ] Try fully mechanics / IK based dragon walk and fly motion.
+  - [ ] Review how rivers and lakes look now, and check for any remaining plateauing effects from the hydrology erosion. Does river meander wavelength need to scale along with the river width? 
+  - [ ] Explore tabling & sheer cliffs & plateaus. Can this be done cheaply in a rugged & organic looking way? Biome-dependent, so Canyons have tons of this.
+  - [ ] 
 - [ ] Use Eleven Labs for better sound effects.
 - [ ] You don't start the game outside in the open world. You start the game waking up on a table on a hilltop glade in one such leafkin village, listening to creepy leafkin chanting and drumming. When you first make a movement, you hear them shriek in startlement and then the pitter-patter of feet running away. Your view fades in from black, and you're sitting on a ceremonial table in a lush leafkin village-glade. You wander around, the leafkin are frightened and hiding and want nothing to do with you, they run away from you and cower and wimper if you corner them. You find your way to the exit from the village, and open out into the wider world.
 - [ ] Add a 2nd pine texture with blotchy snow cover. Apply that to outer tris of each bough, and make this the tree instance to use above the snowline. Use the SAME standard tree card & clump card though, so it's only for LOD0 & LOD1.
