@@ -6320,7 +6320,7 @@ const earHead = new THREE.Vector3()
 // Through the walls now and then, beyond what the glade itself sends: a leafkin passing by day (`glade`: never round a town's house, which leafkin shun), an owl by night, `range` metres out.
 const OUTSIDE = [
   { clips: ['leafkinChatter1', 'leafkinChatter2', 'leafkinChatter3', 'leafkinChatter4'], glade: true, when: (day) => day > 0.25, every: [20, 60], range: [5, 12], gain: 0.6, walled: true },
-  { clips: ['owl'], glade: false, when: (day) => day < 0.3, every: [25, 70], range: [10, 25], gain: 0.5 },
+  { clips: ['owl'], glade: false, bird: true, when: (day) => day < 0.3, every: [25, 70], range: [10, 25], gain: 0.5 },
 ]
 const outsideLeft = OUTSIDE.map(() => 10)
 
@@ -6334,7 +6334,7 @@ function updateAmbience(dt, state) {
   sound.setListener(ears.x, ears.y, ears.z, earFwd.x, earFwd.y, earFwd.z, earUp.x, earUp.y, earUp.z)
   if (indoors) {
     OUTSIDE.forEach((O, i) => {
-      if ((O.glade && indoors.town) || !O.when(daynessOf(state)) || (outsideLeft[i] -= dt) > 0) return
+      if ((O.glade && indoors.town) || (O.bird && effects.maddened) || !O.when(daynessOf(state)) || (outsideLeft[i] -= dt) > 0) return
       outsideLeft[i] = THREE.MathUtils.randFloat(...O.every)
       const q = Math.random() * Math.PI * 2, d = THREE.MathUtils.randFloat(...O.range)
       sound.play(O.clips[Math.floor(Math.random() * O.clips.length)], { rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: O.gain, walled: O.walled === true, at: { x: ears.x + Math.cos(q) * d, y: ears.y, z: ears.z + Math.sin(q) * d } })
@@ -6353,6 +6353,7 @@ function updateAmbience(dt, state) {
     cover: state.cover,
     precip: state.precip,
     indoors: !!indoors || cave !== null,
+    hushed: effects.maddened,
   })
 }
 

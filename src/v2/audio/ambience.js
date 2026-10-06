@@ -361,6 +361,7 @@ export class Ambience {
     this.loops.hearth = engine.loop(CAMPFIRES, { directional: true, bus: 'near', gain: RULES.campfire.gain })
     this.blazeAt = { x: 0, y: 0, z: 0 }
     this.leavesOn = false
+    this.hushed = false
     this.windOn = false
     this.rainOn = false
     // How many times each clip has fired; window.v2ambience.fired at the console.
@@ -463,8 +464,9 @@ export class Ambience {
    * @param swimming  she is swimming: strokes, not footsteps
    * @param now       the room's world clock in seconds (clock.js), which the dragons' roars are scored against
    * @param indoors   she is inside a house: the fiddles are silent
+   * @param hushed    the birds, crickets and rustling leaves are silent (a chanterelle, design/33-vitals.md §Eating)
    */
-  update(dt, { head, dayness, submerged, speed, afoot, swimming = false, cover = 0, precip = 0, now, indoors = false }) {
+  update(dt, { head, dayness, submerged, speed, afoot, swimming = false, cover = 0, precip = 0, now, indoors = false, hushed = false }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
     if (!Number.isFinite(now)) throw new Error(`Ambience.update: needs the room's world seconds, got ${now}`)
     this.frame++
@@ -481,6 +483,7 @@ export class Ambience {
       this.wet = submerged
       this.engine.setSubmerged(submerged)
     }
+    this.hushed = hushed
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s, cover, precip)
     this._fiddlers(dt, head, indoors)
@@ -500,12 +503,12 @@ export class Ambience {
 
     const below = s.aboveSnow < 0
     this._birds(dt, head, s, dayness, below)
-    this._crickets(dt, dayness, below)
+    this._crickets(dt, dayness, below && !hushed)
     this._feet(dt, head, s, speed, afoot)
     this._herds(dt, head)
     this._dragons(dt, head, now)
     this._frogs(dt, head, s)
-    this._grasshoppers(dt, head)
+    if (!hushed) this._grasshoppers(dt, head)
     this._voices(head)
     this._rocks(dt, head, s)
     this._lake(dt, head, s)
@@ -514,6 +517,7 @@ export class Ambience {
 
   _birds(dt, head, s, dayness, below) {
     this.clock += dt
+    if (this.hushed) return
     const R = RULES.raptor
     const highCliff = s.aboveSnow > -R.cliffBand && s.cliff > R.cliffTan
     if (this.due('raptor', dayness > R.light && (s.aboveSnow > 0 || highCliff), R.interval, dt)) {
@@ -960,7 +964,7 @@ export class Ambience {
     const canopy = s.forest * (1 - smoothstep(V.aloft[0], V.aloft[1], head.y - s.groundH))
     // Hysteresis: on past `on`, off again only below `off`, so a forest edge does not flap.
     if (this.leavesOn ? canopy < V.off : canopy > V.on) this.leavesOn = !this.leavesOn
-    this._loop('leaves', this.leavesOn, V.level * smoothstep(V.off, V.full, canopy))
+    this._loop('leaves', this.leavesOn && !this.hushed, V.level * smoothstep(V.off, V.full, canopy))
 
     const D = RULES.wind
     // Three ways up into the wind: over the snowline on foot, aloft over anything, or a sky closing in.

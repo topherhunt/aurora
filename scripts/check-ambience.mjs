@@ -622,6 +622,23 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(count(sparse, 'cricket') > 50, 'crickets still chirp in the sparse night')
 }
 {
+  // Hushed (a chanterelle): no bird, cricket, grasshopper or rustle, by day or night, and the wood comes back when it lifts.
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  sense.s.forest = 0.9
+  const grasshoppers = { bodies(into) { into.push({ x: HEAD.x + 1, y: GROUND, z: HEAD.z }); return into } }
+  const amb = new Ambience({ engine, sense, rand: mulberry32(5), grasshoppers })
+  run(amb, 30, { dayness: NIGHT })
+  check(engine.loops.leaves.active, 'the leaves rustle before the hush')
+  const before = engine.plays.length
+  run(amb, 300, { dayness: NIGHT, hushed: true })
+  run(amb, 300, { dayness: DAY, hushed: true })
+  const hushed = engine.plays.slice(before)
+  check(count({ plays: hushed }, ...SONGBIRDS, ...RAPTORS, 'owl', 'woodpecker', 'cricket') === 0 && !engine.loops.leaves.active, 'hushed, no bird or cricket sounds and the leaves are still', `${hushed.length} plays: ${[...new Set(hushed.map((p) => p.name))].join(' ')}`)
+  run(amb, 60, { dayness: DAY })
+  check(engine.loops.leaves.active && count({ plays: engine.plays.slice(before + hushed.length) }, ...SONGBIRDS) > 0, 'once the hush lifts the songbirds and leaves return')
+}
+{
   // The leaves loop has hysteresis at the wood's edge.
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
