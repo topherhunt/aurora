@@ -209,24 +209,28 @@ export function writeSkyUniforms(u, state) {
 // The cloud layer alone (§10): a plane 1500 m up, above every summit, the view
 // ray projected onto it and one seamless fBm sampled at two scales that drift
 // with the wind. `cloudAt` gives x = how much of the sky that way the cloud
-// hides, 0 with clouds off or below the horizon fade, and y = the raw density,
-// which the dome darkens the bellies from. Its own chunk so the stars and the
-// aurora, drawn before the dome, can be dimmed by the same cloud that the dome
-// composites over the sun.
+// hides, 0 with clouds off or below the horizon fade, y = the raw density,
+// which the dome darkens the bellies from, and zw = the slope of the cloud's
+// coarse shape across the plane (world x, z; relative units, from the bake's
+// G/B), which the dome lights each cloud's sun side from. Its own chunk so the
+// stars and the aurora, drawn before the dome, can be dimmed by the same cloud
+// that the dome composites over the sun.
 export const CLOUD_GLSL = /* glsl */ `
   uniform sampler2D uClouds;
   uniform vec4 uCloud;
   uniform vec2 uCloudDrift;
 
-  vec2 cloudAt( vec3 dir ) {
-    if ( uCloud.w < 0.5 || dir.y <= 0.02 ) return vec2( 0.0 );
+  vec4 cloudAt( vec3 dir ) {
+    if ( uCloud.w < 0.5 || dir.y <= 0.02 ) return vec4( 0.0 );
     vec2 p = dir.xz * ( 1500.0 / dir.y );
-    float a = texture2D( uClouds, p / 6000.0 + uCloudDrift ).r;
-    float b = texture2D( uClouds, p / 2600.0 * vec2( 0.8, 1.1 ) + uCloudDrift * 1.7 + 0.37 ).r;
-    float tex = a * 0.65 + b * 0.35;
+    vec3 a = texture2D( uClouds, p / 6000.0 + uCloudDrift ).rgb;
+    vec3 b = texture2D( uClouds, p / 2600.0 * vec2( 0.8, 1.1 ) + uCloudDrift * 1.7 + 0.37 ).rgb;
+    float tex = a.r * 0.65 + b.r * 0.35;
     float density = smoothstep( uCloud.y, uCloud.z, tex );
     float fade = smoothstep( 0.02, 0.15, dir.y );
-    return vec2( density * fade, tex );
+    // Chain rule through both samplings, per 2600 m of plane.
+    vec2 slope = ( a.gb - 0.5 ) * ( 0.65 * 2600.0 / 6000.0 ) + ( b.gb - 0.5 ) * vec2( 0.8, 1.1 ) * 0.35;
+    return vec4( density * fade, tex, slope );
   }
 `
 
@@ -386,7 +390,7 @@ export const SKY_GLSL = /* glsl */ `
     // anyway through uHorizon and uZenith. The horizon fade hands the plane's
     // far stretch to the fog, which is eating the terrain there.
     if ( coreGain > 0.5 ) {
-      vec2 cl = cloudAt( dir );
+      vec4 cl = cloudAt( dir );
       // Bellies darken with thickness past the remap's edge, so a solid ceiling
       // still shows its texture instead of one flat grey; and the layer takes
       // the horizon colour as it recedes, the aerial perspective the terrain
@@ -405,10 +409,21 @@ export const SKY_GLSL = /* glsl */ `
       float mToward = max( md, 0.0 );
       vec3 moonCol = vec3( 0.62, 0.70, 0.90 );
       float thick = smoothstep( uCloud.y, uCloud.z + 0.35, cl.y );
-      vec3 cloud = mix( uCloudLit, uCloudShade, min( 1.0, thick + 0.7 * sunUp * max( -sun, 0.0 ) ) );
+      // Each cloud's own sides: where its shape thins toward the light it is
+      // the lit face, where it thickens it is the far one. The light's
+      // horizontal component weights it, so a high sun lights tops we never see.
+      // By day uCloudLit is clipped white, so the lit face brightens by shedding
+      // shade, not by a gain.
+      float sunSide = clamp( -dot( cl.zw, uSunDir.xz ) * 10.0, -1.0, 1.0 ) * sunUp;
+      // The moon is up by day too, faintly: its sides only once the sun's are gone.
+      float moonSide = clamp( -dot( cl.zw, uMoonDir.xz ) * 10.0, -1.0, 1.0 ) * step( 0.001, uMoon.y ) * ( 1.0 - sunUp );
+      float shade = thick + 0.7 * sunUp * max( -sun, 0.0 ) - 0.4 * sunSide;
+      vec3 cloud = mix( uCloudLit, uCloudShade, clamp( shade, 0.0, 1.0 ) );
       cloud = mix( cloud, uHorizon, ( 1.0 - smoothstep( 0.03, 0.45, dir.y ) ) * 0.85 );
-      cloud *= 1.0 + 0.45 * sunUp * pow( sToward, 5.0 );
-      cloud += moonCol * ( uMoon.y * ( 1.0 - thick * 0.7 ) * 0.2 * pow( mToward, 8.0 ) );
+      cloud *= 1.0 + 0.45 * sunUp * pow( sToward, 5.0 ) + 0.3 * max( sunSide, 0.0 );
+      cloud += sunTint * ( 0.15 * max( sunSide, 0.0 ) * ( 1.0 - thick ) );
+      cloud *= 1.0 - 0.45 * max( -moonSide, 0.0 );
+      cloud += moonCol * ( uMoon.y * ( ( 1.0 - thick * 0.7 ) * 0.2 * pow( mToward, 8.0 ) + 0.15 * max( moonSide, 0.0 ) ) );
       col = mix( col, cloud, cl.x );
       // The silver lining: thin edges near the light glow brighter than the sky
       // behind them. Added over the composite with sqrt(cl.x), because those

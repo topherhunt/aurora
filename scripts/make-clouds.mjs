@@ -1,4 +1,4 @@
-// Bakes public/world/clouds.png: a 256x256 seamless fBm, grayscale, the one
+// Bakes public/world/clouds.png: a 256x256 seamless fBm in R, the one
 // cloud texture the sky layer and the summit wreaths sample (§10). Offline
 // rather than at load because 256^2 of fBm in JS is 20-50 ms on the Quest 2
 // main thread, and the texture is the same in every game -- the weather varies
@@ -46,28 +46,60 @@ function gradient(u, v, period, seed) {
   return (n00 + (n10 - n00) * sx) + ((n01 + (n11 - n01) * sx) - (n00 + (n10 - n00) * sx)) * sy
 }
 
+// G/B carry the slope of the first SHAPE_OCTAVES alone, which the sky uses to
+// light each cloud from its sun side (§10). Every octave contributes equal
+// slope (half the amplitude, twice the frequency), so the full sum's slope is
+// crinkle; the coarse octaves give one ramp across a cloud's body.
+const SHAPE_OCTAVES = 3
 const px = new Float32Array(SIZE * SIZE)
+const shape = new Float32Array(SIZE * SIZE)
 let lo = Infinity, hi = -Infinity
 for (let j = 0; j < SIZE; j++) {
   for (let i = 0; i < SIZE; i++) {
     const u = i / SIZE, v = j / SIZE
     let n = 0
-    for (let o = 0; o < OCTAVES.length; o++) n += gradient(u, v, OCTAVES[o].period, 11 + o) * OCTAVES[o].amp
+    for (let o = 0; o < OCTAVES.length; o++) {
+      n += gradient(u, v, OCTAVES[o].period, 11 + o) * OCTAVES[o].amp
+      if (o === SHAPE_OCTAVES - 1) shape[j * SIZE + i] = n
+    }
     px[j * SIZE + i] = n
     if (n < lo) lo = n
     if (n > hi) hi = n
   }
 }
-const out = new Uint8Array(SIZE * SIZE)
-for (let k = 0; k < px.length; k++) out[k] = Math.round(((px[k] - lo) / (hi - lo)) * 255)
+
+// Central differences, wrapped, normalised so the steepest texel is +-1. Three
+// loads textures with flipY, so image row j is texture v = 1 - j/SIZE and the
+// v slope is the negated row slope.
+const at = (i, j) => shape[((j + SIZE) % SIZE) * SIZE + ((i + SIZE) % SIZE)]
+const du = new Float32Array(SIZE * SIZE), dv = new Float32Array(SIZE * SIZE)
+let gmax = 0
+for (let j = 0; j < SIZE; j++) {
+  for (let i = 0; i < SIZE; i++) {
+    const k = j * SIZE + i
+    du[k] = at(i + 1, j) - at(i - 1, j)
+    dv[k] = at(i, j - 1) - at(i, j + 1)
+    gmax = Math.max(gmax, Math.abs(du[k]), Math.abs(dv[k]))
+  }
+}
+
+const gray = new Uint8Array(SIZE * SIZE)
+const out = new Uint8Array(SIZE * SIZE * 4)
+for (let k = 0; k < px.length; k++) {
+  gray[k] = Math.round(((px[k] - lo) / (hi - lo)) * 255)
+  out[k * 4] = gray[k]
+  out[k * 4 + 1] = Math.round(127.5 + 127.5 * du[k] / gmax)
+  out[k * 4 + 2] = Math.round(127.5 + 127.5 * dv[k] / gmax)
+  out[k * 4 + 3] = 255
+}
 
 // Seam check: the wrapped lattice makes column 0 continue column 255, and the
 // gate for the texture is that this holds, so it is asserted where it is made.
 let seam = 0
-for (let j = 0; j < SIZE; j++) seam = Math.max(seam, Math.abs(out[j * SIZE] - out[j * SIZE + SIZE - 1]), Math.abs(out[j] - out[(SIZE - 1) * SIZE + j]))
+for (let j = 0; j < SIZE; j++) seam = Math.max(seam, Math.abs(gray[j * SIZE] - gray[j * SIZE + SIZE - 1]), Math.abs(gray[j] - gray[(SIZE - 1) * SIZE + j]))
 if (seam > 24) throw new Error(`clouds.png does not tile: seam step ${seam}`)
 
-writePng('public/world/clouds.png', SIZE, SIZE, out, 1)
+writePng('public/world/clouds.png', SIZE, SIZE, out, 4)
 let mean = 0
-for (const v of out) mean += v
-console.log(`public/world/clouds.png: ${SIZE}x${SIZE} gray, mean ${(mean / out.length).toFixed(1)}, worst seam step ${seam}`)
+for (const v of gray) mean += v
+console.log(`public/world/clouds.png: ${SIZE}x${SIZE} R density + GB shape slope, mean ${(mean / gray.length).toFixed(1)}, worst seam step ${seam}`)

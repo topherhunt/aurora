@@ -56,12 +56,12 @@ Small theory-of-mind touches that pay for themselves: they remember what they to
 
 ## Voice
 
-**The clip carries the speech act and the mood; the text carries the fact.** "Listen, I saw something" is heard while the panel says the boy went north past the tarn. A clip never names a person, place, direction or number, so voice and text can never disagree. Each speech act is an *atom* (greet a friend, hedge, refuse for a price, plead for a missing child, grumble about the cold) recorded in about three wordings; the inventory, with the engine state that fires each atom, is `tools/voice/atoms.js`, recorded with `voice-recorder.html` into `tools/voice/work/`.
+**The clip carries the speech act and the mood; the text carries the fact.** "Listen, I saw something" is heard while the panel says the boy went north past the tarn. A clip never names a person, place, direction or number, so voice and text can never disagree. The engine asks for a *moment* (greet a friend, hedge, plead for someone missing, grumble about the cold); a recorded *utterance* lists every moment each of its readings serves, so "It's getting dark" read easy is an evening remark and read with dread is a worry that someone is late. A moment's pool is every reading that lists it. Lines avoid generic "them": gendered forms are recorded as separate files. The inventory is `tools/voice/atoms.js`, recorded with `voice-recorder.html` into `tools/voice/work/`.
 
 - **One performer, many voices.** Every line is recorded once per performance (base, elder, a light take as the source for women), then voice-converted offline into about six voice types shared across the 19 bodies; a per-person playback-rate offset of a semitone or two separates people who share one. Conversion keeps the performance and changes the timbre; gravelly takes convert badly, hence the light take.
 - **Leafkin have their own atoms**, voiced by the same performer and played fast (rate about 1.5 moves pitch and formants together, which reads as small). Each atom has three trust tiers: a stranger hears only their native tongue (a small fixed vocabulary: *hoola* hello, *tikka* friend, *momo* food), trust mixes in pidgin, and a friend speaks the pidgin of the text. The relationship is audible.
-- **Repetition is a scheduling problem before it is a wording problem.** A shuffle bag per atom, cooldowns per speaker and per atom within earshot, speaking on her arrival rather than while she stays, and escalation over time (a parent grows more urgent) so a repeat is story, not a loop. Clip picks are keyed by seed so both players hear the same line.
-- **Later**: swappable nouns spliced into a carrier phrase ("head *north*", "go to the *cave*").
+- **Repetition is a scheduling problem before it is a wording problem.** A shuffle bag per moment, cooldowns per speaker and per utterance within earshot, speaking on her arrival rather than while she stays, and escalation over time (a parent grows more urgent) so a repeat is story, not a loop. Clip picks are keyed by seed so both players hear the same line.
+- **Splicing is an experiment**: a filler cut into a carrier phrase ("I might have seen *her*", "head *north*"). The recorder's Splice set records carrier, fillers and whole sentences and plays the joins against the real sentence.
 
 ## In the headset
 
@@ -107,7 +107,7 @@ Engine (three-free, gated by `check-talk.mjs`): `mind.js` (names, ties, temperam
 4. **Telling and gossip.** Built in the engine (`tell` for "X sent me" and "Y is at Z", `gossip`); nothing calls `gossip` from the talk state yet, and rapport lives only in memory, not the save or the room.
 5. **The headset panel, hails and overhead bubbles.** Not started: needs `townsfolk.js`, `villagers.js` and `main.js`, which other sessions are in.
 6. **The message.** Built: someone asks her to carry a phrase to a grown-up in the nearest town; the recipient asks what was said and she picks from the true words and three near-misses. True words warm the recipient and the sender thanks her and owes her; garbled words turn the recipient cold for good. The discretion variant ("not where her husband can hear") is not built.
-7. **Voice.** Atom inventory and recorder built (`tools/voice/`, `voice-recorder.html`); not yet recorded, converted, scheduled or played.
+7. **Voice.** Moment and utterance inventory, recorder and splice lab built (`tools/voice/`, `voice-recorder.html`); not yet recorded, converted, scheduled or played.
 8. Go-and-look, trades, the rest of the quest list.
 
 ## Decided

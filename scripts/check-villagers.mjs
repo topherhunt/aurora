@@ -41,7 +41,7 @@ import { LEAD_TICKS, popM } from '../src/v2/render/net-ease.js'
 import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
 import { CARRIERS, CARRY_MAX } from '../src/v2/hands.js'
 import { rollInterior } from '../src/v2/rooms/interior.js'
-import { Residents } from '../src/v2/render/residents.js'
+import { COWER_WHIMPER_S, Residents } from '../src/v2/render/residents.js'
 import { houseUniforms } from '../src/v2/render/interior.js'
 import { STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
@@ -903,12 +903,13 @@ console.log('\nat home')
     // No carrier free, so a feast never asks the stand-in for the fist it lacks.
     hands.carriers = CARRIERS
     const res = new Residents(new THREE.Scene(), room, { asset: makeAsset(), sitY, who: [{ id: 3, size: 1, pace: 1, feast: false }], seed: spec.seed, ox: 0, oy: 0, oz: 0, hands, mushrooms: { record: () => ({ kind: 'mushroom' }) } })
-    return { res, hands, trusts, feet: { x: 400, y: 0, z: 400 }, lures: [], heard: [], clips: new Set() }
+    return { res, hands, trusts, feet: { x: 400, y: 0, z: 400 }, lures: [], heard: [], whimpers: [], t: 0, clips: new Set() }
   }
   const run = (h, s) => {
     for (let i = 0; i < s * 60; i++) {
       h.res.update(1 / 60, view, h.feet, h.lures, h.trusts)
-      for (const v of h.res.voices([])) h.heard.push(v.sound)
+      h.t += 1 / 60
+      for (const v of h.res.voices([])) { h.heard.push(v.sound); if (v.sound === 'leafkinWhimper') h.whimpers.push(h.t) }
       for (const r of h.res.all) h.clips.add(r.clip)
     }
   }
@@ -918,9 +919,11 @@ console.log('\nat home')
   const near = (h) => { const o = h.res.all.find((q) => q.id === 3); h.feet = { x: o.x + 1.2, y: o.y, z: o.z } }
   near(wary); near(fond)
   wary.heard.length = 0
-  for (const h of [wary, fond]) run(h, 8)
+  wary.whimpers.length = 0
+  for (const h of [wary, fond]) run(h, 30)
+  const gaps = wary.whimpers.slice(1).map((t, i) => t - wary.whimpers[i])
   const facing = Math.cos(Math.atan2(wary.feet.x - r.x, wary.feet.z - r.z) - r.heading)
-  check(r.state === 'cower' && wary.clips.has('cower') && facing > 0.9 && wary.heard.filter((s) => s === 'leafkinWhimper').length >= 2 && !wary.heard.includes('panting') && wary.heard.every((s) => SOUNDS[s] !== undefined), 'one that does not trust her, her within COWER_M, cowers facing her, whimpering and never panting', `${r.state}, facing ${facing.toFixed(2)}; ${wary.heard.join(' ')}`)
+  check(r.state === 'cower' && wary.clips.has('cower') && facing > 0.9 && gaps.length >= 2 && gaps.every((g) => g >= COWER_WHIMPER_S[0] - 0.02 && g <= COWER_WHIMPER_S[1] + 0.02) && !wary.heard.includes('panting') && wary.heard.every((s) => SOUNDS[s] !== undefined), 'one that does not trust her, her within COWER_M, cowers facing her, whimpering now and then, never panting', `${r.state}, facing ${facing.toFixed(2)}; gaps ${gaps.map((g) => g.toFixed(1)).join(' ')} s; ${wary.heard.join(' ')}`)
   check(fond.res.all.every((o) => o.state !== 'cower'), 'one that trusts the players goes on about its home beside her')
   {
     const out = fond.res.all.find((o) => o.id === 3), states = []
@@ -933,9 +936,13 @@ console.log('\nat home')
     const back = fond.res.all.find((o) => o.id === 3)
     check(!fond.res.all.includes(out) && states.join() === 'leave,gone' && back !== undefined && back !== out && Math.hypot(back.x - room.doorIn.x, back.z - room.doorIn.z) < 0.01, 'synced out each frame, a villager walks out once and is gone; synced in, it walks in at the door', states.join())
   }
-  wary.feet = { x: 400, y: 0, z: 400 }
+  const away = Math.atan2(wary.feet.x - r.x, wary.feet.z - r.z)
+  wary.feet = { x: r.x + 3.1 * Math.sin(away), y: wary.feet.y, z: r.z + 3.1 * Math.cos(away) }
   run(wary, 1)
-  check(r.state !== 'cower', 'her gone past COWER_OFF_M, it goes back to its home', r.state)
+  wary.whimpers.length = 0
+  run(wary, 15)
+  check(r.state !== 'cower' && wary.whimpers.length === 0, 'her backed off past 3 m, it stops whimpering and goes back to its home', `${r.state}, ${wary.whimpers.length} whimpers`)
+  wary.feet = { x: 400, y: 0, z: 400 }
 
   // A mushroom in her hand, her on the ring's far side from it.
   const g = room.ringPts.reduce((a, p) => (Math.hypot(p.x - r.x, p.z - r.z) > Math.hypot(a.x - r.x, a.z - r.z) ? p : a))

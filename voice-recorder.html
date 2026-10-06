@@ -16,8 +16,9 @@
       button[aria-pressed="true"] { background: #1d3a5c; border-color: var(--accent); }
       button:disabled { opacity: .4; cursor: default; }
       label { display: block; margin: 4px 0; color: var(--dim); }
-      select { width: 100%; }
+      #side select { width: 100%; }
       kbd { border: 1px solid var(--edge); border-radius: 3px; padding: 0 4px; color: var(--ink); }
+      input[type="range"] { vertical-align: middle; }
 
       #side { width: 290px; padding: 14px; background: var(--panel); border-right: 1px solid #1b2c44; overflow-y: auto; flex: none; }
       #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -28,6 +29,7 @@
       .row > * { flex: 1; }
       .note { color: var(--dim); font-size: 12px; }
       .err { color: var(--rec); white-space: pre-wrap; }
+      .hidden { display: none !important; }
 
       #cur-meta { color: var(--dim); font-size: 12px; }
       #cur-text { font-size: 30px; line-height: 1.2; margin: 6px 0 2px; font-family: Georgia, serif; }
@@ -39,14 +41,19 @@
       body.recording #stage { box-shadow: inset 4px 0 0 var(--rec); }
       body.recording #status { color: var(--rec); }
 
-      .atom { margin-top: 14px; }
-      .atom-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-      .atom-id { color: var(--accent); }
+      #lab { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1b2c44; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: center; }
+      #lab .row { flex-wrap: nowrap; }
+      #lab .row > * { flex: none; }
+
+      .group { margin-top: 14px; }
+      .group-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+      .group-id { color: var(--accent); }
       .badge { font-size: 11px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--edge); color: var(--dim); }
       .badge.core { border-color: var(--accent); color: var(--accent); }
+      .badge.thin { border-color: var(--rec); color: var(--rec); }
       .mood-warm { color: #ffcf7f; } .mood-cold { color: #9fb7d9; } .mood-angry { color: #ff8a7a; } .mood-distress { color: #ff7ab8; }
       .tier { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin: 4px 0 0 4px; }
-      .line { display: flex; gap: 10px; padding: 3px 6px; border-radius: 3px; cursor: pointer; align-items: baseline; }
+      .line { display: flex; gap: 10px; padding: 3px 6px; border-radius: 3px; cursor: pointer; align-items: baseline; flex-wrap: wrap; }
       .line:hover { background: #0e1726; }
       .line.sel { background: #1d3a5c; }
       .line .dots { width: 52px; flex: none; letter-spacing: 2px; }
@@ -55,6 +62,7 @@
       .line .dots span.have { color: var(--ok); }
       .line .text { font-family: Georgia, serif; font-size: 15px; }
       .line .lnote { color: var(--dim); font-size: 12px; }
+      .line .uses { color: #557096; font-size: 11px; }
     </style>
   </head>
   <body>
@@ -79,9 +87,13 @@
       <div class="row">
         <button id="set-human" class="qa-set-human" aria-pressed="true">Human</button>
         <button id="set-leafkin" class="qa-set-leafkin" aria-pressed="false">Leafkin</button>
+        <button id="set-splice" class="qa-set-splice" aria-pressed="false">Splice</button>
       </div>
+      <label id="view-wrap">View <select id="view" class="qa-view">
+        <option value="lines">By line (record)</option><option value="moments">By moment (coverage)</option>
+      </select></label>
       <label>Category <select id="cat" class="qa-cat"></select></label>
-      <label><input type="checkbox" id="core-only" /> Core atoms only</label>
+      <label><input type="checkbox" id="core-only" /> Core moments only</label>
       <div id="counts" class="note qa-counts"></div>
 
       <h2>Keys</h2>
@@ -89,7 +101,8 @@
         <kbd>Space</kbd> record / stop<br />
         <kbd>Enter</kbd> play the take<br />
         <kbd>&darr;</kbd> <kbd>&uarr;</kbd> next / previous line<br />
-        <kbd>1</kbd>-<kbd>4</kbd> pick a take
+        <kbd>1</kbd>-<kbd>4</kbd> pick a take<br />
+        Splice: click the wave to mark the slot start, shift-click its end
       </div>
 
       <h2>Leafkin words</h2>
@@ -101,35 +114,73 @@
         <div id="cur-meta" class="qa-cur-meta"></div>
         <div id="cur-text" class="qa-cur-text"></div>
         <div id="cur-note" class="qa-cur-note"></div>
-        <canvas id="wave"></canvas>
+        <canvas id="wave" class="qa-wave"></canvas>
         <div id="meter"><div></div></div>
         <div id="status" class="qa-status"></div>
+        <div id="lab" class="qa-lab hidden">
+          <span class="note">Carrier from</span><select id="lab-carrier" class="qa-lab-carrier"></select>
+          <span class="note">Slot from</span><select id="lab-slot" class="qa-lab-slot"></select>
+          <span class="note">Join</span><span class="row"><input id="lab-gap" type="range" min="-120" max="200" value="-20" /><span id="lab-gap-v"></span></span>
+          <span class="note">Slot gain</span><span class="row"><input id="lab-gain" type="range" min="50" max="150" value="100" /><span id="lab-gain-v"></span></span>
+          <span class="note">Slot pitch</span><span class="row"><input id="lab-pitch" type="range" min="-3" max="3" step="0.25" value="0" /><span id="lab-pitch-v"></span></span>
+          <span></span><span class="row">
+            <button id="lab-play" class="qa-lab-play">Play splice</button>
+            <button id="lab-all" class="qa-lab-all">Play every filler</button>
+            <button id="lab-real" class="qa-lab-real">Play the real sentence</button>
+          </span>
+        </div>
       </div>
       <div id="list" class="qa-list"></div>
     </div>
 
     <script type="module">
-      import { HUMAN, LEAFKIN, LEAFKIN_WORDS, TIERS, TAKES } from './tools/voice/atoms.js'
-      import { cleanTake, encodeWav, fileName } from './tools/voice/audio.js'
+      import { MOMENTS, HUMAN, LEAFKIN, LEAFKIN_WORDS, TIERS, TAKES, SPLICES } from './tools/voice/atoms.js'
+      import { cleanTake, encodeWav, fileName, join, shiftPitch } from './tools/voice/audio.js'
 
       const $ = (id) => document.getElementById(id)
-
-      // Every recordable line, flattened: { set, atom, variant, text, note, tier }.
-      const LINES = {
-        human: HUMAN.flatMap((atom) => atom.lines.map(([text, note], i) => ({ set: 'human', atom, variant: String(i + 1), text, note, tier: null }))),
-        leafkin: LEAFKIN.flatMap((atom) => TIERS.flatMap((tier) => atom.tiers[tier].map(([text, note], i) => ({ set: 'leafkin', atom, variant: `${tier}-${i + 1}`, text, note, tier })))),
+      const moment = (id) => {
+        const m = MOMENTS[id]
+        if (!m) throw new Error(`atoms.js: no moment ${id}`)
+        return { id, when: m[0], mood: m[1], core: m[2] }
       }
 
+      // A `{a|b}` text expanded into its forms: [[form, text]], or [[null, text]] with none.
+      function forms(text) {
+        const m = text.match(/\{([^}]+)\}/)
+        if (!m) return [[null, text]]
+        return m[1].split('|').map((f) => [f.toLowerCase().replace(/'s$/, ''), text.replace(m[0], f)])
+      }
+
+      // Every recordable line: { set, group: { id, cat, head }, variant, text, note, uses, mood, core, tier }.
+      const LINES = {
+        human: HUMAN.flatMap((utt) => utt.reads.flatMap((r, ri) => forms(utt.text).map(([form, text]) => {
+          const uses = r.uses.map(moment)
+          return { set: 'human', group: { id: utt.id, cat: utt.cat, head: '' }, variant: `r${ri + 1}${form ? `-${form}` : ''}`, text, note: r.note, uses, mood: uses[0].mood, core: uses.some((m) => m.core), tier: null }
+        }))),
+        leafkin: LEAFKIN.flatMap((atom) => TIERS.flatMap((tier) => atom.tiers[tier].map(([text, note], i) => (
+          { set: 'leafkin', group: { id: atom.id, cat: atom.cat, head: atom.when }, variant: `${tier}-${i + 1}`, text, note, uses: [], mood: atom.mood, core: atom.core, tier })))),
+        splice: SPLICES.flatMap((sp) => [
+          ['carrier', sp.carrier.replace(/___\.?/, '...'), 'the carrier alone, pausing at the slot'],
+          ...sp.fillers.map((f) => [`full-${f}`, sp.carrier.replace('___', f), 'the whole sentence, natural']),
+          ...sp.fillers.map((f) => [`alone-${f}`, f, 'the filler alone, in the sentence\'s tune']),
+        ].map(([variant, text, note]) => ({ set: 'splice', group: { id: `sp.${sp.id}`, cat: 'splice', head: sp.carrier, splice: sp }, variant, text, note, uses: [], mood: 'neutral', core: true, tier: null }))),
+      }
+      // Lines keep their group object identity so the list can break on a new group.
+      for (const set of Object.values(LINES)) for (let i = 1; i < set.length; i++) if (set[i].group.id === set[i - 1].group.id) set[i].group = set[i - 1].group
+
       const st = {
-        set: 'human', cat: 'all', coreOnly: false, take: TAKES[0].id, sel: 0,
+        set: 'human', view: 'lines', cat: 'all', coreOnly: false, take: TAKES[0].id, sel: 0,
         ctx: null, stream: null, src: null, analyser: null, node: null,
         recording: false, chunks: [], dir: null,
         have: new Set(), // file names on disk (or downloaded this session)
         buffers: new Map(), // file name -> AudioBuffer, for playback
+        marks: {}, // splice file name -> { a, b } seconds: the slot
       }
+      try { st.marks = JSON.parse(localStorage.getItem('voice-marks') ?? '{}') } catch { st.marks = {} }
 
-      const shown = () => LINES[st.set].filter((l) => (st.cat === 'all' || l.atom.cat === st.cat) && (!st.coreOnly || l.atom.core))
+      const shown = () => LINES[st.set].filter((l) => (st.cat === 'all' || l.group.cat === st.cat) && (!st.coreOnly || l.core))
       const current = () => shown()[st.sel]
+      const fileOf = (l, take = st.take) => fileName(l.group.id, l.variant, take)
 
       // --- ui --------------------------------------------------------------
 
@@ -137,60 +188,92 @@
       $('lk-words').innerHTML = LEAFKIN_WORDS.map(([w, m]) => `<b>${w}</b> ${m}`).join('<br>')
 
       function fillCats() {
-        const cats = [...new Set(LINES[st.set].map((l) => l.atom.cat))]
+        const cats = [...new Set(LINES[st.set].map((l) => l.group.cat))]
         $('cat').replaceChildren(new Option('all', 'all'), ...cats.map((c) => new Option(c, c)))
         st.cat = 'all'
       }
 
+      function lineRow(l, i) {
+        const row = document.createElement('div')
+        row.className = `line qa-line${i === st.sel ? ' sel' : ''}`
+        const dots = TAKES.map((t) => `<span class="${st.have.has(fileOf(l, t.id)) ? 'have' : ''}" title="${t.label}">&#9679;</span>`).join('')
+        row.innerHTML = `<span class="dots">${dots}</span><span class="text"></span><span class="lnote"></span><span class="uses"></span>`
+        row.querySelector('.text').textContent = l.text
+        row.querySelector('.lnote').textContent = `${l.variant} · ${l.note}`
+        row.querySelector('.uses').textContent = l.uses.map((m) => m.id).join('  ')
+        row.onclick = () => select(i)
+        return row
+      }
+
+      function groupHead(html) {
+        const el = document.createElement('div')
+        el.className = 'group qa-group'
+        el.innerHTML = `<div class="group-head">${html}</div>`
+        return el
+      }
+
       function render() {
         const lines = shown()
-        st.sel = Math.min(st.sel, lines.length - 1)
+        st.sel = Math.max(0, Math.min(st.sel, lines.length - 1))
         const list = $('list')
         list.replaceChildren()
-        let atomEl = null
-        let lastAtom = null
+        if (st.view === 'moments' && st.set === 'human') renderMoments(list, lines)
+        else renderLines(list, lines)
+        const all = LINES[st.set]
+        const done = all.filter((l) => st.have.has(fileOf(l))).length
+        const groups = new Set(all.map((l) => l.group.id)).size
+        $('counts').textContent = `${groups} ${st.set === 'human' ? 'utterances' : 'groups'}, ${all.length} lines` +
+          (st.set === 'human' ? `, ${Object.keys(MOMENTS).length} moments` : '') + `; ${done} recorded in this take`
+        showCurrent()
+      }
+
+      function renderLines(list, lines) {
+        let groupEl = null
+        let lastGroup = null
         let lastTier = null
         lines.forEach((l, i) => {
-          if (l.atom !== lastAtom) {
-            atomEl = document.createElement('div')
-            atomEl.className = 'atom qa-atom'
-            atomEl.innerHTML = `<div class="atom-head"><span class="atom-id">${l.atom.id}</span>` +
-              `<span class="badge ${l.atom.core ? 'core' : ''}">${l.atom.core ? 'core' : 'extra'}</span>` +
-              `<span class="mood-${l.atom.mood}">${l.atom.mood}</span><span class="note">${l.atom.when}</span></div>`
-            list.append(atomEl)
-            lastAtom = l.atom
+          if (l.group !== lastGroup) {
+            groupEl = groupHead(`<span class="group-id">${l.group.id}</span>` +
+              (st.set === 'leafkin' ? `<span class="badge ${l.core ? 'core' : ''}">${l.core ? 'core' : 'extra'}</span><span class="mood-${l.mood}">${l.mood}</span>` : '') +
+              `<span class="note">${l.group.head}</span>`)
+            list.append(groupEl)
+            lastGroup = l.group
             lastTier = null
           }
           if (l.tier !== null && l.tier !== lastTier) {
             const t = document.createElement('div')
             t.className = 'tier'
             t.textContent = l.tier
-            atomEl.append(t)
+            groupEl.append(t)
             lastTier = l.tier
           }
-          const row = document.createElement('div')
-          row.className = `line qa-line${i === st.sel ? ' sel' : ''}`
-          const dots = TAKES.map((t) => `<span class="${st.have.has(fileName(l.atom.id, l.variant, t.id)) ? 'have' : ''}" title="${t.label}">&#9679;</span>`).join('')
-          row.innerHTML = `<span class="dots">${dots}</span><span class="text"></span><span class="lnote"></span>`
-          row.querySelector('.text').textContent = l.text
-          row.querySelector('.lnote').textContent = l.note
-          row.onclick = () => select(i)
-          atomEl.append(row)
+          groupEl.append(lineRow(l, i))
         })
-        const all = LINES[st.set]
-        const done = all.filter((l) => st.have.has(fileName(l.atom.id, l.variant, st.take))).length
-        const atoms = new Set(all.map((l) => l.atom.id)).size
-        $('counts').textContent = `${atoms} atoms, ${all.length} lines; ${done} recorded in this take`
-        showCurrent()
+      }
+
+      // Each moment and every reading that serves it: the engine's pool, for judging coverage.
+      function renderMoments(list, lines) {
+        for (const id of Object.keys(MOMENTS)) {
+          const m = moment(id)
+          if (st.coreOnly && !m.core) continue
+          const pool = lines.map((l, i) => [l, i]).filter(([l]) => l.uses.some((u) => u.id === id))
+          if (st.cat !== 'all' && pool.length === 0) continue
+          const el = groupHead(`<span class="group-id">${id}</span><span class="badge ${m.core ? 'core' : ''}">${m.core ? 'core' : 'extra'}</span>` +
+            `<span class="mood-${m.mood}">${m.mood}</span><span class="badge ${pool.length < 3 ? 'thin' : ''}">${pool.length}</span><span class="note">${m.when}</span>`)
+          for (const [l, i] of pool) el.append(lineRow(l, i))
+          list.append(el)
+        }
       }
 
       function showCurrent() {
         const l = current()
+        $('lab').classList.toggle('hidden', st.set !== 'splice')
         if (!l) { $('cur-text').textContent = '(nothing shown)'; return }
-        $('cur-meta').textContent = `${l.atom.id}  ${l.variant}  ·  ${l.atom.when}  ·  take: ${st.take}`
+        $('cur-meta').textContent = `${l.group.id}  ${l.variant}  ·  ${l.uses.map((m) => m.id).join(', ') || l.group.head}  ·  take: ${st.take}`
         $('cur-text').textContent = l.text
         $('cur-note').textContent = l.note
-        drawWave(st.buffers.get(fileName(l.atom.id, l.variant, st.take)) ?? null)
+        drawWave(st.buffers.get(fileOf(l)) ?? null, st.set === 'splice' ? marksOf(l) : null)
+        if (st.set === 'splice') fillLab(l.group.splice)
       }
 
       function select(i) {
@@ -205,13 +288,17 @@
         $('status').className = err ? 'err qa-status' : 'qa-status'
       }
 
-      function drawWave(buf) {
+      function drawWave(buf, marks) {
         const c = $('wave')
         c.width = c.clientWidth * devicePixelRatio
         c.height = c.clientHeight * devicePixelRatio
         const g = c.getContext('2d')
         g.clearRect(0, 0, c.width, c.height)
         if (buf === null) return
+        if (marks !== null) {
+          g.fillStyle = 'rgba(255, 207, 127, 0.18)'
+          g.fillRect(marks.a / buf.duration * c.width, 0, (marks.b - marks.a) / buf.duration * c.width, c.height)
+        }
         const d = buf.getChannelData(0)
         const mid = c.height / 2
         g.fillStyle = '#7fd1ff'
@@ -220,6 +307,10 @@
           let hi = 0
           for (let j = Math.floor(x * per); j < Math.floor((x + 1) * per); j++) hi = Math.max(hi, Math.abs(d[j]))
           g.fillRect(x, mid - hi * mid, 1, Math.max(1, hi * c.height))
+        }
+        if (marks !== null) {
+          g.fillStyle = '#ffcf7f'
+          for (const t of [marks.a, marks.b]) g.fillRect(t / buf.duration * c.width - 1, 0, 2 * devicePixelRatio, c.height)
         }
         g.fillStyle = '#7f96b8'
         g.font = `${11 * devicePixelRatio}px monospace`
@@ -274,7 +365,7 @@
         tick()
       }
 
-      // --- recording -------------------------------------------------------
+      // --- recording and playback ------------------------------------------
 
       function startTake() {
         if (st.ctx === null) { status('Enable the microphone first.', true); return }
@@ -296,36 +387,127 @@
         const rate = st.ctx.sampleRate
         const clean = cleanTake(raw, rate)
         if (clean === null) { status('Nothing above the noise gate: is the mic muted or too far?', true); return }
-        const l = current()
-        const name = fileName(l.atom.id, l.variant, st.take)
+        const name = fileOf(current())
         const buf = st.ctx.createBuffer(1, clean.length, rate)
         buf.copyToChannel(clean, 0)
         st.buffers.set(name, buf)
-        await save(name, encodeWav(clean, rate))
+        delete st.marks[name]
+        await save(name, new Blob([encodeWav(clean, rate)], { type: 'audio/wav' }))
         st.have.add(name)
         render()
         status(`Saved ${name} (${buf.duration.toFixed(2)} s).`)
         if ($('autoplay').checked) play()
       }
 
-      function play() {
-        const l = current()
-        if (!l || st.ctx === null) return
-        const buf = st.buffers.get(fileName(l.atom.id, l.variant, st.take))
-        if (!buf) { status('No take for this line yet.'); return }
+      function playBuffer(buf, rate = Number($('rate').value), when = 0) {
         st.ctx.resume()
         const s = st.ctx.createBufferSource()
         s.buffer = buf
         // An AudioBufferSourceNode's rate moves pitch and formants together: exactly the leafkin shift.
-        s.playbackRate.value = Number($('rate').value)
+        s.playbackRate.value = rate
         s.connect(st.ctx.destination)
-        s.start()
+        s.start(st.ctx.currentTime + when)
+        return buf.duration / rate
       }
+
+      function play() {
+        const l = current()
+        if (!l || st.ctx === null) return
+        const buf = st.buffers.get(fileOf(l))
+        if (!buf) { status('No take for this line yet.'); return }
+        playBuffer(buf)
+      }
+
+      // --- splice lab --------------------------------------------------------
+
+      // Where a source's slot sits by default: a carrier keeps its slot where `___` is, a filler alone is all slot.
+      function marksOf(l) {
+        const name = fileOf(l)
+        const buf = st.buffers.get(name)
+        if (st.marks[name]) return st.marks[name]
+        const d = buf ? buf.duration : 0
+        if (l.variant.startsWith('alone-')) return { a: 0, b: d }
+        const at = l.group.splice.carrier.indexOf('___') / l.group.splice.carrier.length
+        const t = at < 0.1 ? 0 : at > 0.8 ? d : d * at
+        return { a: t, b: t }
+      }
+
+      async function setMark(e) {
+        const l = current()
+        if (st.set !== 'splice' || !l) return
+        const buf = st.buffers.get(fileOf(l))
+        if (!buf) return
+        const r = $('wave').getBoundingClientRect()
+        const t = Math.max(0, Math.min(buf.duration, (e.clientX - r.left) / r.width * buf.duration))
+        const m = { ...marksOf(l) }
+        if (e.shiftKey) m.b = t
+        else m.a = t
+        if (m.b < m.a) [m.a, m.b] = [m.b, m.a]
+        st.marks[fileOf(l)] = m
+        try { localStorage.setItem('voice-marks', JSON.stringify(st.marks)) } catch {}
+        if (st.dir !== null) await save('splice-marks.json', new Blob([JSON.stringify(st.marks, null, 1)], { type: 'application/json' }))
+        showCurrent()
+      }
+
+      let labFor = null
+      function fillLab(sp) {
+        if (labFor === sp) return
+        labFor = sp
+        const carriers = LINES.splice.filter((l) => l.group.splice === sp && !l.variant.startsWith('alone-'))
+        $('lab-carrier').replaceChildren(...carriers.map((l) => new Option(l.variant === 'carrier' ? 'carrier alone' : `cut from "${l.text}"`, l.variant)))
+        $('lab-slot').replaceChildren(...sp.fillers.flatMap((f) => [new Option(`"${f}" cut from its sentence`, `full-${f}`), new Option(`"${f}" alone`, `alone-${f}`)]))
+      }
+
+      function sourceOf(sp, variant) {
+        const l = LINES.splice.find((x) => x.group.splice === sp && x.variant === variant)
+        const buf = st.buffers.get(fileOf(l))
+        if (!buf) throw new Error(`No ${st.take} take of "${l.text}" yet.`)
+        const m = marksOf(l)
+        const rate = buf.sampleRate
+        const d = buf.getChannelData(0)
+        return { rate, pre: d.slice(0, Math.round(m.a * rate)), slot: d.slice(Math.round(m.a * rate), Math.round(m.b * rate)), post: d.slice(Math.round(m.b * rate)) }
+      }
+
+      function spliced(sp, carrierVariant, slotVariant) {
+        const c = sourceOf(sp, carrierVariant)
+        const s = sourceOf(sp, slotVariant)
+        if (c.rate !== s.rate) throw new Error('Carrier and slot were recorded at different sample rates.')
+        const gain = Number($('lab-gain').value) / 100
+        const slot = shiftPitch(s.slot, Number($('lab-pitch').value)).map((v) => v * gain)
+        const out = join([c.pre, slot, c.post], c.rate, Number($('lab-gap').value) / 1000)
+        const buf = st.ctx.createBuffer(1, out.length, c.rate)
+        buf.copyToChannel(out, 0)
+        return buf
+      }
+
+      function labRun(fn) {
+        try {
+          if (st.ctx === null) throw new Error('Enable the microphone first (it starts the audio engine).')
+          fn(current().group.splice)
+        } catch (e) { status(e.message, true) }
+      }
+      $('lab-play').onclick = () => labRun((sp) => playBuffer(spliced(sp, $('lab-carrier').value, $('lab-slot').value), 1))
+      $('lab-all').onclick = () => labRun((sp) => {
+        const kind = $('lab-slot').value.startsWith('alone-') ? 'alone' : 'full'
+        let at = 0
+        for (const f of sp.fillers) at += playBuffer(spliced(sp, $('lab-carrier').value, `${kind}-${f}`), 1, at) + 0.4
+      })
+      $('lab-real').onclick = () => labRun((sp) => {
+        const f = $('lab-slot').value.replace(/^(full|alone)-/, '')
+        const buf = st.buffers.get(fileOf(LINES.splice.find((x) => x.group.splice === sp && x.variant === `full-${f}`)))
+        if (!buf) throw new Error(`No ${st.take} take of the whole "${f}" sentence yet.`)
+        playBuffer(buf, 1)
+      })
+      for (const [id, fmt] of [['lab-gap', (v) => `${v} ms ${v < 0 ? 'overlap' : 'gap'}`], ['lab-gain', (v) => `${v}%`], ['lab-pitch', (v) => `${v} st`]]) {
+        const show = () => { $(`${id}-v`).textContent = fmt(Number($(id).value)) }
+        $(id).oninput = show
+        show()
+      }
+      $('wave').onclick = (e) => setMark(e).catch((err) => status(String(err), true))
 
       // --- files: a chosen folder (Chromium) or downloads ------------------
 
-      async function save(name, wav) {
-        const blob = new Blob([wav], { type: 'audio/wav' })
+      async function save(name, blob) {
         if (st.dir === null) {
           const a = document.createElement('a')
           a.href = URL.createObjectURL(blob)
@@ -367,7 +549,9 @@
         const decoder = st.ctx ?? new AudioContext()
         let n = 0
         for await (const [name, h] of dir.entries()) {
-          if (h.kind !== 'file' || !name.endsWith('.wav')) continue
+          if (h.kind !== 'file') continue
+          if (name === 'splice-marks.json') st.marks = { ...st.marks, ...JSON.parse(await (await h.getFile()).text()) }
+          if (!name.endsWith('.wav')) continue
           st.have.add(name)
           st.buffers.set(name, await decoder.decodeAudioData(await (await h.getFile()).arrayBuffer()))
           n++
@@ -399,22 +583,24 @@
         render()
       }
       $('take').onchange = () => setTake($('take').value)
+      $('view').onchange = () => { st.view = $('view').value; render() }
       $('cat').onchange = () => { st.cat = $('cat').value; st.sel = 0; render() }
       $('core-only').onchange = () => { st.coreOnly = $('core-only').checked; st.sel = 0; render() }
-      for (const set of ['human', 'leafkin']) {
+      for (const set of ['human', 'leafkin', 'splice']) {
         $(`set-${set}`).onclick = () => {
           st.set = set
           st.sel = 0
-          $('set-human').setAttribute('aria-pressed', set === 'human')
-          $('set-leafkin').setAttribute('aria-pressed', set === 'leafkin')
+          for (const s of ['human', 'leafkin', 'splice']) $(`set-${s}`).setAttribute('aria-pressed', s === set)
+          $('view-wrap').classList.toggle('hidden', set !== 'human')
           fillCats()
           if (set === 'leafkin' && st.take !== 'leafkin') setTake('leafkin')
+          else if (set !== 'leafkin' && st.take === 'leafkin') setTake('base')
           else render()
         }
       }
 
       addEventListener('keydown', (e) => {
-        if (e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey) return
+        if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey) return
         // A focused button would also take the Space as a click.
         if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur()
         if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) Promise.resolve(st.recording ? stopTake() : startTake()).catch((err) => status(String(err), true)) }

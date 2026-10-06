@@ -22,7 +22,7 @@ import { CARRY_SPAN } from './leafkin.js'
 import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
 import { DARK_FILL } from './interior.js'
-import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, WHIMPER_S, gripAt } from './villagers.js'
+import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, gripAt } from './villagers.js'
 
 // The house's own leafkin, beyond its villagers indoors: up to this many, trusted under ids from HOMEBODY_ID (trust.js keeps ids under 256).
 export const HOMEBODIES = 2
@@ -30,7 +30,9 @@ export const HOMEBODY_ID = 128
 export const homebodyId = (house, i) => HOMEBODY_ID + house * HOMEBODIES + i
 // Her within this of one that does not trust her, it cowers; past COWER_OFF_M it goes back to what it was about.
 export const COWER_M = 2
-const COWER_OFF_M = 2.5
+const COWER_OFF_M = 3
+// Seconds from one cowering whimper's start to the next: the 3.6 s clip, then 2-10 s quiet.
+export const COWER_WHIMPER_S = [5.6, 13.6]
 // The lie clip's hold between its lying back and its sitting up (tools/creatures/anim/clips/human/lie.json), and how far it shuffles up the bed as it lies.
 const LIE_CUT = [1.7, 3.7]
 const LIE_SLIDE = 0.4
@@ -486,7 +488,7 @@ export class Residents {
       r.voice -= dt
       r.left -= dt
       if (r.state === 'cower') {
-        if (r.voice <= 0) { r.voice = between(this.rand, WHIMPER_S); this._say(r, 'leafkinWhimper') }
+        if (r.voice <= 0) { r.voice = between(this.rand, COWER_WHIMPER_S); this._say(r, 'leafkinWhimper') }
         if (r.left <= 0) { const c = this.rand() < 0.25 ? 'recoil' : 'cower'; this._play(r, c, this.durations[c]) }
       } else {
         if (r.voice <= 0) {

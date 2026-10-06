@@ -1,163 +1,310 @@
-// The voice atom inventory (_notes/conversation-and-quests.md, "Voice"): every recorded speech act, the engine state that plays it, and its
-// wordings. A clip never names a person, place, direction or number -- the panel text carries the fact, the clip carries
-// the act and the mood, so the two can never disagree. `core` atoms are the ones the talk engine or a broadcast needs to
-// sound alive; the rest are colour. Recorded files are `<atom id>.<n>.<take>.wav`, n the 1-based wording.
+// The voice inventory (_notes/conversation-and-quests.md, "Voice"). A clip never names a person, place, direction or
+// number -- the panel text carries the fact, the clip carries the act and the mood, so the two can never disagree.
+//
+// A MOMENT is where the engine wants a clip; an UTTERANCE is a recorded line. One utterance serves every moment its
+// reading fits, and a line that needs a different delivery in another moment ("It's getting dark", easy or afraid) is a
+// second reading, so a second file. The engine's pool for a moment is every reading that lists it. `{he|she}` in a text
+// is a form: each form is its own file, picked by who is meant. Files are `<utterance>.<variant>.<take>.wav`.
 
-/** Human atoms: `{ id, cat, when, mood, core, lines: [[text, acting note]] }`. */
+/** Moment id -> [when the engine plays it, mood, core]. Core moments are the ones needed to sound alive. */
+export const MOMENTS = {
+  'greet.stranger': ['opener, standing neutral', 'neutral', true],
+  'greet.friend': ['opener, standing > 0.3', 'warm', true],
+  'greet.cold': ['opener, standing < -0.2', 'cold', true],
+  'greet.morning': ['passing, morning', 'neutral', false],
+  'greet.evening': ['passing, dusk or night', 'neutral', false],
+  'pass.nod': ['she walks past, no conversation', 'neutral', true],
+  'bye.warm': ['bye, standing >= 0', 'warm', true],
+  'bye.curt': ['bye, standing < 0 or patience out', 'cold', true],
+  'answer.sure': ['a known fact, sure, before the line', 'neutral', true],
+  'answer.hedge': ['how.hedge (sure < 0.6)', 'neutral', true],
+  'answer.unknown': ['_dunno', 'neutral', true],
+  'answer.boast': ['how.boast', 'neutral', true],
+  'answer.again': ['how.again (asked before)', 'neutral', true],
+  'answer.nervous': ['a lie from a poor liar', 'neutral', false],
+  'refuse.wary': ['_refuse (wariness)', 'cold', true],
+  'refuse.price': ['price (greed > 0.6)', 'cold', true],
+  'tell.believe': ['tell, belief adopted', 'neutral', true],
+  'tell.caught': ['tell, lie caught', 'angry', true],
+  'give.thanks': ['give, a wanted item', 'warm', true],
+  'give.polite': ['give, not wanted', 'neutral', true],
+  'talk.self': ['talk:self, before the line', 'neutral', true],
+  'talk.town': ['talk:town, before the line', 'neutral', false],
+  'needs.yes': ['talk:needs, has a want', 'neutral', true],
+  'needs.no': ['talk:needs, no want', 'warm', true],
+  'missing.plea': ['someone who cares hails her, quest untaken', 'distress', true],
+  'missing.child': ['the plea, when the missing one is their child', 'distress', true],
+  'missing.worry': ['the one who cares, broadcast in earshot', 'distress', true],
+  'missing.late': ['broadcast, hours on or at dusk', 'distress', true],
+  'missing.found': ['the missing one brought home, to her', 'warm', true],
+  'missing.reunion': ['the missing one brought home, to the one found', 'warm', true],
+  'missing.sympathy': ['townsfolk broadcast during the search', 'neutral', false],
+  'witness.lead': ['a witness, before the sighting', 'neutral', true],
+  'errand.ask': ['giver offers a message', 'neutral', true],
+  'errand.recall': ['recipient asks the words', 'neutral', true],
+  'errand.true': ['true words delivered', 'warm', true],
+  'errand.garbled': ['garbled words delivered', 'cold', true],
+  'observe.dusk': ['evening, at ease', 'neutral', false],
+  'observe.marvel': ['something remarkable in view', 'warm', true],
+  'weather.cold': ['cold or windy', 'neutral', true],
+  'weather.fine': ['clear day', 'warm', true],
+  'weather.foul': ['rain, snow or storm', 'neutral', true],
+  'sky.aurora': ['aurora overhead', 'warm', true],
+  'mood.bored': ['idle, nothing happening', 'neutral', true],
+  'mood.busy': ['working, or hailed while walking', 'neutral', true],
+  'mood.tired': ['late evening, heading home', 'neutral', false],
+  'mood.hungry': ['near meal hours', 'neutral', false],
+  'mood.content': ['warm standing, calm town', 'warm', false],
+  'worry.general': ['a hard season, low stores', 'neutral', true],
+  'worry.winter': ['cold season', 'neutral', false],
+  'worry.beast': ['a predator near town', 'neutral', false],
+  'worry.leafkin': ['leafkin seen near town', 'neutral', false],
+  'fear.uneasy': ['night, or after an alarm', 'neutral', true],
+  'fear.danger': ['danger in sight: fire, wild strider, dragon', 'distress', true],
+  'gossip.lead': ['two folk stop to talk, opener', 'neutral', true],
+  'gossip.react': ['the other one, reply', 'neutral', true],
+  'social.agree': ['listening, reply', 'neutral', true],
+  'social.disagree': ['listening, rival or sceptic', 'cold', true],
+  'social.curious': ['something new: a beast, a stranger', 'neutral', true],
+  'social.surprise': ['startled: she appears, a sound', 'neutral', true],
+  'hail.attention': ['they want her: an errand, a want', 'neutral', true],
+  'react.animal': ['she leads a tamed beast past', 'warm', false],
+  'home.welcome': ['she enters their house, standing warm', 'warm', false],
+  'home.intrude': ['she enters their house, cold or stranger', 'angry', false],
+  'nv.laugh': ['gossip, warm standing, a joke', 'warm', true],
+  'nv.sigh': ['bored, tired, worried', 'neutral', true],
+  'nv.think': ['before a hedge, pondering', 'neutral', true],
+  'nv.cough': ['idle, cold, a sickbed', 'neutral', true],
+  'nv.effort': ['working: chopping, lifting', 'neutral', false],
+  'nv.cold': ['cold weather idle', 'neutral', false],
+  'nv.yawn': ['late, tired', 'neutral', false],
+}
+
+// One utterance: id, recording group, text, then its readings as [acting note, ...moments].
+const u = (id, cat, text, ...reads) => ({ id, cat, text, reads: reads.map(([note, ...uses]) => ({ note, uses })) })
+
+/** Human utterances: `{ id, cat, text, reads: [{ note, uses }] }`. */
 export const HUMAN = [
-  // --- greeting and parting (speak.js opener, bye; passing in the street)
-  { id: 'greet.stranger', cat: 'greet', when: 'opener, standing neutral', mood: 'neutral', core: true, lines: [
-    ['Well met.', 'polite, a little reserved'], ['Good day to you.', 'warmer, unhurried'], ['Hail, traveller.', 'formal, chin up']] },
-  { id: 'greet.friend', cat: 'greet', when: 'opener, standing > 0.3', mood: 'warm', core: true, lines: [
-    ['Good to see you!', 'genuine, bright'], ['Ah, there you are!', 'as if you were expected'], ['Back again? Good.', 'pleased, teasing']] },
-  { id: 'greet.cold', cat: 'greet', when: 'opener, standing < -0.2', mood: 'cold', core: true, lines: [
-    ['You again.', 'flat'], ['What now?', 'impatient'], ['Hmph. You.', 'a grunt first']] },
-  { id: 'greet.morning', cat: 'greet', when: 'passing, morning', mood: 'neutral', core: false, lines: [
-    ['Morning.', 'brisk nod'], ['Up early, are we?', 'amused'], ['Fresh one today.', 'breath on cold air']] },
-  { id: 'greet.evening', cat: 'greet', when: 'passing, dusk or night', mood: 'neutral', core: false, lines: [
-    ['Evening.', 'tired, kind'], ['Late to be out.', 'mild warning'], ['Get home safe, now.', 'parental']] },
-  { id: 'pass.nod', cat: 'greet', when: 'she walks past, no conversation', mood: 'neutral', core: true, lines: [
-    ['Hm, hello.', 'barely looking up'], ['Hey there.', 'easy'], ['Mm.', 'a nod you can hear']] },
-  { id: 'bye.warm', cat: 'greet', when: 'bye, standing >= 0', mood: 'warm', core: true, lines: [
-    ['Safe roads.', 'the stock blessing'], ['Go well.', 'soft'], ['Mind the cold out there.', 'fond']] },
-  { id: 'bye.curt', cat: 'greet', when: 'bye, standing < 0 or patience out', mood: 'cold', core: true, lines: [
-    ["That's all.", 'turning away'], ['Off with you, then.', 'shooing'], ['We\'re done here.', 'final']] },
+  // --- greeting and parting
+  u('well-met', 'greet', 'Well met.', ['polite, a little reserved', 'greet.stranger']),
+  u('good-day', 'greet', 'Good day to you.', ['warm, unhurried', 'greet.stranger', 'pass.nod']),
+  u('hail-traveller', 'greet', 'Hail, traveller.', ['formal, chin up', 'greet.stranger']),
+  u('good-to-see', 'greet', 'Good to see you!', ['genuine, bright', 'greet.friend']),
+  u('there-you-are', 'greet', 'Ah, there you are!', ['as if you were expected', 'greet.friend', 'hail.attention']),
+  u('back-again', 'greet', 'Back again?', ['pleased, teasing', 'greet.friend'], ['flat, unwelcome', 'greet.cold']),
+  u('you-again', 'greet', 'You again.', ['flat', 'greet.cold']),
+  u('what-now', 'greet', 'What now?', ['impatient', 'greet.cold'], ['weary, at bad news', 'worry.general']),
+  u('hmph-you', 'greet', 'Hmph. You.', ['a grunt first', 'greet.cold']),
+  u('morning', 'greet', 'Morning.', ['brisk nod', 'greet.morning', 'pass.nod']),
+  u('up-early', 'greet', 'Up early, are we?', ['amused', 'greet.morning']),
+  u('evening', 'greet', 'Evening.', ['tired, kind', 'greet.evening', 'pass.nod']),
+  u('late-to-be-out', 'greet', 'Late to be out.', ['mild warning', 'greet.evening', 'fear.uneasy']),
+  u('hm-hello', 'greet', 'Hm, hello.', ['barely looking up', 'pass.nod']),
+  u('hey-there', 'greet', 'Hey there.', ['easy', 'pass.nod', 'greet.stranger']),
+  u('safe-roads', 'greet', 'Safe roads.', ['the stock blessing', 'bye.warm']),
+  u('go-well', 'greet', 'Go well.', ['soft', 'bye.warm']),
+  u('mind-the-cold', 'greet', 'Mind the cold out there.', ['fond', 'bye.warm', 'weather.cold']),
+  u('get-home-safe', 'greet', 'Get home safe, now.', ['parental', 'bye.warm', 'greet.evening']),
+  u('thats-all', 'greet', "That's all.", ['turning away', 'bye.curt']),
+  u('off-with-you', 'greet', 'Off with you, then.', ['shooing', 'bye.curt']),
+  u('were-done', 'greet', "We're done here.", ['final', 'bye.curt']),
 
-  // --- answering (speak.js _answer and its outcomes)
-  { id: 'answer.sure', cat: 'answer', when: 'a known fact, sure, about to be said', mood: 'neutral', core: true, lines: [
-    ['Oh, that I know.', 'pleased to help'], ['Easy.', 'quick'], ['Listen.', 'leaning in']] },
-  { id: 'answer.hedge', cat: 'answer', when: 'how.hedge (sure < 0.6)', mood: 'neutral', core: true, lines: [
-    ['Hmm, I think...', 'trailing, searching'], ['If I remember right...', 'squinting at the past'], ["Don't hold me to it, but...", 'shrugging']] },
-  { id: 'answer.unknown', cat: 'answer', when: '_dunno', mood: 'neutral', core: true, lines: [
-    ['No idea.', 'plain'], ["Couldn't tell you.", 'apologetic'], ['Never heard of it.', 'puzzled']] },
-  { id: 'answer.boast', cat: 'answer', when: 'how.boast', mood: 'neutral', core: true, lines: [
-    ['Ha! Everyone knows that.', 'too loud'], ['Saw it with my own eyes.', 'chest out'], ['Trust me.', 'oily confidence']] },
-  { id: 'answer.again', cat: 'answer', when: 'how.again (asked before)', mood: 'neutral', core: true, lines: [
-    ['Like I said...', 'patient'], ['As I told you.', 'a touch tired'], ['Same as before.', 'flat']] },
-  { id: 'answer.nervous', cat: 'answer', when: 'a lie, from a poor liar (low honesty skill)', mood: 'neutral', core: false, lines: [
-    ['Oh! Er... well...', 'caught off guard'], ['Um. Let me think.', 'stalling'], ['Ah... right. Yes.', 'too quick']] },
-  { id: 'refuse.wary', cat: 'answer', when: '_refuse (wariness)', mood: 'cold', core: true, lines: [
-    ['Why do you want to know?', 'narrowed eyes'], ["That's not your business.", 'firm'], ["I don't know you.", 'stepping back']] },
-  { id: 'refuse.price', cat: 'answer', when: 'price (greed > 0.6)', mood: 'cold', core: true, lines: [
-    ["What's it worth to you?", 'sly'], ['Not for free.', 'blunt'], ['Bring me something first.', 'businesslike']] },
+  // --- answering
+  u('that-i-know', 'answer', 'Oh, that I know.', ['pleased to help', 'answer.sure']),
+  u('easy', 'answer', 'Easy.', ['quick', 'answer.sure']),
+  u('listen', 'answer', 'Listen.', ['leaning in', 'answer.sure', 'witness.lead', 'gossip.lead']),
+  u('i-think', 'answer', 'Hmm, I think...', ['trailing, searching', 'answer.hedge']),
+  u('if-i-remember', 'answer', 'If I remember right...', ['squinting at the past', 'answer.hedge', 'witness.lead']),
+  u('dont-hold-me', 'answer', "Don't hold me to it, but...", ['shrugging', 'answer.hedge', 'witness.lead']),
+  u('no-idea', 'answer', 'No idea.', ['plain', 'answer.unknown']),
+  u('couldnt-tell', 'answer', "Couldn't tell you.", ['apologetic', 'answer.unknown']),
+  u('never-heard', 'answer', 'Never heard of it.', ['puzzled', 'answer.unknown']),
+  u('everyone-knows', 'answer', 'Ha! Everyone knows that.', ['too loud', 'answer.boast']),
+  u('own-eyes', 'answer', 'Saw it with my own eyes.', ['chest out', 'answer.boast', 'witness.lead']),
+  u('trust-me', 'answer', 'Trust me.', ['oily confidence', 'answer.boast'], ['earnest, pleading', 'missing.plea']),
+  u('like-i-said', 'answer', 'Like I said...', ['patient', 'answer.again']),
+  u('as-i-told', 'answer', 'As I told you.', ['a touch tired', 'answer.again']),
+  u('er-well', 'answer', 'Oh! Er... well...', ['caught off guard', 'answer.nervous']),
+  u('let-me-think', 'answer', 'Um. Let me think.', ['stalling', 'answer.nervous'], ['honestly thinking', 'answer.hedge']),
+  u('right-yes', 'answer', 'Ah... right. Yes.', ['too quick', 'answer.nervous']),
+  u('why-know', 'answer', 'Why do you want to know?', ['narrowed eyes', 'refuse.wary']),
+  u('not-your-business', 'answer', "That's not your business.", ['firm', 'refuse.wary']),
+  u('dont-know-you', 'answer', "I don't know you.", ['stepping back', 'refuse.wary']),
+  u('whats-it-worth', 'answer', "What's it worth to you?", ['sly', 'refuse.price']),
+  u('not-for-free', 'answer', 'Not for free.', ['blunt', 'refuse.price']),
+  u('bring-something', 'answer', 'Bring me something first.', ['businesslike', 'refuse.price']),
 
-  // --- told things and gifts (speak.js tell, give)
-  { id: 'tell.believe', cat: 'tell', when: 'tell, belief adopted', mood: 'neutral', core: true, lines: [
-    ['Is that so.', 'thoughtful'], ['Truly?', 'eyebrows up'], ["Well, I'll be.", 'won over']] },
-  { id: 'tell.caught', cat: 'tell', when: 'tell, lie caught', mood: 'angry', core: true, lines: [
-    ["That's a lie.", 'cold anger'], ['Who told you that?', 'suspicious'], ["Don't lie to me.", 'hurt and hard']] },
-  { id: 'give.thanks', cat: 'tell', when: 'give, a wanted item', mood: 'warm', core: true, lines: [
-    ["Oh! I won't forget this.", 'moved'], ['Thank you, truly.', 'quiet'], ['I owe you one.', 'grinning']] },
-  { id: 'give.polite', cat: 'tell', when: 'give, not wanted', mood: 'neutral', core: true, lines: [
-    ["That's kind of you.", 'polite, puzzled'], ['Oh. Thank you.', 'what is this?'], ['Hm. All right.', 'pocketing it anyway']] },
+  // --- told things and gifts
+  u('is-that-so', 'tell', 'Is that so.', ['thoughtful', 'tell.believe', 'gossip.react']),
+  u('truly', 'tell', 'Truly?', ['eyebrows up', 'tell.believe', 'gossip.react']),
+  u('well-ill-be', 'tell', "Well, I'll be.", ['won over', 'tell.believe', 'observe.marvel']),
+  u('thats-a-lie', 'tell', "That's a lie.", ['cold anger', 'tell.caught']),
+  u('who-told-you', 'tell', 'Who told you that?', ['suspicious', 'tell.caught'], ['delighted, nosy', 'gossip.react']),
+  u('dont-lie', 'tell', "Don't lie to me.", ['hurt and hard', 'tell.caught']),
+  u('wont-forget', 'tell', "Oh! I won't forget this.", ['moved', 'give.thanks', 'missing.found']),
+  u('thank-you-truly', 'tell', 'Thank you, truly.', ['quiet', 'give.thanks', 'errand.true', 'missing.found']),
+  u('owe-you', 'tell', 'I owe you one.', ['grinning', 'give.thanks']),
+  u('thats-kind', 'tell', "That's kind of you.", ['polite, puzzled', 'give.polite']),
+  u('oh-thank-you', 'tell', 'Oh. Thank you.', ['what is this?', 'give.polite']),
+  u('hm-all-right', 'tell', 'Hm. All right.', ['pocketing it anyway', 'give.polite'], ['grudging yes', 'social.agree']),
 
-  // --- talk (speak.js _talk: self, needs, town)
-  { id: 'talk.self', cat: 'talk', when: 'talk:self, before the line', mood: 'neutral', core: true, lines: [
-    ['Me? Not much to tell.', 'modest'], ['I keep busy.', 'proud of it'], ['Born and raised here.', 'settled']] },
-  { id: 'talk.town', cat: 'talk', when: 'talk:town, before the line', mood: 'neutral', core: false, lines: [
-    ["It's a quiet place.", 'content'], ['Good people, mostly.', 'a wry pause'], ['Not much, but it\'s home.', 'fond']] },
-  { id: 'needs.yes', cat: 'talk', when: 'talk:needs, has a want', mood: 'neutral', core: true, lines: [
-    ['Now that you ask...', 'brightening'], ['There is one thing.', 'hopeful'], ['I could use a hand.', 'humble']] },
-  { id: 'needs.no', cat: 'talk', when: 'talk:needs, no want', mood: 'warm', core: true, lines: [
-    ["I'm all right, thank you.", 'kind'], ['Nothing, but thanks.', 'easy'], ['I have what I need.', 'content']] },
+  // --- talk
+  u('not-much-to-tell', 'talk', 'Me? Not much to tell.', ['modest', 'talk.self']),
+  u('keep-busy', 'talk', 'I keep busy.', ['proud of it', 'talk.self', 'mood.busy']),
+  u('born-raised', 'talk', 'Born and raised here.', ['settled', 'talk.self', 'talk.town']),
+  u('quiet-place', 'talk', "It's a quiet place.", ['content', 'talk.town']),
+  u('good-people', 'talk', 'Good people, mostly.', ['a wry pause', 'talk.town']),
+  u('now-you-ask', 'talk', 'Now that you ask...', ['brightening', 'needs.yes', 'witness.lead']),
+  u('one-thing', 'talk', 'There is one thing.', ['hopeful', 'needs.yes', 'errand.ask']),
+  u('use-a-hand', 'talk', 'I could use a hand.', ['humble', 'needs.yes', 'hail.attention']),
+  u('all-right-thanks', 'talk', "I'm all right, thank you.", ['kind', 'needs.no']),
+  u('have-what-i-need', 'talk', 'I have what I need.', ['content', 'needs.no', 'mood.content']),
 
-  // --- the missing child (quests.js missing-child: plea, broadcast, witnesses, relief)
-  { id: 'plea.help', cat: 'quest', when: 'parent hails her, quest untaken', mood: 'distress', core: true, lines: [
-    ['Please, I need help!', 'breathless'], ['You there! Please!', 'reaching out'], ['Help me, please!', 'cracking voice']] },
-  { id: 'plea.missing', cat: 'quest', when: 'parent plea, the second beat', mood: 'distress', core: true, lines: [
-    ['My child is missing!', 'barely holding it'], ["My little one's gone!", 'near tears'], ["I can't find my child!", 'panicked']] },
-  { id: 'worry.missing', cat: 'quest', when: 'parent broadcast while she is in earshot', mood: 'distress', core: true, lines: [
-    ['Where could they be?', 'to no one'], ["They've never been gone this long.", 'pacing'], ['Has anyone seen my child?', 'calling out']] },
-  { id: 'worry.urgent', cat: 'quest', when: 'parent broadcast, hours later or dusk', mood: 'distress', core: true, lines: [
-    ["It's getting dark...", 'dread'], ["Please, there's no time.", 'desperate'], ['Every hour counts.', 'grim']] },
-  { id: 'relief.found', cat: 'quest', when: 'child brought home', mood: 'warm', core: true, lines: [
-    ['Oh, thank the stars!', 'sobbing laugh'], ['You found them!', 'disbelief'], ["I thought I'd lost them.", 'hugging, muffled']] },
-  { id: 'witness.saw', cat: 'quest', when: 'a witness, before the sighting', mood: 'neutral', core: true, lines: [
-    ['I saw something.', 'lowered voice'], ['Now that you mention it...', 'remembering'], ['I might have seen them.', 'unsure']] },
-  { id: 'worry.sympathy', cat: 'quest', when: 'townsfolk broadcast during the crisis', mood: 'neutral', core: false, lines: [
-    ['Poor thing.', 'shaking head'], ["I hope they're found soon.", 'quiet'], ['Terrible business.', 'grim']] },
+  // --- someone missing: a child, a partner, a friend, the town's sellsword, the elder
+  u('need-help', 'missing', 'Please, I need help!', ['breathless', 'missing.plea']),
+  u('you-there-please', 'missing', 'You there! Please!', ['reaching out', 'missing.plea', 'hail.attention']),
+  u('someones-missing', 'missing', "Someone's gone missing!", ['panicked', 'missing.plea'], ['hushed, to a neighbour', 'gossip.lead']),
+  u('cant-find-child', 'missing', "I can't find my child!", ['near tears', 'missing.child']),
+  u('never-came-home', 'missing', '{He|She} never came home.', ['barely holding it', 'missing.plea', 'missing.worry']),
+  u('never-gone-long', 'missing', "{He's|She's} never been gone this long.", ['pacing', 'missing.worry']),
+  u('where-could-be', 'missing', 'Where could {he|she} be?', ['to no one', 'missing.worry']),
+  u('anyone-seen', 'missing', 'Has anyone seen {him|her}?', ['calling out', 'missing.worry']),
+  u('getting-dark', 'missing', "It's getting dark...", ['easy, an evening remark', 'observe.dusk'], ['dread', 'missing.late', 'fear.uneasy']),
+  u('no-time', 'missing', "Please, there's no time.", ['desperate', 'missing.late']),
+  u('every-hour', 'missing', 'Every hour counts.', ['grim', 'missing.late']),
+  u('thank-the-stars', 'missing', 'Oh, thank the stars!', ['sobbing laugh', 'missing.found', 'missing.reunion']),
+  u('you-found', 'missing', 'You found {him|her}!', ['disbelief', 'missing.found']),
+  u('lost-you', 'missing', "I thought I'd lost you.", ['hugging, muffled', 'missing.reunion']),
+  u('youre-safe', 'missing', "You're safe!", ['relief', 'missing.reunion'], ['to her, back from danger', 'greet.friend']),
+  u('poor-soul', 'missing', 'Poor soul.', ['shaking head', 'missing.sympathy']),
+  u('terrible-business', 'missing', 'Terrible business.', ['grim', 'missing.sympathy', 'worry.general']),
+  u('hope-found', 'missing', "I hope {he's|she's} found soon.", ['quiet', 'missing.sympathy']),
+  u('saw-something', 'missing', 'I saw something.', ['lowered voice', 'witness.lead']),
+  u('might-have-seen', 'missing', 'I might have seen {him|her|it}.', ['unsure', 'witness.lead']),
 
-  // --- the message (quests.js message: ask, recall, judged)
-  { id: 'errand.ask', cat: 'quest', when: 'giver offers the message', mood: 'neutral', core: true, lines: [
-    ['Will you carry a message for me?', 'hopeful'], ['Could you take word to someone?', 'careful'], ['I need someone I can trust.', 'searching your face']] },
-  { id: 'errand.recall', cat: 'quest', when: 'recipient asks the words', mood: 'neutral', core: true, lines: [
-    ['What did they say? Exactly.', 'intent'], ['Tell me the words.', 'braced'], ['Go on, what was the message?', 'impatient']] },
-  { id: 'errand.true', cat: 'quest', when: 'true words delivered', mood: 'warm', core: true, lines: [
-    ["That's a weight off.", 'exhale'], ['Thank you for telling me.', 'moved'], ['Good. Good.', 'nodding slowly']] },
-  { id: 'errand.garbled', cat: 'quest', when: 'garbled words delivered', mood: 'cold', core: true, lines: [
-    ['That makes no sense.', 'confused, then cold'], ["They'd never say that.", 'offended'], ["Are you sure? Hmph.", 'disappointed']] },
+  // --- the message
+  u('carry-message', 'errand', 'Will you carry a message for me?', ['hopeful', 'errand.ask']),
+  u('someone-i-trust', 'errand', 'I need someone I can trust.', ['searching your face', 'errand.ask', 'missing.plea']),
+  u('tell-me-words', 'errand', 'Tell me the words. Exactly.', ['intent', 'errand.recall']),
+  u('go-on', 'errand', 'Go on...', ['braced', 'errand.recall'], ['hooked', 'gossip.react']),
+  u('weight-off', 'errand', "That's a weight off.", ['exhale', 'errand.true', 'missing.found']),
+  u('good-good', 'errand', 'Good. Good.', ['nodding slowly', 'errand.true', 'social.agree']),
+  u('makes-no-sense', 'errand', 'That makes no sense.', ['confused, then cold', 'errand.garbled', 'social.disagree']),
+  u('doesnt-sound-right', 'errand', "That doesn't sound right.", ['offended', 'errand.garbled', 'tell.caught']),
 
-  // --- ambient life: weather and sky (broadcast)
-  { id: 'weather.cold', cat: 'ambient', when: 'cold or windy', mood: 'neutral', core: true, lines: [
-    ['Bitter cold today.', 'rubbing hands'], ['Feel that wind.', 'hunched'], ["Snow's coming. I can smell it.", 'sniffing']] },
-  { id: 'weather.fine', cat: 'ambient', when: 'clear day', mood: 'warm', core: true, lines: [
-    ['Fine day.', 'content'], ['Look at that sky.', 'gazing up'], ["Sun's out, for once.", 'wry']] },
-  { id: 'weather.foul', cat: 'ambient', when: 'rain, snow or storm', mood: 'neutral', core: true, lines: [
-    ['Rain again.', 'sighing'], ["Storm's brewing.", 'eyeing the clouds'], ['Best get indoors.', 'hurrying']] },
-  { id: 'sky.aurora', cat: 'ambient', when: 'aurora overhead', mood: 'warm', core: true, lines: [
-    ['The lights are out tonight.', 'hushed wonder'], ["Look, the sky's dancing.", 'childlike'], ['Never get tired of that.', 'soft']] },
+  // --- what they see: weather, sky, the remarkable
+  u('look-at-that', 'ambient', 'Well, look at that.', ['impressed', 'observe.marvel', 'react.animal', 'sky.aurora'], ['wry, at trouble', 'worry.general']),
+  u('never-tired', 'ambient', 'Never get tired of that.', ['soft', 'sky.aurora', 'observe.marvel']),
+  u('lights-out', 'ambient', 'The lights are out tonight.', ['hushed wonder', 'sky.aurora']),
+  u('sky-dancing', 'ambient', "Look, the sky's dancing.", ['childlike', 'sky.aurora']),
+  u('bitter-cold', 'ambient', 'Bitter cold today.', ['rubbing hands', 'weather.cold']),
+  u('feel-wind', 'ambient', 'Feel that wind.', ['hunched', 'weather.cold', 'weather.foul']),
+  u('smell-snow', 'ambient', "Snow's coming. I can smell it.", ['sniffing', 'weather.cold', 'worry.winter']),
+  u('fine-day', 'ambient', 'Fine day.', ['content', 'weather.fine', 'pass.nod']),
+  u('look-at-sky', 'ambient', 'Look at that sky.', ['gazing up', 'weather.fine', 'weather.foul', 'sky.aurora']),
+  u('sun-out', 'ambient', "Sun's out, for once.", ['wry', 'weather.fine']),
+  u('rain-again', 'ambient', 'Rain again.', ['sighing', 'weather.foul']),
+  u('storm-brewing', 'ambient', "Storm's brewing.", ['eyeing the clouds', 'weather.foul', 'fear.uneasy']),
+  u('get-indoors', 'ambient', 'Best get indoors.', ['hurrying', 'weather.foul', 'fear.uneasy']),
 
-  // --- ambient life: the body and the day (broadcast)
-  { id: 'mood.bored', cat: 'ambient', when: 'idle, nothing happening', mood: 'neutral', core: true, lines: [
-    ['Nothing ever happens here.', 'sulky'], ['Another long day.', 'sigh'], ['Hmm, hmm, hmm...', 'humming a tune']] },
-  { id: 'mood.busy', cat: 'ambient', when: 'working, or she hails while they walk', mood: 'neutral', core: true, lines: [
-    ['Busy, busy.', 'muttered'], ['No rest today.', 'cheerful grumble'], ["Can't stop, sorry.", 'over the shoulder']] },
-  { id: 'mood.tired', cat: 'ambient', when: 'late evening, heading home', mood: 'neutral', core: false, lines: [
-    ['Long day.', 'with a yawn'], ['My back aches.', 'groaning'], ['Bed soon.', 'drowsy']] },
-  { id: 'mood.hungry', cat: 'ambient', when: 'near meal hours', mood: 'neutral', core: false, lines: [
-    ['I could eat a horse.', 'hearty'], ["What's for supper?", 'hopeful'], ["Stomach's growling.", 'patting belly']] },
-  { id: 'mood.content', cat: 'ambient', when: 'warm standing, calm town', mood: 'warm', core: false, lines: [
-    ['Ahh, this is the life.', 'stretching'], ["Can't complain.", 'easy'], ['All is well.', 'satisfied']] },
+  // --- the body and the day
+  u('nothing-happens', 'ambient', 'Nothing ever happens here.', ['sulky', 'mood.bored']),
+  u('long-day', 'ambient', 'Another long day.', ['sigh', 'mood.bored', 'mood.tired']),
+  u('hum', 'ambient', 'Hmm, hmm, hmm...', ['humming a tune', 'mood.bored', 'mood.content']),
+  u('busy-busy', 'ambient', 'Busy, busy.', ['muttered', 'mood.busy']),
+  u('no-rest', 'ambient', 'No rest today.', ['cheerful grumble', 'mood.busy']),
+  u('cant-stop', 'ambient', "Can't stop, sorry.", ['over the shoulder', 'mood.busy']),
+  u('back-aches', 'ambient', 'My back aches.', ['groaning', 'mood.tired']),
+  u('bed-soon', 'ambient', 'Bed soon.', ['drowsy', 'mood.tired']),
+  u('eat-a-horse', 'ambient', 'I could eat a horse.', ['hearty', 'mood.hungry']),
+  u('whats-supper', 'ambient', "What's for supper?", ['hopeful', 'mood.hungry']),
+  u('the-life', 'ambient', 'Ahh, this is the life.', ['stretching', 'mood.content']),
+  u('cant-complain', 'ambient', "Can't complain.", ['easy', 'mood.content', 'needs.no']),
 
-  // --- ambient life: worry and fear (broadcast; crisis-specific ones join as crises exist)
-  { id: 'worry.general', cat: 'worry', when: 'a hard season, low stores', mood: 'neutral', core: true, lines: [
-    ['Hard times.', 'heavy'], ['What will we do?', 'fretting'], ['I worry, you know.', 'confiding']] },
-  { id: 'worry.winter', cat: 'worry', when: 'cold season', mood: 'neutral', core: false, lines: [
-    ['Will the stores last the winter?', 'counting'], ['Need more wood before the snows.', 'planning'], ['Long winter ahead.', 'grim']] },
-  { id: 'worry.beast', cat: 'worry', when: 'a predator near town', mood: 'neutral', core: false, lines: [
-    ["Something's been at the livestock.", 'angry and scared'], ['Saw tracks this morning.', 'low'], ['Keep your doors shut tonight.', 'warning']] },
-  { id: 'worry.leafkin', cat: 'worry', when: 'leafkin seen near town', mood: 'neutral', core: false, lines: [
-    ['Little folk in the woods again.', 'suspicious'], ['Fairy stories, all of it.', 'scoffing'], ['Leave out a bowl, just in case.', 'superstitious']] },
-  { id: 'fear.uneasy', cat: 'worry', when: 'night, or after an alarm', mood: 'neutral', core: true, lines: [
-    ["I don't like this.", 'tense'], ["Something's not right.", 'looking around'], ['Did you hear that?', 'freezing']] },
-  { id: 'fear.danger', cat: 'worry', when: 'danger in sight: fire, wild strider, dragon', mood: 'distress', core: true, lines: [
-    ['Look out!', 'shout'], ['Run!', 'shout, fleeing'], ['Get inside!', 'shout, waving']] },
+  // --- worry and fear
+  u('hard-times', 'worry', 'Hard times.', ['heavy', 'worry.general', 'missing.sympathy']),
+  u('what-will-we-do', 'worry', 'What will we do?', ['fretting', 'worry.general', 'missing.worry']),
+  u('i-worry', 'worry', 'I worry, you know.', ['confiding', 'worry.general', 'missing.worry']),
+  u('stores-last', 'worry', 'Will the stores last the winter?', ['counting', 'worry.winter']),
+  u('long-winter', 'worry', 'Long winter ahead.', ['grim', 'worry.winter']),
+  u('at-the-livestock', 'worry', "Something's been at the livestock.", ['angry and scared', 'worry.beast']),
+  u('saw-tracks', 'worry', 'Saw tracks this morning.', ['low', 'worry.beast', 'witness.lead']),
+  u('doors-shut', 'worry', 'Keep your doors shut tonight.', ['warning', 'worry.beast', 'fear.uneasy']),
+  u('little-folk', 'worry', 'Little folk in the woods again.', ['suspicious', 'worry.leafkin']),
+  u('fairy-stories', 'worry', 'Fairy stories, all of it.', ['scoffing', 'worry.leafkin', 'social.disagree']),
+  u('dont-like-this', 'worry', "I don't like this.", ['tense', 'fear.uneasy', 'missing.late']),
+  u('not-right', 'worry', "Something's not right.", ['looking around', 'fear.uneasy', 'missing.worry']),
+  u('hear-that', 'worry', 'Did you hear that?', ['freezing', 'fear.uneasy'], ['eager, gossip', 'gossip.lead']),
+  u('look-out', 'worry', 'Look out!', ['shout', 'fear.danger']),
+  u('run', 'worry', 'Run!', ['shout, fleeing', 'fear.danger']),
+  u('get-inside', 'worry', 'Get inside!', ['shout, waving', 'fear.danger']),
 
-  // --- two folk talking (talk state; the gossip transfer)
-  { id: 'gossip.lead', cat: 'social', when: 'two folk stop to talk, opener', mood: 'neutral', core: true, lines: [
-    ['Did you hear?', 'eager'], ["You'll never guess...", 'delighted'], ['Between you and me...', 'whispered']] },
-  { id: 'gossip.react', cat: 'social', when: 'the other one, reply', mood: 'neutral', core: true, lines: [
-    ['No!', 'scandalised'], ['Really?', 'hooked'], ["I don't believe it.", 'amazed']] },
-  { id: 'social.agree', cat: 'social', when: 'listening, reply', mood: 'neutral', core: true, lines: [
-    ['Aye.', 'nod'], ["That's right.", 'firm'], ['True enough.', 'thoughtful']] },
-  { id: 'social.disagree', cat: 'social', when: 'listening, rival or sceptic', mood: 'cold', core: true, lines: [
-    ['Nonsense.', 'dismissive'], ["I don't think so.", 'polite doubt'], ['Bah.', 'waving it off']] },
-  { id: 'social.curious', cat: 'social', when: 'something new: a tamed beast, a stranger', mood: 'neutral', core: true, lines: [
-    ["Hm? What's that?", 'turning'], ["Now what's this?", 'intrigued'], ["Who's that, then?", 'peering']] },
-  { id: 'social.surprise', cat: 'social', when: 'startled: she appears, a sound', mood: 'neutral', core: true, lines: [
-    ['Oh!', 'jump'], ['Whoa!', 'stepping back'], ['By the gods!', 'hand to chest']] },
-  { id: 'hail.attention', cat: 'social', when: 'they want her: an errand, a want', mood: 'neutral', core: true, lines: [
-    ['Hey, you!', 'calling across'], ['Over here!', 'waving'], ['A moment, friend?', 'polite call']] },
+  // --- two folk talking, and noticing
+  u('did-you-hear', 'social', 'Did you hear?', ['eager', 'gossip.lead']),
+  u('never-guess', 'social', "You'll never guess...", ['delighted', 'gossip.lead']),
+  u('between-us', 'social', 'Between you and me...', ['whispered', 'gossip.lead', 'witness.lead']),
+  u('no', 'social', 'No!', ['scandalised', 'gossip.react'], ['refusing, sharp', 'refuse.wary']),
+  u('really', 'social', 'Really?', ['hooked', 'gossip.react', 'tell.believe']),
+  u('dont-believe', 'social', "I don't believe it.", ['amazed', 'gossip.react', 'observe.marvel'], ['flat, sceptical', 'tell.caught']),
+  u('aye', 'social', 'Aye.', ['nod', 'social.agree']),
+  u('thats-right', 'social', "That's right.", ['firm', 'social.agree']),
+  u('true-enough', 'social', 'True enough.', ['thoughtful', 'social.agree']),
+  u('nonsense', 'social', 'Nonsense.', ['dismissive', 'social.disagree', 'tell.caught']),
+  u('dont-think-so', 'social', "I don't think so.", ['polite doubt', 'social.disagree']),
+  u('bah', 'social', 'Bah.', ['waving it off', 'social.disagree', 'mood.bored']),
+  u('whats-that', 'social', "Hm? What's that?", ['turning', 'social.curious']),
+  u('whats-this', 'social', "Now what's this?", ['intrigued', 'social.curious', 'react.animal']),
+  u('whos-that', 'social', "Who's that, then?", ['peering', 'social.curious']),
+  u('oh', 'social', 'Oh!', ['jump', 'social.surprise'], ['delighted', 'give.thanks']),
+  u('whoa', 'social', 'Whoa!', ['stepping back', 'social.surprise', 'react.animal']),
+  u('by-the-gods', 'social', 'By the gods!', ['hand to chest', 'social.surprise', 'observe.marvel']),
+  u('hey-you', 'social', 'Hey, you!', ['calling across', 'hail.attention'], ['angry', 'home.intrude']),
+  u('over-here', 'social', 'Over here!', ['waving', 'hail.attention']),
+  u('a-moment', 'social', 'A moment, friend?', ['polite call', 'hail.attention']),
 
-  // --- reactions to her doing things in the world
-  { id: 'react.animal', cat: 'react', when: 'she leads a tamed beast past', mood: 'warm', core: false, lines: [
-    ['What a fine beast!', 'admiring'], ['Is that thing tame?', 'wary'], ['Well, look at that.', 'impressed']] },
-  { id: 'home.welcome', cat: 'react', when: 'she enters their house, standing warm', mood: 'warm', core: false, lines: [
-    ['Come in, warm yourself.', 'hospitable'], ['Make yourself at home.', 'easy'], ['Mind the step.', 'fussing']] },
-  { id: 'home.intrude', cat: 'react', when: 'she enters their house, standing cold or stranger', mood: 'angry', core: false, lines: [
-    ['Hey! This is my house!', 'outraged'], ['Get out of there!', 'shout'], ['What are you doing in here?', 'alarmed']] },
+  // --- reactions to her
+  u('fine-beast', 'react', 'What a fine beast!', ['admiring', 'react.animal']),
+  u('thing-tame', 'react', 'Is that thing tame?', ['wary', 'react.animal']),
+  u('warm-yourself', 'react', 'Come in, warm yourself.', ['hospitable', 'home.welcome']),
+  u('make-at-home', 'react', 'Make yourself at home.', ['easy', 'home.welcome']),
+  u('my-house', 'react', 'This is my house!', ['outraged', 'home.intrude']),
+  u('get-out', 'react', 'Get out of there!', ['shout', 'home.intrude']),
+  u('doing-in-here', 'react', 'What are you doing in here?', ['alarmed', 'home.intrude'], ['pleasantly surprised', 'home.welcome']),
 
-  // --- non-verbal (cheap life; any body, any time)
-  { id: 'nv.laugh', cat: 'nonverbal', when: 'gossip, warm standing, a joke', mood: 'warm', core: true, lines: [
-    ['(chuckle)', 'short, closed mouth'], ['(laugh)', 'one good belly laugh'], ['(snort)', 'derisive']] },
-  { id: 'nv.sigh', cat: 'nonverbal', when: 'bored, tired, worried', mood: 'neutral', core: true, lines: [
-    ['(sigh)', 'long'], ['(huff)', 'annoyed'], ['(hmm)', 'pondering']] },
-  { id: 'nv.effort', cat: 'nonverbal', when: 'working: chopping, lifting', mood: 'neutral', core: false, lines: [
-    ['(grunt)', 'lifting'], ['(hup)', 'swinging'], ['(oof)', 'set it down']] },
-  { id: 'nv.cold', cat: 'nonverbal', when: 'cold weather idle', mood: 'neutral', core: false, lines: [
-    ['(brr)', 'shivering'], ['(cough)', 'dry'], ['(sniff)', 'runny nose']] },
-  { id: 'nv.yawn', cat: 'nonverbal', when: 'late, tired', mood: 'neutral', core: false, lines: [
-    ['(yawn)', 'big'], ['(stretch groan)', 'satisfied'], ['(mm)', 'sleepy']] },
+  // --- non-verbal: free to use anywhere the moment fits
+  u('chuckle', 'nonverbal', '(chuckle)', ['short, closed mouth', 'nv.laugh', 'mood.content']),
+  u('laugh', 'nonverbal', '(laugh)', ['one good belly laugh', 'nv.laugh', 'gossip.react']),
+  u('snort', 'nonverbal', '(snort)', ['derisive', 'nv.laugh', 'social.disagree']),
+  u('sigh-long', 'nonverbal', '(long sigh)', ['weary', 'nv.sigh', 'mood.bored', 'mood.tired']),
+  u('sigh-worried', 'nonverbal', '(shaky sigh)', ['worried', 'nv.sigh', 'missing.worry', 'worry.general']),
+  u('sigh-content', 'nonverbal', '(contented sigh)', ['settling in', 'nv.sigh', 'mood.content']),
+  u('huff', 'nonverbal', '(huff)', ['annoyed', 'nv.sigh', 'greet.cold']),
+  u('hmm', 'nonverbal', '(hmm)', ['pondering', 'nv.think', 'answer.hedge']),
+  u('huh', 'nonverbal', '(huh?)', ['puzzled', 'nv.think', 'social.curious']),
+  u('ah', 'nonverbal', '(ah!)', ['remembering', 'nv.think', 'answer.sure']),
+  u('tsk', 'nonverbal', '(tsk)', ['disapproving', 'nv.think', 'social.disagree']),
+  u('cough-dry', 'nonverbal', '(dry cough)', ['short', 'nv.cough']),
+  u('cough-chesty', 'nonverbal', '(chesty cough)', ['rattling', 'nv.cough', 'weather.cold']),
+  u('throat-clear', 'nonverbal', '(clears throat)', ['for attention', 'nv.cough', 'hail.attention', 'answer.nervous']),
+  u('grunt', 'nonverbal', '(grunt)', ['lifting', 'nv.effort']),
+  u('hup', 'nonverbal', '(hup)', ['swinging', 'nv.effort']),
+  u('oof', 'nonverbal', '(oof)', ['set it down', 'nv.effort', 'mood.tired']),
+  u('brr', 'nonverbal', '(brr)', ['shivering', 'nv.cold', 'weather.cold']),
+  u('sniff', 'nonverbal', '(sniff)', ['runny nose', 'nv.cold']),
+  u('yawn', 'nonverbal', '(yawn)', ['big', 'nv.yawn', 'mood.tired', 'mood.bored']),
+  u('stretch', 'nonverbal', '(stretch groan)', ['satisfied', 'nv.yawn', 'mood.content']),
+]
+
+/**
+ * Splice experiments (voice-recorder.html, Splice lab): a carrier with a `___` slot and the fillers that may go in it.
+ * Each filler is recorded in the whole sentence, and the carrier and fillers alone; the lab cuts and joins them.
+ */
+export const SPLICES = [
+  { id: 'might-have-seen', carrier: 'I might have seen ___.', fillers: ['him', 'her', 'it', 'something'] },
+  { id: 'where-could', carrier: 'Where could ___ be?', fillers: ['he', 'she', 'it'] },
+  { id: 'never-came-home', carrier: '___ never came home.', fillers: ['He', 'She'] },
+  { id: 'head', carrier: 'Head ___ from here.', fillers: ['north', 'south', 'east', 'west'] },
+  { id: 'go-to', carrier: 'Go to the ___.', fillers: ['cave', 'inn', 'bridge', 'woods'] },
 ]
 
 // The leafkin native tongue: a few words used in the native and mixed tiers so the chatter repeats like a language.

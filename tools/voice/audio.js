@@ -55,5 +55,45 @@ export function encodeWav(samples, rate) {
   return buf
 }
 
-/** One file per (atom, wording, take): `greet.friend.2.base.wav`, `lk.greet.mixed-1.leafkin.wav`. */
-export const fileName = (atomId, variant, take) => `${atomId}.${variant}.${take}.wav`
+/** `samples` resampled by `semitones` (linear): pitch and length move together, as a faster playback would. */
+export function shiftPitch(samples, semitones) {
+  if (semitones === 0) return samples
+  const step = 2 ** (semitones / 12)
+  const out = new Float32Array(Math.floor((samples.length - 1) / step))
+  for (let i = 0; i < out.length; i++) {
+    const x = i * step
+    const j = Math.floor(x)
+    out[i] = samples[j] + (samples[j + 1] - samples[j]) * (x - j)
+  }
+  return out
+}
+
+/** Segments joined end to end: `gapS` > 0 puts silence between, < 0 overlaps them by that much with an equal-power crossfade. */
+export function join(segments, rate, gapS) {
+  const parts = segments.filter((s) => s.length > 0).map((s) => s.slice())
+  const edge = Math.round(TRIM.fadeS * rate)
+  for (const p of parts) {
+    const n = Math.min(edge, p.length >> 1)
+    for (let i = 0; i < n; i++) { p[i] *= i / n; p[p.length - 1 - i] *= i / n }
+  }
+  const gap = Math.round(gapS * rate)
+  let total = 0
+  for (const [i, p] of parts.entries()) total += p.length + (i > 0 ? gap : 0)
+  const out = new Float32Array(Math.max(0, total))
+  let at = 0
+  for (const [i, p] of parts.entries()) {
+    if (i > 0) at += gap
+    const lap = i > 0 && gap < 0 ? Math.min(-gap, p.length, at) : 0
+    for (let j = 0; j < p.length; j++) {
+      if (j < lap) {
+        const t = j / lap
+        out[at + j] = out[at + j] * Math.cos(t * Math.PI / 2) + p[j] * Math.sin(t * Math.PI / 2)
+      } else out[at + j] = p[j]
+    }
+    at += p.length
+  }
+  return out
+}
+
+/** One file per (utterance, variant, take): `back-again.r2.base.wav`, `where-could-be.r1-she.light.wav`. */
+export const fileName = (id, variant, take) => `${id}.${variant}.${take}.wav`
