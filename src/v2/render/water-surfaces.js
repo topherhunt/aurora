@@ -52,8 +52,10 @@ export class WaterSurfaces {
     this.group.name = 'v2-water-surfaces'
     water.group.add(this.group)
 
-    // id -> Mesh, so rebuildOne can find and replace exactly one body. Dragging a lake gizmo at 60 Hz must not touch the rivers.
+    // id -> the body's own Mesh, kept OFF the scene: its geometry is the source `merged` is concatenated from, and the handle rebuildOne, updateLod and riverLiftAt work through. Dragging a lake gizmo at 60 Hz must not touch the rivers.
     this.meshes = new Map()
+    // The one mesh in the scene, every body's vertices end to end: one draw call for all the water. Null until the first rebuild.
+    this.merged = null
     // id -> the flattened spline it was built from, kept for levelAt. The AUTHORED half-widths, not the widened ones: the widening exists to bury a polygon edge under a bank, and treating that overhang as wet would strip a band of props off both sides of every stream, which is the mistake Water.levelAt's undilated-mask comment already records once.
     this.riverSamples = new Map()
     // id -> { key, shore }: the traced outline of each lake (shoreline.js), kept across rebuilds. Tracing the ocean reads the field 440k times, 180 ms on the shipped world, so a rebuild re-traces only a lake whose record changed or whose box the rebuild's rect touches.
@@ -82,7 +84,6 @@ export class WaterSurfaces {
     for (const mesh of this.meshes.values()) mesh.geometry.dispose()
     this.meshes.clear()
     this.riverSamples.clear()
-    this.group.clear()
     this.triangles = 0
 
     const lakes = this.layers.lakes.lakes
@@ -99,7 +100,7 @@ export class WaterSurfaces {
     }
 
     this.reindex()
-    this.applyVisibility()
+    this.compose()
     this.epoch = this.layers.epoch
     return { bodies: this.meshes.size, triangles: this.triangles }
   }
@@ -117,6 +118,93 @@ export class WaterSurfaces {
 
   applyVisibility() {
     for (const [id, mesh] of this.meshes) mesh.visible = this.isVisible(mesh.userData.kind, id, null) !== false
+    if (this.merged !== null) this.composeIndex()
+  }
+
+  /**
+   * Concatenate every body's vertices into the one drawn mesh. A lake has no river attributes and a river no `aLake`, so each gets zeros for the other's: the material's defaults, written out. Vertex buffers are static; the index (visibility, river LOD) and `aRung` are rewritten by composeIndex / composeRung. Bodies keep their own geometry as the source, so this costs one pass over the buffers per rebuild, never per frame.
+   */
+  compose() {
+    const R = RAISE_RUNGS.length
+    let verts = 0
+    let capacity = 0
+    for (const mesh of this.meshes.values()) {
+      verts += mesh.geometry.attributes.position.count
+      capacity += mesh.geometry.index.count
+    }
+    const position = new Float32Array(verts * 3)
+    const lake = new Uint8Array(verts)
+    const flow = new Float32Array(verts * 4)
+    const raise = new Float32Array(verts * R)
+    const rung = new Uint8Array(verts)
+    let base = 0
+    const sphere = new THREE.Sphere()
+    sphere.makeEmpty()
+    for (const mesh of this.meshes.values()) {
+      const geo = mesh.geometry
+      const n = geo.attributes.position.count
+      mesh.userData.base = base
+      position.set(geo.attributes.position.array, base * 3)
+      if (mesh.userData.kind === 'lake') {
+        lake.fill(1, base, base + n)
+      } else {
+        flow.set(geo.attributes.aFlow.array, base * 4)
+        raise.set(geo.attributes.aRaise.data.array, base * R)
+      }
+      if (geo.boundingSphere === null) geo.computeBoundingSphere()
+      sphere.union(geo.boundingSphere)
+      base += n
+    }
+    if (this.merged !== null) {
+      this.merged.geometry.dispose()
+      this.group.remove(this.merged)
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(position, 3))
+    geo.setAttribute('aLake', new THREE.BufferAttribute(lake, 1))
+    geo.setAttribute('aFlow', new THREE.BufferAttribute(flow, 4))
+    const interleaved = new THREE.InterleavedBuffer(raise, R)
+    geo.setAttribute('aRaise', new THREE.InterleavedBufferAttribute(interleaved, 4, 0))
+    geo.setAttribute('aRaiseFar', new THREE.InterleavedBufferAttribute(interleaved, 3, 4))
+    const rungAttr = new THREE.BufferAttribute(rung, 1)
+    rungAttr.setUsage(THREE.DynamicDrawUsage)
+    geo.setAttribute('aRung', rungAttr)
+    const index = new THREE.BufferAttribute(new Uint32Array(capacity), 1)
+    index.setUsage(THREE.DynamicDrawUsage)
+    geo.setIndex(index)
+    if (verts > 0) geo.boundingSphere = sphere
+    const mesh = new THREE.Mesh(geo, this.water.material)
+    mesh.name = 'v2-water'
+    this.merged = mesh
+    this.group.add(mesh)
+    this.composeRung()
+    this.applyVisibility()
+  }
+
+  /** The merged index: each visible body's drawn indices, offset to its place in the merged vertex buffers. */
+  composeIndex() {
+    const geo = this.merged.geometry
+    const out = geo.index.array
+    let n = 0
+    for (const mesh of this.meshes.values()) {
+      if (!mesh.visible) continue
+      const g = mesh.geometry
+      const count = g.drawRange.count === Infinity ? g.index.count : g.drawRange.count
+      const src = g.index.array
+      const base = mesh.userData.base
+      for (let i = 0; i < count; i++) out[n++] = src[i] + base
+    }
+    geo.setDrawRange(0, n)
+    geo.index.needsUpdate = true
+  }
+
+  /** The merged `aRung`: each river's own bytes at its place; lakes stay zero. */
+  composeRung() {
+    const out = this.merged.geometry.attributes.aRung
+    for (const mesh of this.meshes.values()) {
+      if (mesh.userData.kind === 'river') out.array.set(mesh.geometry.attributes.aRung.array, mesh.userData.base)
+    }
+    out.needsUpdate = true
   }
 
   /**
@@ -128,7 +216,6 @@ export class WaterSurfaces {
     const old = this.meshes.get(id)
     if (old) {
       old.geometry.dispose()
-      this.group.remove(old)
       this.meshes.delete(id)
       this.triangles -= old.userData.triangles
     }
@@ -139,7 +226,7 @@ export class WaterSurfaces {
     if (lake) {
       this.buildLake(lake)
       this.reindex()
-      this.applyVisibility()
+      this.compose()
       return
     }
     const path = this.layers.paths.paths.get(id)
@@ -147,7 +234,7 @@ export class WaterSurfaces {
     if (path.kind !== 'river') throw new Error(`WaterSurfaces.rebuildOne: path ${id} is a ${path.kind}, which draws no surface of its own`)
     this.buildRiver(path)
     this.reindex()
-    this.applyVisibility()
+    this.compose()
   }
 
   buildLake(lake) {
@@ -171,7 +258,6 @@ export class WaterSurfaces {
     mesh.userData.kind = 'lake'
     mesh.userData.triangles = triangles
     mesh.userData.shore = kept.shore
-    this.group.add(mesh)
     this.meshes.set(lake.id, mesh)
     this.triangles += triangles
   }
@@ -199,7 +285,7 @@ export class WaterSurfaces {
   }
 
   /**
-   * One mesh, one draw call, whatever the distance. The vertex buffer is static: the fine strip over the DRAWN samples (PathSet.drawnSamples: the baked samples, cut where a tributary's sheet meets its trunk's), its flow frame, and per vertex the lift that clears the drawn terrain at each of its rungs (riverRaise). The wet index keeps the full samples: past the cut the water is still there, under the trunk's. Two things move after build, both from updateLod and neither per frame: the INDEX buffer, which picks fine or coarse quads chunk by chunk, and `aRung`, one byte per vertex naming the terrain rung drawn under it, which selects the lift in the vertex shader. The index is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
+   * One body's mesh, a source for the merged draw. The vertex buffer is static: the fine strip over the DRAWN samples (PathSet.drawnSamples: the baked samples, cut where a tributary's sheet meets its trunk's), its flow frame, and per vertex the lift that clears the drawn terrain at each of its rungs (riverRaise). The wet index keeps the full samples: past the cut the water is still there, under the trunk's. Two things move after build, both from updateLod and neither per frame: the INDEX buffer, which picks fine or coarse quads chunk by chunk, and `aRung`, one byte per vertex naming the terrain rung drawn under it, which selects the lift in the vertex shader. The index is allocated at the all-fine count and drawn to `drawRange`; a mix of states never needs more.
    */
   buildRiver(river) {
     const samples = this.samplesOf(river)
@@ -229,7 +315,6 @@ export class WaterSurfaces {
     mesh.userData.kind = 'river'
     mesh.userData.triangles = r.triangles
     mesh.userData.lod = lod
-    this.group.add(mesh)
     this.meshes.set(river.id, mesh)
     this.riverSamples.set(river.id, samples)
     this.triangles += r.triangles
@@ -255,6 +340,8 @@ export class WaterSurfaces {
     const fine2 = LOD_FINE * LOD_FINE
     const near2 = LOD_RUNG_NEAR * LOD_RUNG_NEAR
     let rewritten = 0
+    let anyChanged = false
+    let anyMoved = false
     for (const mesh of this.meshes.values()) {
       const lod = mesh.userData.lod
       if (!lod) continue
@@ -304,7 +391,11 @@ export class WaterSurfaces {
       }
       if (moved) mesh.geometry.attributes.aRung.needsUpdate = true
       if (changed || moved) rewritten++
+      anyChanged ||= changed
+      anyMoved ||= moved
     }
+    if (anyChanged) this.composeIndex()
+    if (anyMoved) this.composeRung()
     return rewritten
   }
 
@@ -650,6 +741,8 @@ export class WaterSurfaces {
     this.meshes.clear()
     this.riverSamples.clear()
     this.buckets.clear()
+    if (this.merged !== null) this.merged.geometry.dispose()
+    this.merged = null
     this.group.clear()
     // The material belongs to Water, which is shared with v1's lakes and with whatever else reflects the sky. Disposing it here would take the water out of the whole world.
     if (this.group.parent) this.group.parent.remove(this.group)

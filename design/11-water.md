@@ -167,3 +167,9 @@ Her head goes under a v2 lake or river and the world changes -- **built**, and t
 - **One thing it is not.** The waterline transition is a hard cut: `uSubmerged` is a float rather than a bool so that softening it later is one line here and none in the shader, but the half-in-half-out shot needs a clip plane and two passes and is not attempted.
 
 ---
+
+### v2 draw: one merged mesh, tiling next
+
+`WaterSurfaces` (src/v2/render/water-surfaces.js) draws every lake and river as ONE mesh: each body keeps its own off-scene geometry as the source, and `compose()` concatenates their vertices (zeros for the attributes a body lacks) with an index rebuilt on visibility and river-LOD changes. The merged mesh's bounding sphere spans the whole world, so it is never frustum-culled per body.
+
+**Next experiment: tile the merged mesh the way terrain is tiled** (quadtree LOD, fixed slots in one BatchedMesh), so distant water is culled and drawn coarse by tile instead of by river chunk. Compare against the merged single draw with a water trace before building it. Needs nothing from the author beyond a Quest trace of the merged build.

@@ -1041,6 +1041,15 @@ export async function run() {
       check(first === 2 && statesMatch() && t1[0] > 0 && t1[1] > 0, 'the first read rewrites both rivers and grades the near one fine and coarse by chunk distance', `${first} rewritten, states ${t1.join('/')}`)
       const before = drawn()
       check(before < lod.capacity && before === lodIndices(lod, new Uint32Array(lod.capacity)), 'the draw range is the mixed strip\'s index count', `${before} of ${lod.capacity}`)
+      {
+        const drawnMeshes = ws.group.children.filter((m) => m.isMesh)
+        const m = ws.merged.geometry
+        const sum = [...ws.meshes.values()].reduce((a, b) => a + (b.geometry.drawRange.count === Infinity ? b.geometry.index.count : b.geometry.drawRange.count), 0)
+        check(drawnMeshes.length === 1 && drawnMeshes[0] === ws.merged && m.drawRange.count === sum, 'every lake and river is one drawn mesh whose index is the bodies\' drawn indices end to end', `${drawnMeshes.length} meshes, ${m.drawRange.count} of ${sum} indices`)
+        const aRung = m.attributes.aRung.array
+        const { base } = mesh.userData
+        check(aRung[base + 2] === geo.attributes.aRung.array[2] && m.attributes.aLake.array.some((v) => v === 1), 'the river\'s rung bytes land at its place in the merged buffer and the lakes carry aLake')
+      }
       const nearReads = stub.reads
       check(nearReads > 0 && nearReads < lod.coarse.length + far.userData.lod.coarse.length, 'the rung is read at the coarse samples alone, and past 400 m at a stride of them', `${nearReads} reads for ${lod.coarse.length + far.userData.lod.coarse.length} coarse samples`)
       {

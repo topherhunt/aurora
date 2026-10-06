@@ -33,7 +33,7 @@ import { taken, TOLERANCE_M } from '../taken.js'
 //
 // ONE MAP. The root's 128 px Tripo map and the leaf cut (gen-props/carrot-leaf.png)
 // are painted side by side into one 256 x 128 atlas so a variant is one geometry
-// on one material: a mesh per leaf seed and nothing else.
+// on one material, and the layer is that one mesh.
 // ---------------------------------------------------------------------------
 
 // Metres per tile, and the chance a tile grows its one clump. About half the
@@ -79,8 +79,8 @@ const NEAR_M = 10
 const RUNG_MESH = 0
 const RUNG_CARD = 1
 
-// Leaf seeds, one geometry each. Three keeps the layer at three draw calls.
-const LEAF_SEEDS = [1, 2, 3]
+// ONE leaf seed, the median of seeds 1-3 by crown width and height, so the layer is one draw call; yaw, scale and tint carry the variety.
+const LEAF_SEEDS = [1]
 
 // Where a bunch may grow. Every one of these is a rejection, never a retry.
 const PLACEMENT = {

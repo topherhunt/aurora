@@ -412,7 +412,7 @@ check(!spiders.cardReady && spiders.cardCount === 0 && spiders.batch.children.le
   const lc = spiders.litterCards
   const ext = critterCardExtents(spiders.bounds)
   check(pic >= 0 && lc.kind[pic] === 2 && Math.abs(lc.box[pic].z - ext.hx) < 1e-6 && Math.abs(lc.box[pic].w - ext.hz) < 1e-6 && lc.box[pic].y === 0, 'the card is a FIXED picture of the shared pool, as wide as the body and as long, centred on the quad\'s own origin', `picture ${pic}, ${lc.box[pic].z.toFixed(3)} x ${lc.box[pic].w.toFixed(3)}`)
-  check(spiders.cards.layer.every((v) => v === pic) && lc.claimed === MAX, 'every slot\'s card instance wears that picture, and the pool was told MAX', `claimed ${lc.claimed}`)
+  check(spiders.cards.layer.every((v) => v === pic) && lc.claimed === 64, 'every slot\'s card instance wears that picture, and the pool was told the 64 a crowd of cards needs', `claimed ${lc.claimed}`)
 }
 
 // --- placement -----------------------------------------------------------------
@@ -539,14 +539,22 @@ spiders.place(0, 0)
   let worstH = [Infinity, -Infinity]
   // The legs, every frame: a spider well into a scoot swings them half a stride and its phase runs; sitting, they are still and its phase holds. Only the middle of a phrase is counted -- the swing eases up over AMP_EASE_S at either end of a scoot.
   const gaitWas = new Map()
+  const cardWas = new Map()
+  let cardFrames = 0, cardMoved = 0
   const legs = { walking: 0, sitting: 0, wrong: 0, phase: 0, over: 0 }
+  // Card-rung spiders are stepped every CARD_EVERY frames and draw no legs, so only the mesh rungs are held to this.
   for (let f = 0; f < 600; f++) {
-    for (const c of alive()) gaitWas.set(c, c.gait)
+    for (const c of alive()) { gaitWas.set(c, c.gait); if (c.rung === LOD_RUNGS && c.cardOn) cardWas.set(c, c.m.slice()) }
     const t0 = performance.now()
     tick(spiders, ...HER, 1 / 60)
     ms += performance.now() - t0
+    for (const [c, m] of cardWas) {
+      if (c.rung !== LOD_RUNGS || !c.cardOn) { cardWas.delete(c); continue }
+      cardFrames++
+      if (c.m.some((v, i) => v !== m[i])) cardMoved++
+    }
     for (const c of alive()) {
-      if (c.rung >= CARD_RUNGS) continue
+      if (c.rung >= LOD_RUNGS) continue
       if (!(c.amp >= 0 && c.amp <= STRIDE.run / 2 + 1e-9)) legs.over++
       const middle = c.phrase !== null && c.elapsed > AMP_EASE_S && c.phrase.dur - c.elapsed > AMP_EASE_S
       if (middle) {
@@ -559,6 +567,7 @@ spiders.place(0, 0)
       worstH = [Math.min(worstH[0], c.y - GROUND), Math.max(worstH[1], c.y - GROUND)]
     }
   }
+  check(cardFrames > 60 && cardMoved > 0 && cardMoved <= cardFrames / 3, 'a spider on the card rung is stepped every fourth frame, not every one', `${cardMoved} of ${cardFrames} spider-frames moved a matrix`)
   const sim = before.filter(({ c }) => c.rung < CARD_RUNGS)
   const moved = sim.filter(({ c, x, y, z }) => Math.hypot(c.x - x, c.y - y, c.z - z) > 0.02)
   check(sim.length >= 3 && moved.length > sim.length / 2, 'most of the spiders within their cull have crawled somewhere in ten seconds', `${moved.length} of ${sim.length}, ${before.length} alive`)

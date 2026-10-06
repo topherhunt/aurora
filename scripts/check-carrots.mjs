@@ -91,7 +91,7 @@ console.log('carrots: the bank')
   check(Math.abs(rootBottom + T.ROOT_HEIGHT * (1 - T.CROWN_DROP)) < 1e-3, 'the root tip is ROOT_HEIGHT below the shoulder', rootBottom.toFixed(4))
   check(leafBottom > -0.01, 'the leaves sprout at the crown', leafBottom.toFixed(4))
   check(rootUvOk && leafUvOk, 'the root samples the left half of the atlas and the leaves the right')
-  check(b.tiers[0].geometries.length === 3 && b.size > 0.3 && b.size < 0.7, 'three variants, each ~half a metre of leaves', `${b.tiers[0].geometries.length} at ${b.size.toFixed(3)} m`)
+  check(b.tiers[0].geometries.length === 1 && b.size > 0.3 && b.size < 0.7, 'one variant, ~half a metre of leaves', `${b.tiers[0].geometries.length} at ${b.size.toFixed(3)} m`)
 }
 
 console.log('carrots: the bunch')

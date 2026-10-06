@@ -366,18 +366,17 @@ const sinkOf = (c) => SINK * 0.3 * c.size
   check(crabs._slope(-Infinity, 5, -Infinity, e) === 0, 'stone gone on both sides is level')
 }
 
-// --- the cross card: far crabs leave the mesh for the card, under the same matrix ----
+// --- the top card: far crabs leave the mesh for the card, under the same matrix ----
 {
-  check(crabs.card.parent === crabs.batch && !crabs.card.visible && crabs.card.geometry.index.count === 12, 'the card mesh rides in the batch, hidden until its picture is baked, two quads')
-  // A crab is seen clinging to a rock from above, so its card is its side (upright on the XY plane, feet down) crossed with its TOP: a quad lying flat at the body's middle, the body's length by its breadth, reading the right half of the picture.
+  check(crabs.card.parent === crabs.batch && !crabs.card.visible && crabs.card.geometry.index.count === 6, 'the card mesh rides in the batch, hidden until its picture is baked, one quad')
+  // A crab is seen clinging to a rock from above, so its card is its TOP alone: a quad lying flat at the body's middle, the body's length by its breadth, reading the whole picture.
   {
     const pos = crabs.card.geometry.getAttribute('position'), uv = crabs.card.geometry.getAttribute('uv')
-    const sideY = [0, 1, 2, 3].map((i) => pos.getY(i)), topY = [4, 5, 6, 7].map((i) => pos.getY(i))
-    const topX = [4, 5, 6, 7].map((i) => pos.getX(i)), topZ = [4, 5, 6, 7].map((i) => pos.getZ(i))
+    const topY = [0, 1, 2, 3].map((i) => pos.getY(i))
+    const topX = [0, 1, 2, 3].map((i) => pos.getX(i)), topZ = [0, 1, 2, 3].map((i) => pos.getZ(i))
     const { halfX, halfZ, height } = crabs.bounds
-    check([0, 1, 2, 3].every((i) => pos.getZ(i) === 0) && Math.min(...sideY) < 0 && Math.max(...sideY) > height, 'the side quad stands upright on the body\'s length')
-    check(topY.every((y) => Math.abs(y - height / 2) < 1e-6) && Math.min(...topX) < -halfX && Math.max(...topX) > halfX && Math.min(...topZ) < -halfZ && Math.max(...topZ) > halfZ && new Set(topX).size === 2 && new Set(topZ).size === 2, 'the other quad lies flat at the body\'s middle, the body\'s length by its breadth: the top', `y ${topY[0].toFixed(3)} of ${height.toFixed(3)}`)
-    check([4, 5, 6, 7].every((i) => uv.getX(i) >= 0.5) && [0, 1, 2, 3].every((i) => uv.getX(i) <= 0.5), 'the side reads the left half of the picture, the top the right')
+    check(pos.count === 4 && topY.every((y) => Math.abs(y - height / 2) < 1e-6) && Math.min(...topX) < -halfX && Math.max(...topX) > halfX && Math.min(...topZ) < -halfZ && Math.max(...topZ) > halfZ && new Set(topX).size === 2 && new Set(topZ).size === 2, 'the quad lies flat at the body\'s middle, the body\'s length by its breadth: the top', `y ${topY[0].toFixed(3)} of ${height.toFixed(3)}`)
+    check([0, 1, 2, 3].every((i) => uv.getX(i) === 0 || uv.getX(i) === 1), 'and reads the whole picture')
   }
   const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <normal_fragment_begin>' }
   crabs.cardMaterial.onBeforeCompile(shader)

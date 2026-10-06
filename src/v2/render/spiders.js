@@ -172,6 +172,10 @@ const WET_STEP = 1 / 16
 // A rock spider re-reads the stone under it every so many frames.
 export const RESEAT_EVERY = 45
 export const MAX = 256
+// The pool instances claimed for the cards: the pool packs only visible ones, so this is bookkeeping for the worst crowd on the card rung at once, not a reservation.
+const CARD_CLAIM = 64
+// A card-rung spider is stepped every CARD_EVERY frames (wildlife.js does the same): its pose is closed-form in the world second, so the next step lands exactly where every-frame stepping would, and at its distance a stride four frames long is under two pixels.
+const CARD_EVERY = 4
 const HOST_BUF = 64
 
 // A spider's life is cut into SPELLs this long on its own grid (sim/score.js), each a crossing from the seat it holds at one turn to the seat it holds at the next, broken into SCOOTS short scoots with a sit before each. A ground spider's spell is the long one: it covers more ground and hardly ever stops.
@@ -384,7 +388,7 @@ export class Spiders {
     }
     this.counts = new Uint16Array(LOD_TIERS)
     // The far spiders, as instances of the shared litter quad, one per slot (a slot's id is its card's); drawn once the picture is baked, and until then every spider in range is a mesh and the rest are not drawn.
-    cards.claim('spiders', MAX)
+    cards.claim('spiders', CARD_CLAIM)
     this.litterCards = cards
     this.cardPicture = -1
     this.cardReady = false
@@ -1626,6 +1630,10 @@ export class Spiders {
             c.dirty = true
           } else {
             // A trunk that re-seated with its chunk is followed by re-planning off its new origin, and a rock that re-split is read for the stone still being there.
+            if (c.rung === LOD_RUNGS && c.cardOn && !(host.kind === 'tree' && host.moved) && (this.frame + c.id) % CARD_EVERY !== 0) {
+              c.cardStamp = this.frame
+              continue
+            }
             if (host.kind === 'tree' && host.moved) c.spell = null
             else if (host.kind === 'rock' && (this.frame + c.id) % RESEAT_EVERY === 0) {
               _seatC.u = Math.atan2(c.z - host.z, c.x - host.x)

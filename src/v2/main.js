@@ -3526,6 +3526,9 @@ async function bootWorld() {
   flares = new Flares(scene)
   sparks = new Flares(scene, { look: SPARK, cap: SPARK_CAP, fadeS: SPARK_S, size: SPARK_M })
   visions = new Flares(scene, { look: VISION })
+  // Seen through the hills: drawn over everything but the vitals veil and the blackout.
+  visions.material.depthTest = false
+  visions.mesh.renderOrder = 990
   let saved = EDITOR_MODE ? null : readSave()
   let room = ROOMS[saved?.room ?? 'overworld']
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)

@@ -50,11 +50,10 @@
 // the body along Z and below its middle -- lift and fall in the vertex shader
 // while it moves.
 //
-// Past CARD_M from her head a crab is its cross card (critters.js) -- its side
-// and its top, since a crab is seen clinging to a rock from above -- written to
-// the card mesh under the same matrix and hue the body would have had, legs
-// still; once the card's picture is baked, the two meshes together hold every
-// live crab.
+// Past CARD_M from her head a crab is its top card (critters.js CRAB_VIEWS), one
+// quad lying flat at the body's middle, written to the card mesh under the same
+// matrix and hue the body would have had, legs still; once the card's picture is
+// baked, the two meshes together hold every live crab.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'

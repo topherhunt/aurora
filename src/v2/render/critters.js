@@ -343,7 +343,8 @@ export function tierTintSplice(shader, k) {
 // stands on and is seen from above it -- the spider on its trunk -- wants only
 // the top view, and a side quad would stand out of the bark edge-on.
 // ---------------------------------------------------------------------------
-export const CARD_M = 8
+// Metres to the crab's mesh edge, and so its card's start (crabs.js).
+export const CARD_M = 10.4
 // The bake: each view is TEX_SIZE px square, side by side in the order the views are listed; the picture frames the body with this margin each side so the alpha edge is not the texel edge.
 const CARD_MARGIN = 0.06
 
@@ -443,8 +444,8 @@ export function critterCardExtents({ halfX, halfZ, height }) {
   return { hx: halfX * grow, hz: halfZ * grow, y0: (height / 2) * (1 - grow), y1: (height / 2) * (1 + grow) }
 }
 
-// The two quads a card is built of, by view name: the crab's.
-export const CRAB_VIEWS = ['side', 'top']
+// The crab's card is its top alone: a crab is seen from above, clinging to a rock, and a side quad would show flat-on.
+export const CRAB_VIEWS = ['top']
 
 /**
  * One view's camera, in the unit mesh's frame: where it stands (ten units out
