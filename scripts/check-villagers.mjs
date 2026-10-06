@@ -936,12 +936,21 @@ console.log('\nat home')
     const back = fond.res.all.find((o) => o.id === 3)
     check(!fond.res.all.includes(out) && states.join() === 'leave,gone' && back !== undefined && back !== out && Math.hypot(back.x - room.doorIn.x, back.z - room.doorIn.z) < 0.01, 'synced out each frame, a villager walks out once and is gone; synced in, it walks in at the door', states.join())
   }
-  const away = Math.atan2(wary.feet.x - r.x, wary.feet.z - r.z)
-  wary.feet = { x: r.x + 3.1 * Math.sin(away), y: wary.feet.y, z: r.z + 3.1 * Math.cos(away) }
-  run(wary, 1)
-  wary.whimpers.length = 0
-  run(wary, 15)
-  check(r.state !== 'cower' && wary.whimpers.length === 0, 'her backed off past 3 m, it stops whimpering and goes back to its home', `${r.state}, ${wary.whimpers.length} whimpers`)
+  // Her backed off across the room, still in it: it must not walk back to her and cower again.
+  const rounds = []
+  for (let round = 0; round < 8; round++) {
+    if (round > 0) { wary.feet = { x: r.x + 1.2, y: r.y, z: r.z }; run(wary, 2) }
+    const cowered = r.state === 'cower'
+    const across = Math.atan2(-r.x, -r.z), backed = room.R - 0.4
+    wary.feet = { x: backed * Math.sin(across), y: wary.feet.y, z: backed * Math.cos(across) }
+    const off = Math.hypot(wary.feet.x - r.x, wary.feet.z - r.z)
+    run(wary, 1)
+    wary.whimpers.length = 0
+    let again = 0
+    for (let i = 0; i < 20; i++) { run(wary, 1); if (r.state === 'cower') again++ }
+    rounds.push({ cowered, off, again, whimpers: wary.whimpers.length })
+  }
+  check(rounds.filter((o) => o.cowered).length >= 3 && rounds.every((o) => o.off > 2.5 && o.again === 0 && o.whimpers === 0), 'her backed off across the room, again and again, it stops whimpering, goes back to its home and stays away from her', rounds.map((o) => `${o.cowered ? '' : 'never cowered, '}${o.off.toFixed(1)} m: ${o.again} s cowering, ${o.whimpers} whimpers`).join('; '))
   wary.feet = { x: 400, y: 0, z: 400 }
 
   // A mushroom in her hand, her on the ring's far side from it.

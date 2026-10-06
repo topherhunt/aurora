@@ -30,7 +30,9 @@ export const HOMEBODY_ID = 128
 export const homebodyId = (house, i) => HOMEBODY_ID + house * HOMEBODIES + i
 // Her within this of one that does not trust her, it cowers; past COWER_OFF_M it goes back to what it was about.
 export const COWER_M = 2
-const COWER_OFF_M = 3
+const COWER_OFF_M = 2.5
+// One that does not trust her picks its next place at least this far from her where the room has one, so backing off does not walk it straight back to cower again.
+const SHY_M = 3
 // Seconds from one cowering whimper's start to the next: the 3.6 s clip, then 2-10 s quiet.
 export const COWER_WHIMPER_S = [5.6, 13.6]
 // The lie clip's hold between its lying back and its sitting up (tools/creatures/anim/clips/human/lie.json), and how far it shuffles up the bed as it lies.
@@ -140,7 +142,7 @@ export class Residents {
     const r = {
       id, size, pace, k: size / this.asset.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI / 2, level: 0,
       state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, feast, carrier: null,
-      calm: 0, voice: 0, hx: 0, hz: 0, planX: 0, planZ: 0,
+      calm: 0, voice: 0, hx: 0, hz: 0, wary: false, planX: 0, planZ: 0,
       mutter: between(this.rand, MUTTER_S), body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: this.durations.walk / pace },
     }
     this.all.push(r)
@@ -166,25 +168,28 @@ export class Residents {
       if (seats.length > 0) { this._goTo(r, seats[Math.floor(this.rand() * seats.length)], now); return }
       r.feast = false
     }
+    const shy = (p) => !r.wary || Math.hypot(p.x - r.hx, p.z - r.hz) >= SHY_M
     for (let tries = 0; tries < 8; tries++) {
       let u = this.rand(), kind = PICK[PICK.length - 1][0]
       for (const [k, w] of PICK) { if (u < w) { kind = k; break } u -= w }
       if (kind === 'talk') {
         const other = this.all.find((o) => o !== r && o.state === 'act' && (o.spot?.kind === 'wander' || o.spot?.kind === 'gaze'))
-        if (other && !now) { this._release(other); this._talk(r, other, false); return }
+        if (other && !now && room.spots.every((s) => s.kind !== 'talk' || shy(s))) { this._release(other); this._talk(r, other, false); return }
         continue
       }
       if (kind === 'wander') {
-        const p = room.ringPts[Math.floor(this.rand() * room.ringPts.length)]
+        const pts = room.ringPts.filter(shy)
+        if (pts.length === 0) continue
+        const p = pts[Math.floor(this.rand() * pts.length)]
         this._goTo(r, { kind: 'wander', x: p.x, z: p.z, lookX: p.x - room.ring.x, lookZ: p.z - room.ring.z, level: 0 }, now)
         return
       }
-      const free = room.spots.filter((s) => s.kind === kind && this._free(s))
+      const free = room.spots.filter((s) => s.kind === kind && this._free(s) && shy(s))
       if (free.length === 0) continue
       this._goTo(r, free[Math.floor(this.rand() * free.length)], now)
       return
     }
-    const p = room.ringPts[0]
+    const p = room.ringPts.reduce((a, q) => (Math.hypot(q.x - r.hx, q.z - r.hz) > Math.hypot(a.x - r.hx, a.z - r.hz) ? q : a))
     this._goTo(r, { kind: 'wander', x: p.x, z: p.z, lookX: 1, lookZ: 0, level: 0 }, now)
   }
 
@@ -341,6 +346,7 @@ export class Residents {
     for (const r of this.all) {
       r.calm = Math.max(0, r.calm - dt)
       r.hx = fx; r.hz = fz
+      r.wary = !trusts(r.id)
       const fearing = r.state === 'cower' || r.state === 'court'
       if (trusts(r.id)) { if (fearing) this._choose(r, false); continue }
       const lure = r.state === 'court' ? held.find((l) => this._under(r, l)) : undefined

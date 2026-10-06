@@ -1,36 +1,36 @@
 // Pure sample work for voice-recorder.html: trim, normalise, encode. No DOM, so a node script can check it.
 
 export const TRIM = {
-  // Dropped from both ends before anything else: the click of the key that started and stopped the take.
-  keyClickS: 0.15,
-  // A 10 ms window louder than this RMS is voice (about -46 dBFS).
-  gate: 0.005,
+  // A 10 ms window is voice when its RMS is this many times the take's noise floor (its quietest tenth of windows):
+  // a fixed gate ate breathy sighs and soft tails.
+  overFloor: 3,
+  minGate: 0.0005,
   win: 0.01,
   // Kept around the voice so breaths in and tails out survive.
-  padInS: 0.06,
-  padOutS: 0.15,
+  padInS: 0.1,
+  padOutS: 0.3,
   fadeS: 0.005,
   peak: 0.89, // -1 dBFS
 }
 
-/** `samples` with key clicks cut, silence trimmed, edges faded and peak normalised; null when nothing passed the gate. */
+/** `samples` (key clicks already cut) with silence trimmed, edges faded and peak normalised; null when nothing stands above the floor. */
 export function cleanTake(samples, rate) {
-  const click = Math.round(TRIM.keyClickS * rate)
-  const body = samples.subarray(click, Math.max(click, samples.length - click))
   const win = Math.round(TRIM.win * rate)
-  let first = -1
-  let last = -1
-  for (let i = 0; i + win <= body.length; i += win) {
+  const rms = []
+  for (let i = 0; i + win <= samples.length; i += win) {
     let sum = 0
-    for (let j = i; j < i + win; j++) sum += body[j] * body[j]
-    if (Math.sqrt(sum / win) < TRIM.gate) continue
-    if (first < 0) first = i
-    last = i + win
+    for (let j = i; j < i + win; j++) sum += samples[j] * samples[j]
+    rms.push(Math.sqrt(sum / win))
   }
+  if (rms.length === 0) return null
+  const floor = [...rms].sort((x, y) => x - y)[Math.floor(rms.length / 10)]
+  const gate = Math.max(TRIM.minGate, floor * TRIM.overFloor)
+  const first = rms.findIndex((v) => v >= gate)
   if (first < 0) return null
-  const from = Math.max(0, first - Math.round(TRIM.padInS * rate))
-  const to = Math.min(body.length, last + Math.round(TRIM.padOutS * rate))
-  const out = body.slice(from, to)
+  const last = rms.findLastIndex((v) => v >= gate) + 1
+  const from = Math.max(0, first * win - Math.round(TRIM.padInS * rate))
+  const to = Math.min(samples.length, last * win + Math.round(TRIM.padOutS * rate))
+  const out = samples.slice(from, to)
   let peak = 0
   for (const v of out) peak = Math.max(peak, Math.abs(v))
   const gain = TRIM.peak / peak

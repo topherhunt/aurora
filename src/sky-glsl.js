@@ -414,15 +414,23 @@ export const SKY_GLSL = /* glsl */ `
       // horizontal component weights it, so a high sun lights tops we never see.
       // By day uCloudLit is clipped white, so the lit face brightens by shedding
       // shade, not by a gain.
-      float sunSide = clamp( -dot( cl.zw, uSunDir.xz ) * 10.0, -1.0, 1.0 ) * sunUp;
+      // Faded out below 30 deg up to none at 10: foreshortened toward the
+      // horizon, the shape's slope packs into bands that read as corrugation.
+      float sideFade = smoothstep( 0.17, 0.5, dir.y );
+      float sunSide = clamp( -dot( cl.zw, uSunDir.xz ) * 4.0, -1.0, 1.0 ) * sunUp * sideFade;
       // The moon is up by day too, faintly: its sides only once the sun's are gone.
-      float moonSide = clamp( -dot( cl.zw, uMoonDir.xz ) * 10.0, -1.0, 1.0 ) * step( 0.001, uMoon.y ) * ( 1.0 - sunUp );
-      float shade = thick + 0.7 * sunUp * max( -sun, 0.0 ) - 0.4 * sunSide;
-      vec3 cloud = mix( uCloudLit, uCloudShade, clamp( shade, 0.0, 1.0 ) );
+      float moonSide = clamp( -dot( cl.zw, uMoonDir.xz ) * 4.0, -1.0, 1.0 ) * step( 0.001, uMoon.y ) * ( 1.0 - sunUp ) * sideFade;
+      // The away lean scales thickness, so thin edges stay light; a flat add
+      // would push whole clouds past full shade into one grey. The soft cap
+      // holds the darkest belly under SHADE_MAX with its texture still in it.
+      float away = sunUp * max( -sun, 0.0 );
+      float shade = max( thick * ( 1.0 + 0.8 * away ) + 0.15 * away - 0.2 * sunSide, 0.0 );
+      const float SHADE_MAX = 0.75;
+      vec3 cloud = mix( uCloudLit, uCloudShade, SHADE_MAX * ( 1.0 - exp( -shade / SHADE_MAX ) ) );
       cloud = mix( cloud, uHorizon, ( 1.0 - smoothstep( 0.03, 0.45, dir.y ) ) * 0.85 );
-      cloud *= 1.0 + 0.45 * sunUp * pow( sToward, 5.0 ) + 0.3 * max( sunSide, 0.0 );
+      cloud *= 1.0 + 0.45 * sunUp * pow( sToward, 5.0 ) + 0.2 * max( sunSide, 0.0 );
       cloud += sunTint * ( 0.15 * max( sunSide, 0.0 ) * ( 1.0 - thick ) );
-      cloud *= 1.0 - 0.45 * max( -moonSide, 0.0 );
+      cloud *= 1.0 - 0.2 * max( -moonSide, 0.0 );
       cloud += moonCol * ( uMoon.y * ( ( 1.0 - thick * 0.7 ) * 0.2 * pow( mToward, 8.0 ) + 0.15 * max( moonSide, 0.0 ) ) );
       col = mix( col, cloud, cl.x );
       // The silver lining: thin edges near the light glow brighter than the sky

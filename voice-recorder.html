@@ -30,6 +30,7 @@
       .note { color: var(--dim); font-size: 12px; }
       .err { color: var(--rec); white-space: pre-wrap; }
       .hidden { display: none !important; }
+      .warn { color: #ffcf7f; }
 
       #cur-meta { color: var(--dim); font-size: 12px; }
       #cur-text { font-size: 30px; line-height: 1.2; margin: 6px 0 2px; font-family: Georgia, serif; }
@@ -60,6 +61,8 @@
       .line .dots span { color: #26364e; }
       .line.sel .dots span { color: #4a6a94; }
       .line .dots span.have { color: var(--ok); }
+      .line .play { padding: 0 6px; font-size: 11px; flex: none; }
+      .line .play.none { visibility: hidden; }
       .line .text { font-family: Georgia, serif; font-size: 15px; }
       .line .lnote { color: var(--dim); font-size: 12px; }
       .line .uses { color: #557096; font-size: 11px; }
@@ -74,7 +77,7 @@
 
       <h2>Save folder</h2>
       <button id="folder" class="qa-folder">Choose folder...</button>
-      <div id="folder-name" class="note">None: takes download instead. Suggested: tools/voice/work/</div>
+      <div id="folder-name" class="note warn">None: takes are kept in this browser only. Choose tools/voice/work/ to write them as files.</div>
 
       <h2>Take</h2>
       <select id="take" class="qa-take"></select>
@@ -116,7 +119,7 @@
         <div id="cur-note" class="qa-cur-note"></div>
         <canvas id="wave" class="qa-wave"></canvas>
         <div id="meter"><div></div></div>
-        <div id="status" class="qa-status"></div>
+        <div class="row" style="flex-wrap: nowrap; align-items: baseline; margin-top: 8px;"><button id="play" class="qa-play-cur" style="flex: none;">&#9654; Play take</button><div id="status" class="qa-status" style="margin: 0;"></div></div>
         <div id="lab" class="qa-lab hidden">
           <span class="note">Carrier from</span><select id="lab-carrier" class="qa-lab-carrier"></select>
           <span class="note">Slot from</span><select id="lab-slot" class="qa-lab-slot"></select>
@@ -170,9 +173,9 @@
 
       const st = {
         set: 'human', view: 'lines', cat: 'all', coreOnly: false, take: TAKES[0].id, sel: 0,
-        ctx: null, stream: null, src: null, analyser: null, node: null,
-        recording: false, chunks: [], dir: null,
-        have: new Set(), // file names on disk (or downloaded this session)
+        ctx: new AudioContext(), stream: null, src: null, analyser: null, node: null, inLatency: 0,
+        recording: false, capturing: false, chunks: [], startFrame: 0, stopFrame: null, onPast: null, dir: null,
+        have: new Set(), // file names kept in this browser or the folder
         buffers: new Map(), // file name -> AudioBuffer, for playback
         marks: {}, // splice file name -> { a, b } seconds: the slot
       }
@@ -197,11 +200,12 @@
         const row = document.createElement('div')
         row.className = `line qa-line${i === st.sel ? ' sel' : ''}`
         const dots = TAKES.map((t) => `<span class="${st.have.has(fileOf(l, t.id)) ? 'have' : ''}" title="${t.label}">&#9679;</span>`).join('')
-        row.innerHTML = `<span class="dots">${dots}</span><span class="text"></span><span class="lnote"></span><span class="uses"></span>`
+        row.innerHTML = `<span class="dots">${dots}</span><button class="play qa-play${st.have.has(fileOf(l)) ? '' : ' none'}" title="Play this take">&#9654;</button><span class="text"></span><span class="lnote"></span><span class="uses"></span>`
         row.querySelector('.text').textContent = l.text
         row.querySelector('.lnote').textContent = `${l.variant} · ${l.note}`
         row.querySelector('.uses').textContent = l.uses.map((m) => m.id).join('  ')
         row.onclick = () => select(i)
+        row.querySelector('.play').onclick = (e) => { e.stopPropagation(); select(i); play() }
         return row
       }
 
@@ -321,7 +325,7 @@
 
       // The worklet hands raw float blocks to the page, so takes are lossless PCM (MediaRecorder only gives lossy codecs).
       const WORKLET = `registerProcessor('tap', class extends AudioWorkletProcessor {
-        process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true }
+        process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage([currentFrame, ch.slice(0)]); return true }
       })`
 
       async function enableMic(deviceId) {
@@ -330,25 +334,31 @@
           deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1,
           echoCancellation: false, noiseSuppression: false, autoGainControl: false,
         } })
-        if (st.ctx === null) {
-          st.ctx = new AudioContext()
+        if (st.node === null) {
           await st.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' })))
           st.node = new AudioWorkletNode(st.ctx, 'tap')
-          st.node.port.onmessage = (e) => { if (st.recording) st.chunks.push(e.data) }
+          st.node.port.onmessage = ({ data: [frame, block] }) => {
+            if (!st.capturing) return
+            st.chunks.push([frame, block])
+            if (st.stopFrame !== null && frame + block.length >= st.stopFrame) { st.capturing = false; st.onPast() }
+          }
           st.analyser = st.ctx.createAnalyser()
           st.analyser.fftSize = 1024
           meterLoop()
         }
+        await st.ctx.resume()
         st.src?.disconnect()
         st.src = st.ctx.createMediaStreamSource(st.stream)
         st.src.connect(st.analyser)
         st.src.connect(st.node)
         const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput')
-        const active = st.stream.getAudioTracks()[0].getSettings().deviceId
+        const settings = st.stream.getAudioTracks()[0].getSettings()
+        const active = settings.deviceId
+        st.inLatency = settings.latency ?? DEFAULT_IN_LATENCY_S
         $('mic-sel').replaceChildren(...devices.map((d) => new Option(d.label || d.deviceId, d.deviceId, false, d.deviceId === active)))
         $('mic-on').textContent = 'Microphone on'
         $('mic-on').disabled = true
-        status(`Mic ready at ${st.ctx.sampleRate} Hz. Space to record.`)
+        status(`Mic ready at ${st.ctx.sampleRate} Hz, input latency ${(st.inLatency * 1000).toFixed(0)} ms${settings.latency === undefined ? ' (assumed)' : ''}. Space to record.`)
       }
 
       function meterLoop() {
@@ -367,35 +377,47 @@
 
       // --- recording and playback ------------------------------------------
 
+      // Mic audio reaches the worklet `inLatency` after it was spoken, so a take is cut by when a key press was *heard*:
+      // it starts after the press-and-release clicks, ends just before the stopping press, and keeps listening until
+      // that moment has arrived. Stopping on the press itself dropped the last words still in flight.
+      const DEFAULT_IN_LATENCY_S = 0.05
+      const START_CLICKS_S = 0.15
+      const STOP_GUARD_S = 0.01
+      const heardFrame = (afterS) => Math.round((st.ctx.currentTime + st.inLatency + afterS) * st.ctx.sampleRate)
+
       function startTake() {
-        if (st.ctx === null) { status('Enable the microphone first.', true); return }
-        if (!current()) return
-        st.ctx.resume()
+        if (st.node === null) { status('Enable the microphone first.', true); return }
+        if (!current() || st.capturing) return
         st.chunks = []
+        st.startFrame = heardFrame(START_CLICKS_S)
+        st.stopFrame = null
+        st.capturing = true
         st.recording = true
         document.body.classList.add('recording')
         status('Recording... Space to stop.')
       }
 
       async function stopTake() {
+        const line = current()
         st.recording = false
         document.body.classList.remove('recording')
-        const total = st.chunks.reduce((n, c) => n + c.length, 0)
+        await new Promise((ok) => { st.onPast = ok; st.stopFrame = heardFrame(-STOP_GUARD_S) })
+        const first = st.chunks[0][0]
+        const total = st.chunks.reduce((n, [, c]) => n + c.length, 0)
         const raw = new Float32Array(total)
-        let o = 0
-        for (const c of st.chunks) { raw.set(c, o); o += c.length }
+        for (const [frame, c] of st.chunks) raw.set(c, frame - first)
         const rate = st.ctx.sampleRate
-        const clean = cleanTake(raw, rate)
-        if (clean === null) { status('Nothing above the noise gate: is the mic muted or too far?', true); return }
-        const name = fileOf(current())
+        const clean = cleanTake(raw.subarray(Math.max(0, st.startFrame - first), Math.max(0, st.stopFrame - first)), rate)
+        if (clean === null) { status('Nothing above the noise floor: is the mic muted, or was the take too short?', true); return }
+        const name = fileOf(line)
         const buf = st.ctx.createBuffer(1, clean.length, rate)
         buf.copyToChannel(clean, 0)
         st.buffers.set(name, buf)
         delete st.marks[name]
-        await save(name, new Blob([encodeWav(clean, rate)], { type: 'audio/wav' }))
+        await saveTake(name, new Blob([encodeWav(clean, rate)], { type: 'audio/wav' }))
         st.have.add(name)
         render()
-        status(`Saved ${name} (${buf.duration.toFixed(2)} s).`)
+        status(`Saved ${name} (${buf.duration.toFixed(2)} s)${st.dir === null ? ' in this browser only: choose a folder to write files' : ''}.`)
         if ($('autoplay').checked) play()
       }
 
@@ -412,7 +434,7 @@
 
       function play() {
         const l = current()
-        if (!l || st.ctx === null) return
+        if (!l) return
         const buf = st.buffers.get(fileOf(l))
         if (!buf) { status('No take for this line yet.'); return }
         playBuffer(buf)
@@ -445,7 +467,7 @@
         if (m.b < m.a) [m.a, m.b] = [m.b, m.a]
         st.marks[fileOf(l)] = m
         try { localStorage.setItem('voice-marks', JSON.stringify(st.marks)) } catch {}
-        if (st.dir !== null) await save('splice-marks.json', new Blob([JSON.stringify(st.marks, null, 1)], { type: 'application/json' }))
+        if (st.dir !== null) await writeFile('splice-marks.json', new Blob([JSON.stringify(st.marks, null, 1)], { type: 'application/json' }))
         showCurrent()
       }
 
@@ -482,7 +504,6 @@
 
       function labRun(fn) {
         try {
-          if (st.ctx === null) throw new Error('Enable the microphone first (it starts the audio engine).')
           fn(current().group.splice)
         } catch (e) { status(e.message, true) }
       }
@@ -505,64 +526,77 @@
       }
       $('wave').onclick = (e) => setMark(e).catch((err) => status(String(err), true))
 
-      // --- files: a chosen folder (Chromium) or downloads ------------------
+      // --- storage: every take in IndexedDB, and in the chosen folder (Chromium) when there is one ---------
 
-      async function save(name, blob) {
-        if (st.dir === null) {
-          const a = document.createElement('a')
-          a.href = URL.createObjectURL(blob)
-          a.download = name
-          a.click()
-          return
-        }
-        const fh = await st.dir.getFileHandle(name, { create: true })
-        const w = await fh.createWritable()
+      async function writeFile(name, blob) {
+        const w = await (await st.dir.getFileHandle(name, { create: true })).createWritable()
         await w.write(blob)
         await w.close()
       }
 
-      // The chosen folder survives a reload in IndexedDB; the browser still asks again for write permission.
+      async function saveTake(name, blob) {
+        await db('takes', 'readwrite', (s) => s.put({ blob, at: Date.now() }, name))
+        if (st.dir !== null) await writeFile(name, blob)
+      }
+
+      // The folder handle also lives here; after a reload the browser still asks again for write permission.
       const idb = () => new Promise((ok, fail) => {
-        const r = indexedDB.open('voice-recorder', 1)
-        r.onupgradeneeded = () => r.result.createObjectStore('kv')
+        const r = indexedDB.open('voice-recorder', 2)
+        r.onupgradeneeded = () => { for (const name of ['kv', 'takes']) if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name) }
         r.onsuccess = () => ok(r.result)
         r.onerror = () => fail(r.error)
       })
-      async function kv(key, value) {
-        const db = await idb()
+      async function db(store, mode, op) {
+        const d = await idb()
         return new Promise((ok, fail) => {
-          const tx = db.transaction('kv', value === undefined ? 'readonly' : 'readwrite')
-          const r = value === undefined ? tx.objectStore('kv').get(key) : tx.objectStore('kv').put(value, key)
+          const r = op(d.transaction(store, mode).objectStore(store))
           r.onsuccess = () => ok(r.result)
           r.onerror = () => fail(r.error)
         })
       }
+      const kv = (key, value) => value === undefined ? db('kv', 'readonly', (s) => s.get(key)) : db('kv', 'readwrite', (s) => s.put(value, key))
+      async function browserTakes() {
+        const names = await db('takes', 'readonly', (s) => s.getAllKeys())
+        const takes = await db('takes', 'readonly', (s) => s.getAll())
+        return names.map((name, i) => [name, takes[i]])
+      }
+      const decode = async (blob) => st.ctx.decodeAudioData(await blob.arrayBuffer())
 
+      // Folder takes load first; a browser take newer than the folder's copy (recorded while disconnected) is written out.
       async function useFolder(dir) {
         if ((await dir.queryPermission({ mode: 'readwrite' })) !== 'granted' && (await dir.requestPermission({ mode: 'readwrite' })) !== 'granted') {
           throw new Error('Write permission to the folder was refused.')
         }
         st.dir = dir
         await kv('dir', dir)
-        st.have.clear()
-        st.buffers.clear()
-        const decoder = st.ctx ?? new AudioContext()
-        let n = 0
+        const onDisk = new Map()
         for await (const [name, h] of dir.entries()) {
           if (h.kind !== 'file') continue
-          if (name === 'splice-marks.json') st.marks = { ...st.marks, ...JSON.parse(await (await h.getFile()).text()) }
+          const file = await h.getFile()
+          if (name === 'splice-marks.json') st.marks = { ...st.marks, ...JSON.parse(await file.text()) }
           if (!name.endsWith('.wav')) continue
+          onDisk.set(name, file.lastModified)
+          status(`Loading takes from ${dir.name}/... ${onDisk.size}`)
           st.have.add(name)
-          st.buffers.set(name, await decoder.decodeAudioData(await (await h.getFile()).arrayBuffer()))
-          n++
+          st.buffers.set(name, await decode(file))
         }
-        $('folder-name').textContent = `${dir.name}/ (${n} takes found)`
+        let written = 0
+        for (const [name, { blob, at }] of await browserTakes()) {
+          if (onDisk.has(name) && onDisk.get(name) >= at) continue
+          await writeFile(name, blob)
+          st.buffers.set(name, await decode(blob))
+          st.have.add(name)
+          written++
+        }
+        $('folder-name').textContent = `${dir.name}/ (${onDisk.size} takes found, ${written} written from this browser)`
+        $('folder-name').classList.remove('warn')
         $('folder').textContent = 'Change folder...'
+        status(`Loaded ${onDisk.size} takes from ${dir.name}/.`)
         render()
       }
 
       $('folder').onclick = async () => {
-        if (!('showDirectoryPicker' in window)) { status('This browser cannot write to a folder; takes will download instead. Use Chrome for folder saving.', true); return }
+        if (!('showDirectoryPicker' in window)) { status('This browser cannot write to a folder; takes stay in the browser. Use Chrome for folder saving.', true); return }
         const saved = await kv('dir')
         if (saved && st.dir === null) {
           try { await useFolder(saved); return } catch (e) { console.warn(e) }
@@ -574,6 +608,7 @@
 
       // --- wiring ----------------------------------------------------------
 
+      $('play').onclick = play
       $('mic-on').onclick = () => enableMic().catch((e) => status(`Microphone: ${e.message}`, true))
       $('mic-sel').onchange = () => enableMic($('mic-sel').value).catch((e) => status(`Microphone: ${e.message}`, true))
       function setTake(id) {
@@ -614,7 +649,12 @@
 
       fillCats()
       render()
-      kv('dir').then((d) => { if (d) { $('folder-name').textContent = `${d.name}/ (click to reconnect)`; $('folder').textContent = 'Reconnect folder...' } })
+      kv('dir').then((d) => { if (d) { $('folder-name').textContent = `${d.name}/ (click to reconnect; until then takes stay in this browser)`; $('folder').textContent = 'Reconnect folder...' } })
+      navigator.storage.persist()
+      browserTakes().then(async (takes) => {
+        for (const [name, { blob }] of takes) { st.buffers.set(name, await decode(blob)); st.have.add(name) }
+        render()
+      }).catch((e) => status(`Could not load takes kept in this browser: ${e.message}`, true))
     </script>
   </body>
 </html>
