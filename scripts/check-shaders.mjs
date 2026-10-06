@@ -748,6 +748,15 @@ for (const variant of ['maps', 'unready', 'off']) {
   CROSS_STAGE.push(['lighting.js vertex lamps', vsrc, fsrc])
   if (!vsrc.includes('vWlLamp = wlLamp( wlWorld );') || !fsrc.includes('varying vec3 vWlLamp;')) MISSING_MARKS.push('lighting.js vertex lamps: vWlLamp')
 
+  const hearthStub = { uniforms: THREE.UniformsUtils.clone(lib.uniforms), vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines: {} }
+  const hearthMat = new THREE.MeshLambertMaterial()
+  lighting.patch(hearthMat, { mode: 'vertex', cacheKey: 'check-vertex-hearths', hearths: true })
+  hearthMat.onBeforeCompile(hearthStub, { capabilities: { isWebGL2: true } })
+  const hsrc = finish(hearthStub.vertexShader)
+  SHADERS.push(['lighting.js    vertex   hearths   vert', 'vert', builtinPrologue('vert', defines), hsrc])
+  if (!hsrc.includes('uHearthFar[ wlHi / 4 ][ wlHi % 4 ]')) MISSING_MARKS.push('lighting.js vertex hearths: the baked glow term')
+  if (!('uHearthFar' in hearthStub.uniforms)) MISSING_MARKS.push('lighting.js vertex hearths: uHearthFar not bound')
+
   lighting.clearLamps()
   if (lighting.variantKey().endsWith('-lamps')) MISSING_MARKS.push('lighting.js lamps: variantKey keeps the axis after clearLamps')
   const offStub = { uniforms: THREE.UniformsUtils.clone(lib.uniforms), vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines: {} }

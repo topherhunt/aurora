@@ -123,7 +123,7 @@ export const ladderTris = (geometries) => geometries.map((g) => g.index.count / 
 // rolled about its axis (deadwood.js) had its card lit from underneath, ground
 // bounce and no sun, and read as a grey slab beside the mesh. Straight down at
 // it the two directions agree and it is lit as a top.
-const CARD_NORMAL = /* glsl */ `
+export const CARD_NORMAL = /* glsl */ `
   {
     vec3 cnUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
     vec3 cnSum = cnUp + normalize( vViewPosition );

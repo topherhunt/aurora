@@ -80,6 +80,9 @@ import THREE from '../../three-instance.js'
 // tiered bank costs one compile rather than one per mesh.
 // ---------------------------------------------------------------------------
 
+// Geometry ids at or above this belong to the card set; no view without one reaches it.
+const NO_CARDS = 0x3fffffff
+
 /**
  * The mesh set: one InstancedMesh per (tier, variant), the slot bookkeeping and
  * the dirty spans. Not a scene object -- the owner adds `meshes` to whatever
@@ -191,7 +194,7 @@ export class PropMeshes {
 
   /** Take the next free slot in the instance's mesh and fill it from the view's shadow. The caller has asked `_room`. */
   _alloc(view, instanceId) {
-    const g = view.geoAt[instanceId]
+    const g = view.localAt(instanceId)
     const mesh = this.meshes[g]
     const s = mesh.count
     mesh.count = s + 1
@@ -209,7 +212,7 @@ export class PropMeshes {
    * because the mover may be another view's instance altogether.
    */
   _free(view, instanceId) {
-    const g = view.geoAt[instanceId]
+    const g = view.localAt(instanceId)
     const mesh = this.meshes[g]
     const s = view.slot[instanceId]
     const last = mesh.count - 1
@@ -225,7 +228,7 @@ export class PropMeshes {
   }
 
   _writeSlot(view, instanceId) {
-    const g = view.geoAt[instanceId]
+    const g = view.localAt(instanceId)
     const mesh = this.meshes[g]
     const s = view.slot[instanceId]
     mesh.instanceMatrix.array.set(
@@ -287,8 +290,14 @@ export class PropArena extends THREE.Group {
    * @param tiers, caps, material, name, opts   as PropMeshes, for the standalone
    *                      form; `opts.shared` is the shared form and the rest are
    *                      then ignored (see `over`).
+   * @param opts.cards    a PropMeshes (litter-cards.js) that draws the geometry
+   *                      ids from `cardBase` up, one id per mesh of that set, so
+   *                      several layers' far cards are one draw call. The set is
+   *                      built with `layerShift`: the instance's picture is
+   *                      `setLayerShiftAt`, and it rides in the view's shadow
+   *                      across every tier change.
    */
-  constructor(maxInstances, tiers, caps, material, name, { layerShift = false, shared = null } = {}) {
+  constructor(maxInstances, tiers, caps, material, name, { layerShift = false, shared = null, cards = null, cardBase = NO_CARDS } = {}) {
     super()
     this.name = name
     this.frustumCulled = false
@@ -300,6 +309,9 @@ export class PropArena extends THREE.Group {
       this.shared = new PropMeshes(tiers, caps, material, name, { layerShift })
       for (const mesh of this.shared.meshes) this.add(mesh)
     }
+    if (cards && !cards.layerShift) throw new Error(`${name}: the card set must be built with layerShift`)
+    this.cards = cards
+    this.cardBase = cards ? cardBase : NO_CARDS
     this.meshes = this.shared.meshes
     this.capAt = this.shared.capAt
     this.variantCount = this.shared.variantCount
@@ -312,12 +324,26 @@ export class PropArena extends THREE.Group {
     this.mat = new Float32Array(maxInstances * 16)
     this.col = new Float32Array(maxInstances * 3).fill(1)
     this.fade = new Float32Array(maxInstances).fill(1)
-    this.layer = this.shared.layerShift ? new Float32Array(maxInstances) : null
+    this.layer = this.shared.layerShift || cards ? new Float32Array(maxInstances) : null
   }
 
   /** A view of `maxInstances` ids over a mesh set another view, or the owner, shows. */
-  static over(shared, maxInstances, name) {
-    return new PropArena(maxInstances, null, null, null, name, { shared })
+  static over(shared, maxInstances, name, opts = {}) {
+    return new PropArena(maxInstances, null, null, null, name, { ...opts, shared })
+  }
+
+  /** The mesh set that draws geometry id `g`: the layer's own, or the shared cards. */
+  _setFor(g) {
+    return g >= this.cardBase ? this.cards : this.shared
+  }
+
+  _localOf(g) {
+    return g >= this.cardBase ? g - this.cardBase : g
+  }
+
+  /** The index of instance `instanceId`'s mesh within the set that draws it. */
+  localAt(instanceId) {
+    return this._localOf(this.geoAt[instanceId])
   }
 
   addInstance(geometryId) {
@@ -336,11 +362,13 @@ export class PropArena extends THREE.Group {
    * says so once per mesh.
    */
   setGeometryIdAt(instanceId, geometryId) {
-    if (this.geoAt[instanceId] === geometryId) return true
-    if (this.vis[instanceId] && !this.shared._room(geometryId)) return false
-    if (this.slot[instanceId] >= 0) this.shared._free(this, instanceId)
+    const from = this.geoAt[instanceId]
+    if (from === geometryId) return true
+    const to = this._setFor(geometryId)
+    if (this.vis[instanceId] && !to._room(this._localOf(geometryId))) return false
+    if (this.slot[instanceId] >= 0) this._setFor(from)._free(this, instanceId)
     this.geoAt[instanceId] = geometryId
-    if (this.vis[instanceId]) this.shared._alloc(this, instanceId)
+    if (this.vis[instanceId]) to._alloc(this, instanceId)
     return true
   }
 
@@ -348,14 +376,14 @@ export class PropArena extends THREE.Group {
   setVisibleAt(instanceId, visible) {
     const want = visible ? 1 : 0
     if (this.vis[instanceId] === want) return true
+    const g = this.geoAt[instanceId]
     if (want) {
-      const g = this.geoAt[instanceId]
-      if (g >= 0 && !this.shared._room(g)) return false
+      if (g >= 0 && !this._setFor(g)._room(this._localOf(g))) return false
       this.vis[instanceId] = 1
-      if (g >= 0) this.shared._alloc(this, instanceId)
+      if (g >= 0) this._setFor(g)._alloc(this, instanceId)
     } else {
       this.vis[instanceId] = 0
-      if (this.slot[instanceId] >= 0) this.shared._free(this, instanceId)
+      if (this.slot[instanceId] >= 0) this._setFor(g)._free(this, instanceId)
     }
     return true
   }
@@ -369,9 +397,11 @@ export class PropArena extends THREE.Group {
     const s = this.slot[instanceId]
     if (s < 0) return
     const g = this.geoAt[instanceId]
-    const mesh = this.meshes[g]
+    const set = this._setFor(g)
+    const l = this._localOf(g)
+    const mesh = set.meshes[l]
     matrix.toArray(mesh.instanceMatrix.array, s * 16)
-    this.shared._dirty(mesh.instanceMatrix, this.shared._matRange[g], s, 16)
+    set._dirty(mesh.instanceMatrix, set._matRange[l], s, 16)
   }
 
   getMatrixAt(instanceId, matrix) {
@@ -384,9 +414,11 @@ export class PropArena extends THREE.Group {
     const s = this.slot[instanceId]
     if (s < 0) return
     const g = this.geoAt[instanceId]
-    const mesh = this.meshes[g]
+    const set = this._setFor(g)
+    const l = this._localOf(g)
+    const mesh = set.meshes[l]
     color.toArray(mesh.instanceColor.array, s * 3)
-    this.shared._dirty(mesh.instanceColor, this.shared._colRange[g], s, 3)
+    set._dirty(mesh.instanceColor, set._colRange[l], s, 3)
   }
 
   getColorAt(instanceId, color) {
@@ -399,26 +431,31 @@ export class PropArena extends THREE.Group {
     const s = this.slot[instanceId]
     if (s < 0) return
     const g = this.geoAt[instanceId]
-    const attr = this.meshes[g].geometry.getAttribute('aPropFade')
+    const set = this._setFor(g)
+    const l = this._localOf(g)
+    const attr = set.meshes[l].geometry.getAttribute('aPropFade')
     attr.array[s] = value
-    this.shared._dirty(attr, this.shared._fadeRange[g], s, 1)
+    set._dirty(attr, set._fadeRange[l], s, 1)
   }
 
-  /** The instance's layer offset; the mesh set must have been built with `layerShift`. */
+  /** The instance's layer offset (or card picture); the mesh set that draws it must have been built with `layerShift`. */
   setLayerShiftAt(instanceId, value) {
     if (!this.layer) throw new Error(`${this.name}: built without layerShift`)
     this.layer[instanceId] = value
     const s = this.slot[instanceId]
     if (s < 0) return
     const g = this.geoAt[instanceId]
-    const attr = this.meshes[g].geometry.getAttribute('aLayerShift')
+    const set = this._setFor(g)
+    if (!set.layerShift) return
+    const l = this._localOf(g)
+    const attr = set.meshes[l].geometry.getAttribute('aLayerShift')
     attr.array[s] = value
-    this.shared._dirty(attr, this.shared._layerRange[g], s, 1)
+    set._dirty(attr, set._layerRange[l], s, 1)
   }
 
   /** See PropMeshes.roomAt. */
   roomAt(geometryId) {
-    return this.shared.roomAt(geometryId)
+    return this._setFor(geometryId).roomAt(this._localOf(geometryId))
   }
 
   /** Disposes the mesh set. A view over a shared set leaves that to the set's owner. */

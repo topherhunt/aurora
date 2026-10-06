@@ -43,10 +43,10 @@ Source: three production batteries from the Quest 2 at 90 Hz (11.1 ms budget), c
 ## Recommendations, by subject
 
 ### Litter (3.0 ms, 26 calls)
-- One draw call per (tier, variant) mesh: pebbles 1, sticks 1, deadwood 2 variants x up to 4 tiers, bones 2 x up to 4, mushrooms 5 species x 3 tiers (two meshes, one spun triangle). Up to about 33 meshes, 26 non-empty in T3. CPU is about 1.8 ms render (26 x 0.07) plus 0.7 ms js for ring maintenance.
+- One draw call per (tier, variant) mesh: pebbles 1, sticks 1, deadwood 2 variants x up to 4 tiers, bones 2 x up to 4, mushrooms 5 species x 2 mesh tiers; every far card of deadwood, bones and mushrooms is one shared InstancedMesh (`litter-cards.js`). Up to about 33 meshes, 26 non-empty in T3. CPU is about 1.8 ms render (26 x 0.07) plus 0.7 ms js for ring maintenance.
 - Fix 1: set `visible = false` on any tier mesh whose count is zero, so three skips its program setup entirely. Probably a few calls, since 26 is already the non-empty count.
-- Fix 2: merge the card tiers into one shared InstancedMesh with a per-instance texture layer (mushroom triangles, stump and skull quads, crossed log and skeleton quads padded to one shape). Cuts about 9 calls in litter alone. `PropMeshes` already lets several scatters share one mesh set (the six rock beds do).
-- Fix 3: shortening radii saves instance and tile work, not draw calls, because a mesh costs the same whether it holds 5 or 5000 instances. Only a radius cut that empties a whole tier mesh saves calls. Sticks already reach just 10 m (`REACH_M`). Mushrooms draw to 55 m (`DRAW_RADIUS`), which is the same radius their tiles load at; a 13 cm mushroom is 2 px at 60 m.
+- Fix 2 (done): the card tiers of deadwood, bones and mushrooms are one InstancedMesh (`LitterCards`) with a per-instance picture index in `aLayerShift`. Stumps, skulls and mushrooms are spun quads; logs and skeletons are one axial quad turned about their own length, replacing the crossed pair. Mushroom cards are baked as flat albedo and lit by the pool's Lambert, and they no longer carry the old parallax crossover rule. Cuts about 9 calls in litter alone.
+- Fix 3: shortening radii saves instance and tile work, not draw calls, because a mesh costs the same whether it holds 5 or 5000 instances. Only a radius cut that empties a whole tier mesh saves calls. Sticks already reach just 10 m (`REACH_M`). Mushrooms now follow the animals' view-arc rule (`LOD_DEG`, `propCull` of their span) instead of fixed pixel bands, so the radius is the arc cull of the biggest cap.
 - Acceptance: T3 `scatter/litter` calls 26 to under 12 with the same visuals.
 
 ### Boulders (1.7) and ferns (1.6)
@@ -60,7 +60,7 @@ Source: three production batteries from the Quest 2 at 90 Hz (11.1 ms budget), c
 - Not done: needs the wildlife, leafkin and hob code read for their per-creature state, and the nearest-frame gates (`check-crabs`, `check-grasshoppers`, `check-butterflies`) pass fixed times that a stride would perturb.
 
 ### Fish
-- Fish are drawn only when submerged (`fishShown` in `main.js`). The village pond stays clear to look into from the shore, but its fish no longer draw from above.
+- Fish are drawn only when submerged (`fishShown` in `main.js`). The village pond uses the overworld's water clarity, so it is no easier to see into from the shore, and its fish no longer draw from above.
 
 ### Outdoor sound while inside
 - Done: halved gain and darker filter. A true background-sounds engine (occasional muffled realistic sounds in proportion to real frequency, aware of the surroundings, no sim) is a design item, not built. Sketch: sample the surroundings once at door entry (biome, water within 60 m, night/day, weather), then Poisson-schedule from a per-biome table of one-shot clips through the existing `INDOORS` bus, with rate = real-world frequency x a constant. No creature state.

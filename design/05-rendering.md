@@ -230,7 +230,7 @@ These thresholds are deliberately tighter than a pixel-error argument gives: hol
 | rocks (`ROCK_LOD_AT` 4 / 7.5 / 25 m per m) | rock size | 14.3 / 7.6 / 2.3 deg | card, per-bed radius | rungs 0-1 are the standard's to within 10%; T2 held 40% further |
 | ferns (`LOD_BANDS` 5 / 10 m, 0.55 m fern) | none, absolute | 6.3 / 3.2 deg | card to 90 m, 0.4 deg, thinned by the density field | rungs 1-2 of the standard for a median fern; LOD0 stops early on purpose (frond arc legible to 5 m) |
 | trees (`LOD_BANDS` 8 / 24 m, ~8 m tree) | none, absolute | 53 / 19 deg | card to 1.5 km, 0.3 deg | four times the standard's arc: a 550-triangle tree at 0.05/m^2 cannot afford 12.7 deg (36 m of LOD0, twenty times the mesh trees) |
-| mushrooms (`MUSHROOM_LOD_SPANS` 20 / 40 spans) | max(height, spread) | 2.9 / 1.4 deg | card to 55 m absolute | a quarter of the standard: a 9 cm cap cards at 1.8 m |
+| mushrooms | max(height, spread) | the animals' arc rule (`LOD_DEG`, `PROP_STEPS`) | `propCull` of the biggest cap | two mesh rungs, then the shared litter card (§24) |
 | grass (one tier), litter (one tier) | -- | -- | 70 m / 28 m, ~0.8 / 0.3 deg | no ladder; the tile thinning is the LOD |
 
 Putting one of these on `critterTier` is a dial per layer -- `distAt(size, deg)` with that layer's degrees -- not the creature's 12.7 applied as-is, which would put the forest's LOD0 out to 36 m and cull a metre-tall tuft at 36 m and a half-metre one at 18, well inside the 70 m meadow. Rocks are the one layer whose numbers already say the standard.

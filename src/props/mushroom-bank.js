@@ -1,10 +1,10 @@
 import { buildMushroom, mushroomTriangles, MUSHROOM_DEFAULTS } from './mushroom.js'
-import { bakeImpostor, buildImpostorCard, impostorCardExtents } from './impostor.js'
+import { bakeImpostor, impostorCardExtents } from './impostor.js'
 import { LAYER } from '../textures.js'
 
 // ---------------------------------------------------------------------------
 // The mushroom variant bank: every mushroom mesh in the world, baked once at
-// load, plus the one spun card that stands in for it past a few metres.
+// load, plus the picture of each that the shared far card shows (render/litter-cards.js).
 //
 // Same shape as fern-bank.js and tree-bank.js and for the same reasons -- no
 // offline step, no asset file, a cross product small enough that the variety a
@@ -14,7 +14,7 @@ import { LAYER } from '../textures.js'
 //
 //   LOD0   the mesh at radial 16. 108 to 122 triangles.
 //   LOD1   the same mesh at radial 6. 58 to 72 triangles.
-//   LOD2   one plane, spun toward the eye, 1 triangle.
+//   LOD2   the shared card quad, spun toward the eye, 2 triangles.
 //   gone   under 2 px, which for a 13 cm mushroom is 60 m.
 //
 // TWO MESH TIERS AND ONE CARD IS THE WHOLE ARGUMENT ABOUT SIZE. §5's bush class
@@ -32,15 +32,12 @@ import { LAYER } from '../textures.js'
 // count is purely a silhouette question, so the near tier can afford 16 and the
 // far one can fall to 6.
 //
-// AND NOTHING BETWEEN THE COARSE MESH AND THE BILLBOARD. A tree and a fern each
+// AND NOTHING BETWEEN THE COARSE MESH AND THE CARD. A tree and a fern each
 // card to a CROSSED PAIR of planes before they card to one, because a crown is
 // metres deep and a single flat plane through it shows its own parallax error
-// while the prop is still large on screen. A mushroom never gets that window:
-// the coarse mesh already runs to 40 spans, which is past §5's `spread x 28.6`
-// and is where the whole prop is 23 px across at 16.2 px/deg. A second plane at
-// that size is two more triangles spent on a picture nobody can resolve, so the
-// tier after the coarse mesh is the spun billboard, and the billboard runs until
-// the scatter's rim dissolve takes it.
+// while the prop is still large on screen. A mushroom has no such window: the
+// coarse mesh runs to twice the first rung (mushrooms.js) and the spun card
+// follows it.
 //
 // ONE CARD PER SPECIES, which is also one card per variant -- see
 // mushroomVariants. The long version is on LAYER.IMPOSTOR_MUSHROOM_AGARIC in
@@ -175,58 +172,8 @@ export const MUSHROOM_NAMES = Object.keys(MUSHROOM_SPECIES)
 // earns its slot at all.
 export const MUSHROOM_MESH_RADIAL = [16, 6]
 
-// The distance ladder, in MULTIPLES OF THE PROP'S OWN SPAN rather than metres:
-// tier 0 inside 20 spans, tier 1 to 40, the spun billboard from there to the
-// scatter's draw radius. A variant's `span` is measured by buildMushroomBank
-// below, and it is max(height, spread) -- the larger of how tall the thing is
-// and how wide.
-//
-// RELATIVE AND NOT ABSOLUTE, because this generator spans two orders of
-// magnitude. The same five presets build a 9 cm forest-floor mushroom and a 3 m
-// cave one, and a fixed 10 m band means the small one is a mesh until it is 15
-// px tall while the big one has been carded since it was 26 px. Hanging the
-// ladder off the prop's own size makes the swap happen at the same APPARENT SIZE
-// for every one of them -- at 16.2 px/deg that is 46 px and 23 px -- which is
-// the thing the tier is actually chosen by. It costs one multiply per
-// instance per frame in the scatter's band test, which is why it is worth doing
-// rather than merely correct.
-//
-// MAX AND NOT HEIGHT, and the max is what makes §5's parallax rule hold by
-// construction. §5 wants the first FLAT tier no closer than `depth x 28.6`, and
-// a cap is as deep as it is wide, so the depth is `spread`. Because span >=
-// spread, the card starting at 40 spans starts at 40 x spread AT WORST -- 1.40
-// of what the rule demands, on every variant, whatever a future preset does to
-// the proportions. Height alone would not: the chanterelle at capRise -0.02 is a
-// pancake 1.86 times wider than it is tall, so 40 of ITS heights is only 21.5 of
-// its spreads and its card would come in at half the honest range.
-//
-// MAX AND NOT SPREAD, for the other end of the same argument. The ink cap is a
-// thimble on a stalk -- spread 0.046 m against height 0.12 -- and 40 spreads is
-// 1.8 m, where it is still 86 px tall. Carding an 86 px prop is visible. Taking
-// the larger of the two lets the thin species be governed by its height and the
-// flat species by its width, which is what "apparent size" meant all along.
-export const MUSHROOM_LOD_SPANS = [20, 40]
-
-// The LOD2 billboard is a TRIANGLE, apex down.
-//
-// A mushroom is the lollipop case from impostor.js's species table -- a wide cap
-// over a thin stalk -- so the two corners the apex-down triangle throws away are
-// the ground either side of the stem, which hold nothing. Measured by
-// rasterising the real LOD0 silhouette of all five species and counting which
-// covered pixels fall inside each triangle (scripts/check-mushrooms.mjs does it
-// and gates the number), apex-down keeps 74 to 94 percent of the prop where
-// apex-up keeps 40 to 58: parasol 93.7 against 39.6, fly agaric 89.7 / 45.3,
-// chanterelle 88.8 / 57.3, ink cap 82.0 / 45.2, porcini 74.4 / 57.7. Half the
-// far band's triangles for a few percent of a picture three pixels tall.
-//
-// PORCINI IS THE WORST CASE AND IT IS WORTH SAYING WHY, because it is the one
-// that would break the choice if it got any worse: a bolete is a bun on a
-// BARREL, so the widest part of its silhouette near the ground is real stem and
-// not empty air, which is exactly what an apex-down triangle clips. At 74
-// percent it still beats apex-up on that species by 17 points, but a future
-// preset fatter in the stem than the cap should be re-measured rather than
-// assumed to follow the others.
-export const MUSHROOM_BILLBOARD_TRI = 'down'
+// The distance ladder is the animals' arc rule over each variant's `span`, which
+// buildMushroomBank measures as max(height, spread); mushrooms.js owns it.
 
 /** One variant per species -- five. Index into this is a variant id. */
 export function mushroomVariants() {
@@ -249,22 +196,6 @@ export function mushroomVariants() {
       stemCurve: base.stemCurve,
     }
   })
-}
-
-/**
- * The impostor texture layers, one per species.
- *
- * This is the list `createPropMaterial({ billboardLayers })` keys on to decide
- * which geometries in the batch its vertex shader spins toward the eye. The LOD2
- * billboard is the ONLY tier that wears these layers -- the two mesh tiers wear
- * MUSHROOM_CAP and MUSHROOM_FLESH -- so unlike treeImpostorLayers, whose crossed
- * tier shares the layer with the tree's billboard and is held fixed by its
- * normals alone, the list is sufficient here. The shader's second condition, a
- * vertex normal at or over CARD_UP_MARK, still has to hold and does:
- * buildImpostorCard's `upNormal` writes literal (0, 1, 0).
- */
-export function mushroomImpostorLayers() {
-  return MUSHROOM_NAMES.map((s) => MUSHROOM_SPECIES[s].impostorLayer)
 }
 
 /**
@@ -317,23 +248,23 @@ function cardFrame(species, seed) {
 /**
  * Bake the whole bank in the shared batch's attribute layout.
  *
- * Returns `{ tiers, variants, bytes, triangles }`, where `tiers[t].geometries[v]`
- * is the geometry for tier `t` and variant `v`, and each entry of `variants` has
+ * Returns `{ tiers, cards, variants, bytes, triangles }`, where `tiers[t].geometries[v]`
+ * is the mesh for tier `t` and variant `v`, and each entry of `variants` has
  * picked up a measured `span` -- max(height, spread) -- that mushroomVariants()
  * on its own cannot supply. Every tier is the same length, so a band index and a
- * variant id are independent lookups. The card tier holds a triangle of its own
- * per variant, sized to that variant's measured height, so a mesh and the card
- * that replaces it are the same size at the instant they swap.
+ * variant id are independent lookups. `cards[v]` is the extents of the shared
+ * far card (litter-cards.js addPicture) for variant `v`, sized to that variant's
+ * measured height, so a mesh and the card that replaces it are the same size at
+ * the instant they swap.
  *
  * The arena TAKES the geometries -- render/prop-arena.js hands each one to an
  * InstancedMesh, which draws the very object it was given -- so the caller must
  * NOT dispose them.
  *
- * The CARD tier arrives with no pixels behind it. Its layers cannot be
- * photographed here because the bake needs a live renderer and this runs in a
- * constructor and in node -- see bakeMushroomImpostors. Until that runs the
- * cards sample an empty layer and alphaTest discards them, so distant mushrooms
- * fade in rather than flashing.
+ * The cards have no pixels behind them: the bake needs a live renderer and this
+ * runs in a constructor and in node -- see bakeMushroomImpostors. Until it runs
+ * a card's picture is empty and alphaTest discards it, so distant mushrooms fade
+ * in rather than flashing.
  */
 export function buildMushroomBank({ seed = 1 } = {}) {
   const variants = mushroomVariants()
@@ -371,11 +302,7 @@ export function buildMushroomBank({ seed = 1 } = {}) {
     }
     const s = perSpecies.get(v.species)
 
-    // The variant's own size, MEASURED off the built mesh rather than taken from
-    // `v.height`, because `spread` falls out of the cluster layout and the wavy
-    // rim and there is no closed form for it. This is the scale the scatter's
-    // distance bands are multiples of -- see MUSHROOM_LOD_SPANS -- so it is
-    // written back onto the variant record where the scatter can reach it.
+    // The variant's own size, MEASURED off the built mesh (`spread` has no closed form), written back onto the record for the scatter's LOD arc.
     v.span = Math.max(mesh.userData.mushroom.height, mesh.userData.mushroom.spread)
 
     // The quad is the species' frame scaled to THIS variant's real height. The
@@ -391,18 +318,11 @@ export function buildMushroomBank({ seed = 1 } = {}) {
     // geometry ids with nothing to cross-dissolve it.
     const k = mesh.userData.mushroom.height / s.frameHeight
 
-    // The billboard: one triangle with a vertical normal, spun toward the eye by
-    // the shader. `upNormal` rides with the spin deliberately -- a card that
-    // turns toward the player must not turn its normal too, or N.L becomes a
-    // function of where they are standing and the whole bed twinkles as they
-    // turn on the spot. It is also what selects this tier and no other for the
-    // spin; see mushroomImpostorLayers.
-    cards.push(buildImpostorCard(
-      s.ext.width * k, s.ext.height * k, s.layer, 1,
-      { upNormal: true, tri: MUSHROOM_BILLBOARD_TRI }))
+    // The card: the species' frame scaled to this variant, standing on y = 0 (litter-cards.js's cardPicture, spun).
+    cards.push({ kind: 'spun', cx: 0, cy: (s.ext.height * k) / 2, hw: (s.ext.width * k) / 2, hh: (s.ext.height * k) / 2 })
   })
 
-  const tiers = [...meshes.map((g) => ({ geometries: g })), { geometries: cards }]
+  const tiers = meshes.map((g) => ({ geometries: g }))
 
   // `t.triangles` is per SLOT, because that is what the scatter indexes when it
   // prices one instance. The TOTALS are per DISTINCT geometry, which is what the
@@ -422,12 +342,13 @@ export function buildMushroomBank({ seed = 1 } = {}) {
       triangles += g.index.count / 3
     }
   }
-  return { tiers, variants, bytes, triangles }
+  return { tiers, cards, variants, bytes, triangles }
 }
 
 /**
- * Photograph one mushroom per SPECIES into the impostor layer its cards already
- * point at, in place. Call ONCE, with the same `seed` buildMushroomBank was
+ * Photograph one mushroom per SPECIES as flat albedo (the shared card's Lambert
+ * lights it) into the atlas impostor layer, in place; the caller copies each
+ * layer into its card picture. Call ONCE, with the same `seed` buildMushroomBank was
  * given.
  *
  * Unlike the tree and fern bakes this does NOT have to wait for
@@ -444,7 +365,7 @@ export function buildMushroomBank({ seed = 1 } = {}) {
 export function bakeMushroomImpostors(renderer, texArray, { seed = 1 } = {}) {
   return MUSHROOM_NAMES.map((species) => {
     const { geo, frame } = cardFrame(species, seed)
-    const ext = bakeImpostor(renderer, geo, texArray, MUSHROOM_SPECIES[species].impostorLayer, frame)
+    const ext = bakeImpostor(renderer, geo, texArray, MUSHROOM_SPECIES[species].impostorLayer, { ...frame, unlit: true })
     geo.dispose()
     return { species, layer: MUSHROOM_SPECIES[species].impostorLayer, ...ext }
   })
@@ -458,14 +379,11 @@ export function mushroomBankTriangles({ seed = 1 } = {}) {
   const variants = mushroomVariants()
   const mesh = MUSHROOM_MESH_RADIAL.map((_, t) =>
     variants.reduce((n, v, i) => n + mushroomTriangles(mushroomParams(v, seed + i * 101, t)), 0))
-  // The card tier is priced per VARIANT, which is per species: one triangle
-  // each, built at that species' own measured size.
   return {
     // Per MESH TIER, finest first, because the two are separate bands in the
     // arena and a caller pricing "the mesh" has to say which one it means.
     mesh,
     meshTotal: mesh.reduce((a, b) => a + b, 0),
-    card: variants.length,
     variants: variants.length,
   }
 }

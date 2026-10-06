@@ -5,10 +5,8 @@ import {
   GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
   propReach,
 } from './gen-props.js'
-import {
-  AXIS_VIEWS, LOD_DEG, LOD_HYSTERESIS, SPUN_VIEWS, bakeCritterCard, distAt, ladderTier, setAxisCard,
-  setCritterCard, spunBounds,
-} from './critters.js'
+import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from './critters.js'
+import { cardPicture } from './litter-cards.js'
 import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
@@ -50,11 +48,10 @@ import { smoothstep } from '../../sim/mathx.js'
 //    is culled at its own size's range through the rim's per-instance
 //    gone-distance (rim.js); the tile grid reaches as far as the biggest piece
 //    in the bank is drawn.
-//    The stump's card is one quad spun to her in the vertex shader; the log's
-//    is its length photographed from beside it on two quads crossed about its
-//    own axis, not spun: a log has a heading, and a card that held still
-//    against the eye while the mesh under it pointed along its yaw made every
-//    swap read as the log turning.
+//    The far card is the shared litter quad (litter-cards.js): a stump's is
+//    spun to her; a log's turns only about the log's own length, because a log
+//    has a heading and a card spun about Y while the mesh pointed along its yaw
+//    made every swap read as the log turning.
 //
 // 3. THE FOREST IS PLACED AROUND IT, not it around the forest. A piece is a
 //    pure function of position (`_plan`), so trees.js asks `occupiesAt` before
@@ -316,8 +313,8 @@ const VARIANTS = [
   { name: 'stump', kind: 'snag', url: GEN_PROP_GLB.stump, longAxisZ: false },
   { name: 'log', kind: 'log', url: GEN_PROP_GLB.log, longAxisZ: true },
 ]
-// The far tier: a stump's one spun quad, a log's length crossed about its core.
-const cardViews = (v) => (v.kind === 'log' ? AXIS_VIEWS : SPUN_VIEWS)
+// The far tier (litter-cards.js): a stump's quad spun to her, a log's turned about its own axis.
+const cardKind = (v) => (v.kind === 'log' ? 'axial' : 'spun')
 
 // The band of a standing piece's height the walker is measured over.
 const TRUNK_BAND = [0.3, 0.8]
@@ -394,8 +391,8 @@ function logCore(geo, bounds) {
 
 /**
  * The bank from the two shipped ladders (gen-props.js's loadGenProp, keyed by
- * VARIANTS' names): tiers pick-first with the card last, every tier's
- * geometries in slot order, and per variant the metres `_seat` works in -- a
+ * VARIANTS' names): mesh tiers pick-first, every tier's geometries in slot
+ * order, a card picture per variant (`cards`, litter-cards.js's cardPicture), and per variant the metres `_seat` works in -- a
  * stump's radius is its widest half so its rim is sampled where the rim is,
  * a log's its core's so the slope burial is the belly's -- the radius the
  * walker meets it at (`solid`: a stump's trunk, see trunkRadius, a log's
@@ -414,14 +411,7 @@ export function deadwoodBankFrom(ladders) {
   })
   const tiers = propMeshTiers(picks)
   const cores = VARIANTS.map((v, i) => (v.kind === 'log' ? logCore(picks[i].geometries[0], picks[i].bounds) : { x: 0, y: 0, r: 0 }))
-  tiers.push({
-    geometries: VARIANTS.map((v, i) => {
-      const shim = { geometry: new THREE.BufferGeometry() }
-      if (v.kind === 'log') setAxisCard(shim, picks[i].bounds, cores[i])
-      else setCritterCard(shim, spunBounds(picks[i].bounds), SPUN_VIEWS)
-      return shim.geometry
-    }),
-  })
+  const cards = VARIANTS.map((v, i) => cardPicture(cardKind(v), picks[i].bounds, cores[i]))
   const variants = VARIANTS.map((v, i) => {
     const b = picks[i].bounds
     const log = v.kind === 'log'
@@ -439,7 +429,7 @@ export function deadwoodBankFrom(ladders) {
   })
   let bytes = 0
   for (const tier of tiers) for (const geo of tier.geometries) bytes += geometryBytes(geo)
-  return { tiers, variants, maps: picks.map((l) => l.map), bounds: picks.map((l) => l.bounds), bytes }
+  return { tiers, cards, variants, maps: picks.map((l) => l.map), bounds: picks.map((l) => l.bounds), bytes }
 }
 
 /** The bank off the shipped files, for the world. Both ladders or nothing. */
@@ -465,8 +455,11 @@ export class Deadwood {
     field,
     water,
     layers,
-    { seed = 1, density = DENSITY, radius = null, fullRadius = null, bank = null, biome = null, bounds = null } = {}
+    { seed = 1, density = DENSITY, radius = null, fullRadius = null, bank = null, biome = null, bounds = null, cards = null } = {}
   ) {
+    if (!cards || typeof cards.claim !== 'function') {
+      throw new Error('Deadwood: needs the LitterCards its far tier is drawn by')
+    }
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Deadwood: needs the bank from loadDeadwoodBank (or deadwoodBankFrom)')
     }
@@ -600,39 +593,34 @@ export class Deadwood {
 
     this.maxInstances = this._poolBound() + FADE_MAX_INFLIGHT
 
-    // A material per variant, and another per variant's card: each wears its
-    // own shipped map (gen-props.js). The card's map is photographed off the
-    // mesh by `bakeCards`, and a card is not drawn until then -- an unbaked
-    // card is a white quad, not an empty one.
-    this.tierCount = bank.tiers.length
-    this.cardTier = this.tierCount - 1
+    // A material per variant, each wearing its own shipped map (gen-props.js). The far tier is the shared card quad, which draws nothing until `bakeCards` has photographed its picture.
+    this.cards = cards
+    this.cardTier = bank.tiers.length
+    this.tierCount = this.cardTier + 1
     this.meshMaterials = bank.variants.map((v, i) => {
       const m = createGenPropMaterial()
       m.map = bank.maps[i]
       return m
     })
-    this.cardMaterials = bank.variants.map((v) => {
-      const m = createGenPropMaterial({ card: true, billboard: cardViews(v) === SPUN_VIEWS })
-      m.visible = false
-      return m
-    })
-    this.materials = [...this.meshMaterials, ...this.cardMaterials]
+    this.materials = this.meshMaterials
 
-    // The bank hands its tiers back finest-first and already expanded per
-    // variant, so there is no reverse and no perVariant indirection: a geometry
-    // id is just `tier * variantCount + variant`, which is the arena's own
-    // layout. Every slot is its own geometry because a card is sized to its own
-    // variant's extents.
+    // The bank hands its mesh tiers back finest-first and already expanded per variant, so a geometry id is `tier * variantCount + variant`, the arena's own layout. The far tier is one id past them, the one card mesh.
+    const cardBase = this.cardTier * this.variantCount
+    cards.claim('deadwood', this.maxInstances)
+    this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
       this._tierCaps(),
-      (t, v) => (t === this.cardTier ? this.cardMaterials[v] : this.meshMaterials[v]),
-      'v2-deadwood'
+      (t, v) => this.meshMaterials[v],
+      'v2-deadwood',
+      { cards: cards.meshes, cardBase }
     )
     this.tierIds = bank.tiers.map((_t, t) =>
       bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))
+    this.tierIds.push(new Array(this.variantCount).fill(cardBase))
     this.tierTris = bank.tiers.map((t) => t.geometries.map(triangleCount))
+    this.tierTris.push(new Array(this.variantCount).fill(cards.cardTris))
     // The A/B control: hand the far band the real T0 mesh so the card can be
     // judged against ground truth at the distance the swap happens.
     this.farMeshIds = this.tierIds[0].slice()
@@ -745,7 +733,7 @@ export class Deadwood {
    * throw in the middle of a walk.
    */
   _tierCaps() {
-    return new Array(this.tierCount).fill(this.maxInstances)
+    return new Array(this.cardTier).fill(this.maxInstances)
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
@@ -1467,6 +1455,7 @@ export class Deadwood {
       // their rung on the very next frame with no hysteresis to cross.
       this.tierAt[id] = -1
       this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
+      this.batch.setLayerShiftAt(id, this.cardPicture[variant])
 
       // A piece of rank u survives while the local keep-fraction fullRadius/d
       // exceeds u, so it goes at fullRadius/u, its own FULL_STEP reach over its
@@ -1579,6 +1568,7 @@ export class Deadwood {
     this.batch.getColorAt(i, this._c)
     this.batch.setColorAt(dup, this._c)
     this.batch.setGeometryIdAt(dup, this._geometryFor(oldTier, variant))
+    this.batch.setLayerShiftAt(dup, this.cardPicture[variant])
     this.batch.setVisibleAt(dup, true)
     setPropFadeTimerAt(this.batch, dup, now, false)
     setPropFadeTimerAt(this.batch, i, now, true)
@@ -1652,11 +1642,7 @@ export class Deadwood {
   bakeCards(renderer) {
     const t0 = performance.now()
     this.bank.variants.forEach((v, i) => {
-      const card = this.cardMaterials[i]
-      const views = cardViews(v)
-      const bounds = views === SPUN_VIEWS ? spunBounds(this.bank.bounds[i]) : this.bank.bounds[i]
-      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], bounds, views)
-      card.visible = true
+      this.cards.bake(renderer, this.cardPicture[i], this.bank.tiers[0].geometries[i], this.bank.maps[i], this.bank.bounds[i], cardKind(v))
     })
     this.cardBakeMs = performance.now() - t0
   }

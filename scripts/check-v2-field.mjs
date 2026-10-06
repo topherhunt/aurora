@@ -64,6 +64,7 @@ import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { TerrainTint } from '../src/terrain/terrain-tint.js'
 import { buildChunkV2, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { HEARTH_LIGHT, HEARTHS } from '../src/v2/hearth-light.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
 
@@ -654,6 +655,34 @@ export async function run({ heightmap } = {}) {
 
     check(r.positions.length === CHUNK_VERTS * 3, 'vertex count matches config exactly', `${r.positions.length / 3} of ${CHUNK_VERTS}`)
     check(r.indices.length === CHUNK_INDICES, 'index count matches config exactly', `${r.indices.length} of ${CHUNK_INDICES}`)
+    check(r.hearth.length === CHUNK_VERTS && r.hearth.every((v) => v === 0), 'with no hearths every vertex bakes no glow', `${r.hearth.filter((v) => v !== 0).length} lit`)
+
+    // The last hearth the cap allows at the chunk's centre, the rest far off: the top index has to survive the pack.
+    {
+      const step = size / CHUNK_RES
+      const cx = 512 + size / 2, cz = -1024 + size / 2
+      const fire = { x: cx, y: field.heightAt(cx, cz), z: cz }
+      const lit = buildChunkV2(field, layers, { ox: 512, oz: -1024, size, res: CHUNK_RES, cam: CAM }, null, null, [...Array.from({ length: HEARTHS - 1 }, (_, i) => ({ x: -3000 + i * 40, y: 0, z: 3000 })), fire])
+      const reach = Math.max(HEARTH_LIGHT.reach, HEARTH_LIGHT.coarse * step)
+      let wrongIndex = 0, inside = 0, leaked = 0, peak = 0
+      for (let v = 0; v < inner; v++) {
+        const d = Math.hypot(512 + lit.positions[v * 3] - fire.x, lit.positions[v * 3 + 1] - fire.y, -1024 + lit.positions[v * 3 + 2] - fire.z)
+        const g = lit.hearth[v]
+        if (d < reach - 0.5) { inside++; if (Math.floor(g) !== HEARTHS - 1 || g <= HEARTHS - 1) wrongIndex++ }
+        if (d > reach && g !== 0) leaked++
+        peak = Math.max(peak, g - Math.floor(g))
+      }
+      check(inside > 0 && wrongIndex === 0, 'a vertex inside a hearth\'s reach carries that hearth\'s index and some glow', `${inside} inside, ${wrongIndex} wrong`)
+      check(leaked === 0, 'and one past the reach carries none', `${leaked} lit past ${reach.toFixed(1)} m`)
+      check(peak > 0.9 && peak < 1, 'the glow peaks near the flame and stays under 1, so the index is never bumped', peak.toFixed(3))
+
+      // A coarse chunk, flame between vertices: the reach widens so the pool still lands on some.
+      const coarseSize = WORLD_SIZE / (1 << 4), coarseStep = coarseSize / CHUNK_RES
+      const qx = 512 + coarseStep * 2.5, qz = -1024 + coarseStep * 2.5
+      const coarse = buildChunkV2(field, layers, { ox: 512, oz: -1024, size: coarseSize, res: CHUNK_RES, cam: CAM }, null, null, [{ x: qx, y: field.heightAt(qx, qz), z: qz }])
+      const coarseLit = coarse.hearth.filter((v) => v > 0).length
+      check(coarseStep * HEARTH_LIGHT.coarse > HEARTH_LIGHT.reach && coarseLit >= 4, `a ${coarseStep.toFixed(0)} m cell still catches the glow on the vertices around the flame`, `${coarseLit} lit`)
+    }
 
     let nan = 0
     for (const a of [r.positions, r.normals, r.colors]) for (let i = 0; i < a.length; i++) if (!Number.isFinite(a[i])) nan++

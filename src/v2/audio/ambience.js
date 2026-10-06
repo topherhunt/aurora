@@ -169,6 +169,8 @@ export const RULES = {
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A strider's feet on the same clock, the large animal's step: at `level` and rate 1 for a `size`-metre body at `near` m.
   stride: { reach: 40, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  // A stag's hooves: the strider's tread quieter, given the far treatment as though `far` metres further off (dulled and wetted, and that much late at the speed of sound).
+  hoof: { reach: 40, near: 2, size: 2.2, level: 0.25, max: 0.3, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0], far: 15 },
   // A snowman's: the same tread deeper and louder, carrying farther, so a 2-6 m body thuds where a strider steps.
   thud: { reach: 60, near: 3, size: 1.2, level: 0.8, max: 1, deep: 0.8, jitter: 0.1, gain: [0.8, 1.0] },
   // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
@@ -187,6 +189,8 @@ export const RULES = {
   striderCall: { reach: 30, near: 3, edge: 8, level: 0.6, gain: [0.8, 1.0] },
   // A tamed stag's or hare's contented grunt as it eats from her hand (wildlife.js voices()), pitched up; the grunt is mastered hot.
   contented: { reach: 15, near: 2, edge: 5, level: 0.25, gain: [0.8, 1.0] },
+  // A stag's cry as it bolts from her (wildlife.js voices()): its grunt, heard as the herd's grunt is.
+  alarm: { reach: 25, near: 4, edge: 8, level: 0.25, gain: [0.7, 1.0] },
   // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
   door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
@@ -241,7 +245,7 @@ export class Ambience {
    * @param engine  a SoundEngine (or the gate's fake): play, loop, setSubmerged, update.
    * @param sense   a WorldSense (or the gate's scripted one): sample(hx, hy, hz, out).
    * @param voiced    the layers whose one-shots are heard, each { layer, rule, bus }: layer.voices(into) drains them (a one-shot's optional `rate` and `gain` scale its roll), `rule` names their RULES entry (voice, villagerVoice), or a one-shot's own `rule` does (door); `bus` 'near' keeps them out of the house's walls (a leafkin at home), else `air`.
-   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls, bus, sound, rule }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, `calls`, if any, maps a species key (body.sp.key) to the rule of its call, `bus` is as a voiced layer's, and `sound` and `rule` their step (footfall and RULES.footfall unless named).
+   * @param herds     the layers of animals whose feet are heard, each { layer, clips, calls, steps, bus, sound, rule }: layer.bodies(into) lists its living bodies (x, y, z, size, clip, cycle, speed), `clips` names their library in FOOTFALLS, `calls`, if any, maps a species key (body.sp.key) to the rule of its call, `bus` is as a voiced layer's, and `sound` and `rule` their step (footfall and RULES.footfall unless named), or `steps`, keyed by species, a species' own { sound, rule }.
    * @param crawlers  the layers whose moving bodies together hold the crawl loop: each has bodies(into) listing x, y, z and speed, and may have startled(into), listing the bodies that took fright this frame.
    * @param startlers the layers heard only when one takes fright (the spiders, silent on their feet): each has startled(into).
    * @param dragons   the dragon layer, if any: bodies(into) lists x, y, z, state ('roost' on the nest), clip ('fly' in the air) and cycle (the clip's length) on each.
@@ -266,7 +270,9 @@ export class Ambience {
     for (const h of herds) {
       if (!h.layer || typeof h.layer.bodies !== 'function') throw new Error('Ambience: a herd needs a layer with bodies()')
       if (!FOOTFALLS[h.clips]) throw new Error(`Ambience: no footfalls for a ${h.clips} clip library`)
-      if (h.sound !== undefined && (!SOUNDS[h.sound] || !RULES[h.rule]?.deep)) throw new Error(`Ambience: a herd's step ${h.sound} needs a sound and a footfall rule, not ${h.rule}`)
+      for (const s of [h, ...Object.values(h.steps || {})]) {
+        if (s.sound !== undefined && (!SOUNDS[s.sound] || !RULES[s.rule]?.deep)) throw new Error(`Ambience: a herd's step ${s.sound} needs a sound and a footfall rule, not ${s.rule}`)
+      }
       for (const rule of Object.values(h.calls ?? {})) if (!RULES[rule]?.every) throw new Error(`Ambience: no call rule named ${rule}`)
     }
     for (const l of crawlers) if (!l || typeof l.bodies !== 'function') throw new Error('Ambience: a crawler layer needs bodies()')
@@ -597,13 +603,15 @@ export class Ambience {
    */
   _herds(dt, head) {
     for (const h of this.herds) {
-      const { sound = 'footfall', rule = 'footfall' } = h
-      const F = RULES[rule]
+      const { sound: herdSound = 'footfall', rule: herdRule = 'footfall' } = h
       const table = FOOTFALLS[h.clips]
       const listed = this.listed
       listed.length = 0
       h.layer.bodies(listed)
       for (const c of listed) {
+        const own = h.steps ? h.steps[c.sp.key] : undefined
+        const sound = own ? own.sound : herdSound
+        const F = RULES[own ? own.rule : herdRule]
         const call = h.calls ? h.calls[c.sp.key] : undefined
         const Y = call ? RULES[call] : null
         const d = Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z)
@@ -630,7 +638,7 @@ export class Ambience {
           const level = Math.min(F.max, F.level * (c.size / F.size)) * (F.near / Math.max(F.near, d))
           const rate = Math.pow(F.size / c.size, F.deep)
           while (f.phase >= f.at) {
-            this.fire(sound, { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus })
+            this.fire(sound, { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus, distance: F.far === undefined ? 0 : d + F.far })
             if (++f.beat === beats.length) {
               f.beat = 0
               f.phase -= 1

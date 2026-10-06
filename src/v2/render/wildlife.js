@@ -278,7 +278,8 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * `court` what it does once it is there and the lure is not at its face.
  * A `wary` one flees her at its `flee` gait, holds still at a lure, eats a
  * carrot of hers and is then tame, following her to its `heel` and voicing
- * its `call` (an ambience SOUNDS key, at a rate rolled in `rate`) as it eats.
+ * its `call` (an ambience SOUNDS key, at a rate rolled in `rate`) as it eats;
+ * one with a `cry` voices it, under that ambience rule, as it starts to run.
  * `prefix` is the first word of its creatures' keys.
  */
 export const SPECIES = [
@@ -287,7 +288,7 @@ export const SPECIES = [
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
     lures: ['carrot'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
-    wary: true, flee: 'run', heel: 2.5, call: { sound: 'deerGrunt', rate: [1.1, 1.3] },
+    wary: true, flee: 'run', heel: 2.5, call: { sound: 'deerGrunt', rate: [1.1, 1.3] }, cry: { sound: 'deerGrunt', rule: 'alarm', rate: [1, 1] },
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.15, 0.9, 0.8]]), // greyer, brown, redder
   },
   {
@@ -764,10 +765,9 @@ export class Wildlife {
     return into
   }
 
-  /** A wary animal's contented call, from where it stands. */
-  _say(c) {
-    const { sound, rate } = c.sp.call
-    this.said.push({ sound, x: c.sx, y: c.y, z: c.sz, rate: between(c.live.rand, rate) })
+  /** A wary animal's contented call, or another voice of its species', from where it stands. */
+  _say(c, { sound, rule, rate } = c.sp.call) {
+    this.said.push({ sound, rule, x: c.sx, y: c.y, z: c.sz, rate: between(c.live.rand, rate) })
   }
 
   // -------------------------------------------------------------------------
@@ -1247,6 +1247,7 @@ export class Wildlife {
       }
       // The room hears the run the tick it begins, its heading the way it runs.
       if (act === 'flee' && c.live.by === null) c.live.sendTick = tickOf(now)
+      if (act === 'flee' && c.sp.cry !== undefined) this._say(c, c.sp.cry)
       q.push(...this._steps(c.sp, act, rand))
     }
     c.act = act

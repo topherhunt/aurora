@@ -1,6 +1,7 @@
 import THREE from './three-instance.js'
 import { WORLD_SIZE, WORLD_HALF } from './sim/terrain-height.js'
 import { AZIMUTHS, HORIZON_SOFT } from './sim/horizon.js'
+import { HEARTHS } from './v2/hearth-light.js'
 
 // ---------------------------------------------------------------------------
 // World lighting: the render-side half of the horizon map (§8).
@@ -488,12 +489,14 @@ const LAMP_GLSL = /* glsl */ `
   }
 `
 
-// TORCHES are the one dynamic light: up to TORCHES of them, each a point that moves, so they are uniforms and not the lamp map's bake. Like a lamp's the light multiplies the surface's own colour and ignores its normal; it fades to nothing at TORCH_REACH metres, as the square of the distance left. A slot with no strength is skipped, so a world with none lit pays only the loop's test.
+// TORCHES are the one dynamic light: up to TORCHES of them, each a point that moves, so they are uniforms and not the lamp map's bake. Like a lamp's the light multiplies the surface's own colour and ignores its normal; it fades to nothing at its slot's reach (TORCH_REACH for a torch), as the square of the distance left. A slot with no strength is skipped, so a world with none lit pays only the loop's test.
 export const TORCHES = 4
 export const TORCH_REACH = 15
 const TORCH_GLSL = /* glsl */ `
   // xyz the flame, w its strength (0 = out).
   uniform vec4 uTorch[${TORCHES}];
+  // 1 / each slot's reach, metres.
+  uniform float uTorchInvReach[${TORCHES}];
   uniform vec3 uTorchColor;
 
   vec3 wlTorch( vec3 p ) {
@@ -501,7 +504,7 @@ const TORCH_GLSL = /* glsl */ `
     for ( int i = 0; i < ${TORCHES}; i++ ) {
       float s = uTorch[ i ].w;
       if ( s <= 0.0 ) continue;
-      float k = clamp( 1.0 - length( p - uTorch[ i ].xyz ) / ${TORCH_REACH.toFixed(1)}, 0.0, 1.0 );
+      float k = clamp( 1.0 - length( p - uTorch[ i ].xyz ) * uTorchInvReach[ i ], 0.0, 1.0 );
       sum += uTorchColor * ( s * k * k );
     }
     return sum;
@@ -561,9 +564,12 @@ export class WorldLighting {
       uLampY: { value: new THREE.Vector2(0, 1) },
       uLampColor: { value: new THREE.Color(0, 0, 0) },
       uLampGlow: { value: new THREE.Vector3(0, 0, 0) },
-      // The torches (TORCH_GLSL): each a point and a strength, and the warm colour they share, linear.
+      // The torches (TORCH_GLSL): each a point, a strength and a reach, and the warm colour they share, linear.
       uTorch: { value: Array.from({ length: TORCHES }, () => new THREE.Vector4(0, 0, 0, 0)) },
+      uTorchInvReach: { value: new Float32Array(TORCHES).fill(1 / TORCH_REACH) },
       uTorchColor: { value: new THREE.Color(1.0, 0.42, 0.12) },
+      // Each town hearth's baked glow strength (hearth-light.js), read only by a patch with `hearths`.
+      uHearthFar: { value: new Float32Array(HEARTHS) },
     }
 
     this.horizonTex = null
@@ -634,13 +640,15 @@ export class WorldLighting {
     this.recompile()
   }
 
-  /** The torches' light this frame: up to TORCHES of `{ x, y, z, strength }`, the rest put out. Not a recompile. */
+  /** The torches' light this frame: up to TORCHES of `{ x, y, z, strength, reach }`, the rest put out. Not a recompile. */
   setTorches(list) {
-    const slots = this.uniforms.uTorch.value
+    const slots = this.uniforms.uTorch.value, inv = this.uniforms.uTorchInvReach.value
     for (let i = 0; i < TORCHES; i++) {
       const t = list[i]
-      if (t) slots[i].set(t.x, t.y, t.z, t.strength)
-      else slots[i].w = 0
+      if (!t) { slots[i].w = 0; continue }
+      if (!(t.reach > 0)) throw new Error(`setTorches: slot ${i} needs a reach, got ${t.reach}`)
+      slots[i].set(t.x, t.y, t.z, t.strength)
+      inv[i] = 1 / t.reach
     }
   }
 
@@ -825,8 +833,12 @@ export class WorldLighting {
    * to read "no difference" on a headset. variantKey() rides in the same key
    * for the same reason: this file's own two axes are three programs.
    */
-  patch(material, { mode, cacheKey, worldPosVarying = null, caustics = mode === 'fragment', liftAlbedo = null }) {
+  patch(material, { mode, cacheKey, worldPosVarying = null, caustics = mode === 'fragment', liftAlbedo = null, hearths = false }) {
     if (mode !== 'fragment' && mode !== 'vertex') throw new Error(`patch: bad mode ${mode}`)
+    // The baked glow rides a per-vertex `hearth` attribute only the terrain carries.
+    if (hearths && mode !== 'vertex') throw new Error('patch: hearths needs vertex mode')
+    // vec4-packed: a float[] may take a whole vector slot per element, and HEARTHS of those would crowd the vertex stage's uniform budget.
+    const hearthDecl = hearths ? `\nattribute float hearth;\nuniform vec4 uHearthFar[${HEARTHS / 4}];` : ''
     // Per material, and on userData so a console can tune it live.
     const liftU = liftAlbedo && { value: new THREE.Vector2(liftAlbedo.mix, liftAlbedo.gain) }
     if (liftU) material.userData.wlLiftAlbedo = liftU
@@ -898,7 +910,7 @@ export class WorldLighting {
         // The lamps' light at the vertex, a varying only while a room has lamps.
         const lamp = (lamps ? '\nvarying vec3 vWlLamp;' : '') + '\nvarying vec3 vWlTorch;'
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}${lamp}${lamps ? LAMP_GLSL : ''}${TORCH_GLSL}`)
+          .replace('#include <common>', `#include <common>\n${maps ? `${SAMPLE_GLSL}\n` : ''}${varying}${bed}${lamp}${lamps ? LAMP_GLSL : ''}${TORCH_GLSL}${hearthDecl}`)
           .replace(
             '#include <project_vertex>',
             `#include <project_vertex>
@@ -909,7 +921,8 @@ export class WorldLighting {
               : `vWlNear = ${NEAR_GLSL('wlWorld')};`}
             ${caustics ? 'vWlBed = wlWorld;' : ''}
             ${lamps ? 'vWlLamp = wlLamp( wlWorld );' : ''}
-            vWlTorch = wlTorch( wlWorld );`
+            vWlTorch = wlTorch( wlWorld );
+            ${hearths ? 'int wlHi = int( hearth ); vWlTorch += uTorchColor * ( fract( hearth ) * uHearthFar[ wlHi / 4 ][ wlHi % 4 ] );' : ''}`
           )
         shader.fragmentShader = shader.fragmentShader
           .replace('#include <common>', `#include <common>\n${varying}${bed}${lamp}\n${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}`)

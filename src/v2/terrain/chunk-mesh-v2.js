@@ -2,6 +2,7 @@ import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
 import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
 import { forestKeepAt } from '../layers/forest.js'
+import { hearthGlowAt, hearthsReach } from '../hearth-light.js'
 
 // ---- THE STIPPLE FRAME, one per vertex, read per FACE.
 //
@@ -525,9 +526,10 @@ function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, w
  *   as Trees: null is full forest everywhere the treeline allows, which is what
  *   the gates measure against. The shipped worker passes the real field.
  * @param ground GroundTint, or null for a world whose ground is grass everywhere; see layers/ground.js.
- * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, forest:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
+ * @param hearths town hearth flames `{x, y, z}` whose glow is baked per vertex; see v2/hearth-light.js.
+ * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, forest:Float32Array, hearth:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
-export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null) {
+export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null, hearths = []) {
   if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
     throw new Error(`buildChunkV2: spec.cam must be a finite {x, y, z}, got ${JSON.stringify(cam)}`)
   }
@@ -667,6 +669,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // terrain-material.js fades it in with distance. Water is not asked: a lake
   // bed's tint is under the lake.
   const forest = new Float32Array(total)
+  const hearth = new Float32Array(total)
+  const glows = hearthsReach(hearths, ox, oz, size, step)
 
   let minY = Infinity
   let maxY = -Infinity
@@ -766,6 +770,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       if (ground) ground.tintAt(wx, wz, tint)
       shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o, tint)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
+      if (glows) hearth[vi] = hearthGlowAt(hearths, wx, h, wz, step)
 
       // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal
       // (-dx, 1, -dz) most faces -- not the bumped shading normal above, whose
@@ -826,6 +831,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       colors[o + 2] = colors[vi * 3 + 2]
       for (let c = 0; c < 4; c++) stipple[sv * 4 + c] = stipple[vi * 4 + c]
       forest[sv] = forest[vi]
+      hearth[sv] = hearth[vi]
       row.push(sv)
       sv++
     }
@@ -880,7 +886,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // `culled` travels with the mesh so the panel and the gate can report the
   // fraction of chunks that took the cheap path -- §18 puts a number on that
   // claim rather than asserting it.
-  return { positions, normals, colors, stipple, forest, indices, minY, maxY, skirtDepth, culled: !touched }
+  return { positions, normals, colors, stipple, forest, hearth, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
 // C_GRASS is exported because the quest flat-ground card has to paint itself the

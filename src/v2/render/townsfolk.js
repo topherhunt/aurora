@@ -1261,9 +1261,14 @@ export class Townsfolk {
     this.loaded = true
   }
 
-  /** Every town's campfire flame, woken or not, for ambience.js: the clearing is flattened to `town.y`. */
+  /** Every town's hearth flame, woken or not: the clearing is flattened to `town.y`. */
+  get hearths() {
+    return this.towns.map((t) => ({ x: t.x, y: t.y + HEARTH.fire.lift * this.hearthScale, z: t.z }))
+  }
+
+  /** The hearths and the smithies' forges, for ambience.js. */
   get fires() {
-    return [...this.towns.map((t) => ({ x: t.x, y: t.y + HEARTH.fire.lift * this.hearthScale, z: t.z })), ...this.towns.flatMap((t) => t.works.filter((w) => w.kind === 'smithy').map(forgeAt))]
+    return [...this.hearths, ...this.towns.flatMap((t) => t.works.filter((w) => w.kind === 'smithy').map(forgeAt))]
   }
 
   get stats() {

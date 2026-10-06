@@ -4,11 +4,12 @@ import { QUANT, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } f
 import {
   buildMushroomBank,
   bakeMushroomImpostors,
-  mushroomImpostorLayers,
-  MUSHROOM_LOD_SPANS,
   MUSHROOM_NAMES,
 } from '../../props/mushroom-bank.js'
 import { createPropMaterial, setSnowLine } from '../../material.js'
+import { TEX_SIZE } from '../../textures.js'
+import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from './critters.js'
+import { PROP_STEPS, propCull } from './gen-props.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
@@ -40,20 +41,14 @@ import { taken, TOLERANCE_M } from '../taken.js'
 //
 // THE LADDER, shorter than a fern's on purpose:
 //
-//   tier 0   the mesh at radial 16, 60 to 66 tris.    inside 20 spans
-//   tier 1   the mesh at radial 6, 30 to 36 tris.      20 to 40 spans
-//   tier 2   one triangle, spun toward the eye, 1 tri. 40 spans to the draw radius
+//   tier 0   the mesh at radial 16, 60 to 66 tris.    to 1 x distAt(span, LOD_DEG)
+//   tier 1   the mesh at radial 6, 30 to 36 tris.      to 2 x
+//   tier 2   one triangle, spun toward the eye, 1 tri. to 16 x, then culled
 //
-// No crossed-planes tier between coarse mesh and billboard, where a tree and a fern
-// both have one: by 40 spans the prop is 23 px across, past §5's parallax range and
-// past the size at which a second plane's silhouette is legible.
-//
-// THE BANDS ARE MULTIPLES OF THE PROP'S OWN SPAN, not metres -- the one place this
-// scatter departs from its siblings. A mushroom is 8 cm on the forest floor and
-// metres in a cave off the same five presets, so a fixed band would card the small
-// one at 15 px and hold the big one long past 26. A span is max(height, spread);
-// MUSHROOM_LOD_SPANS carries the pixel numbers and the §5 parallax check. The far
-// end is the 2-pixel rule coming the other way and stays absolute; see DRAW_RADIUS.
+// THE LADDER IS THE ANIMALS' ARC RULE (critters.js ladderTier, gen-props.js
+// PROP_STEPS) over the instance's own span = max(height, spread) x its size jitter,
+// so a 9 cm cap and a cave giant swap at the same apparent size. Each instance is
+// rim-culled at propCull(its span), and the layer's radius is the biggest of those.
 // ---------------------------------------------------------------------------
 
 // How many anchors -- trees plus rocks -- this file ASSUMES are standing per
@@ -109,23 +104,15 @@ const CLUMP_LEAN = 0.26
 const SIZE_JITTER = [0.82, 1.18]
 
 // Metres. Inside this every clump that rolled one is standing; past it the
-// keep-fraction decays as FULL_RADIUS / d exactly as the forest's does. It sits
-// comfortably past the last mesh band so the thinning only ever starts where a
-// mushroom is already a single spun triangle.
+// keep-fraction decays as FULL_RADIUS / d exactly as the forest's does. Capped
+// by the layer's radius, so a layer whose biggest cap culls inside it thins nowhere.
 const FULL_RADIUS = 24
 
-// Metres, and the only distance here that is NOT relative to the prop. At
-// 16.2 px/deg a 13 cm mushroom subtends 2 px at 60 m and a 28 cm parasol at
-// 130 m. Culling the whole layer at 55 m therefore costs the parasols a band
-// where they would still have been faintly visible, and buys back the far
-// two-thirds of the tile grid for the four species where the card was already
-// sub-pixel. A single radius for the layer is the trade; a per-species radius
-// would mean five tile grids, which is also why the band ladder above is scaled
-// per INSTANCE and the cull is not.
+// Metres, the ceiling on the layer's radius. The radius actually used is the arc
+// cull of the biggest instance the bank can grow (propCull of the largest span
+// times SIZE_JITTER's top), because past that nothing is drawn and a tile there
+// would only be walked.
 const DRAW_RADIUS = 55
-
-// The dead band on a tier boundary. The forest's value for the forest's reasons.
-const LOD_HYSTERESIS = 0.12
 
 // Metres per tile. Smaller than the fern's 12 and much smaller than the
 // forest's 25, for a reason particular to this scatter: growing a tile costs
@@ -138,8 +125,11 @@ const TILE = 10
 const BUILD_BUDGET_MS = 1.5
 
 // Only instances in tiles this close are re-tiered every frame; everything
-// beyond the last mesh band is a billboard and cannot change tier.
+// beyond the last mesh band is a card and cannot change tier.
 const NEAR_MARGIN = TILE * 1.5
+
+// Mesh rungs on the ladder; the rung after them is the card.
+const MESH_RUNGS = 2
 
 // Anchors read out of the sources per tile. 64 in a 10 m tile is 0.64/m^2, an
 // order of magnitude over the density this file expects, so the cap is a
@@ -243,8 +233,9 @@ export class Mushrooms {
     layers,
     textureArray,
     anchors,
-    { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, none = false, bounds = null } = {}
+    { seed = 1, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, none = false, bounds = null, cards = null } = {}
   ) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Mushrooms: needs the shared LitterCards (litter-cards.js)')
     if (typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') {
       throw new Error('Mushrooms: field needs heightAt and heightAndSlopeAt')
     }
@@ -274,7 +265,16 @@ export class Mushrooms {
     this.seed = seed
     // The room's disc, if it has one (tile-pool.js): no tile outside it, and a draw radius cut to what fits inside it.
     this.bounds = bounds
-    radius = boundedRadius(radius, bounds, TILE)
+
+    const t0 = performance.now()
+    const bank = buildMushroomBank({ seed })
+    this.bank = bank
+    this.variantCount = bank.variants.length
+
+    // The radius is the arc cull of the biggest cap the bank can grow, so no tile is walked that cannot show one.
+    const maxSpan = Math.max(...bank.variants.map((v) => v.span))
+    radius = boundedRadius(Math.min(radius, propCull(maxSpan * SIZE_JITTER[1])), bounds, TILE)
+    fullRadius = Math.min(fullRadius, radius)
     this.radius = radius
     this.fullRadius = fullRadius
     this.fullSq = fullRadius * fullRadius
@@ -303,11 +303,6 @@ export class Mushrooms {
     for (let q = 0; q <= this.maxQ + 1; q++) this.loSq[q] = (fullRadius * Math.pow(2, q / QUANT)) ** 2
 
     this.maxInstances = this._poolBound()
-
-    const t0 = performance.now()
-    const bank = buildMushroomBank({ seed })
-    this.bank = bank
-    this.variantCount = bank.variants.length
 
     // Which variant ids belong to which species, read back off the bank rather
     // than computed from the species order. The bank lays its variants out
@@ -342,35 +337,22 @@ export class Mushrooms {
       return h
     })
 
-    // Span squared per VARIANT, the scale the distance bands are multiples of.
-    // Read off bank.variants rather than recomputed, because a span is measured
-    // from a built mesh and this file never builds one.
+    // Span per VARIANT, read off the bank because a span is measured from a built mesh.
     this.variantSpan = Float64Array.from(bank.variants, (v) => {
       if (!(v.span > 0)) throw new Error(`Mushrooms: bank variant ${v.species} has no measured span`)
       return v.span
     })
 
-    // How far out a tile has to be before NOTHING in it can want a mesh, in
-    // units of one span. Past that everything resolves to the spun
-    // billboard, which is what lets a far tile be priced with one multiply
-    // instead of a walk. NEAR_MARGIN covers the two ways the tile-centre test
-    // can be optimistic about a member: a diagonal half-tile of position (7.1 m)
-    // and LOD_HYSTERESIS holding a sticky instance one band longer.
-    this.nearSpans = MUSHROOM_LOD_SPANS[MUSHROOM_LOD_SPANS.length - 1]
+    // Metres of mesh reach per metre of span, hysteresis included: a tile past
+    // biggest x this + NEAR_MARGIN holds only cards, so it is priced with one
+    // multiply instead of a walk. NEAR_MARGIN covers a diagonal half-tile (7.1 m).
+    this.nearSpans = distAt(1, LOD_DEG) * PROP_STEPS[MESH_RUNGS - 1] * (1 + LOD_HYSTERESIS)
 
-    // Five impostor layers, one per species, and passing them here is what lets
-    // the vertex shader spin the LOD2 triangles. Only that tier wears these
-    // layers -- the two mesh tiers wear the cap and flesh sheets -- so unlike
-    // the tree layer, where a fixed crossed tier shares the impostor layer with
-    // the billboard, nothing here relies on the shader's second test to be held
-    // still. That test, a vertex normal at or over CARD_UP_MARK in material.js,
-    // still has to pass for the spin to happen at all.
     // `instancedFade` because the rim dissolve's timer has nowhere else to live
     // on an InstancedMesh: instanceColor is itemSize 3 in r180, so there is no
     // alpha beside the tint and the arena carries `aPropFade` instead. See
     // material.js's FADE_VERTEX.
     this.material = createPropMaterial(textureArray, {
-      billboardLayers: mushroomImpostorLayers(),
       instancedFade: true,
     })
 
@@ -378,18 +360,26 @@ export class Mushrooms {
     // finest-first and already expanded per variant, so there is no reverse and
     // no perVariant indirection: a geometry id is just `tier * variantCount +
     // variant`, which is the arena's own layout.
-    this.tierCount = bank.tiers.length
+    // The far tier is one id past them, the shared card quad, which draws nothing until `bakeCards` has written its pictures.
+    this.cards = cards
+    this.cardTier = bank.tiers.length
+    this.tierCount = this.cardTier + 1
+    const cardBase = this.cardTier * this.variantCount
+    cards.claim('mushrooms', this.maxInstances)
+    this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
       this._tierCaps(),
       this.material,
-      'v2-mushrooms'
+      'v2-mushrooms',
+      { cards: cards.meshes, cardBase }
     )
     this.tierIds = bank.tiers.map((_, t) =>
       bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))
+    this.tierIds.push(new Array(this.variantCount).fill(cardBase))
     this.tierTris = bank.tiers.map((tier) => tier.geometries.map(triangleCount))
-    this.cardTier = this.tierCount - 1
+    this.tierTris.push(new Array(this.variantCount).fill(cards.cardTris))
     // The A/B control: hand the far band the real MESH instead of the spun
     // triangle, so the impostor can be judged against ground truth at the
     // distance the swap actually happens. Tier 0 is the FINEST mesh, not the
@@ -398,8 +388,8 @@ export class Mushrooms {
     this.farMeshIds = this.tierIds[0].slice()
     this.farMeshTris = this.tierTris[0].slice()
     // A far tile can be priced with one multiply only when every slot in the
-    // tier costs the same. That holds for the card tier -- one spun triangle is
-    // one spun triangle -- and NOT for a mesh tier. Derived rather than
+    // tier costs the same. That holds for the card tier -- one quad is
+    // one quad -- and NOT for a mesh tier. Derived rather than
     // assumed, so that a card tier which ever stops being uniform prices itself
     // per instance instead of quietly billing the whole world as variant 0.
     const cardTris = this.tierTris[this.cardTier]
@@ -423,17 +413,8 @@ export class Mushrooms {
     // second between. No LOD cross-fade in this bed for it to preempt.
     this.rim = new RimFade(this.batch, this.maxInstances)
 
-    // Bands squared, but in UNITS OF THE PROP'S OWN SPAN SQUARED -- the test in
-    // update() multiplies by `instSpan2` before comparing. Keeping the span out
-    // of the table is what makes one table serve a 9 cm ink cap and a 4 m cave
-    // mushroom: both swap at the same apparent size, so neither pops.
-    this.bandSq = Float32Array.from(MUSHROOM_LOD_SPANS, (b) => b * b)
-    this.bandSqOut = Float32Array.from(MUSHROOM_LOD_SPANS, (b) => (b * (1 + LOD_HYSTERESIS)) ** 2)
-
-    // (span x scale)^2 per instance, the other half of that multiply. Stored
-    // rather than looked up through `variantAt` because the size jitter is per
-    // instance and lives nowhere else once the matrix is composed.
-    this.instSpan2 = new Float32Array(this.maxInstances)
+    // span x size jitter per instance: stored because the jitter lives nowhere else once the matrix is composed.
+    this.instSpan = new Float32Array(this.maxInstances)
 
     // key -> { tx, tz, ids, rank, n, q, u, near, queued }
     this.tiles = new Map()
@@ -504,7 +485,7 @@ export class Mushrooms {
    */
   _tierCaps() {
     const per = Math.ceil((this.maxInstances / this.variantCount) * 4) + 64
-    return new Array(this.tierCount).fill(per)
+    return new Array(this.cardTier).fill(per)
   }
 
   /** The quantised thinning level for a tile whose nearest point is at d2. */
@@ -613,16 +594,7 @@ export class Mushrooms {
         // Nothing to re-tier on a cap the rim is not drawing.
         if (this.rim.isHidden(i)) continue
 
-        const s2 = this.instSpan2[i]
-
-        let tier = cardTier
-        for (let t = 0; t < this.bandSq.length; t++) {
-          const sticky = cur >= 0 && cur <= t
-          if (d2 < (sticky ? this.bandSqOut[t] : this.bandSq[t]) * s2) {
-            tier = t
-            break
-          }
-        }
+        const tier = ladderTier(distAt(this.instSpan[i], LOD_DEG), PROP_STEPS, MESH_RUNGS, Math.sqrt(d2), cur)
 
         const variant = this.variantAt[i]
         if (tier !== cur) {
@@ -939,7 +911,7 @@ export class Mushrooms {
         grew++
         this.variantAt[id] = variant
         const span = this.variantSpan[variant] * scale
-        this.instSpan2[id] = span * span
+        this.instSpan[id] = span
         if (span > biggest) biggest = span
         this.instX[id] = mx
         this.instY[id] = h - PLACEMENT.sink * scale
@@ -974,6 +946,7 @@ export class Mushrooms {
           (k0 + gc[2] * k1) * v
         )
         this.batch.setColorAt(id, this._c)
+        this.batch.setLayerShiftAt(id, this.cardPicture[variant])
 
         this.tierAt[id] = this.cardTier
         this.batch.setGeometryIdAt(id, this._geometryFor(this.cardTier, variant))
@@ -982,7 +955,7 @@ export class Mushrooms {
         // batch's colour texture, and the writers throw if that texture has not
         // been created yet. The cap stays hidden until the rim's sweep has
         // looked at it, which the tile below is marked due for.
-        this.rim.place(id, Math.min(this.fullRadius / u, this.radius))
+        this.rim.place(id, Math.min(this.fullRadius / u, propCull(span)))
       }
       if (grew > 0) grewClumps++
     }
@@ -1067,7 +1040,7 @@ export class Mushrooms {
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
         if (this.rim.isHidden(id)) continue
-        const span = Math.sqrt(this.instSpan2[id])
+        const span = this.instSpan[id]
         const d = Math.hypot(this.instX[id] - x, this.instY[id] + span * 0.5 - y, this.instZ[id] - z) - span * 0.5
         if (d < bestD) {
           bestD = d
@@ -1088,7 +1061,7 @@ export class Mushrooms {
     const { tile, k, id } = hit
     if (tile.ids[k] !== id || this.tierAt[id] < 0) throw new Error(`Mushrooms.take: instance ${id} is not standing in its tile`)
     const variant = this.variantAt[id]
-    const span = Math.sqrt(this.instSpan2[id])
+    const span = this.instSpan[id]
     const scale = span / this.variantSpan[variant]
     this.batch.getColorAt(id, this._c)
     const color = [this._c.r, this._c.g, this._c.b]
@@ -1136,7 +1109,7 @@ export class Mushrooms {
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
         if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
-        this.take({ dist: 0, id, tile, k, size: Math.sqrt(this.instSpan2[id]) })
+        this.take({ dist: 0, id, tile, k, size: this.instSpan[id] })
         return true
       }
     }
@@ -1177,7 +1150,7 @@ export class Mushrooms {
   }
 
   /**
-   * A/B the far band by eye: `'card'` is the spun billboard, `'mesh'` holds the
+   * A/B the far band by eye: `'card'` is the shared spun card, `'mesh'` holds the
    * real mushroom all the way out. Costs one setGeometryIdAt per far instance,
    * so it is a look-see control and not something to drive per frame.
    */
@@ -1197,7 +1170,7 @@ export class Mushrooms {
   }
 
   /**
-   * Photograph the five species into their impostor layers. Needs a live
+   * Photograph the five species and copy each into its card pictures. Needs a live
    * renderer, which is why it is a separate call from the constructor.
    *
    * The mushroom sheets are generated in JS rather than loaded from a PNG, so
@@ -1209,6 +1182,13 @@ export class Mushrooms {
   bakeCards(renderer) {
     const t0 = performance.now()
     const baked = bakeMushroomImpostors(renderer, this.textureArray, { seed: this.seed })
+    const stride = TEX_SIZE * TEX_SIZE * 4
+    const atlas = this.textureArray.image.data
+    this.bank.variants.forEach((v, i) => {
+      const layer = baked.find((b) => b.species === v.species).layer
+      this.cards.pixels(this.cardPicture[i]).set(atlas.subarray(layer * stride, (layer + 1) * stride))
+    })
+    this.cards.upload()
     this.cardBakeMs = performance.now() - t0
     return baked
   }

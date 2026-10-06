@@ -68,6 +68,7 @@ import {
 } from '../src/props/deadwood-bank.js'
 import { impostorCardExtents } from '../src/props/impostor.js'
 import { Deadwood, RUNGS, SNAG_HEIGHT, LOG_LENGTH, deadwoodBankFrom } from '../src/v2/render/deadwood.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { GEN_PROP_LODS, PROP_MESH_TIERS, PROP_STEPS, propCull, propReach } from '../src/v2/render/gen-props.js'
 import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from '../src/v2/render/critters.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -817,9 +818,9 @@ const shippedBank = () => deadwoodBankFrom({
 
   const bank = shippedBank()
   const lens = bank.tiers.map((t) => t.geometries.length)
-  check(bank.tiers.length === PROP_MESH_TIERS.length + 1 && RUNGS === bank.tiers.length && PROP_MESH_TIERS[0] === 0,
+  check(bank.tiers.length === PROP_MESH_TIERS.length && RUNGS === bank.tiers.length + 1 && PROP_MESH_TIERS[0] === 0,
     'the pick, the drawn decimated tier and the card, one rung each',
-    `shipped tiers ${PROP_MESH_TIERS.join('/')} of ${GEN_PROP_LODS + 1} and the card: ${bank.tiers.length} tiers, ${RUNGS} rungs`)
+    `shipped tiers ${PROP_MESH_TIERS.join('/')} of ${GEN_PROP_LODS + 1} and the card: ${bank.tiers.length} mesh tiers, ${RUNGS} rungs`)
   check(lens.every((n) => n === 2) && bank.variants.length === 2,
     'every tier carries one geometry per variant slot', `stump + log, tiers ${lens.join('/')}`)
   const tris = bank.tiers.map((t) => t.geometries.map((g) => g.index.count / 3))
@@ -843,31 +844,22 @@ const shippedBank = () => deadwoodBankFrom({
   check(log.long > 2 * log.radius, 'and the log lies along its own Z',
     `${log.long.toFixed(2)} long against ${(2 * log.radius).toFixed(2)} wide`)
 
-  // The card must cover the piece it stands in for at the swap. The stump's
-  // is one quad in its XY plane, spun to her in the shader, so its width has
-  // to cover the stump's widest side; the log's is two quads, its length
-  // upright and laid flat, both through its core.
+  // The card's picture must cover the piece it stands in for at the swap: the stump's spun card its widest side, the log's axial card its length and height.
   const tooSmall = []
   const shape = []
-  const cardTier = bank.tiers[bank.tiers.length - 1]
   bank.variants.forEach((v, i) => {
-    const card = cardTier.geometries[i]
-    card.computeBoundingBox()
-    const b = card.boundingBox
+    const c = bank.cards[i]
     const pb = bank.bounds[i]
-    const quads = card.index.count / 6
-    const wide = v.kind === 'log' ? b.max.z - b.min.z : b.max.x - b.min.x
-    if (wide < Math.max(pb.width, pb.long) - 1e-3 || b.max.y - b.min.y < pb.height - 1e-3) {
-      tooSmall.push(`${v.name}: card ${wide.toFixed(2)} x ${(b.max.y - b.min.y).toFixed(2)} for a piece ${Math.max(pb.width, pb.long).toFixed(2)} x ${pb.height.toFixed(2)}`)
+    const wide = 2 * c.hw
+    if (wide < Math.max(pb.width, pb.long) - 1e-3 || 2 * c.hh < pb.height - 1e-3) {
+      tooSmall.push(`${v.name}: card ${wide.toFixed(2)} x ${(2 * c.hh).toFixed(2)} for a piece ${Math.max(pb.width, pb.long).toFixed(2)} x ${pb.height.toFixed(2)}`)
     }
-    const flat = Math.abs(b.max.z - b.min.z) < 1e-6
-    const crossed = b.max.x - b.min.x > pb.height - 1e-3 && b.max.z - b.min.z > pb.long - 1e-3
-    if (!(v.kind === 'log' ? quads === 2 && crossed : quads === 1 && flat)) shape.push(`${v.name}: ${quads} quads`)
+    if (c.kind !== (v.kind === 'log' ? 'axial' : 'spun')) shape.push(`${v.name}: ${c.kind}`)
   })
   check(tooSmall.length === 0, 'and the card is at least as big as the piece it replaces',
     tooSmall.length === 0 ? 'both cards cover their pick' : tooSmall.join('; '))
-  check(shape.length === 0, 'the stump\'s card is one quad to spin and the log\'s is its length crossed about its axis',
-    shape.length === 0 ? 'one flat quad; two quads spanning the length upright and flat' : shape.join('; '))
+  check(shape.length === 0, 'the stump\'s card is spun and the log\'s is turned about its own length',
+    shape.length === 0 ? 'stump spun, log axial' : shape.join('; '))
   for (const t of bank.tiers) for (const g of t.geometries) g.dispose()
 
   // THE ARTEFACT THE RELATIVE LADDER EXISTS TO CLOSE, stated as an inequality
@@ -960,7 +952,7 @@ const MOCK_LAYERS = {
       snowLineAt: () => 900,
       bands: { altLo: 0, altSpan: 100 },
     }
-    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 7, bank: shippedBank() })
+    const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 7, bank: shippedBank(), cards: new LitterCards(4096) })
     dw.place(0, 0)
     if (dw.placed === 0) floating.push(`${g.name}: nothing placed at all`)
 
@@ -1052,7 +1044,7 @@ const MOCK_LAYERS = {
   const TILE = 25
   const PAD = 0.5
   const make = (opts) => new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS,
-    { seed: SEED, bank: shippedBank(), ...opts })
+    { seed: SEED, bank: shippedBank(), cards: new LitterCards(4096), ...opts })
 
   // Every placed piece's plan footprint, read back off the batch's own arrays:
   // the core axis in plan (a stump has half 0) and the core radius at the
@@ -1227,7 +1219,7 @@ const MOCK_LAYERS = {
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank(), cards: new LitterCards(4096) })
   dw.place(0, 0)
 
   const m = new THREE.Matrix4()
@@ -1282,16 +1274,13 @@ const MOCK_LAYERS = {
 // --- every log lies the same side up, and every stump leans its own way -------
 //
 // Every mesh variant compiles to ONE program (gen-props.js keys it on the card
-// flags alone), so the arena's calls switch material, not program. The two
-// cards are two programs only because one is spun and the other crossed.
+// flags alone), so the arena's calls switch material, not program. The far card is the shared pool's own program.
 {
   console.log('\nits variants draw through one program')
   const dw = new Deadwood(new THREE.Scene(), { heightAt: () => 40, heightAndSlopeAt: () => ({ h: 40, tan: 0 }), snowLineAt: () => 900, bands: { altLo: 0, altSpan: 100 } },
-    MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+    MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank(), cards: new LitterCards(4096) })
   const meshKeys = new Set(dw.meshMaterials.map((m) => m.customProgramCacheKey()))
-  const cardKeys = new Set(dw.cardMaterials.map((m) => m.customProgramCacheKey()))
   check(meshKeys.size === 1 && dw.meshMaterials.length === 2, 'one program key across the mesh variants', [...meshKeys].join(', '))
-  check(cardKeys.size === 2 && ![...cardKeys].some((k) => meshKeys.has(k)), 'the spun card and the crossed card are their own two', [...cardKeys].join(', '))
 }
 
 // A log is not rolled about its length: the shipped mesh's map is shadowed on
@@ -1308,7 +1297,7 @@ const MOCK_LAYERS = {
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank(), cards: new LitterCards(4096) })
   dw.place(0, 0)
 
   const m = new THREE.Matrix4()
@@ -1382,7 +1371,7 @@ const MOCK_LAYERS = {
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 11, bank: shippedBank(), cards: new LitterCards(4096) })
   dw.place(0, 0)
 
   const spans = new Float64Array(16)
@@ -1565,7 +1554,7 @@ const MOCK_LAYERS = {
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank(), cards: new LitterCards(4096) })
   dw.place(0, 0)
   // Her eye, over the mock field's ground: a walk at 1.6 over ground at 40 is
   // 38 m under it, and no piece is ever within its mesh band of that.
@@ -1685,7 +1674,7 @@ const MOCK_LAYERS = {
     snowLineAt: () => 900,
     bands: { altLo: 0, altSpan: 100 },
   }
-  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank() })
+  const dw = new Deadwood(new THREE.Scene(), field, MOCK_WATER, MOCK_LAYERS, { seed: 23, bank: shippedBank(), cards: new LitterCards(4096) })
   dw.place(0, 0)
   // Her eye over the mock field's ground, as above.
   const EYE = 41.6
@@ -1794,7 +1783,7 @@ const MOCK_LAYERS = {
   }
 
   const run = (water, layers) => {
-    const d = new Deadwood(new THREE.Scene(), field, water, layers, { seed: 21, bank: shippedBank(), fullRadius: LAKE + 30 })
+    const d = new Deadwood(new THREE.Scene(), field, water, layers, { seed: 21, bank: shippedBank(), cards: new LitterCards(4096), fullRadius: LAKE + 30 })
     d.place(0, 0)
     return d
   }

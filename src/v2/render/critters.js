@@ -355,8 +355,9 @@ const CARD_MARGIN = 0.06
 //
 // `mixed` gates the spin per VERTEX on an `aSpin` attribute (1 spun, 0 left
 // where the instance matrix put it), for a card that is one spun quad and one
-// fixed quad in the same geometry (setSpunTopCard).
-export const billboardVertex = (mixed) => /* glsl */ `
+// fixed quad in the same geometry (setSpunTopCard). `uv` names the varying whose x
+// the yaw mirrors.
+export const billboardVertex = (mixed, uv = 'vMapUv') => /* glsl */ `
   {
     vec4 bbOrigin = instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
     vec4 bbAxis = instanceMatrix * vec4( 1.0, 0.0, 0.0, 0.0 );
@@ -373,7 +374,7 @@ export const billboardVertex = (mixed) => /* glsl */ `
     vec2 bbSpun = vec2( transformed.x * bbC.x - transformed.z * bbC.y, transformed.x * bbC.y + transformed.z * bbC.x );
     ${mixed ? 'transformed.xz = mix( transformed.xz, bbSpun, aSpin );' : 'transformed.xz = bbSpun;'}
     // The yaw the spin threw away picks which way the picture reads: two silhouettes from one bake, stable per instance.
-    if ( bbA.x < 0.0 ${mixed ? '&& aSpin > 0.5' : ''}) vMapUv.x = 1.0 - vMapUv.x;
+    if ( bbA.x < 0.0 ${mixed ? '&& aSpin > 0.5' : ''}) ${uv}.x = 1.0 - ${uv}.x;
   }`
 export const BILLBOARD_VERTEX = billboardVertex(false)
 // What a `mixed` material declares at <common>, ahead of the body at <begin_vertex>.

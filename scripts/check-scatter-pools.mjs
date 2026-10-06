@@ -47,6 +47,7 @@ import { Rocks } from '../src/v2/render/rocks.js'
 import { Ferns } from '../src/v2/render/ferns.js'
 import { Litter } from '../src/v2/render/litter.js'
 import { Deadwood, deadwoodBankFrom } from '../src/v2/render/deadwood.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { Mushrooms } from '../src/v2/render/mushrooms.js'
 import { buildTextureArray, LAYER_COUNT } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
@@ -76,6 +77,7 @@ const deadwoodBank = deadwoodBankFrom({
   log: readShippedLadder('log-fallen', { longAxisZ: true }),
 })
 const S = () => new THREE.Scene()
+const cards = () => new LitterCards(400000)
 
 const MAKE = {
   ferns: () => new Ferns(S(), field, water, layers, textures, { seed: 7 }),
@@ -83,8 +85,8 @@ const MAKE = {
   grass: () => new Grass(S(), field, water, layers.paths, textures, { seed: 7, style: 'tufts', layers }),
   rocks: () => new Rocks(S(), field, water, layers, textures, { seed: 7 }),
   litter: () => new Litter(S(), field, water, layers, textures, { seed: 7 }),
-  deadwood: () => new Deadwood(S(), field, water, layers, { seed: 7, bank: deadwoodBank }),
-  mushrooms: () => new Mushrooms(S(), field, water, layers, textures, [noAnchors], { seed: 7 }),
+  deadwood: () => new Deadwood(S(), field, water, layers, { seed: 7, bank: deadwoodBank, cards: cards() }),
+  mushrooms: () => new Mushrooms(S(), field, water, layers, textures, [noAnchors], { seed: 7, cards: cards() }),
 }
 
 /** A Rocks is eight beds behind one façade; everything else is its own bed. */

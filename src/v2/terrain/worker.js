@@ -58,6 +58,8 @@ import { TileStore } from '../../v3/tiles.js'
 let field = null
 let layers = null
 let ground = null
+// Town hearth flames, fixed for the world's life; see v2/hearth-light.js.
+let hearths = []
 // This worker's copy of the resident fine tiles, or null for a world that does not
 // page any. The main thread decides WHICH tiles are resident -- see TerrainV2.putTile
 // -- and this only holds what it is sent, so all three copies of the field (here,
@@ -105,6 +107,8 @@ function onInit(msg) {
   field = new V2Height({ heightmap, layers, relief: msg.relief, detail: msg.fine ? new FineJitter(msg.fine) : null })
   // The biome class grid, when the world has one (v3 does, the shipped world does not); GroundTint validates it so a grid of the wrong size fails here, not as a wrongly coloured world.
   ground = msg.ground ? new GroundTint(msg.ground) : null
+  if (!Array.isArray(msg.hearths)) throw new Error('v2 terrain worker init needs a hearths array')
+  hearths = msg.hearths
   // Force the lazy percentile pass now rather than inside the first chunk, where
   // it would show up as one inexplicably slow mesh in the ms/chunk numbers.
   field.bands
@@ -238,8 +242,8 @@ self.onmessage = (e) => {
   if (msg.type === 'chunk') {
     if (!field) throw new Error('v2 terrain worker got a chunk request before init')
     const t0 = performance.now()
-    const r = buildChunkV2(field, layers, msg, biome, ground)
-    // Transfer rather than copy: these six buffers are the bulk of the per-chunk
+    const r = buildChunkV2(field, layers, msg, biome, ground, hearths)
+    // Transfer rather than copy: these buffers are the bulk of the per-chunk
     // cost and structured-cloning them would put that cost back on the main
     // thread, which is the one thing this worker exists to avoid.
     self.postMessage(
@@ -252,13 +256,14 @@ self.onmessage = (e) => {
         colors: r.colors,
         stipple: r.stipple,
         forest: r.forest,
+        hearth: r.hearth,
         indices: r.indices,
         minY: r.minY,
         maxY: r.maxY,
         skirtDepth: r.skirtDepth,
         ms: performance.now() - t0,
       },
-      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.forest.buffer, r.indices.buffer]
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.forest.buffer, r.hearth.buffer, r.indices.buffer]
     )
     return
   }

@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { buildMushroom, mushroomTriangles, MUSHROOM_DEFAULTS } from './props/mushroom.js'
 import {
   MUSHROOM_SPECIES, MUSHROOM_NAMES,
-  MUSHROOM_LOD_SPANS, MUSHROOM_MESH_RADIAL,
+  MUSHROOM_MESH_RADIAL,
 } from './props/mushroom-bank.js'
 import { geometryBytes } from './props/fern.js' // generic; it lives there for historical reasons
 import { bakeImpostor, buildImpostorCard } from './props/impostor.js'
@@ -12,6 +12,7 @@ import {
 } from './props/mushroom-texture.js'
 import { buildTextureArray, LAYER, TEX_SIZE } from './textures.js'
 import { createPropMaterial } from './material.js'
+import { propCull, propReach } from './v2/render/gen-props.js'
 import { grassTexture, wrapLambert } from './preview-stage.js'
 import mushroomSource from './props/mushroom.js?raw'
 import textureSource from './props/mushroom-texture.js?raw'
@@ -175,7 +176,7 @@ const params = {
   ...MUSHROOM_DEFAULTS,
   underside: UNDERSIDE_0_1,
   // 1, because that is what the world draws: the shipped ladder's only card is
-  // the single spun billboard (see MUSHROOM_LOD_SPANS). The slider still reaches
+  // the single spun billboard. The slider still reaches
   // 4 so a crossed pair can be looked at, but the page must open on the card the
   // game has rather than on one it dropped.
   planes: 1,
@@ -762,14 +763,9 @@ function refresh() {
   ])
 
   // The ladder render/v2/mushrooms.js actually walks, in metres FOR THIS
-  // MUSHROOM. The bands are multiples of the prop's own span, so the metre
-  // column moves with the sliders and the pixel column does not -- which is the
-  // whole point of making them relative, and is much easier to believe when you
-  // can drag `height` and watch one column move while the other sits still.
-  //
-  // Span is max(height, spread), for the reason MUSHROOM_LOD_SPANS gives: it
-  // is what makes the card tier satisfy §5's parallax rule for a pancake
-  // chanterelle and still not card a thimble-shaped ink cap at 1.8 m.
+  // MUSHROOM. The rungs are the animals' arc rule over the span (gen-props.js
+  // propReach), so the metre column moves with the sliders and the pixel column
+  // does not.
   const span = Math.max(m.height, m.spread)
   const meshRows = MUSHROOM_MESH_RADIAL.map((radial, t) => ({
     name: `LOD${t} &middot; mesh, radial ${radial}`,
@@ -782,27 +778,20 @@ function refresh() {
   table(document.getElementById('lod'), [
     ['span = max(height, spread)', size(span)],
     ...ladder.map((row, t) => {
-      // The last tier has no band of its own: it runs from the final entry in
-      // the table out to wherever the prop stops being worth drawing, and that
-      // is the 2-px rule rather than another multiple of the span.
-      const last = t === ladder.length - 1
-      const out = last ? vanishAt(span) : span * MUSHROOM_LOD_SPANS[t]
+      const out = propReach(span, t)
       const px = apparentPx(span, out)
       return [
         row.name,
         `${row.tris} tris &middot; to ${dist(out)} &middot; ${px.toFixed(0)} px`,
-        last || px >= 8 ? 'ok' : 'warn',
+        'ok',
       ]
     }),
   ])
   document.getElementById('lodnote').innerHTML =
-    `The bands are <b>multiples of the span</b>, not metres: ` +
-    `${MUSHROOM_LOD_SPANS.join(', ')} of them. Drag <code>height</code> and the middle column ` +
-    `moves while the pixel column does not -- every mushroom in the world swaps tier at the same ` +
-    `<em>apparent size</em>, which is what makes one table serve a 6 cm forest-floor cap and a ` +
-    `giant in a cave. The card comes in at ${MUSHROOM_LOD_SPANS[MUSHROOM_MESH_RADIAL.length - 1]} spans ` +
-    `against the 28.6 &sect;5 demands, so it is 1.4&times; later than the parallax rule's floor for ` +
-    `every shape this page can build.`
+    `The rungs are <b>multiples of the span</b>, not metres, on the animals' arc rule: ` +
+    `drag <code>height</code> and the middle column moves while the pixel column does not, so ` +
+    `every mushroom swaps tier at the same <em>apparent size</em>. The card runs to ${dist(propCull(span))} ` +
+    `and is culled there.`
 
   drawSheets()
 

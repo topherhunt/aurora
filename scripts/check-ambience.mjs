@@ -992,6 +992,19 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(thuds.length > 0 && strides.length > 0 && least(thuds, 'gain') > most(strides, 'gain') && most(thuds, 'rate') < least(strides, 'rate'), 'the smallest snowman treads louder and deeper than a strider', `${thuds.length} thuds, ${strides.length} strides`)
 }
 {
+  // A stag beside a strider and a hare, as main.js herds the wildlife: the stag's own step is the strider's tread, quieter and further off; the hare keeps the herd's footfall.
+  const at = (key, size, z) => ({ sp: { key }, x: HEAD.x + 10, y: HEAD.y, z: HEAD.z + z, size, clip: 'walk', cycle: 1, speed: 1 })
+  const stag = at('stag', 2.8, 0.1), hare = at('hare', 0.5, 0.1), strider = at('strider', 2.2, -0.1)
+  const engine = fakeEngine(), sense = scripted()
+  const amb = new Ambience({ engine, sense, rand: mulberry32(38), herds: [{ layer: { bodies: (into) => { into.push(stag, hare); return into } }, clips: 'quadruped', steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: { bodies: (into) => { into.push(strider); return into } }, clips: 'bird', sound: 'tread', rule: 'stride' }] })
+  run(amb, 10, {})
+  const of = (z) => engine.plays.filter((p) => p.name === 'tread' && Math.sign(p.at.z - HEAD.z) === Math.sign(z))
+  const hooves = of(1), strides = of(-1)
+  const most = (ps, k) => Math.max(...ps.map((p) => p[k])), least = (ps, k) => Math.min(...ps.map((p) => p[k]))
+  check(hooves.length > 0 && strides.length > 0 && most(hooves, 'gain') < least(strides, 'gain') && hooves.every((p) => p.distance > 10) && strides.every((p) => !p.distance), 'a stag steps on the strider\'s tread, quieter, and heard as further off than it is', `${hooves.length} hooves at ${least(hooves, 'distance').toFixed(1)} m, ${strides.length} strides`)
+  check(engine.plays.some((p) => p.name === 'footfall') && !engine.plays.some((p) => p.name === 'footfall' && p.distance), 'and the hare in the same herd keeps the herd\'s footfall')
+}
+{
   // A villager's door, said on the villagers' layer under its own rule: heard past their voices' reach and not past its own.
   const D = RULES.door
   const said = []

@@ -15,6 +15,7 @@ import * as THREE from 'three'
 import {
   Bones, RUNGS, SKELETON_LENGTH, SKELETON_LENGTH_CAP, SKULL_SIZE, bonesBankFrom,
 } from '../src/v2/render/bones.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { GEN_PROP_LODS, PROP_MESH_TIERS, PROP_STEPS, propCull, propReach } from '../src/v2/render/gen-props.js'
 import { LOD_DEG, LOD_HYSTERESIS, distAt, ladderTier } from '../src/v2/render/critters.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
@@ -42,7 +43,7 @@ const flatField = (h, snowLine = 900) => ({
   bands: { altLo: 0, altSpan: 100 },
 })
 const place = (field, water, seed = 5) => {
-  const b = new Bones(new THREE.Scene(), field, water, LAYERS, { seed, bank: shippedBank() })
+  const b = new Bones(new THREE.Scene(), field, water, LAYERS, { seed, bank: shippedBank(), cards: new LitterCards(4096) })
   b.place(0, 0)
   return b
 }
@@ -70,15 +71,15 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   console.log('\nthe shipped bank is built for the scatter that indexes it')
   const bank = shippedBank()
   const lens = bank.tiers.map((t) => t.geometries.length)
-  check(bank.tiers.length === PROP_MESH_TIERS.length + 1 && RUNGS === bank.tiers.length && PROP_MESH_TIERS[0] === 0,
+  check(bank.tiers.length === PROP_MESH_TIERS.length && RUNGS === bank.tiers.length + 1 && PROP_MESH_TIERS[0] === 0,
     'the pick, the drawn decimated tier and the card, one rung each',
-    `shipped tiers ${PROP_MESH_TIERS.join('/')} of ${GEN_PROP_LODS + 1} and the card: ${bank.tiers.length} tiers, ${RUNGS} rungs`)
+    `shipped tiers ${PROP_MESH_TIERS.join('/')} of ${GEN_PROP_LODS + 1} and the card: ${bank.tiers.length} mesh tiers, ${RUNGS} rungs`)
   check(lens.every((n) => n === 2) && bank.variants.length === 2,
     'every tier carries one geometry per variant slot', `skeleton + skull, tiers ${lens.join('/')}`)
   const tris = bank.tiers.map((t) => t.geometries.map((g) => g.index.count / 3))
-  check(bank.variants.every((_v, i) => tris.slice(0, -1).every((t, k) => k === 0 || t[i] < tris[k - 1][i])),
+  check(bank.variants.every((_v, i) => tris.every((t, k) => k === 0 || t[i] < tris[k - 1][i])),
     'and each mesh tier is coarser than the one before it',
-    bank.variants.map((v, i) => `${v.name} ${tris.slice(0, -1).map((t) => t[i]).join('/')}`).join(', '))
+    bank.variants.map((v, i) => `${v.name} ${tris.map((t) => t[i]).join('/')}`).join(', '))
   const unmeasured = bank.variants.filter((v) => !(v.long > 0 && v.width > 0 && v.height > 0 && v.lodSize > 0))
   check(unmeasured.length === 0, 'every variant carries the metres the scatter seats it by',
     unmeasured.length === 0
@@ -88,29 +89,20 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   check(skeleton && skeleton.long >= skeleton.width && skeleton.long > skeleton.height,
     'the skeleton lies along its own Z', skeleton ? `${skeleton.long.toFixed(2)} long, ${skeleton.width.toFixed(2)} wide, ${skeleton.height.toFixed(2)} high` : 'no skeleton')
 
-  // The card must cover the find it stands in for at the swap. The skull's is
-  // one quad in its XY plane, spun to her in the shader, so its width has to
-  // cover the skull's widest side; the skeleton's is two quads, its length
-  // upright and laid flat, both through its own Z axis.
+  // The card's picture must cover the find it stands in for at the swap: the skull's spun card its widest side, the skeleton's axial card its length and height.
   const tooSmall = []
   const shape = []
-  const cardTier = bank.tiers[bank.tiers.length - 1]
   bank.variants.forEach((v, i) => {
-    const card = cardTier.geometries[i]
-    card.computeBoundingBox()
-    const b = card.boundingBox
+    const c = bank.cards[i]
     const pb = bank.bounds[i]
-    const quads = card.index.count / 6
-    const wide = v.kind === 'skeleton' ? b.max.z - b.min.z : b.max.x - b.min.x
-    if (wide < Math.max(pb.width, pb.long) - 1e-3 || b.max.y - b.min.y < pb.height - 1e-3) tooSmall.push(v.name)
-    const flat = Math.abs(b.max.z - b.min.z) < 1e-6
-    const crossed = b.max.x - b.min.x > pb.height - 1e-3 && b.max.z - b.min.z > pb.long - 1e-3
-    if (!(v.kind === 'skeleton' ? quads === 2 && crossed : quads === 1 && flat)) shape.push(`${v.name}: ${quads} quads`)
+    const wide = 2 * c.hw
+    if (wide < Math.max(pb.width, pb.long) - 1e-3 || 2 * c.hh < pb.height - 1e-3) tooSmall.push(v.name)
+    if (c.kind !== (v.kind === 'skeleton' ? 'axial' : 'spun')) shape.push(`${v.name}: ${c.kind}`)
   })
   check(tooSmall.length === 0, 'and the card is at least as big as the find it replaces',
     tooSmall.length === 0 ? 'both cards cover their pick' : tooSmall.join(', '))
-  check(shape.length === 0, 'the skull\'s card is one quad to spin and the skeleton\'s is its length crossed about its axis',
-    shape.length === 0 ? 'one flat quad; two quads spanning the length upright and flat' : shape.join('; '))
+  check(shape.length === 0, 'the skull\'s card is spun and the skeleton\'s is turned about its own length',
+    shape.length === 0 ? 'skull spun, skeleton axial' : shape.join('; '))
   for (const t of bank.tiers) for (const g of t.geometries) g.dispose()
 
   // Distance is measured from the instance origin at the middle of the find,
@@ -223,9 +215,7 @@ const range = (a) => `${Math.min(...a).toFixed(2)}-${Math.max(...a).toFixed(2)} 
   // One program across the mesh variants (gen-props.js keys it on the card
   // flags alone), so the arena's calls switch material, not program.
   const meshKeys = new Set(b.meshMaterials.map((m) => m.customProgramCacheKey()))
-  const cardKeys = new Set(b.cardMaterials.map((m) => m.customProgramCacheKey()))
-  check(meshKeys.size === 1 && cardKeys.size === 2 && ![...cardKeys].some((k) => meshKeys.has(k)),
-    'its mesh variants share one program and its two cards are two', `${[...meshKeys].join(', ')}; ${[...cardKeys].join(', ')}`)
+  check(meshKeys.size === 1, 'its mesh variants share one program', [...meshKeys].join(', '))
   check(Math.abs(b.radius - propCull(Math.max(SKELETON_LENGTH_CAP, SKULL_SIZE[1]))) < 1e-6 && b.radius > 500,
     'the grid reaches the biggest find the scatter can place at its cull',
     `${b.radius.toFixed(0)} m, ${b.tiles.size} tiles`)

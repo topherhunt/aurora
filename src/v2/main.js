@@ -35,7 +35,8 @@ import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
 import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
 import { Wildfire, TORCH_CAP } from './render/wildfire.js'
-import { flicker as flameFlicker } from './render/fire.js'
+import { flicker as flameFlicker, FLICKER } from './render/fire.js'
+import { HEARTH_LIGHT } from './hearth-light.js'
 import { TriFlames } from './render/fire-tris.js'
 import { bakedRoot, cullBakedTo, puppetMode, setPuppetMode } from './render/baked-puppet.js'
 import { Boulders } from './render/boulders.js'
@@ -45,6 +46,7 @@ import { createPlainTerrainMaterial } from '../terrain/terrain-material.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
+import { LitterCards } from './render/litter-cards.js'
 import { Sticks, KIND as STICK, TIP as STICK_TIP } from './render/sticks.js'
 import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
@@ -75,7 +77,7 @@ import { InteriorStone, flatField, rAt, rollInterior } from './rooms/interior.js
 import { TownInteriorView } from './render/town-interior.js'
 import { TownResidents } from './render/town-residents.js'
 import { CELLAR, TownInteriorStone, rollTownInterior, townFloorAt, within } from './rooms/town-interior.js'
-import { Lamps, loadLampBank } from './render/lamps.js'
+import { LAMP, Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
 import { Shell } from './render/shell.js'
@@ -110,7 +112,7 @@ import { Stars } from '../stars.js'
 import { SkyAurora } from './render/aurora.js'
 import { Water, WATER, UNDERWATER, CURRENT, currentDrift, murkDensity, murkLinear, murkAir } from '../water.js'
 import { WorldClock, CLOCK, WEATHER, daynessOfElev } from '../clock.js'
-import { WorldLighting, TORCHES } from '../lighting.js'
+import { WorldLighting, TORCHES, TORCH_REACH } from '../lighting.js'
 import { SkyProbe, PROBE } from '../sky-probe.js'
 import { SKY_GLSL } from '../sky-glsl.js'
 import { Wreaths } from './render/wreaths.js'
@@ -1352,6 +1354,7 @@ function applyQuestToggle(key) {
       deadwood.batch.visible = enabled
       sticks.batch.visible = enabled
       bones.batch.visible = enabled
+      litterCards.group.visible = enabled
       break
     // Back on, every animal layer is put down fresh at her feet: the ground
     // may have moved under it while it was frozen, and a frozen layer is
@@ -2018,7 +2021,9 @@ function strikeFlint(key, fromPack = false) {
 
 const litTipList = []
 const torchSorted = []
-/** Every frame: torches put out under water, the flames and torch flames drawn, the nearest torches fed to the lighting. */
+window.v2hearthLight = HEARTH_LIGHT // console: `v2hearthLight.on = 0` puts the hearths' live light out, for an A/B
+let townHearths = null
+/** Every frame: torches put out under water, the flames and torch flames drawn, the nearest torches and town hearths fed to the lighting, and each town's baked glow dimmed by however much of it a live slot now carries. */
 function updateFire(dt) {
   const now = fireNow()
   for (const a of netplay.flames) {
@@ -2037,9 +2042,26 @@ function updateFire(dt) {
   wildfire.update(dt, now, tips.slice(0, TORCH_CAP), headTmp)
   player.headPosition(headTmp)
   torchSorted.length = 0
-  for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
+  for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), reach: TORCH_REACH, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
+  const [lampOn, lampOff] = LAMP.lit
+  const night = 1 - THREE.MathUtils.clamp((dayness - lampOn) / (lampOff - lampOn), 0, 1)
+  const hearthGain = HEARTH_LIGHT.gain * (HEARTH_LIGHT.day + (1 - HEARTH_LIGHT.day) * night)
+  const far = lighting.uniforms.uHearthFar.value
+  far.fill(0)
+  if (townHearths) {
+    townHearths.forEach((f, i) => {
+      far[i] = hearthGain * FLICKER.mean
+      const d = Math.hypot(f.x - headTmp.x, f.y - headTmp.y, f.z - headTmp.z)
+      if (d >= HEARTH_LIGHT.on) return
+      const near = Math.min(1, (HEARTH_LIGHT.on - d) / HEARTH_LIGHT.fade)
+      torchSorted.push({ x: f.x, y: f.y, z: f.z, strength: hearthGain * near * flameFlicker(now, i * 2.1), reach: HEARTH_LIGHT.reach, d, hearth: i, near })
+    })
+  }
   torchSorted.sort((a, b) => a.d - b.d)
-  lighting.setTorches(torchSorted.slice(0, TORCHES))
+  const lit = torchSorted.slice(0, TORCHES)
+  // Only a hearth that won a slot hands over; one crowded out by torches keeps its full baked glow.
+  for (const t of lit) if (t.hearth !== undefined) far[t.hearth] *= 1 - t.near
+  lighting.setTorches(lit)
 }
 
 /** A/X or Q on the gun in the hand: to safe, or armed with the next colour (flaregun.js pressSafety). */
@@ -2910,6 +2932,7 @@ let rocks = null
 let litter = null
 let mushrooms = null
 let deadwood = null
+let litterCards = null
 let sticks = null
 let wildfire = null
 let bones = null
@@ -3285,8 +3308,6 @@ const ROOMS = {
 let currentRoom = ROOMS.overworld
 /** Her size against the room she is in. Set only under the swap's black, on the rig by the room's Player. */
 const herScale = () => currentRoom.scale
-// A village pond's water: how far she sees into it looking straight down and the angle below the horizontal the seeing-in begins at (water.js WATER.clarity, clarityAngle), set on the room's boot. A pond 20 m across is looked into from its shore at 20 or 30 degrees, where a lake's mirror would show her nothing of its fish.
-const VILLAGE_POND = { clarity: 0.7, clarityAngle: 15 }
 // What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
 let roomSpec = null
 let roomHeightmap = null
@@ -3517,7 +3538,7 @@ function disposeRoom() {
   }
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   if (towns) { towns.dispose(); towns = null }
-  if (townsfolk) { townsfolk.dispose(); townsfolk = null }
+  if (townsfolk) { townsfolk.dispose(); townsfolk = null; townHearths = null }
   if (wildStriders) { wildStriders.dispose(); wildStriders = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
@@ -3530,13 +3551,13 @@ function disposeRoom() {
   if (caveMouths) { caveMouths.dispose(); caveMouths = null }
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
+    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
   ]) gone(layer)
   if (overworld !== null && waterSurfaces === overworld.waterSurfaces) waterSurfaces.detach()
   else gone(waterSurfaces)
   lighting.clearLamps()
   leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
+  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = litterCards = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
   roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
@@ -4231,6 +4252,8 @@ async function buildRoom(room, at) {
   await bootStep('terrain')
   terrain = new TerrainV2(scene, {
     heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures, axis: true,
+    // Indexed as townsfolk.hearths is, so updateFire's uHearthFar[i] dims the right town's baked glow.
+    hearths: townPlan ? townPlan.towns.map((t) => ({ x: t.x, y: t.y, z: t.z })) : [],
   })
   terrainWire = new TerrainWire(scene, terrain)
   window.v2terrainWire = terrainWire // console: `v2terrainWire.visible = true`
@@ -4337,7 +4360,11 @@ async function buildRoom(room, at) {
   const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
   // The village's garden plots, wanted here before the trees: nothing grows on a planted plot but its rows (render/carrots.js).
   let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) })) : []
-  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds })
+  // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); each layer claims its share, and a claim past 4096 throws.
+  litterCards = new LitterCards(4096)
+  scene.add(litterCards.group)
+  lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card' })
+  deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds, cards: litterCards })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
   // card flags), so one program serves every mesh variant and each call is a
@@ -4484,6 +4511,7 @@ async function buildRoom(room, at) {
     walk.addStone(townsfolk)
     walk.addBody(townsfolk)
     window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
+    townHearths = townsfolk.hearths
   }
   if (bridges) walk.addStone(bridges)
   if (boulders) walk.addStone(boulders)
@@ -4615,11 +4643,8 @@ async function buildRoom(room, at) {
   await bootStep('mushrooms')
   // A village grows no mushroom and no bone (DESIGN.md §30): the layers still
   // exist so a mushroom she carried in stays hers.
-  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed, none: !!room.village, bounds })
-  // A FOURTH cacheKey, distinct for the reason spelled out at the trees above:
-  // three keys its program cache on this string, and this material's
-  // uBillboardLayers is its own length, so reusing the ferns' 'v2-prop-bb'
-  // would hand one of the two layers the other's compiled program.
+  mushrooms = new Mushrooms(scene, height, waterSurfaces, layers, propTextures, [trees, rocks], { seed, none: !!room.village, bounds, cards: litterCards })
+  // Its own cacheKey: three keys its program cache on this string, and this material's flags differ from the ferns'.
   lighting.patch(mushrooms.material, { mode: 'vertex', cacheKey: 'v2-mushroom-bb' })
   // So a clump and the ground it stands on cross the snow line together, and so
   // that nothing sprouts above the line -- same contract as the trees and ferns.
@@ -4642,7 +4667,7 @@ async function buildRoom(room, at) {
   // The bones: a rare find on any ground (render/bones.js), on the litter row
   // with the dead wood.
   await bootStep('bones')
-  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await banks.bones, none: !!room.village, bounds })
+  bones = new Bones(scene, height, waterSurfaces, layers, { seed, bank: await banks.bones, none: !!room.village, bounds, cards: litterCards })
   for (const m of bones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   bones.place(spawn.x, spawn.z)
   bones.bakeCards(renderer)
@@ -4694,8 +4719,7 @@ async function buildRoom(room, at) {
   // A village seeds them on the seed its build found a school for in its lake.
   await bootStep('fish')
   fish = new Fish(scene, height, waterSurfaces, { seed: room.village ? roomSpec.fishSeed : seed })
-  // A village's pond is clear: seen into from the shore (VILLAGE_POND). Its fish, like every lake's, are drawn only once she is submerged (the frame loop's fishShown).
-  water.uniforms.uClarity.value.set(room.village ? VILLAGE_POND.clarity : WATER.clarity, Math.sin(((room.village ? VILLAGE_POND.clarityAngle : WATER.clarityAngle) * Math.PI) / 180))
+  water.uniforms.uClarity.value.set(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180))
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
   fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
@@ -4937,7 +4961,7 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
       voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
@@ -5000,6 +5024,7 @@ async function buildRoom(room, at) {
   mushrooms.batch.visible = questToggles.litter
   deadwood.batch.visible = questToggles.litter
   bones.batch.visible = questToggles.litter
+  litterCards.group.visible = questToggles.litter
   applyAnimalVisibility()
   // THE EDITOR OVERLAY, drawn only where there is an editor. Markers is three
   // InstancedMeshes of authoring handles -- 96 triangles a spline point, 8 a
@@ -5332,7 +5357,7 @@ function plainTerrainRung(wet) {
   let mat = builtPlainTerrain.get(key)
   if (!mat) {
     mat = createPlainTerrainMaterial(terrain.material, { stipple: true })
-    lighting.patch(mat, { mode: 'vertex', cacheKey: `v2-terrain-shadow-${key}`, caustics: wet })
+    lighting.patch(mat, { mode: 'vertex', cacheKey: `v2-terrain-shadow-${key}`, caustics: wet, hearths: true })
     builtPlainTerrain.set(key, mat)
   }
   return mat
@@ -7747,8 +7772,7 @@ function stepOverworld(dt, now) {
   // WHAT IS UNDER THE SURFACE IS ONLY DRAWN FROM UNDER IT. The water is nearly
   // opaque from above (WATER.clarity), so with her head in the air every fish
   // and every sunk crab is triangles and a step spent on something nobody can
-  // see; a village's pond is the exception, clear from the shore (VILLAGE_POND),
-  // so its fish are drawn from above. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
+  // see. The fish pool still FOLLOWS her along the shore -- retiring, seeding,
   // no fish stepped, one frame in fish.js FOLLOW_EVERY -- so the lake is stocked
   // the moment she dives; a sunk crab simply pauses on its stone. `submerged` is last frame's answer (see
   // applySubmersion), one frame late on the dive and the surfacing, which the

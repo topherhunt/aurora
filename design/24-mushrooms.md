@@ -119,13 +119,15 @@ Every member takes its height from the field itself, not from the anchor: the y 
 
 | Tier | What | Band |
 |---|---|---|
-| 0 | mesh at radial 16, 60-66 tris | inside 20 spans |
-| 1 | mesh at radial 6, 30-36 tris | 20 to 40 spans |
-| 2 | one triangle, spun toward the eye | 40 spans to the draw radius |
+| 0 | mesh at radial 16, 60-66 tris | the animals' view-arc rule, `PROP_STEPS[0]` rung |
+| 1 | mesh at radial 6, 30-36 tris | the next rung |
+| 2 | the shared litter card: a spun quad, 2 tris | the card rung out to `propCull(span)` |
 
-There is no crossed-planes tier between the coarse mesh and the billboard, which is where a tree and a fern both have one: by 40 spans the whole prop is 23 px across, past §5's parallax range and past the size at which a second plane's silhouette is legible. So the billboard takes over at the end of the mesh and runs to the rim dissolve, exactly as a distant tree, tuft or fern does.
+**The bands are view-arc rungs over the prop's own span, not metres or pixels.** A span is `max(height, spread)`; a rung swaps when the span subtends the same angle (`LOD_DEG`, `PROP_STEPS`, hysteresis `LOD_HYSTERESIS`, as the animals do in `critters.js`), so a 8 cm cap and a cave mushroom a metre tall swap at the same apparent size. The far end is `propCull(span)`.
 
-**The bands are multiples of the prop's own span, not metres**, which is the one place this scatter departs from its siblings. A fern is a fern; a mushroom is 8 cm on the forest floor and metres in a cave off the same five presets, and a fixed band would card the small one while it was still 15 px tall and hold the big one as a mesh long after 26. Hanging the ladder off the prop's own size puts every swap at the same apparent size instead -- 46 px and 23 px at 16.2 px/deg -- and costs one multiply per instance in the band test. A span is `max(height, spread)`. The far end is the 2-pixel rule coming the other way and stays absolute (`DRAW_RADIUS`).
+There is no crossed-planes tier between the coarse mesh and the card, which is where a tree and a fern both have one: a mushroom's mesh holds out to where the whole prop is a few pixels, past the size at which a second plane's silhouette is legible.
+
+**The card is not a mushroom geometry.** The bank returns only per-variant extents (`cards`); the picture is a flat-albedo bake of the species, copied from its atlas layer into a slot of the pool in `render/litter-cards.js`, whose one InstancedMesh draws every far litter card (deadwood, bones, mushrooms). The card is lit by that pool's Lambert, and the old rule that kept the triangle's parallax error under §5's budget no longer applies.
 
 ### Pool sizing
 

@@ -54,29 +54,7 @@
 // there are a different family -- nothing about one mushroom is wrong, and the
 // ladder around it is:
 //
-//   THE BILLBOARD STOPS SPINNING. The ladder is two mesh tiers and one card, and
-//   the card is a single triangle that only works because the vertex shader
-//   turns it toward the eye. It does that when the geometry's texLayer is in
-//   `createPropMaterial({ billboardLayers })` AND its vertex normal is at or over
-//   CARD_UP_MARK, and there is no room for a third condition: BatchedMesh fixes
-//   its attribute set from the first geometry it is handed, so a per-vertex
-//   `isBillboard` on this one prop would be a change to every generator in the
-//   project. A card that fell off either test is a plane seen edge-on, which
-//   covers no pixels at all -- every distant mushroom vanishing for a quarter of
-//   the compass. Sections 12 and 13 are those two tests, written down.
-//
-//   THE CARD STOPS BEING PER VARIANT. The photograph is shared five ways, one
-//   per species, but the triangle it is stretched over is built at each
-//   variant's own measured height. Hoist that out of the variant loop and
-//   nothing throws -- every size-0.8 instance simply grows 25% at the swap, and
-//   the arena quietly holds eighteen copies of each of five cards.
-//
-//   THE MEASURED NUMBERS IN THE COMMENTS GO STALE. mushroom-bank.js quotes a
-//   silhouette table for the apex-down billboard and render/mushrooms.js quotes
-//   a per-species parallax crossover, and both say THIS SCRIPT gates them.
-//   Sections 14 and 15 are what makes that true -- not by pinning the decimals,
-//   which move with the seed, but by asserting the CLAIMS the numbers were
-//   quoted to support.
+//   THE CARD IS A PICTURE, NOT A GEOMETRY. The far tier is the shared litter card (render/litter-cards.js), spun in its own shader; the bank hands back only per-variant extents, built at each variant's measured height. Section 12 gates them.
 
 import * as THREE from 'three'
 import { MUSHROOM_DEFAULTS, buildMushroom, mushroomTriangles } from '../src/props/mushroom.js'
@@ -86,15 +64,15 @@ import {
 } from '../src/props/mushroom-texture.js'
 import {
   MUSHROOM_NAMES, MUSHROOM_SPECIES,
-  MUSHROOM_BILLBOARD_TRI,
-  MUSHROOM_MESH_RADIAL, MUSHROOM_LOD_SPANS,
-  mushroomVariants, mushroomImpostorLayers, mushroomParams,
+  MUSHROOM_MESH_RADIAL,
+  mushroomVariants, mushroomParams,
   buildMushroomBank, mushroomBankTriangles,
 } from '../src/props/mushroom-bank.js'
-import { CARD_UP_MARK } from '../src/material.js'
+import { propCull, propReach } from '../src/v2/render/gen-props.js'
 import { LAYER, LAYER_COUNT, buildTextureArray } from '../src/textures.js'
 import { Mushrooms } from '../src/v2/render/mushrooms.js'
-import { taken } from '../src/v2/taken.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
+import { taken, TOLERANCE_M } from '../src/v2/taken.js'
 import { readFileSync } from 'node:fs'
 
 let failures = 0
@@ -1164,12 +1142,6 @@ const BANK_SEED = 1
 const BANK = buildMushroomBank({ seed: BANK_SEED })
 const VARIANTS = mushroomVariants()
 
-// The card tier sits after the mesh tiers, however many of those there are.
-// Named rather than written as 2, because the mesh tiers have been added to and
-// taken from before now and a hard-coded index went on pointing at a tier that
-// still existed and was no longer a card.
-const CARD_TIER = MUSHROOM_MESH_RADIAL.length
-
 // The distinct geometry objects behind the tier arrays, in first-seen order --
 // the same identity dedupe render/mushrooms.js does before it sizes the arena.
 const DISTINCT = []
@@ -1187,8 +1159,8 @@ const DISTINCT = []
 {
   const lens = BANK.tiers.map((t) => t.geometries.length)
   const want = VARIANTS.length
-  check(BANK.tiers.length === MUSHROOM_MESH_RADIAL.length + 1 && lens.every((n) => n === want),
-    `the bank is ${MUSHROOM_MESH_RADIAL.length + 1} tiers deep -- ${MUSHROOM_MESH_RADIAL.length} mesh and the billboard -- and every tier holds one slot per variant`,
+  check(BANK.tiers.length === MUSHROOM_MESH_RADIAL.length && lens.every((n) => n === want) && BANK.cards.length === want,
+    `the bank is ${MUSHROOM_MESH_RADIAL.length} mesh tiers deep with one card picture per variant, and every tier holds one slot per variant`,
     `${BANK.tiers.length} tiers of ${lens.join('/')}; mushroomVariants() is ${want}, one per species, and MUSHROOM_NAMES holds ${MUSHROOM_NAMES.length}`)
 
   let wrongAttrs = ''
@@ -1247,34 +1219,17 @@ const DISTINCT = []
     'and mushroomBankTriangles() prices those same mesh tiers without building them',
     `priced ${priced.mesh.join(' + ')} over ${priced.variants} variants, built ${meshTris.join(' + ')} over ${VARIANTS.length}`)
 
-  // The card tier is a fixed count by construction -- one plane is one triangle
-  // -- but it is the number render/mushrooms.js multiplies a whole far tile by
-  // in one go (`tris += tile.n * farTris[0]`), so a tier that stopped being
-  // uniform would make the reported triangle count fiction.
-  const cardTris = new Set(BANK.tiers[CARD_TIER].geometries.map((g) => g.index.count / 3))
-  check(cardTris.size === 1 && cardTris.has(1),
-    `tier ${CARD_TIER} is 1 triangle in all ${VARIANTS.length} slots -- the apex-${MUSHROOM_BILLBOARD_TRI} billboard`,
-    `counts seen: ${[...cardTris].join(', ')}`)
-
-  // THE SHARING IS OF PHOTOGRAPHS, NOT OF BUFFERS, and section 12 is where that
-  // is gated. The card is per variant on purpose: it is one triangle, and one
-  // sized for the middle variant made a size-0.8 instance grow 25% at the
-  // instant it crossed the LOD band, with nothing to hide it. What the user
-  // capped was the texture budget, and that is atlas layers -- still five.
+  // Every mesh slot has its own buffer, so a mesh sized for one variant is never worn by another.
   const wantDistinct = VARIANTS.length * BANK.tiers.length
   check(DISTINCT.length === wantDistinct,
-    `every slot has its own buffer -- ${BANK.tiers.length} tiers x ${VARIANTS.length} variants, so a card is sized for the variant it stands in for`,
+    `every slot has its own buffer -- ${BANK.tiers.length} tiers x ${VARIANTS.length} variants`,
     `${DISTINCT.length} distinct, want ${wantDistinct}`)
 
-  // The reason that costs nothing anybody budgeted: bytes and triangles are both
-  // summed over distinct geometries, so this is the whole arena.
-  check(BANK.triangles === priced.meshTotal + priced.card,
+  check(BANK.triangles === priced.meshTotal,
     'and buildMushroomBank() and mushroomBankTriangles() agree on what that arena costs',
-    `built ${BANK.triangles}, priced ${priced.meshTotal} + ${priced.card} = ${priced.meshTotal + priced.card}`)
+    `built ${BANK.triangles}, priced ${priced.meshTotal}`)
 
-  // The pop the per-variant quad exists to remove. Each card must stand as tall
-  // as the mesh it replaces, within the margin impostorCardExtents adds around
-  // the silhouette so the bake is not clipped at its own edge.
+  // The pop the per-variant card extents exist to remove: each card must stand as tall as the finest mesh it replaces, within the margin impostorCardExtents adds around the silhouette.
   let worstPop = 0
   let worstPopAt = ''
   let worstMesh = 0
@@ -1283,16 +1238,16 @@ const DISTINCT = []
     const mesh = BANK.tiers[0].geometries[i]
     mesh.computeBoundingBox()
     const mh = mesh.boundingBox.max.y - mesh.boundingBox.min.y
+    const cardErr = Math.abs((2 * BANK.cards[i].hh) / mh - 1)
+    if (cardErr > worstPop) {
+      worstPop = cardErr
+      worstPopAt = `${v.species} size ${v.size}`
+    }
     for (let t = 1; t < BANK.tiers.length; t++) {
       const g = BANK.tiers[t].geometries[i]
       g.computeBoundingBox()
       const err = Math.abs((g.boundingBox.max.y - g.boundingBox.min.y) / mh - 1)
-      const card = t >= CARD_TIER
-      if (card && err > worstPop) {
-        worstPop = err
-        worstPopAt = `${v.species} size ${v.size} tier ${t}`
-      }
-      if (!card && err > worstMesh) {
+      if (err > worstMesh) {
         worstMesh = err
         worstMeshAt = `${v.species} size ${v.size} tier ${t}`
       }
@@ -1312,400 +1267,56 @@ const DISTINCT = []
 }
 
 // ---------------------------------------------------------------------------
-// 12. One photograph per species, and every card in the tier wearing it.
+// 12. One photograph per species, shown by the shared litter card.
 //
-// Five layers for ninety variants. That is the whole economy of the card tier
-// -- a card gives up shape and keeps hue, and hue is what still separates a
-// scarlet cap from an ink cap at 8 m -- and it means the layer a card addresses
-// is a SPECIES fact. A card that addressed its variant's layer instead would
-// need ninety bakes and ninety slices of an array that only has 44.
-//
-// A CONSTANT texLayer per geometry, not merely a legal one. The attribute is
-// per-vertex, and a card whose three vertices disagreed would be sampling three
-// different photographs across one triangle -- the interpolated value lands
-// between two layers and the shader rounds it to whichever is nearer, so the
-// triangle would be cut in half down an invisible line.
-//
-// The registry checks are section 10's, aimed at the five impostor slices
-// rather than the three sheet slices: a collision is the same silent re-skin,
-// and here it would be a mushroom card wearing a photograph of a fern.
+// Five atlas layers hold the bake (the atlas is also the bake's texture source); the far card is a picture in render/litter-cards.js, so a variant carries only extents. Every card is spun, stands on y = 0, and is centred over its origin.
 // ---------------------------------------------------------------------------
 
-console.log('\nimpostor layers')
-
-const IMPOSTOR_NAMES = [
-  'IMPOSTOR_MUSHROOM_AGARIC', 'IMPOSTOR_MUSHROOM_PORCINI',
-  'IMPOSTOR_MUSHROOM_CHANTERELLE', 'IMPOSTOR_MUSHROOM_PARASOL',
-  'IMPOSTOR_MUSHROOM_INKCAP',
-]
+console.log('\nimpostor layers and cards')
 
 {
-  const missing = IMPOSTOR_NAMES.filter((k) => typeof LAYER[k] !== 'number')
-  check(missing.length === 0, 'the five IMPOSTOR_MUSHROOM_* layers exist in src/textures.js',
-    missing.length === 0 ? IMPOSTOR_NAMES.map((k) => `${k.replace('IMPOSTOR_MUSHROOM_', '')}=${LAYER[k]}`).join(' ') : `missing ${missing.join(', ')}`)
+  const layers = MUSHROOM_NAMES.map((n) => MUSHROOM_SPECIES[n].impostorLayer)
+  check(layers.length === MUSHROOM_NAMES.length && new Set(layers).size === layers.length && layers.every((n) => n < LAYER_COUNT),
+    'each species bakes into its own atlas layer, inside LAYER_COUNT', `${layers.join(' ')} for ${MUSHROOM_NAMES.join(', ')}`)
 
-  const layers = mushroomImpostorLayers()
-  check(layers.length === MUSHROOM_NAMES.length && new Set(layers).size === layers.length,
-    'mushroomImpostorLayers() is five distinct slices, one per species',
-    `${layers.join(' ')} for ${MUSHROOM_NAMES.join(', ')}`)
-
-  const over = layers.filter((n) => !(n < LAYER_COUNT))
-  check(over.length === 0, 'and all five are inside LAYER_COUNT',
-    over.length === 0 ? `< ${LAYER_COUNT}` : `${over.join(', ')} past ${LAYER_COUNT}`)
-
-  // The mushroom's own non-impostor slices. The whole-registry collision sweep
-  // is section 10's; this is the pair that would be easiest to get wrong,
-  // because both halves are edited in the same file for the same prop.
   const sheets = [LAYER.MUSHROOM_CAP, LAYER.MUSHROOM_CAP_CAVE, LAYER.MUSHROOM_FLESH]
   const clash = layers.filter((n) => sheets.includes(n))
   check(clash.length === 0, 'and none of them collides with a mushroom sheet layer -- a card is not a cap texture',
     clash.length === 0 ? `impostors ${layers.join(' ')} vs sheets ${sheets.join(' ')}` : `${clash.join(', ')} in both`)
 
-  // Every slot of the card tier: the geometry in slot i must wear the layer
-  // that slot's SPECIES declared, and wear it on every vertex.
-  let wrongLayer = null
-  let varying = null
-  let cardsChecked = 0
-  VARIANTS.forEach((v, i) => {
-    const arr = BANK.tiers[CARD_TIER].geometries[i].attributes.texLayer.array
-    const want = MUSHROOM_SPECIES[v.species].impostorLayer
-    cardsChecked++
-    for (let k = 0; k < arr.length; k++) {
-      if (arr[k] !== arr[0] && varying === null) {
-        varying = `slot ${i} (${v.species}): vertex 0 is layer ${arr[0]}, vertex ${k} is ${arr[k]}`
-      }
-      if (arr[k] !== want && wrongLayer === null) {
-        wrongLayer = `slot ${i} (${v.species}): layer ${arr[k]}, species declares ${want}`
-      }
-    }
-  })
-  check(varying === null, 'every card geometry addresses ONE layer across all its vertices',
-    varying === null ? `${cardsChecked} tier-${CARD_TIER} slots` : varying)
-  check(wrongLayer === null, 'and it is its own species\' layer',
-    wrongLayer === null ? `${MUSHROOM_NAMES.length} photographs for ${VARIANTS.length} variants` : wrongLayer)
+  const bad = BANK.cards.map((c, i) => ({ c, i })).filter(({ c }) => c.kind !== 'spun' || c.cx !== 0 || !(c.hw > 0) || Math.abs(c.cy - c.hh) > 1e-9)
+  check(bad.length === 0, 'every variant\'s card is a spun picture standing on y = 0',
+    bad.length === 0 ? `${BANK.cards.length} cards, widths ${BANK.cards.map((c) => (2 * c.hw).toFixed(2)).join(' ')} m` : bad.map(({ i }) => VARIANTS[i].species).join(', '))
 
-  // AND NO MESH TIER WEARS ONE, which is the other half of the same fact and
-  // the thing section 13 leans on. `billboardLayers` selects by texLayer, so a
-  // mesh that addressed an impostor slice would be spun toward the eye by the
-  // vertex shader the moment its normal came up -- and a cap's apex normal IS
-  // (0, 1, 0). The mesh tiers wear the cap and flesh sheets and nothing else.
-  const impostors = new Set(mushroomImpostorLayers())
-  let meshWearsCard = null
-  for (let t = 0; t < CARD_TIER; t++) {
-    VARIANTS.forEach((v, i) => {
-      const arr = BANK.tiers[t].geometries[i].attributes.texLayer.array
-      for (let k = 0; k < arr.length; k++) {
-        if (impostors.has(arr[k]) && meshWearsCard === null) {
-          meshWearsCard = `tier ${t} slot ${i} (${v.species}) vertex ${k}: layer ${arr[k]} is an impostor slice`
-        }
-      }
-    })
-  }
-  check(meshWearsCard === null,
-    'and no MESH tier wears an impostor layer, so the card tier is the only thing billboardLayers can select',
-    meshWearsCard === null ? `${CARD_TIER} mesh tiers x ${VARIANTS.length} slots against impostors ${[...impostors].join(' ')}` : meshWearsCard)
+  const pool = new LitterCards(4096)
+  const pictures = BANK.cards.map((c) => pool.addPicture(c))
+  check(pool.cardTris === 2 && new Set(pictures).size === pictures.length,
+    'and each takes its own picture slot in the pool, a quad of two triangles', `${pictures.join(' ')}`)
 }
 
 // ---------------------------------------------------------------------------
-// 13. THE CARD_UP_MARK CONDITION. This is the one that has no second line of
-// defence.
+// 15. The ladder is the animals' arc rule over each variant's span.
 //
-// createPropMaterial is handed the five impostor layers as `billboardLayers`,
-// and its vertex shader spins a card toward the eye when
-//
-//     texLayer is in the billboard list   AND   normal.y > CARD_UP_MARK
-//
-// Section 12 asserted both halves of the first test -- the card tier wears those
-// layers and no mesh tier does. This is the second half, and between them they
-// are the whole mechanism. There is no flag beside it and cannot be one:
-// BatchedMesh fixes its attribute set from the first geometry into the arena, so
-// a per-vertex `isBillboard` for this one prop means adding it to every
-// generator in the project. That is why the spin rides on a value that already
-// exists.
-//
-// WHAT FAILING LOOKS LIKE. A billboard that drops below the mark stops spinning,
-// and a single fixed plane seen along its own plane covers no pixels at all.
-// Every mushroom past 40 spans vanishes for a quarter of the compass and comes
-// back -- and because the card band runs from there to the draw radius, that is
-// most of the layer flickering as the player turns.
-//
-// THE MARK IS 0.99, a thin gap, and the thinness is inherited rather than needed
-// here: the shared buildImpostorCard also authors CANOPY normals, which lean
-// mostly up and top out around 0.88, and a TREE's fixed crossed tier wears the
-// same impostor layer its billboard does with nothing but that gap holding it
-// still. The mushroom ladder has no crossed tier, so nothing here leans on the
-// gap -- but the mark is shared, and a mushroom card that wandered under it
-// would be the failure above.
-//
-// (0,1,0) EXACTLY, not merely over the line. `upNormal` authors literal
-// (0, 1, 0) and the attribute is read in the shader before anything transforms
-// it, so exact is what is available and exact is what is asserted. 1e-5 is
-// float32 slack on a value that is stored as 1.0.
-//
-// buildImpostorCard asserts this too, at the moment it authors the normals. That
-// assert is on the SHARED helper and phrased in terms of the flags it was
-// passed; this one is on the mushroom bank's own output and phrased in terms of
-// the tier. They fail on different edits: dropping `upNormal: true` trips both,
-// but handing a mesh tier's geometry to the card tier's slot trips only this
-// one.
-//
-// CALIBRATED BY BREAKING IT: with `upNormal: true` dropped from the card call in
-// mushroom-bank.js -- which buildImpostorCard accepts without complaint, since a
-// plane normal's y is 0 and 0 is on the correct side of the mark for a card that
-// claims not to be a billboard -- this reports `tier 2 slot 0 (fly agaric)
-// vertex 0: normal (0.00000, 0.00000, 1.00000), 1.41e+0 off (0,1,0)`, and every
-// distant mushroom stops turning. Restored byte for byte afterwards.
-// ---------------------------------------------------------------------------
-
-console.log('\nbillboard marker')
-
-{
-  let notUp = null
-  let upVerts = 0
-
-  VARIANTS.forEach((v, i) => {
-    const nb = BANK.tiers[CARD_TIER].geometries[i].attributes.normal.array
-    for (let k = 0; k < nb.length; k += 3) {
-      upVerts++
-      const off = Math.hypot(nb[k], nb[k + 1] - 1, nb[k + 2])
-      if ((!(nb[k + 1] >= CARD_UP_MARK) || off > 1e-5) && notUp === null) {
-        notUp = `tier ${CARD_TIER} slot ${i} (${v.species}) vertex ${k / 3}: normal (${nb[k].toFixed(5)}, ${nb[k + 1].toFixed(5)}, ${nb[k + 2].toFixed(5)}), ${off.toExponential(2)} off (0,1,0) and CARD_UP_MARK is ${CARD_UP_MARK}`
-      }
-    }
-  })
-
-  check(notUp === null, `every tier-${CARD_TIER} vertex normal is exactly (0,1,0), so the shader spins the billboard`,
-    notUp === null ? `${upVerts} normals over ${VARIANTS.length} slots, all within 1e-5 of up` : notUp)
-}
-
-for (const g of DISTINCT) g.dispose()
-
-// ---------------------------------------------------------------------------
-// 14. The apex-down billboard really is the better triangle.
-//
-// MUSHROOM_BILLBOARD_TRI is 'down', and the comment on it in mushroom-bank.js
-// quotes a measured table and says THIS SCRIPT gates it. So it has to.
-//
-// THE MEASUREMENT. Each species' LOD0 mesh is rasterised orthographically into
-// its OWN `{spread x height}` frame -- the same frame bakeImpostor photographs
-// it in, which is what makes the pixel fractions below comparable to what the
-// card will really keep -- and the covered pixels are counted against each of
-// the two inscribed triangles buildImpostorCard can author. The subject is the
-// shape-0, size-1.0 build AT THE BANK'S OWN SEED, because that is exactly what
-// `cardFrame` hands the bake: the card is a photograph of this mushroom and of
-// no other, so measuring the silhouette of any other build would be measuring
-// something no card ever shows.
-//
-// WHAT IS ASSERTED IS THE CLAIM, NOT THE DECIMALS. The numbers move with the
-// bank seed -- the wavy rim and the lobe phase are seeded -- so pinning
-// `parasol === 93.7` would make this gate fail on a change that has nothing to
-// do with it, which is the fastest way to get a gate deleted. What the choice
-// of 'down' actually rests on is two things that are stable across seeds and
-// across reasonable presets: apex-down BEATS apex-up on every species by a wide
-// margin, and apex-down keeps most of the prop in absolute terms. Those are the
-// two bounds. The table is printed so a reader can see the real numbers drift
-// and judge whether the margin is thinning, which is the thing that would
-// actually warn them.
-//
-// PORCINI IS THE SPECIES TO WATCH and the bank says so: a bolete is a bun on a
-// BARREL, so the widest part of its silhouette near the ground is real stem and
-// not empty air, and an apex-down triangle clips exactly that. It sits nearest
-// both bounds. A future preset fatter in the stem than in the cap is the one
-// that would push through them.
-// ---------------------------------------------------------------------------
-
-console.log('\nbillboard silhouette')
-
-const RES = 128
-
-// Rasterise the mesh into a RES x RES coverage grid over its own extents.
-// Scanline-free and unclipped on purpose: a bounding-box loop with a barycentric
-// inside-test is short enough to read, and at 128^2 over 45 triangles the cost
-// does not matter.
-function silhouette(geo) {
-  const pos = geo.attributes.position.array
-  const idx = geo.index.array
-  const u = geo.userData.mushroom
-  const halfW = u.spread / 2
-  const grid = new Uint8Array(RES * RES)
-  const px = (x) => ((x + halfW) / u.spread) * RES
-  const py = (y) => (y / u.height) * RES
-  for (let f = 0; f < idx.length; f += 3) {
-    const ax = px(pos[idx[f] * 3]), ay = py(pos[idx[f] * 3 + 1])
-    const bx = px(pos[idx[f + 1] * 3]), by = py(pos[idx[f + 1] * 3 + 1])
-    const cx = px(pos[idx[f + 2] * 3]), cy = py(pos[idx[f + 2] * 3 + 1])
-    const minx = Math.max(0, Math.floor(Math.min(ax, bx, cx)))
-    const maxx = Math.min(RES - 1, Math.ceil(Math.max(ax, bx, cx)))
-    const miny = Math.max(0, Math.floor(Math.min(ay, by, cy)))
-    const maxy = Math.min(RES - 1, Math.ceil(Math.max(ay, by, cy)))
-    const d = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-    if (Math.abs(d) < 1e-12) continue
-    for (let iy = miny; iy <= maxy; iy++) {
-      for (let ix = minx; ix <= maxx; ix++) {
-        const qx = ix + 0.5, qy = iy + 0.5
-        const w0 = ((bx - ax) * (qy - ay) - (by - ay) * (qx - ax)) / d
-        const w1 = ((qx - ax) * (cy - ay) - (qy - ay) * (cx - ax)) / d
-        if (w0 < 0 || w1 < 0 || w0 + w1 > 1) continue
-        grid[iy * RES + ix] = 1
-      }
-    }
-  }
-  return grid
-}
-
-// The fraction of covered pixels the inscribed triangle keeps. Both triangles
-// are symmetric about u = 0.5 -- billboardVertex's per-instance u-flip requires
-// it -- so the half-width at a given height is all there is to test.
-function coverage(grid, tri) {
-  let covered = 0, kept = 0
-  for (let iy = 0; iy < RES; iy++) for (let ix = 0; ix < RES; ix++) {
-    if (!grid[iy * RES + ix]) continue
-    covered++
-    const fy = (iy + 0.5) / RES, fx = (ix + 0.5) / RES
-    const half = tri === 'down' ? fy / 2 : (1 - fy) / 2
-    if (Math.abs(fx - 0.5) <= half) kept++
-  }
-  return covered === 0 ? 0 : kept / covered
-}
-
-// The five subjects the cards are photographed from: the species' one variant,
-// at the bank's own seed. Built here rather than taken out of BANK.tiers[0],
-// because the bank seeds each variant slot `seed + i * 101` while `cardFrame`
-// -- and therefore the bake -- uses `seed` bare.
-const SUBJECTS = MUSHROOM_NAMES.map((species) => {
-  const v = VARIANTS.find((x) => x.species === species)
-  if (!v) throw new Error(`no variant for ${species}`)
-  return { species, geo: buildMushroom(mushroomParams(v, BANK_SEED)) }
-})
-
-// How many points apex-down has to beat apex-up by. The claim under test is only
-// that apex-down is the right way round for EVERY species, and the margin is how
-// much room that claim has before a shape change could flip it.
-//
-// 10 AND NOT 15 BECAUSE OF THE PORCINI, and the number that moved it is
-// `stemRadial`. At 3 columns a stem's silhouette is as narrow as half its radius
-// depending on yaw; at 7 it is its real width from every angle. A porcini is a
-// fat stem under a small cap, so widening the stem fills the BOTTOM of the card,
-// which is exactly where an apex-down triangle is at its narrowest -- its margin
-// went 17.3 to 10.2 on that one change alone, with the cap rings worth 0.5 of it.
-// That is the stem getting more honest rather than the card getting worse, and
-// apex-down still wins on all five. TRI_FLOOR is the absolute claim and has not
-// moved: the porcini sits at 71%, and if it goes under 70 the answer is a second
-// card shape, not a smaller number here.
-const TRI_MARGIN = 10
-const TRI_FLOOR = 70
-
-{
-  const rows = SUBJECTS.map(({ species, geo }) => {
-    const grid = silhouette(geo)
-    return {
-      species,
-      down: coverage(grid, 'down') * 100,
-      up: coverage(grid, 'up') * 100,
-    }
-  })
-  rows.sort((a, b) => b.down - a.down)
-  for (const r of rows) {
-    console.log(`        ${r.species.padEnd(13)} apex-down ${r.down.toFixed(1).padStart(5)}%   apex-up ${r.up.toFixed(1).padStart(5)}%   margin ${(r.down - r.up).toFixed(1).padStart(5)}`)
-  }
-
-  check(MUSHROOM_BILLBOARD_TRI === 'down', "MUSHROOM_BILLBOARD_TRI is 'down', the triangle this section measures",
-    `is '${MUSHROOM_BILLBOARD_TRI}'`)
-
-  const beaten = rows.filter((r) => !(r.down - r.up >= TRI_MARGIN))
-  const worstMargin = Math.min(...rows.map((r) => r.down - r.up))
-  check(beaten.length === 0, `apex-down keeps more of every species than apex-up, by at least ${TRI_MARGIN} points`,
-    beaten.length === 0 ? `narrowest margin ${worstMargin.toFixed(1)} points` : beaten.map((r) => `${r.species} only ${(r.down - r.up).toFixed(1)}`).join('; '))
-
-  const thin = rows.filter((r) => !(r.down >= TRI_FLOOR))
-  const worstDown = Math.min(...rows.map((r) => r.down))
-  check(thin.length === 0, `and apex-down keeps at least ${TRI_FLOOR}% of every species' silhouette in absolute terms`,
-    thin.length === 0 ? `worst ${worstDown.toFixed(1)}%` : thin.map((r) => `${r.species} only ${r.down.toFixed(1)}%`).join('; '))
-}
-
-// ---------------------------------------------------------------------------
-// 15. The card comes in later than the parallax rule allows, for EVERY variant.
-//
-// DESIGN.md §5's rule is `crossover = depth x 28.6` -- the range past which a
-// flat card's failure to turn stays under 2 degrees -- and for a mushroom the
-// depth IS the spread, because a cap is as deep as it is wide.
-//
-// The bands are multiples of a variant's SPAN now, and span is max(height,
-// spread), so the rule reduces to pure arithmetic on the band table: the first
-// flat tier starts at `span x MUSHROOM_LOD_SPANS[k]`, span >= spread, therefore
-// the card cannot arrive before `spread x MUSHROOM_LOD_SPANS[k]`. That holds for
-// every variant at every size at once, which is why this section no longer
-// enumerates species to find a binding case -- there is not one.
-//
-// WHAT IS STILL WORTH GATING is the pair of design choices that reduction rests
-// on, because both are one edit away from being false:
-//
-//   - the band the card starts at is at least 28.6, so the multiple itself
-//     satisfies §5. Drop it to 20 and every mushroom in the world cards early.
-//   - `span` really is the max and not the height. Under height-relative bands
-//     the chanterelle at capRise -0.02 is 1.86x wider than tall, so 40 of its
-//     heights is 21.5 of its spreads and its card would come in at 75% of the
-//     honest range. The per-variant ratio is measured here and printed, and the
-//     assertion is that the max covers the worst of them.
-//
-// The metre distances are printed rather than asserted, for section 14's
-// reason: `spread` comes off a seeded build and moves with the seed.
+// Rung k holds to propReach(span, k) and the card is culled at propCull(span);
+// the layer's radius is the cull of the biggest cap the bank can grow, so no
+// variant is clipped by it and no tile is walked beyond it.
 // ---------------------------------------------------------------------------
 
 console.log('\ndistance bands')
 
-const PARALLAX = 28.6
-
 {
-  // The first tier that is a flat card: the mesh tiers come first, so the band
-  // that governs entry to it is the one before it in the table.
-  const cardBand = MUSHROOM_LOD_SPANS[MUSHROOM_MESH_RADIAL.length - 1]
-
-  check(cardBand >= PARALLAX,
-    `the card tier starts at ${cardBand} spans, which is at least the ${PARALLAX} spans §5's parallax rule demands`,
-    `MUSHROOM_LOD_SPANS = [${MUSHROOM_LOD_SPANS.join(', ')}], mesh tiers ${MUSHROOM_MESH_RADIAL.length}, so the card starts at index ${MUSHROOM_MESH_RADIAL.length - 1}`)
-
-  // Every variant, not the five photographed subjects: `spread / height` moves
-  // with the shape multipliers, and shape 4 of the chanterelle is 60% flatter
-  // than shape 0 of it.
   const rows = VARIANTS.map((v, i) => {
     const geo = buildMushroom(mushroomParams(v, BANK_SEED + i * 101))
     const u = geo.userData.mushroom
     geo.dispose()
-    return {
-      species: v.species,
-      height: u.height,
-      spread: u.spread,
-      span: Math.max(u.height, u.spread),
-    }
+    return { species: v.species, span: Math.max(u.height, u.spread) }
   })
-
-  const bySpecies = new Map()
   for (const r of rows) {
-    const cur = bySpecies.get(r.species)
-    if (!cur || r.spread / r.height > cur.spread / cur.height) bySpecies.set(r.species, r)
+    console.log(`        ${r.species.padEnd(13)} span ${r.span.toFixed(3)} m: mesh to ${propReach(r.span, 0).toFixed(2)}, coarse to ${propReach(r.span, 1).toFixed(2)}, card to ${propCull(r.span).toFixed(1)} m`)
   }
-  for (const r of bySpecies.values()) {
-    const needs = (r.spread / r.height) * PARALLAX
-    console.log(`        ${r.species.padEnd(13)} flattest: spread ${r.spread.toFixed(3)} / height ${r.height.toFixed(3)} = ${(r.spread / r.height).toFixed(2)}   ${needs.toFixed(1)} heights but ${((r.spread / r.span) * PARALLAX).toFixed(1)} spans`)
-  }
+  check(rows.every((r) => propReach(r.span, 0) < propReach(r.span, 1) && propReach(r.span, 1) < propCull(r.span)),
+    'every variant has mesh, coarse and card rungs in increasing reach', rows.length + ' variants')
 
-  const flattest = [...rows].sort((a, b) => b.spread / b.height - a.spread / a.height)[0]
-  check((flattest.spread / flattest.height) * PARALLAX > cardBand,
-    'and the max in max(height, spread) is load-bearing -- the flattest variant would break a height-relative table of the same numbers',
-    `${flattest.species} needs ${((flattest.spread / flattest.height) * PARALLAX).toFixed(1)} heights against a band of ${cardBand}`)
-
-  const short = rows.filter((r) => !(r.span * cardBand >= r.spread * PARALLAX))
-  check(short.length === 0,
-    `so every one of the ${rows.length} variants gets its card no closer than spread x ${PARALLAX}`,
-    short.length === 0
-      ? `tightest ${flattest.species}: card at ${(flattest.span * cardBand).toFixed(1)} m, rule wants ${(flattest.spread * PARALLAX).toFixed(1)} m`
-      : short.map((r) => r.species).join('; '))
-
-  // The far end of the same table against the scatter's own draw radius. The
-  // billboard tier has to START inside the radius or it is a tier nothing is
-  // ever drawn in, and the biggest variant in the bank is the one that gets
-  // there last.
   const src = readFileSync(new URL('../src/v2/render/mushrooms.js', import.meta.url), 'utf8')
   const dm = src.match(/^const DRAW_RADIUS = ([0-9.]+)/m)
   if (!dm) {
@@ -1715,17 +1326,13 @@ const PARALLAX = 28.6
   if (!jm) {
     throw new Error('check-mushrooms: no `const SIZE_JITTER = [...]` in src/v2/render/mushrooms.js -- this section can no longer read the jitter it gates')
   }
-  const drawRadius = Number(dm[1])
   const maxJitter = Math.max(...jm[1].split(',').map((s) => Number(s.trim())))
-  const lastBand = MUSHROOM_LOD_SPANS[MUSHROOM_LOD_SPANS.length - 1]
   const biggest = [...rows].sort((a, b) => b.span - a.span)[0]
-  const billboardAt = biggest.span * maxJitter * lastBand
-  check(billboardAt < drawRadius,
-    'and the billboard tier starts inside the draw radius even for the biggest thing the bank can grow',
-    `${biggest.species} spans ${biggest.span.toFixed(3)} m x ${maxJitter} jitter x ${lastBand} = ${billboardAt.toFixed(1)} m, draw radius ${drawRadius} m`)
+  const cull = propCull(biggest.span * maxJitter)
+  check(cull < Number(dm[1]),
+    'and the biggest cap the bank can grow is culled inside the DRAW_RADIUS ceiling, so the layer radius is the arc cull',
+    `${biggest.species} ${biggest.span.toFixed(3)} m x ${maxJitter} jitter culls at ${cull.toFixed(1)} m, ceiling ${dm[1]} m`)
 }
-
-for (const s of SUBJECTS) s.geo.dispose()
 
 // ---------------------------------------------------------------------------
 // Her hand. A cap near the hand is found, pulled out and handed over as the
@@ -1762,7 +1369,7 @@ for (const s of SUBJECTS) s.geo.dispose()
     },
   }
   const grow = () => {
-    const m = new Mushrooms(new THREE.Scene(), field, water, layers, textures, [grove], { seed: 7 })
+    const m = new Mushrooms(new THREE.Scene(), field, water, layers, textures, [grove], { seed: 7, cards: new LitterCards(4096) })
     m.place(0, 0)
     // One sweep turns the fresh placements solid; until then the rim hides them from a hand.
     m.update(0, GROUND + 1.6, 0)
@@ -1773,7 +1380,7 @@ for (const s of SUBJECTS) s.geo.dispose()
     for (const tile of m.tiles.values()) {
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
-        rows.push(`${m.instX[id].toFixed(3)},${m.instZ[id].toFixed(3)},${Math.sqrt(m.instSpan2[id]).toFixed(4)},${m.variantAt[id]}`)
+        rows.push(`${m.instX[id].toFixed(3)},${m.instZ[id].toFixed(3)},${m.instSpan[id].toFixed(4)},${m.variantAt[id]}`)
       }
     }
     return rows.sort().join('|')
@@ -1791,7 +1398,7 @@ for (const s of SUBJECTS) s.geo.dispose()
   const x = m.instX[id0]
   const y = m.instY[id0]
   const z = m.instZ[id0]
-  const size = Math.sqrt(m.instSpan2[id0])
+  const size = m.instSpan[id0]
   const hit = m.pickAt(x, y + size * 0.5, z, 0.1)
   check(hit !== null && hit.id === id0 && hit.tile === tile0 && hit.size === size && hit.dist === 0, 'pickAt finds the cap around the hand', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
   check(m.pickAt(x, y + size + 5, z, 0.1) === null, 'and nothing five metres above it')
@@ -1817,13 +1424,21 @@ for (const s of SUBJECTS) s.geo.dispose()
   check(whole.placed === before && standing(whole) !== standing(m), 'and with the registry cleared it grows back', `${whole.placed} caps`)
   {
     // A peer's take: evicted by key and spot within the registry's tolerance, a rim-hidden one as readily as a shown one; a foreign key, an empty spot and a spot already emptied are false.
+    // A cap with no neighbour inside the registry's tolerance, or the second evict would find the neighbour.
+    const alone = (tile, id) => {
+      for (let k = 0; k < tile.n; k++) {
+        const o = tile.ids[k]
+        if (o !== id && Math.abs(whole.instX[o] - whole.instX[id]) < 3 * TOLERANCE_M && Math.abs(whole.instZ[o] - whole.instZ[id]) < 3 * TOLERANCE_M) return false
+      }
+      return true
+    }
     let te = null, ie = -1
     for (const tile of whole.tiles.values()) {
-      for (let k = 0; k < tile.n && ie < 0; k++) if (whole.rim.isHidden(tile.ids[k])) { te = tile; ie = tile.ids[k] }
+      for (let k = 0; k < tile.n && ie < 0; k++) if (whole.rim.isHidden(tile.ids[k]) && alone(tile, tile.ids[k])) { te = tile; ie = tile.ids[k] }
       if (ie >= 0) break
     }
     const hiddenOne = ie >= 0
-    if (ie < 0) for (const tile of whole.tiles.values()) { if (tile.n) { te = tile; ie = tile.ids[0]; break } }
+    if (ie < 0) for (const tile of whole.tiles.values()) { if (tile.n && alone(tile, tile.ids[0])) { te = tile; ie = tile.ids[0]; break } }
     const ex = whole.instX[ie], ez = whole.instZ[ie]
     const n0 = whole.placed
     check(whole.evict('carrot', ex, ez) === false && whole.evict('mushroom', ex + 5, ez) === false && whole.placed === n0, 'evict is false for a foreign key or an empty spot')

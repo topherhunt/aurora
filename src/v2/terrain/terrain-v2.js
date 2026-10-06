@@ -29,6 +29,7 @@ import {
 import { createTerrainMaterial } from '../../terrain/terrain-material.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
 import { GroundTint } from '../layers/ground.js'
+import { HEARTHS } from '../hearth-light.js'
 
 // ---------------------------------------------------------------------------
 // v2 terrain chunk manager: quadtree LOD over a MAX_DEPTH 10 tree, worker-fed
@@ -150,7 +151,7 @@ export class TerrainV2 {
    * @param fine          {seed, cell} for a v3 island, or null: the rungs of the jitter ladder its image was too coarse to bake, which the worker rebuilds as the field's detail term. Travels for the reason `relief` does -- see the note by `this.relief`.
    * @param tiles         {cell} for a v3 island, or null: the pitch of the fine pyramid this world pages (src/v3/tiles.js). Each worker then holds a TileStore and takes putTile/dropTile below; without it a tile message is a protocol error.
    */
-  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null, fine = null, tiles = null } = {}) {
+  constructor(scene, { heightmapRaw, doc, relief = RELIEF_DEFAULTS, workers = 2, queueDepth = WORKER_QUEUE_DEPTH, atlas = null, axis = false, ground = null, fine = null, tiles = null, hearths = [] } = {}) {
     if (!heightmapRaw) throw new Error('TerrainV2: no heightmapRaw -- the workers have no coarse field to sample and would mesh a flat world')
     // Validated here so a wrong grid throws on the main thread at boot rather than inside a worker.
     if (ground !== null) new GroundTint(ground)
@@ -195,6 +196,11 @@ export class TerrainV2 {
     // travels at init and putTile below keeps the copies in step.
     if (tiles !== null && !(tiles.cell > 0)) throw new Error(`TerrainV2: tiles must be null or { cell }, got ${JSON.stringify(tiles)}`)
     this.tiles = tiles
+    if (hearths.length > HEARTHS) throw new Error(`TerrainV2: ${hearths.length} hearths, uHearthFar holds ${HEARTHS}`)
+    for (const h of hearths) {
+      if (![h.x, h.y, h.z].every(Number.isFinite)) throw new Error(`TerrainV2: hearth must be a finite {x, y, z}, got ${JSON.stringify(h)}`)
+    }
+    this.hearths = hearths.map(({ x, y, z }) => ({ x, y, z }))
 
     const budget = slotBudget(workers, queueDepth)
     this._inFlightCap = budget.inFlightCap
@@ -233,6 +239,8 @@ export class TerrainV2 {
     // Per-vertex forest keep-probability, the far ground's canopy tint; see
     // chunk-mesh-v2 and terrain-material's forest tint.
     this._scratch.setAttribute('forest', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS), 1))
+    // Per-vertex town hearth glow, index + amount; see v2/hearth-light.js.
+    this._scratch.setAttribute('hearth', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS), 1))
     this._scratch.setIndex(new THREE.BufferAttribute(new Uint16Array(CHUNK_INDICES), 1))
     this._scratch.boundingSphere = new THREE.Sphere()
 
@@ -407,7 +415,7 @@ export class TerrainV2 {
       const copy = data.slice()
       const groundCopy = ground ? { ...ground, classes: ground.classes.slice(), palette: ground.palette.slice() } : null
       w.postMessage(
-        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, fine: this.fine, tiles: this.tiles, epoch: this.epoch, ground: groundCopy },
+        { type: 'init', heightmap: { width, height, data: copy, meta }, doc, relief: this.relief, fine: this.fine, tiles: this.tiles, epoch: this.epoch, ground: groundCopy, hearths: this.hearths },
         groundCopy ? [copy.buffer, groundCopy.classes.buffer, groundCopy.palette.buffer] : [copy.buffer]
       )
       this.workers.push(w)
@@ -826,6 +834,10 @@ export class TerrainV2 {
       const { depth, ix, iz } = unpackKey(msg.key)
       throw new Error(`v2 chunk ${depth}/${ix}/${iz} forest has ${msg.forest.length} floats, slots hold ${CHUNK_VERTS}`)
     }
+    if (msg.hearth.length !== CHUNK_VERTS) {
+      const { depth, ix, iz } = unpackKey(msg.key)
+      throw new Error(`v2 chunk ${depth}/${ix}/${iz} hearth has ${msg.hearth.length} floats, slots hold ${CHUNK_VERTS}`)
+    }
 
     // An entry that already holds a slot is an invalidated chunk that kept its old
     // geometry on screen (_invalidateRect); it is REPLACED IN PLACE, which is the
@@ -849,6 +861,7 @@ export class TerrainV2 {
     g.attributes.color.array.set(msg.colors)
     g.attributes.stipple.array.set(msg.stipple)
     g.attributes.forest.array.set(msg.forest)
+    g.attributes.hearth.array.set(msg.hearth)
     g.index.array.set(msg.indices)
 
     // Keep the interior heights. setGeometryAt copies the positions into the

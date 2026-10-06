@@ -5,9 +5,8 @@ import { boundedRadius, eyeLift, tileOutOfBounds } from './tile-pool.js'
 import {
   GEN_PROP_GLB, GEN_PROP_LODS, PROP_RUNGS, PROP_STEPS, createGenPropMaterial, loadGenProp, propCull, propMeshTiers,
 } from './gen-props.js'
-import {
-  AXIS_VIEWS, LOD_DEG, SPUN_VIEWS, bakeCritterCard, distAt, ladderTier, setAxisCard, setCritterCard, spunBounds,
-} from './critters.js'
+import { LOD_DEG, distAt, ladderTier } from './critters.js'
+import { cardPicture } from './litter-cards.js'
 import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
@@ -23,10 +22,9 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 // the biggest find is drawn, and the rim dissolve; NO graded thinning and no
 // build queue, because a tile holds at most ONE candidate and nearly every
 // one is past its own cull -- there is nothing to grade and nothing to budget.
-// The skull's card is one quad spun to her in the vertex shader; the
-// skeleton's is its length on two quads crossed about its own axis, since a
-// lying thing has a heading and a spun card would show its broadside from
-// every side (deadwood.js, on the log).
+// The skull's card is spun to her; the skeleton's turns about its own axis,
+// since a lying thing has a heading and a spun card would show its broadside
+// from every side (litter-cards.js).
 //
 // A SKELETON LIES DOWN AND IS METRES LONG, so it is seated the way the fallen
 // log is (deadwood.js's `_seat`): pitched along its own Z to the ground under
@@ -134,13 +132,12 @@ const VARIANTS = [
   { name: 'skeleton', kind: 'skeleton', url: GEN_PROP_GLB.skeleton, longAxisZ: true },
   { name: 'skull', kind: 'skull', url: GEN_PROP_GLB.skull, longAxisZ: false },
 ]
-// The far tier: a skeleton's length crossed about its middle, a skull's one spun quad.
-const cardViews = (v) => (v.kind === 'skeleton' ? AXIS_VIEWS : SPUN_VIEWS)
+const cardKind = (v) => (v.kind === 'skeleton' ? 'axial' : 'spun')
 
 /**
  * The bank from the two shipped ladders (gen-props.js's loadGenProp, keyed by
- * VARIANTS' names): tiers pick-first with the card last, and per variant the
- * metres `_seat` works in. Pure, so the gate builds it in node.
+ * VARIANTS' names): mesh tiers pick-first, a card picture per variant
+ * (`cards`), and per variant the metres `_seat` works in. Pure, so the gate builds it in node.
  */
 export function bonesBankFrom(ladders) {
   const picks = VARIANTS.map((v) => {
@@ -152,22 +149,14 @@ export function bonesBankFrom(ladders) {
     return ladder
   })
   const tiers = propMeshTiers(picks)
-  tiers.push({
-    geometries: VARIANTS.map((v, i) => {
-      const shim = { geometry: new THREE.BufferGeometry() }
-      const b = picks[i].bounds
-      if (v.kind === 'skeleton') setAxisCard(shim, b, { x: 0, y: b.height / 2 })
-      else setCritterCard(shim, spunBounds(b), SPUN_VIEWS)
-      return shim.geometry
-    }),
-  })
+  const cards = VARIANTS.map((v, i) => cardPicture(cardKind(v), picks[i].bounds, { x: 0, y: picks[i].bounds.height / 2 }))
   const variants = VARIANTS.map((v, i) => {
     const b = picks[i].bounds
     return { name: v.name, kind: v.kind, long: b.long, width: b.width, height: b.height, lodSize: b.lodSize }
   })
   let bytes = 0
   for (const tier of tiers) for (const geo of tier.geometries) bytes += geometryBytes(geo)
-  return { tiers, variants, maps: picks.map((l) => l.map), bounds: picks.map((l) => l.bounds), bytes }
+  return { tiers, cards, variants, maps: picks.map((l) => l.map), bounds: picks.map((l) => l.bounds), bytes }
 }
 
 /** The bank off the shipped files, for the world. Both ladders or nothing. */
@@ -185,7 +174,8 @@ export class Bones {
    * @param bank     bonesBankFrom's answer. Required: a scatter with nothing to
    *                 draw is a bug, not a state.
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null, none = false, bounds = null } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, bank = null, none = false, bounds = null, cards = null } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Bones: needs the LitterCards its far tier is drawn by')
     if (!bank || !Array.isArray(bank.tiers) || !Array.isArray(bank.variants)) {
       throw new Error('Bones: needs the bank from loadBonesBank (or bonesBankFrom)')
     }
@@ -242,32 +232,34 @@ export class Bones {
       if (!(this.vLong[v] > 1e-3 && this.vLod[v] > 1e-3)) throw new Error(`Bones: variant ${v} has no extent to scale by`)
     }
 
-    this.tierCount = bank.tiers.length
-    this.cardTier = this.tierCount - 1
+    // The far tier is the shared card quad (litter-cards.js), one id past the mesh tiers; it draws nothing until `bakeCards` photographs its picture.
+    this.cards = cards
+    this.cardTier = bank.tiers.length
+    this.tierCount = this.cardTier + 1
     this.meshMaterials = bank.variants.map((v, i) => {
       const m = createGenPropMaterial()
       m.map = bank.maps[i]
       return m
     })
-    // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
-    this.cardMaterials = bank.variants.map((v) => {
-      const m = createGenPropMaterial({ card: true, billboard: cardViews(v) === SPUN_VIEWS })
-      m.visible = false
-      return m
-    })
-    this.materials = [...this.meshMaterials, ...this.cardMaterials]
+    this.materials = this.meshMaterials
 
     // Any mesh may hold the whole pool: the variant is rolled per find, so an
     // even split is only the expectation, and the pool is a thousand.
+    const cardBase = this.cardTier * this.variantCount
+    cards.claim('bones', this.maxInstances)
+    this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
-      new Array(this.tierCount).fill(this.maxInstances),
-      (t, v) => (t === this.cardTier ? this.cardMaterials[v] : this.meshMaterials[v]),
-      'v2-bones'
+      new Array(this.cardTier).fill(this.maxInstances),
+      (t, v) => this.meshMaterials[v],
+      'v2-bones',
+      { cards: cards.meshes, cardBase }
     )
     this.tierIds = bank.tiers.map((_t, t) => bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))
+    this.tierIds.push(new Array(this.variantCount).fill(cardBase))
     this.tierTris = bank.tiers.map((t) => t.geometries.map(triangleCount))
+    this.tierTris.push(new Array(this.variantCount).fill(cards.cardTris))
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
@@ -537,6 +529,7 @@ export class Bones {
     // due for.
     this.tierAt[id] = -1
     this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier][variant])
+    this.batch.setLayerShiftAt(id, this.cardPicture[variant])
     this.rim.place(id, Math.min(this.radius, propCull(this.instSize[id])))
     this.rim.markDue(tile)
   }
@@ -661,6 +654,7 @@ export class Bones {
     this.batch.getColorAt(i, this._c)
     this.batch.setColorAt(dup, this._c)
     this.batch.setGeometryIdAt(dup, this.tierIds[oldTier][variant])
+    this.batch.setLayerShiftAt(dup, this.cardPicture[variant])
     this.batch.setVisibleAt(dup, true)
     setPropFadeTimerAt(this.batch, dup, now, false)
     setPropFadeTimerAt(this.batch, i, now, true)
@@ -708,11 +702,7 @@ export class Bones {
     if (this.none) return
     const t0 = performance.now()
     this.bank.variants.forEach((v, i) => {
-      const card = this.cardMaterials[i]
-      const views = cardViews(v)
-      const bounds = views === SPUN_VIEWS ? spunBounds(this.bank.bounds[i]) : this.bank.bounds[i]
-      card.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[i], this.bank.maps[i], bounds, views)
-      card.visible = true
+      this.cards.bake(renderer, this.cardPicture[i], this.bank.tiers[0].geometries[i], this.bank.maps[i], this.bank.bounds[i], cardKind(v))
     })
     this.cardBakeMs = performance.now() - t0
   }

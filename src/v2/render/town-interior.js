@@ -3,7 +3,7 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TriFlames, TRI_FIRE } from './fire-tris.js'
-import { Mesher, kit, frame, put, turn, tip, rgb, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, MUTED, add, sub, norm, cross, LEVELS, DARK_FILL, PANE_LIT, houseUniforms, skyThroughGlass } from './interior.js'
+import { Mesher, kit, frame, put, turn, tip, rgb, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, shiny, SHINE, CLAY, CREAM, WAX, IRON, PEWTER, CORD, WICKER, BURLAP, MUTED, add, sub, norm, cross, LEVELS, DARK_FILL, glaze, houseUniforms, skyThroughGlass } from './interior.js'
 import { CELLAR, S, DOOR, DOORWAY, PART, SLAB, footprint, grow, lines, minus, pt, rect, townCeilingAt, townRoomAt, within } from '../rooms/town-interior.js'
 
 const TAU = 2 * Math.PI
@@ -21,6 +21,9 @@ const SHADE = { amb: 0.2, bleed: 0.3, glass: 1.2, corner: 0.5, candle: 2.4, reac
 // Medieval country colours: oak and elm browns, pewter, iron, earthenware, dyed wool.
 const WOOD = (h, dl = 0) => rgb(0.065 + h * 0.035, 0.36 + h * 0.12, 0.2 + h * 0.13 + dl)
 const DARKWOOD = (h) => WOOD(h, -0.08)
+// Turned and oiled: plates, bowls, mugs.
+const TURNED = (h) => shiny(WOOD(h), SHINE.oiled, 0.3)
+const INK = shiny(rgb(0.6, 0.15, 0.1), SHINE.glaze, 0.5)
 const WOOL = (h) => rgb([0.0, 0.03, 0.09, 0.3, 0.58, 0.62, 0.95][Math.floor(h * 7) % 7] + (h * 7 % 1) * 0.02, 0.38, 0.3)
 // Wool a household could not afford to dye: fleece browns, oatmeal, grey. `cloth` is dyed as often as the house has the means.
 const UNDYED = [rgb(0.08, 0.25, 0.36), rgb(0.1, 0.2, 0.55), rgb(0.07, 0.06, 0.42), rgb(0.06, 0.3, 0.26)]
@@ -215,6 +218,8 @@ function beam(m, p0, p1, hw, hh, tint, up = [0, 1, 0]) {
 const woodUV = (p, n) => (n[0] ? [p[2] / WOOD_M, p[1] / WOOD_M] : n[1] ? [p[0] / WOOD_M, p[2] / WOOD_M] : [p[0] / WOOD_M, p[1] / WOOD_M])
 /** A hewn block in `F` from lo to hi, knocked `a` off square. */
 const hewn = (m, K, F, lo, hi, tint, a = 0.008) => slab(m, K.crook(F, a), lo, hi, tint, woodUV)
+/** A forged iron strap or blade from lo to hi, its edges rounded so the highlight runs over them. */
+const iron = (m, K, F, lo, hi) => K.box(m, F, ...[0, 1, 2].map((a) => (lo[a] + hi[a]) / 2), ...[0, 1, 2].map((a) => (hi[a] - lo[a]) / 2), IRON, { round: 0.4, segs: 12, rows: 6, crook: 0, flat: true })
 
 /**
  * Round logs laid in courses along `L` over the chinking behind them, set into the wall's depth so their fronts stand at its face: cut round the `holes`, stopped under `top(u)`, run on `over` past a corner into the next wall's logs. A poorer house's logs are thicker and less true (design/40-house-wealth.md).
@@ -383,7 +388,7 @@ function doorLeaf(M, K, F, w, top) {
   }
   for (const y of [Math.min(0.35, top * 0.2), top - Math.min(0.45, top * 0.25)]) {
     hewn(M.grain, K, F, [-w / 2 + 0.05, y - 0.08, 0], [w / 2 - 0.05, y + 0.08, 0.035], WOOD(0.4, -0.12), 0.003)
-    slab(M.grain, F, [-w / 2 + 0.02, y - 0.03, 0.035], [w * 0.2, y + 0.03, 0.045], IRON, woodUV)
+    iron(M.grain, K, F, [-w / 2 + 0.02, y - 0.03, 0.035], [w * 0.2, y + 0.03, 0.045])
     for (let k = 0; k < 4; k++) K.blob(M.grain, F, [-w / 2 + 0.08 + k * 0.15, y, 0.048], 0.012, 0.012, 0.006, IRON, { segs: 6, rows: 4 })
   }
   K.tube(M.grain, Array.from({ length: 13 }, (_, k) => { const q = (k / 12) * TAU; return put(F, w * 0.3 + Math.sin(q) * 0.07, Math.min(0.93, top / 2) + Math.cos(q) * 0.07, 0.06) }), Array(13).fill(0.009), IRON, { segs: 6, caps: false })
@@ -415,6 +420,18 @@ function cellarWell(M, room, tint) {
   }
 }
 
+/** Firewood from p0 to p1, `sides` round and sawn flat at both ends. */
+function firelog(m, p0, p1, r, tint, sides) {
+  const w = norm(sub(p1, p0)), L = Math.hypot(...sub(p1, p0)), u = norm(cross(Math.abs(w[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], w)), v = cross(w, u)
+  const dir = (i) => add(u.map((x) => x * Math.cos((i / sides) * TAU)), v, Math.sin((i / sides) * TAU))
+  const base = m.count
+  for (let i = 0; i <= sides; i++) for (const t of [0, 1]) m.v(add(t ? p1 : p0, dir(i), r), dir(i), [i / sides, (t * L) / WOOD_M], tint)
+  for (let i = 0; i < sides; i++) m.quad(base + i * 2, base + i * 2 + 2, base + i * 2 + 3, base + i * 2 + 1)
+  for (const [p, s] of [[p0, -1], [p1, 1]]) {
+    const n = w.map((x) => x * s), mid = m.v(p, n, FLAT, tint), ring = Array.from({ length: sides }, (_, i) => m.v(add(p, dir(i), r), n, FLAT, tint))
+    for (let i = 0; i < sides; i++) s > 0 ? m.tri(mid, ring[i], ring[(i + 1) % sides]) : m.tri(mid, ring[(i + 1) % sides], ring[i])
+  }
+}
 /** The hearth: a stone chimney breast to the roof with a fire in its mouth, a beam for a mantel, a hearthstone, logs and a pot on a crane. */
 function hearthAt(M, K, room, timber) {
   const h = room.hearth, L = { axis: h.axis, at: h.at, ix: h.ix, iz: h.iz }
@@ -437,7 +454,7 @@ function hearthAt(M, K, room, timber) {
     K.rod(M.grain, put(F, s * 0.25, 0, 0.62), put(F, s * 0.25, 0.22, 0.6), 0.015, 0.012, IRON, { flat: true })
     K.rod(M.grain, put(F, s * 0.25, 0.1, 0.25), put(F, s * 0.25, 0.1, 0.62), 0.012, 0.012, IRON, { flat: true })
   }
-  for (const [a, b, y] of [[[-0.38, 0.32], [0.36, 0.45], 0.13], [[-0.3, 0.48], [0.4, 0.3], 0.14], [[-0.1, 0.36], [0.25, 0.42], 0.24]]) K.limb(M.grain, put(F, a[0], y, a[1]), put(F, b[0], y, b[1]), 0.055, 0.05, rgb(0.07, 0.25, 0.14), { bow: 0.01 })
+  for (const [a, b, y, n] of [[[-0.38, 0.32], [0.36, 0.45], 0.13, 6], [[-0.3, 0.48], [0.4, 0.3], 0.14, 4], [[-0.1, 0.36], [0.25, 0.42], 0.24, 6]]) firelog(M.grain, put(F, a[0], y, a[1]), put(F, b[0], y, b[1]), 0.052, rgb(0.07, 0.25, 0.14), n)
   // A crane from the jamb, a pot on its hook.
   const jx = -mouth.w / 2 + 0.04
   K.rod(M.grain, put(F, jx, 0.25, 0.4), put(F, jx, 0.9, 0.4), 0.014, 0.014, IRON, { flat: true })
@@ -555,8 +572,8 @@ function tableAt(M, K, it, tint) {
 
 /** A plate standing on its rim against the wall behind it, or flat. */
 function plateAt(M, K, F, r, tint, upright = false) {
-  const prof = [[0, 0], [r * 0.55, 0], [r * 0.62, 0.006], [r, 0.016], [r * 1.02, 0.02], [r * 0.96, 0.02], [r * 0.6, 0.011], [0, 0.011]]
-  K.lathe(M.linen, upright ? tip({ ...F, y: F.y + r }, 'ax', -Math.PI / 2 + 0.25) : F, prof, tint, { segs: 18, flat: true })
+  const prof = [[0, 0], [r * 0.55, 0], [r * 0.62, 0.006], [r, 0.016], [r * 1.02, 0.02], [r * 0.96, 0.02], [r * 0.8, 0.014], [r * 0.55, 0.009], [r * 0.3, 0.0065], [0, 0.006]]
+  K.lathe(M.linen, upright ? tip(tip({ ...F, y: F.y + r }, 'ay', Math.PI), 'ax', -Math.PI / 2 + 0.25) : F, prof, tint, { segs: 18, flat: true })
 }
 const mugAt = (M, K, F, tint) => {
   K.lathe(M.grain, F, [[0, 0], [0.042, 0], [0.044, 0.004], [0.04, 0.1], [0.037, 0.1], [0.035, 0.012], [0, 0.012]], tint, { segs: 12, uvM: 0.2 })
@@ -565,7 +582,7 @@ const mugAt = (M, K, F, tint) => {
 }
 const bowlAt = (M, K, F, r, tint) => K.lathe(M.grain, F, [[0, 0], [r * 0.5, 0], [r * 0.85, r * 0.25], [r, r * 0.6], [r * 0.95, r * 0.62], [r * 0.8, r * 0.3], [r * 0.4, r * 0.1], [0, r * 0.1]], tint, { segs: 16, uvM: 0.2 })
 const jugAt = (M, K, F, tint) => {
-  K.lathe(M.linen, F, [[0, 0], [0.05, 0], [0.07, 0.05], [0.072, 0.11], [0.05, 0.18], [0.04, 0.21], [0.046, 0.235], [0.04, 0.235], [0, 0.2]], tint, { segs: 14, flat: true, rough: 0.03 })
+  K.lathe(M.linen, F, [[0, 0], [0.05, 0], [0.07, 0.05], [0.072, 0.11], [0.05, 0.18], [0.04, 0.21], [0.046, 0.235], [0.04, 0.235], [0.033, 0.2, 0.55], [0.05, 0.14, 0.3], [0.052, 0.06, 0.18], [0, 0.03, 0.15]], tint, { segs: 14, flat: true, rough: 0.03 })
   K.tube(M.linen, [put(F, -0.045, 0.2, 0), put(F, -0.1, 0.19, 0), put(F, -0.1, 0.1, 0), put(F, -0.068, 0.07, 0)], [0.01, 0.01, 0.01, 0.01], tint, { segs: 6, flat: true })
 }
 const crockAt = (M, K, F, tint) => {
@@ -592,14 +609,14 @@ const potAt = (M, K, F) => {
 const boxAt = (M, K, F, h, tint) => {
   hewn(M.grain, K, F, [-0.09, 0, -0.06], [0.09, 0.08, 0.06], tint, 0.004)
   hewn(M.grain, K, F, [-0.095, 0.08, -0.065], [0.095, 0.1, 0.065], DARKWOOD(h), 0.004)
-  slab(M.grain, F, [-0.012, 0.06, 0.06], [0.012, 0.095, 0.068], IRON, woodUV)
+  iron(M.grain, K, F, [-0.012, 0.06, 0.06], [0.012, 0.095, 0.068])
 }
 const scrollAt = (M, K, F, len) => {
   K.tube(M.linen, [put(F, -len / 2, 0.022, 0), put(F, len / 2, 0.022, 0)], [0.022, 0.022], CREAM, { segs: 10, flat: true })
   for (const s of [-1, 1]) K.lathe(M.grain, tip({ ...F, ...Object.fromEntries(['x', 'y', 'z'].map((k, i) => [k, put(F, s * (len / 2 + 0.005), 0.022, 0)[i]])) }, 'az', (s * Math.PI) / 2), [[0, 0], [0.012, 0], [0.012, 0.02], [0, 0.025]], WOOD(0.2, -0.1), { segs: 8, flat: true })
 }
 const inkpotAt = (M, K, F) => {
-  K.lathe(M.linen, F, [[0, 0], [0.03, 0], [0.032, 0.03], [0.015, 0.045], [0.015, 0.05], [0, 0.05]], rgb(0.6, 0.15, 0.1), { segs: 10, flat: true })
+  K.lathe(M.linen, F, [[0, 0], [0.03, 0], [0.032, 0.03], [0.015, 0.045], [0.015, 0.05], [0, 0.05]], INK, { segs: 10, flat: true })
   K.leaf(M.linen, put(F, 0, 0.045, 0), norm([0.4, 1, 0.2]), 0.22, 0.012, [1, 0, -0.4], CREAM)
 }
 function booksStack(M, K, F, n, rng) {
@@ -627,10 +644,10 @@ const xyz = (p) => ({ x: p[0], y: p[1], z: p[2] })
 function loadAt(M, K, F, l, room, rng) {
   const f = tip(F, 'ay', l.yaw)
   switch (l.kind) {
-    case 'plate': return plateAt(M, K, { ...F, ...xyz(put(F, 0, 0, -0.06)) }, 0.1, rng() < room.tin ? TIN : WOOD(l.hue), true)
-    case 'mug': return mugAt(M, K, f, WOOD(l.hue))
+    case 'plate': return plateAt(M, K, { ...F, ...xyz(put(F, 0, 0, -0.06)) }, 0.1, rng() < room.tin ? PEWTER : TURNED(l.hue), true)
+    case 'mug': return mugAt(M, K, f, TURNED(l.hue))
     case 'jug': return jugAt(M, K, f, CLAY(l.hue))
-    case 'bowl': return bowlAt(M, K, f, 0.08, WOOD(l.hue))
+    case 'bowl': return bowlAt(M, K, f, 0.08, TURNED(l.hue))
     case 'pot': return potAt(M, K, f)
     case 'jar': return jarAt(M, K, f, CLAY(l.hue))
     case 'potion': return potionAt(M, K, f, l.hue)
@@ -653,14 +670,14 @@ const ITEMS = {
     for (const s of [-1, 1]) hewn(M.grain, K, F, [s * (it.hx - 0.15) - 0.03, 0, -it.hz + 0.02], [s * (it.hx - 0.15) + 0.03, T - 0.05, it.hz - 0.02], tint, 0.008)
     hewn(M.grain, K, F, [-it.hx + 0.15, 0.18, -0.03], [it.hx - 0.15, 0.25, 0.03], tint, 0.004)
   },
-  plate(it, M, K, room) { plateAt(M, K, F0(it), 0.11, it.hue < room.tin ? TIN : WOOD(it.hue)) },
-  mug(it, M, K) { mugAt(M, K, F0(it), WOOD(it.hue)) },
-  bowl(it, M, K) { bowlAt(M, K, F0(it), 0.09, WOOD(it.hue)) },
+  plate(it, M, K, room) { plateAt(M, K, F0(it), 0.11, it.hue < room.tin ? PEWTER : TURNED(it.hue)) },
+  mug(it, M, K) { mugAt(M, K, F0(it), TURNED(it.hue)) },
+  bowl(it, M, K) { bowlAt(M, K, F0(it), 0.09, TURNED(it.hue)) },
   jug(it, M, K) { jugAt(M, K, F0(it), CLAY(it.hue)) },
   loaf(it, M, K) { K.blob(M.linen, F0(it), [0, 0.045, 0], 0.11, 0.055, 0.07, rgb(0.08, 0.5, 0.36), { rough: 0.05 }) },
   fruitbowl(it, M, K, room, rng) {
     const F = F0(it)
-    K.lathe(M.grain, F, [[0, 0], [0.08, 0], [0.12, 0.03], [0.17, 0.08], [0.16, 0.085], [0.11, 0.04], [0, 0.03]], WOOD(it.hue), { segs: 18, uvM: 0.25 })
+    K.lathe(M.grain, F, [[0, 0], [0.08, 0], [0.12, 0.03], [0.17, 0.08], [0.16, 0.085], [0.11, 0.04], [0, 0.03]], TURNED(it.hue), { segs: 18, uvM: 0.25 })
     for (let k = 0; k < it.n; k++) {
       const q = (k / it.n) * TAU + K.j(0.3), r = k < 5 ? 0.07 : 0.02, y = k < 5 ? 0.07 : 0.12
       const pear = rng() < 0.25
@@ -688,7 +705,7 @@ const ITEMS = {
     hewn(M.grain, K, F, [-hx - 0.02, 0.85, -hz - 0.01], [hx + 0.02, 0.89, hz + 0.03], tint, 0.004)
     for (const s of [-1, 1]) {
       hewn(M.grain, K, F, [s < 0 ? -hx + 0.04 : 0.01, 0.08, hz], [s < 0 ? -0.01 : hx - 0.04, 0.78, hz + 0.02], WOOD(it.hue, -0.08), 0.003)
-      for (const y of [0.2, 0.66]) slab(M.grain, F, [s * 0.02 + (s < 0 ? -hx + 0.04 : 0.01), y - 0.015, hz + 0.02], [s < 0 ? -hx * 0.4 : hx - 0.04, y + 0.015, hz + 0.028], IRON, woodUV)
+      for (const y of [0.2, 0.66]) iron(M.grain, K, F, [s * 0.02 + (s < 0 ? -hx + 0.04 : 0.01), y - 0.015, hz + 0.02], [s < 0 ? -hx * 0.4 : hx - 0.04, y + 0.015, hz + 0.028])
     }
     hewn(M.grain, K, F, [-hx, 0.89, -hz], [hx, T, -hz + 0.03], tint, 0.004)
     for (const s of [-1, 1]) hewn(M.grain, K, F, [s * hx - 0.02, 0.89, -hz], [s * hx + 0.02, T, -hz + 0.2], tint, 0.004)
@@ -697,7 +714,7 @@ const ITEMS = {
       if (y > T - 0.25) continue
       hewn(M.grain, K, F, [-hx + 0.02, y - 0.025, -hz + 0.03], [hx - 0.02, y, -hz + 0.19], tint, 0.003)
       hewn(M.grain, K, F, [-hx + 0.02, y + 0.03, -hz + 0.17], [hx - 0.02, y + 0.05, -hz + 0.19], tint, 0.003)
-      for (let x = -hx + 0.14; x < hx - 0.1; x += 0.24) plateAt(M, K, { ...F, ...xyz(put(F, x, y, -hz + 0.1)) }, 0.1, it.load === 'plates' && ((x * 7) % 2 > 1 || (x * 3.7) % 1 > room.tin) ? WOOD(it.hue) : TIN, true)
+      for (let x = -hx + 0.14; x < hx - 0.1; x += 0.24) plateAt(M, K, { ...F, ...xyz(put(F, x, y, -hz + 0.1)) }, 0.1, it.load === 'plates' && ((x * 7) % 2 > 1 || (x * 3.7) % 1 > room.tin) ? TURNED(it.hue) : PEWTER, true)
     }
   },
   shelf(it, M, K, room, rng) {
@@ -792,11 +809,11 @@ const ITEMS = {
     hewn(M.grain, K, F, [-hx - 0.015, T - 0.07, -hz - 0.015], [hx + 0.015, T, hz + 0.015], tint, 0.004)
     for (const x of [-hx * 0.6, 0, hx * 0.6]) {
       if (x === 0) continue
-      slab(M.grain, F, [x - 0.025, 0.03, hz], [x + 0.025, T, hz + 0.022], IRON, woodUV)
-      slab(M.grain, F, [x - 0.025, T, -hz - 0.016], [x + 0.025, T + 0.006, hz + 0.022], IRON, woodUV)
+      iron(M.grain, K, F, [x - 0.025, 0.03, hz], [x + 0.025, T, hz + 0.022])
+      iron(M.grain, K, F, [x - 0.025, T, -hz - 0.016], [x + 0.025, T + 0.006, hz + 0.022])
     }
-    for (const s of [-1, 1]) slab(M.grain, F, [s * hx - 0.02, 0, -hz], [s * hx + 0.02, 0.03, hz], IRON, woodUV)
-    slab(M.grain, F, [-0.03, T - 0.16, hz + 0.016], [0.03, T - 0.02, hz + 0.03], IRON, woodUV)
+    for (const s of [-1, 1]) iron(M.grain, K, F, [s * hx - 0.02, 0, -hz], [s * hx + 0.02, 0.03, hz])
+    iron(M.grain, K, F, [-0.03, T - 0.16, hz + 0.016], [0.03, T - 0.02, hz + 0.03])
     if (it.scrolls) for (let k = 0; k < 3; k++) scrollAt(M, K, tip({ ...F, ...xyz(put(F, K.j(hx * 0.4), T + 0.006 + k * 0.03, K.j(hz * 0.4))) }, 'ay', K.j(0.4)), 0.3 + rng() * 0.1)
   },
   desk(it, M, K) {
@@ -898,13 +915,13 @@ const ITEMS = {
     for (const s of [-1, 1]) {
       const x0 = s < 0 ? -hx + 0.04 : 0.01, x1 = s < 0 ? -0.01 : hx - 0.04
       hewn(M.grain, K, F, [x0, 0.14, hz], [x1, T - 0.14, hz + 0.02], WOOD(it.hue, -0.12), 0.003)
-      for (const y of [0.4, T - 0.45]) slab(M.grain, F, [s < 0 ? x0 - 0.02 : x1 - 0.18, y - 0.015, hz + 0.02], [s < 0 ? x0 + 0.18 : x1 + 0.02, y + 0.015, hz + 0.028], IRON, woodUV)
+      for (const y of [0.4, T - 0.45]) iron(M.grain, K, F, [s < 0 ? x0 - 0.02 : x1 - 0.18, y - 0.015, hz + 0.02], [s < 0 ? x0 + 0.18 : x1 + 0.02, y + 0.015, hz + 0.028])
       K.blob(M.grain, F, [s * 0.05, T * 0.5, hz + 0.03], 0.012, 0.012, 0.01, IRON, { segs: 6, rows: 4 })
     }
   },
   sconce(it, M, K) {
     const F = F0(it)
-    slab(M.grain, F, [-0.05, -0.12, -0.12], [0.05, 0.12, -0.11], IRON, woodUV)
+    iron(M.grain, K, F, [-0.05, -0.12, -0.12], [0.05, 0.12, -0.11])
     // A torch stands in a ring on a bracket, leaning out from the wall, its pitch-soaked head blackened.
     if (it.torch) {
       K.tube(M.grain, [put(F, 0, -0.04, -0.11), put(F, 0, -0.04, -0.03)], [0.008, 0.008], IRON, { segs: 6 })
@@ -928,7 +945,7 @@ const ITEMS = {
       else if (kind === 'rake') {
         K.rod(M.grain, L(head, 0, 0, -0.2), L(head, 0, 0, 0.2), 0.016, 0.016, ash)
         for (let k = -3; k <= 3; k++) K.rod(M.grain, L(head, 0, 0, k * 0.06), L(head, -0.01, 0.08, k * 0.06), 0.006, 0.005, ash)
-      } else if (kind === 'hoe') slab(M.grain, F, [head[0] - 0.08, head[1] - 0.02, head[2] + 0.02], [head[0] + 0.08, head[1] + 0.005, head[2] + 0.14], IRON, woodUV)
+      } else if (kind === 'hoe') iron(M.grain, K, F, [head[0] - 0.08, head[1] - 0.02, head[2] + 0.02], [head[0] + 0.08, head[1] + 0.005, head[2] + 0.14])
       else if (kind === 'spade') {
         K.box(M.grain, F, x, 0.15, 0.06, 0.09, 0.15, 0.008, IRON, { round: 0.2 })
         K.rod(M.grain, L(head, 0, 0, -0.07), L(head, 0, 0, 0.07), 0.014, 0.014, ash)
@@ -1019,9 +1036,9 @@ function roomOfVertex(room, x, y, z) {
   return best
 }
 
-/** Per vertex: x the night's fill, y candle and hearth, z window and the daylit fill. */
+/** Per vertex: x the night's fill, y candle and hearth, z window and the daylit fill; `m.cdir` and `m.wdir` the ways its candle and window light come from, weighted by each light's share. */
 function bake(room, m, plan) {
-  const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm
+  const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm, C = new Float32Array(n * 3), W = new Float32Array(n * 3)
   for (let i = 0; i < n; i++) {
     const px = P[i * 3], py = P[i * 3 + 1], pz = P[i * 3 + 2], nx = N[i * 3], ny = N[i * 3 + 1], nz = N[i * 3 + 2]
     const rm = roomOfVertex(room, px, py, pz), R = plan.rooms[rm.id], r = rm.rect
@@ -1036,26 +1053,33 @@ function bake(room, m, plan) {
     for (const l of R.cand) {
       const dx = l.x - px, dy = l.y - py, dz = l.z - pz, d = Math.hypot(dx, dy, dz) || 1
       if (d > 6 * l.reach) continue
-      cand += SHADE.candle * l.i * Math.exp(-d / l.reach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d)) * (dy > 0 ? shaded : 1)
+      const got = SHADE.candle * l.i * Math.exp(-d / l.reach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d)) * (dy > 0 ? shaded : 1)
+      cand += got
+      C[i * 3] += (got * dx) / d; C[i * 3 + 1] += (got * dy) / d; C[i * 3 + 2] += (got * dz) / d
     }
     let win = 0
     for (const w of R.win) {
       const dx = px - w.p[0], dy = py - w.p[1], dz = pz - w.p[2], along = dx * w.ax[0] + dz * w.ax[2]
       if (along <= -0.1) continue
       const dl = Math.hypot(dx, dy, dz) || 1, facing = Math.max(0, -(nx * dx + ny * dy + nz * dz) / dl)
-      win += w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
+      const got = w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
+      win += got
+      W[i * 3] -= (got * dx) / dl; W[i * 3 + 1] -= (got * dy) / dl; W[i * 3 + 2] -= (got * dz) / dl
     }
     for (const b of R.borrowed) {
       const dx = b.p[0] - px, dy = b.p[1] - py, dz = b.p[2] - pz, d = Math.hypot(dx, dy, dz) || 1
       const k = Math.exp(-d / SHADE.doorReach) * (0.35 + 0.65 * Math.max(0, (nx * dx + ny * dy + nz * dz) / d))
       cand += SHADE.candle * b.c * k
       win += b.w * k
+      for (let a = 0; a < 3; a++) { const u = [dx, dy, dz][a] / d; C[i * 3 + a] += SHADE.candle * b.c * k * u; W[i * 3 + a] += b.w * k * u }
     }
     L[i * 3] = amb * DARK_FILL
     L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap))
     L[i * 3 + 2] = win * (0.5 + 0.5 * shaded) * smooth(0, 0.6, edge + 0.3) + amb * (R.fill - DARK_FILL) * LEVELS.amb / LEVELS.win
   }
   m.lit = L
+  m.cdir = C
+  m.wdir = W
 }
 
 /**
@@ -1084,11 +1108,15 @@ export class TownInteriorView {
     for (const id of MESHES) {
       const m = M[id]
       if (m.count === 0) continue
-      if (id === 'window') { m.lit = new Float32Array(m.count * 3); for (let i = 0; i < m.count; i++) m.lit.set(PANE_LIT, i * 3) } else bake(room, m, plan)
+      bake(room, m, plan)
+      if (id === 'window') glaze(m)
       const g = new THREE.BufferGeometry()
       g.setAttribute('position', new THREE.Float32BufferAttribute(m.pos, 3))
       g.setAttribute('normal', new THREE.Float32BufferAttribute(m.nrm, 3))
       g.setAttribute('speck', new THREE.Float32BufferAttribute(m.speck, 1))
+      g.setAttribute('shine', new THREE.Float32BufferAttribute(m.shine, 1))
+      g.setAttribute('cdir', new THREE.Float32BufferAttribute(m.cdir, 3))
+      g.setAttribute('wdir', new THREE.Float32BufferAttribute(m.wdir, 3))
       g.setAttribute('tuv', new THREE.Float32BufferAttribute(m.uv, 2))
       g.setAttribute('tint', new THREE.Float32BufferAttribute(m.tint, 3))
       g.setAttribute('light', new THREE.Float32BufferAttribute(m.lit, 3))

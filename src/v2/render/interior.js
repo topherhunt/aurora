@@ -13,12 +13,20 @@ const WALL_M = 2.0, WOOD_M = 0.6
 const FLAT = [0.5, 0.5]
 // The speckle every surface carries on top of its texture: `px` square, one repeat `m` metres on the plane its normal faces most, whole on the flat-coloured (FLAT) and `textured` of it on the rest.
 const SPECK = { px: 64, m: 0.3, textured: 0.35 }
+// Metal, glaze, wax and oiled wood: a tint marked `shiny(tint, k, mottle)` is a flat colour carrying `mottle` of the speckle that catches its baked candle and window light as a highlight `k` strong with exponent `exp`; its lathes are rounded smooth. The mark rides on the array, so a tint derived from it (tone, a spread) is matte again.
+const SHINE = { exp: 40, metal: 1.2, glaze: 0.9, wax: 0.5, oiled: 0.35 }
+const shiny = (tint, k, mottle = 0) => Object.assign(tint, { shine: k, mottle })
 
 // The house shaders' uniform levels of fill, candle and window light. A room's fill is daylight through its glass but for `DARK_FILL` of it, which a windowless room or a night keeps; the bakes carry the daylit share in the window channel, scaled by amb / win so the shader's uWin gives it back.
 export const LEVELS = { amb: 0.55, candle: 1.0, win: 0.9 }
 export const DARK_FILL = 0.3
-// A pane's own light: no fill and a faint catch of the candles, so at night it is near-black glass. Linear 0.1 already reads mid-grey once encoded to sRGB.
-export const PANE_LIT = [0, 0.03, 1.5]
+// A pane is baked like the room but keeps only `GLASS` of the fill and candlelight reaching it, as clear glass reflects, and its window channel is `PANE_SKY` of the light through it; so at night it is near-black but for the candles near it.
+export const GLASS = 0.15, PANE_SKY = 1.5
+
+/** Turns the bake `m.lit` of a pane mesh into glass's. */
+export function glaze(m) {
+  for (let i = 0; i < m.count; i++) { m.lit[i * 3] *= GLASS; m.lit[i * 3 + 1] *= GLASS; m.lit[i * 3 + 2] = PANE_SKY }
+}
 // The light through glass by dayness (clock.js daynessOfElev; 0.6 is the sun on the horizon): none at night, blue in the twilight, warm at sunrise and sunset, white by day.
 const GLASS_SKY = [[0, 0, 0, 0], [0.3, 0.06, 0.08, 0.18], [0.6, 0.8, 0.45, 0.28], [0.85, 1.0, 0.82, 0.62], [1, 1, 1, 1]]
 
@@ -50,12 +58,19 @@ attribute vec2 tuv;
 attribute vec3 tint;
 attribute vec3 light;
 attribute float speck;
+attribute float shine;
+attribute vec3 cdir;
+attribute vec3 wdir;
 varying vec2 vUv;
 varying vec3 vTint;
 varying vec3 vLight;
 varying vec3 vPos;
 varying vec3 vNrm;
 varying float vSpeck;
+varying float vShine;
+varying vec3 vCdir;
+varying vec3 vWdir;
+varying vec3 vView;
 void main() {
   vUv = tuv;
   vTint = tint;
@@ -63,6 +78,10 @@ void main() {
   vPos = position;
   vNrm = normal;
   vSpeck = speck;
+  vShine = shine;
+  vCdir = cdir;
+  vWdir = wdir;
+  vView = (modelMatrix * vec4(position, 1.0)).xyz - cameraPosition;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`
 const FRAG = /* glsl */ `
@@ -79,12 +98,28 @@ varying vec3 vLight;
 varying vec3 vPos;
 varying vec3 vNrm;
 varying float vSpeck;
+varying float vShine;
+varying vec3 vCdir;
+varying vec3 vWdir;
+varying vec3 vView;
+// Blinn-Phong off a baked light direction; a vertex no light reaches has a zero one, which normalize() would turn to NaN.
+float glint(vec3 n, vec3 e, vec3 d) {
+  float l = length(d);
+  return l < 1e-4 ? 0.0 : pow(max(0.0, dot(n, normalize(d / l + e))), ${SHINE.exp.toFixed(1)});
+}
 void main() {
   vec3 an = abs(vNrm);
   vec2 sp = an.y >= an.x && an.y >= an.z ? vPos.xz : an.x >= an.z ? vPos.zy : vPos.xy;
-  vec3 t = texture2D(map, vUv).rgb * mix(1.0, 2.0 * texture2D(speckMap, sp * ${(1 / SPECK.m).toFixed(4)}).r, vSpeck);
+  // The mottle breaks up the highlight as well as the colour, or near-black metal would show none.
+  float mot = mix(1.0, 2.0 * texture2D(speckMap, sp * ${(1 / SPECK.m).toFixed(4)}).r, vSpeck);
+  vec3 t = texture2D(map, vUv).rgb * mot;
   vec3 lit = vec3(uAmb * vLight.x + uCandle * vLight.y * uFlicker) + uWin * vLight.z * uSky;
-  gl_FragColor = vec4(t * vTint * lit, 1.0);
+  vec3 c = t * vTint * lit;
+  if (vShine > 0.0) {
+    vec3 n = normalize(vNrm), e = -normalize(vView);
+    c += vShine * mot * (vec3(uCandle * vLight.y * uFlicker * glint(n, e, vCdir)) + uWin * vLight.z * uSky * glint(n, e, vWdir));
+  }
+  gl_FragColor = vec4(c, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`
@@ -149,6 +184,7 @@ class Mesher {
     this.uv = []
     this.tint = []
     this.speck = []
+    this.shine = []
     this.idx = []
     this.lit = null
   }
@@ -158,9 +194,12 @@ class Mesher {
   v(p, n, uv, tint) {
     this.pos.push(p[0], p[1], p[2])
     this.nrm.push(n[0], n[1], n[2])
+    const k = tint.shine || 0
+    if (k) uv = FLAT
     this.uv.push(uv[0], uv[1])
     this.tint.push(tint[0], tint[1], tint[2])
-    this.speck.push(uv === FLAT ? 1 : SPECK.textured)
+    this.speck.push(k ? tint.mottle : uv === FLAT ? 1 : SPECK.textured)
+    this.shine.push(k)
     return this.count - 1
   }
 
@@ -237,8 +276,11 @@ function kit(rng) {
   /** `F` knocked a little off true, as nothing hand-made stands square. */
   const crook = (F, a) => tip(tip(F, 'ax', j(a)), 'az', j(a))
 
-  /** A profile of [r, y] revolved about the frame's y; a repeated point is a hard edge. `sx`/`sz` squash it, `rough` wobbles its radius, `lobes` [n, depth] ribs it like a gourd. */
+  /** A profile of [r, y] or [r, y, shade] revolved about the frame's y; a repeated point is a hard edge, and `shade` darkens the tint (and its shine) there, as for the shadowed inside of a vessel. `sx`/`sz` squash it, `rough` wobbles its radius, `lobes` [n, depth] ribs it like a gourd. */
   function lathe(m, F, prof, tint, { segs = 16, rough = 0, sx = 1, sz = 1, uvM = WOOD_M, flat = false, phase = 0, lobes = null } = {}) {
+    prof = prof.map((p) => [p[0], p[1], p[2] ?? 1])
+    if (tint.shine) { prof = chaikin(chaikin(prof)); segs = Math.max(segs, 24) }
+    const tints = prof.map((p) => (p[2] === 1 ? tint : Object.assign(tint.map((c) => c * p[2]), tint.shine ? { shine: tint.shine * p[2], mottle: tint.mottle } : {})))
     const wob = Array.from({ length: segs }, () => prof.map(() => 1 + j(rough)))
     const len = [0]
     for (let k = 1; k < prof.length; k++) len.push(len[k - 1] + Math.hypot(prof[k][0] - prof[k - 1][0], prof[k][1] - prof[k - 1][1]))
@@ -257,7 +299,7 @@ function kit(rng) {
         const tl = Math.hypot(t[0], t[1]) || 1
         const nr = t[1] / tl, ny = -t[0] / tl, nt = (-nr * dL) / L
         const n = turn(F, (cq * nr - sq * nt) / sx, ny, (sq * nr + cq * nt) / sz)
-        m.v(put(F, cq * r * sx, y, sq * r * sz), norm(n), flat ? FLAT : [(i / segs) * around, len[k] / uvM], tint)
+        m.v(put(F, cq * r * sx, y, sq * r * sz), norm(n), flat ? FLAT : [(i / segs) * around, len[k] / uvM], tints[k])
       }
     }
     const K = prof.length
@@ -269,6 +311,16 @@ function kit(rng) {
     }
   }
   const sub2 = (a, b) => [a[0] - b[0], a[1] - b[1]]
+  /** One corner-cutting pass over a profile, ends kept and repeated points (hard edges) merged, so a highlight never breaks on a crease. */
+  const chaikin = (p) => {
+    p = p.filter((q, k) => !k || q[0] !== p[k - 1][0] || q[1] !== p[k - 1][1])
+    const out = [p[0]]
+    for (let k = 0; k < p.length - 1; k++) {
+      const [a, b] = [p[k], p[k + 1]]
+      out.push(a.map((v, i) => 0.75 * v + 0.25 * b[i]), a.map((v, i) => 0.25 * v + 0.75 * b[i]))
+    }
+    return [...out, p[p.length - 1]]
+  }
 
   /** A rounded box centred at local (cx, cy, cz), half-sizes h: a superellipsoid, `round` 0 square to 1 round, its eight corners pushed about `crook` so no two are alike. Grain runs across each face. */
   function box(m, F, cx, cy, cz, hx, hy, hz, tint, { round = 0.3, segs = 16, rows = 8, crook: cj = 0.01, uvM = WOOD_M, flat = false } = {}) {
@@ -428,12 +480,14 @@ export class InteriorView {
       const m = M[id]
       if (m.count === 0) continue
       bake(room, m, tops)
-      // The panes are lit from outside, not by the room.
-      if (id === 'window') for (let i = 0; i < m.count; i++) m.lit.set(PANE_LIT, i * 3)
+      if (id === 'window') glaze(m)
       const g = new THREE.BufferGeometry()
       g.setAttribute('position', new THREE.Float32BufferAttribute(m.pos, 3))
       g.setAttribute('normal', new THREE.Float32BufferAttribute(m.nrm, 3))
       g.setAttribute('speck', new THREE.Float32BufferAttribute(m.speck, 1))
+      g.setAttribute('shine', new THREE.Float32BufferAttribute(m.shine, 1))
+      g.setAttribute('cdir', new THREE.Float32BufferAttribute(m.cdir, 3))
+      g.setAttribute('wdir', new THREE.Float32BufferAttribute(m.wdir, 3))
       g.setAttribute('tuv', new THREE.Float32BufferAttribute(m.uv, 2))
       g.setAttribute('tint', new THREE.Float32BufferAttribute(m.tint, 3))
       g.setAttribute('light', new THREE.Float32BufferAttribute(m.lit, 3))
@@ -777,9 +831,9 @@ function bandIn(room, s, x, z) {
   return Math.min(side, deep)
 }
 
-/** Per vertex: x the night's fill, y candle, z window and the daylit fill. */
+/** Per vertex: x the night's fill, y candle, z window and the daylit fill; `m.cdir` and `m.wdir` the ways its candle and window light come from, weighted by each light's share. */
 function bake(room, m, tops) {
-  const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm
+  const n = m.count, L = new Float32Array(n * 3), P = m.pos, N = m.nrm, C = new Float32Array(n * 3), W = new Float32Array(n * 3)
   const wins = room.windows.map((w) => {
     const r = rAt(room.rs, w.a) + w.depth
     return { p: [Math.cos(w.a) * r, w.y, Math.sin(w.a) * r], ax: [-Math.cos(w.a), 0, -Math.sin(w.a)], k: ((w.r / 0.3) ** 2) * 1.2 }
@@ -810,18 +864,23 @@ function bake(room, m, tops) {
         if (nearTop(t, qx, qz, pen)) got *= 1 - (1 - SHADE.pass) * smooth(-pen, pen, t.inBy(qx, qz))
       }
       cand += got
+      C[i * 3] += (got * dx) / dl; C[i * 3 + 1] += (got * dy) / dl; C[i * 3 + 2] += (got * dz) / dl
     }
     let win = 0
     for (const w of wins) {
       const dx = px - w.p[0], dy = py - w.p[1], dz = pz - w.p[2], along = dx * w.ax[0] + dz * w.ax[2]
       if (along <= -0.1) continue
       const dl = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1, facing = Math.max(0, -(nx * dx + ny * dy + nz * dz) / dl)
-      win += w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
+      const got = w.k * (SHADE.spill * Math.exp(-dl / SHADE.spillM) * (0.5 + 0.5 * facing) + (smooth(0.15, 0.85, along / dl) * Math.max(0.2, facing)) / (1 + (dl / SHADE.beamM) ** 2))
+      win += got
+      W[i * 3] -= (got * dx) / dl; W[i * 3 + 1] -= (got * dy) / dl; W[i * 3 + 2] -= (got * dz) / dl
     }
     // Candles crowd onto the table: saturate their sum so it glows rather than bleaches.
     L[i * 3] = amb * DARK_FILL; L[i * 3 + 1] = SHADE.cap * (1 - Math.exp(-cand / SHADE.cap)); L[i * 3 + 2] = win * (amb / SHADE.amb) + amb * (1 - DARK_FILL) * LEVELS.amb / LEVELS.win
   }
   m.lit = L
+  m.cdir = C
+  m.wdir = W
 }
 
 let speckTex = null
@@ -908,14 +967,18 @@ function buildFlames(candles, ox, oy, oz) {
 // --- the furniture and things ---------------------------------------------------
 
 // Worn country colours: earthenware, tallow, moss, rust, iron, cord and wicker, none of them brighter than the bark outside by much.
-const CLAY = (h) => rgb(0.05 + h * 0.04, 0.36, 0.3)
+// Pottery keeps half its mottle, what is eaten off a little.
+const CLAY = (h) => shiny(rgb(0.05 + h * 0.04, 0.36, 0.3), SHINE.glaze, 0.5)
+const DISH = (h) => shiny(rgb(0.05 + h * 0.04, 0.36, 0.3), SHINE.glaze, 0.3)
 const CREAM = rgb(0.11, 0.2, 0.52)
-const WAX = rgb(0.12, 0.3, 0.72)
+const WAX = shiny(rgb(0.12, 0.3, 0.72), SHINE.wax, 0.5)
 const GREEN = (k = 0) => rgb(0.24 + k * 0.06, 0.3, 0.3)
 const MUTED = (h) => rgb(h, 0.22, 0.36)
 const DARK = rgb(0.07, 0.3, 0.18)
-const IRON = rgb(0.08, 0.08, 0.2)
-const TIN = rgb(0.1, 0.08, 0.38)
+// Metal is near black, read by its highlight.
+const IRON = shiny(rgb(0.08, 0.08, 0.06), SHINE.metal, 1)
+const TIN = shiny(rgb(0.1, 0.06, 0.1), SHINE.metal, 1)
+const PEWTER = shiny(rgb(0.1, 0.06, 0.1), SHINE.metal, 0.6)
 const CORD = rgb(0.1, 0.25, 0.45)
 const WICKER = rgb(0.1, 0.36, 0.4)
 const BURLAP = (h) => rgb(0.08 + h * 0.03, 0.28, 0.26 + h * 0.05)
@@ -1062,14 +1125,14 @@ const ITEMS = {
 
   plate(it, M, K, room, rng) {
     const F = frame(it.x, it.y, it.z)
-    K.lathe(M.linen, F, [[0, 0], [0.085, 0], [0.108, 0.016], [0.106, 0.021], [0.08, 0.009], [0, 0.009]], CLAY(rng()), { segs: 18, flat: true, rough: 0.02 })
-    if (it.food) food(M, K, frame(it.x, it.y + 0.009, it.z), it.food, 0.04, rng)
+    K.lathe(M.linen, F, [[0, 0], [0.085, 0], [0.108, 0.016], [0.106, 0.021], [0.085, 0.013], [0.055, 0.009], [0.025, 0.0065], [0, 0.006]], DISH(rng()), { segs: 18, flat: true, rough: 0.02 })
+    if (it.food) food(M, K, frame(it.x, it.y + 0.006, it.z), it.food, 0.04, rng)
   },
 
   cup(it, M, K, room, rng) {
     const F = K.crook(frame(it.x, it.y, it.z, rng() * TAU), 0.04)
-    K.lathe(M.linen, F, [[0, 0], [0.03, 0], [0.035, 0.035], [0.037, 0.065], [0.032, 0.066], [0.029, 0.012], [0, 0.012]], CLAY(rng()), { segs: 14, flat: true, rough: 0.03 })
-    K.tube(M.linen, [put(F, 0.034, 0.052, 0), put(F, 0.055, 0.045, 0), put(F, 0.056, 0.025, 0), put(F, 0.034, 0.018, 0)], [0.006, 0.007, 0.007, 0.006], CLAY(rng()), { segs: 6, flat: true, caps: false })
+    K.lathe(M.linen, F, [[0, 0], [0.03, 0], [0.035, 0.035], [0.037, 0.065], [0.032, 0.066], [0.029, 0.012], [0, 0.012]], DISH(rng()), { segs: 14, flat: true, rough: 0.03 })
+    K.tube(M.linen, [put(F, 0.034, 0.052, 0), put(F, 0.055, 0.045, 0), put(F, 0.056, 0.025, 0), put(F, 0.034, 0.018, 0)], [0.006, 0.007, 0.007, 0.006], DISH(rng()), { segs: 6, flat: true, caps: false })
   },
 
   vase(it, M, K, room, rng) {
@@ -1089,7 +1152,7 @@ const ITEMS = {
   },
 
   bowl(it, M, K, room, rng) {
-    K.lathe(M.grain, K.crook(frame(it.x, it.y, it.z), 0.03), [[0, 0], [0.07, 0], [0.12, 0.045], [0.132, 0.062], [0.122, 0.066], [0.06, 0.014], [0, 0.014]], woodOf(room, K), { segs: 20, rough: 0.03 })
+    K.lathe(M.grain, K.crook(frame(it.x, it.y, it.z), 0.03), [[0, 0], [0.07, 0], [0.12, 0.045], [0.132, 0.062], [0.122, 0.066], [0.06, 0.014], [0, 0.014]], shiny(woodOf(room, K), SHINE.oiled, 0.3), { segs: 20, rough: 0.03 })
     food(M, K, frame(it.x, it.y + 0.014, it.z), it.food, 0.05, rng)
   },
 
@@ -1115,7 +1178,7 @@ const ITEMS = {
       for (const a of [m0 + 0.06 / rm, m1 - 0.06 / rm]) K.tube(M.grain, [wallAt(room, a, 0, shelfY - 0.2), wallAt(room, a, 0.06, shelfY - 0.12), wallAt(room, a, 0.16, shelfY - 0.04)], [0.018, 0.016, 0.014], wood)
       for (let k = 0; k < 3; k++) {
         const a = m0 + ((m1 - m0) * (k + 0.5)) / 3, p = wallAt(room, a, 0.1, shelfY)
-        K.lathe(M.linen, K.crook(frame(...p), 0.05), [[0, 0], [0.05, 0], [0.07, 0.055], [0.064, 0.062], [0.045, 0.012], [0, 0.012]], CLAY(k * 0.3), { segs: 14, flat: true })
+        K.lathe(M.linen, K.crook(frame(...p), 0.05), [[0, 0], [0.05, 0], [0.07, 0.055], [0.064, 0.062], [0.045, 0.012], [0, 0.012]], DISH(k * 0.3), { segs: 14, flat: true })
       }
     }
   },
@@ -1522,4 +1585,4 @@ const ITEMS = {
 }
 
 // The kit and palette render/town-interior.js builds from.
-export { Mesher, kit, frame, put, turn, tip, rgb, tone, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, CLAY, CREAM, WAX, IRON, TIN, CORD, WICKER, BURLAP, DARK, MUTED, add, sub, norm, cross }
+export { Mesher, kit, frame, put, turn, tip, rgb, tone, FLAT, WOOD_M, VERT, FRAG, speckleTexture, buildFlames, slab, bookAt, candleOn, sackAt, binding, shiny, SHINE, CLAY, CREAM, WAX, IRON, PEWTER, CORD, WICKER, BURLAP, DARK, MUTED, add, sub, norm, cross }
