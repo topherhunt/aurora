@@ -29,7 +29,7 @@
 import fs from 'node:fs'
 import {
   SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES,
-  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, INDOORS,
+  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, INDOORS, WALLED,
 } from '../src/v2/audio/sound-engine.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
 import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
@@ -289,6 +289,11 @@ console.log('far')
   const engine = new SoundEngine({ ctx })
   engine.unlock()
   engine.buffers.set('clip', { duration: 1 })
+  engine.setIndoors(true)
+  const walled = engine.play('clip', { gain: 0.4, walled: true }), wall = walled.outs[0]
+  engine.setIndoors(false)
+  const open = engine.play('clip', { gain: 0.4, walled: true })
+  check(walled.env.gain.value === 0.4 * WALLED.gain && wall.type === 'lowpass' && wall.frequency.value === WALLED.lp && open.env.gain.value === 0.4 && open.outs[0] === open.env, 'a walled shot indoors is dulled and quietened past the walls, outdoors untouched')
   // The buses: one convolver carrying a synthesized impulse, its return on air; two echo taps, each a delay looped through a low-pass, their return on air and into the reverb.
   check(ctx.convolvers.length === 1 && engine.reverb === ctx.convolvers[0], 'one convolver for the whole scene')
   const ir = engine.reverb.buffer
@@ -977,7 +982,7 @@ for (const rule of ['voice', 'villagerVoice']) {
   said.push({ sound: 'leafkinChatter1', x: HEAD.x + 2, y: HEAD.y, z: HEAD.z })
   run(amb, 3, {})
   const mine = engine.plays.filter((p) => p.name === 'leafkinChatter1' || p.name === 'footfall'), theirs = engine.plays.filter((p) => p.name === 'leafkinChatter2')
-  check(mine.some((p) => p.name === 'footfall') && mine.every((p) => p.bus === 'near') && theirs.length > 0 && theirs.every((p) => p.bus === undefined), 'a layer given the near bus mutters and steps on it; one not given it stays on air', `${mine.length} near, ${theirs.length} air`)
+  check(mine.some((p) => p.name === 'footfall') && mine.every((p) => p.bus === 'near') && theirs.length > 0 && theirs.every((p) => p.bus === undefined && p.walled === true) && mine.every((p) => p.walled !== true), 'a layer given the near bus mutters and steps on it; one not given it stays on air, its voices walled', `${mine.length} near, ${theirs.length} air`)
 }
 {
   // A snowman's feet beside a strider's, each as main.js herds them, the same distance off: the tread, deeper and louder.

@@ -469,6 +469,9 @@ console.log('\ndeterminism and the boot')
   const late = make()
   late.update(FAR, head(FAR), T0 + 500, 1 / 60)
   check(late.all.some((c) => !c.hidden) && late.voices([]).length === 0, 'a boot mid-chapter finds villagers about, and hears nothing of the replay', JSON.stringify(late.stats.states))
+  const settled = make()
+  settled.settle(T0 + 500)
+  check(settled.all.every((c, i) => c.state === late.all[i].state && c.x === late.all[i].x && c.z === late.all[i].z) && settled.voices([]).length === 0, 'settle, as a saved house opens, finds the village where a boot far off does, and silent', JSON.stringify(settled.stats.states))
   const chapter = make()
   const t = run(chapter, T0, CHAPTER_S + 30, FAR)
   check(chapter.tick / 20 > t - 0.1, 'a chapter turn is stepped through', JSON.stringify(chapter.stats.states))
@@ -917,8 +920,19 @@ console.log('\nat home')
   wary.heard.length = 0
   for (const h of [wary, fond]) run(h, 8)
   const facing = Math.cos(Math.atan2(wary.feet.x - r.x, wary.feet.z - r.z) - r.heading)
-  check(r.state === 'cower' && wary.clips.has('cower') && facing > 0.9 && wary.heard.includes('leafkinWhimper') && wary.heard.includes('panting') && wary.heard.every((s) => SOUNDS[s] !== undefined), 'one that does not trust her, her within COWER_M, cowers facing her, whimpering and panting by turns', `${r.state}, facing ${facing.toFixed(2)}; ${wary.heard.join(' ')}`)
+  check(r.state === 'cower' && wary.clips.has('cower') && facing > 0.9 && wary.heard.filter((s) => s === 'leafkinWhimper').length >= 2 && !wary.heard.includes('panting') && wary.heard.every((s) => SOUNDS[s] !== undefined), 'one that does not trust her, her within COWER_M, cowers facing her, whimpering and never panting', `${r.state}, facing ${facing.toFixed(2)}; ${wary.heard.join(' ')}`)
   check(fond.res.all.every((o) => o.state !== 'cower'), 'one that trusts the players goes on about its home beside her')
+  {
+    const out = fond.res.all.find((o) => o.id === 3), states = []
+    for (let i = 0; i < 60 * 60 && fond.res.all.includes(out); i++) {
+      fond.res.sync(new Map())
+      fond.res.update(1 / 60, view, fond.feet, fond.lures, fond.trusts)
+      if (states.at(-1) !== out.state) states.push(out.state)
+    }
+    fond.res.sync(new Map([[3, { size: 1, pace: 1, feast: false }]]))
+    const back = fond.res.all.find((o) => o.id === 3)
+    check(!fond.res.all.includes(out) && states.join() === 'leave,gone' && back !== undefined && back !== out && Math.hypot(back.x - room.doorIn.x, back.z - room.doorIn.z) < 0.01, 'synced out each frame, a villager walks out once and is gone; synced in, it walks in at the door', states.join())
+  }
   wary.feet = { x: 400, y: 0, z: 400 }
   run(wary, 1)
   check(r.state !== 'cower', 'her gone past COWER_OFF_M, it goes back to its home', r.state)

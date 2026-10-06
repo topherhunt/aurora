@@ -122,7 +122,7 @@ export class Residents {
 
   /** The villagers indoors now, by id: one come in walks in at the door, one gone out walks to it and is gone. */
   sync(inside) {
-    for (const r of this.all) if (r.id < HOMEBODY_ID && !inside.has(r.id) && r.state !== 'leave') this._leave(r)
+    for (const r of this.all) if (r.id < HOMEBODY_ID && !inside.has(r.id) && r.state !== 'leave' && r.state !== 'gone') this._leave(r)
     for (const [id, c] of inside) if (!this.all.some((r) => r.id === id)) this._add(id, c.size, c.pace, true, c.feast)
   }
 
@@ -138,7 +138,7 @@ export class Residents {
     const r = {
       id, size, pace, k: size / this.asset.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI / 2, level: 0,
       state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, feast, carrier: null,
-      calm: 0, voice: 0, panted: false, hx: 0, hz: 0, planX: 0, planZ: 0,
+      calm: 0, voice: 0, hx: 0, hz: 0, planX: 0, planZ: 0,
       mutter: between(this.rand, MUTTER_S), body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: this.durations.walk / pace },
     }
     this.all.push(r)
@@ -370,7 +370,7 @@ export class Residents {
       if (!(fearing || r.state === 'walk' || (r.state === 'act' && (r.phase === 'stand' || r.phase === 'busy' || r.phase === 'talk')))) continue
       this._drop(r)
       if (want === 'court') this._court(r, true)
-      else { r.state = 'cower'; r.route = []; r.voice = 0; r.panted = true; this._play(r, 'cower', this.durations.cower) }
+      else { r.state = 'cower'; r.route = []; r.voice = 0; this._play(r, 'cower', this.durations.cower) }
     }
   }
 
@@ -480,13 +480,13 @@ export class Residents {
       else if (r.phase === 'rise') r.slide = LIE_SLIDE * (1 - t)
       if (r.left <= 0) this._next(r)
     } else if (r.state === 'cower' || r.state === 'court') {
-      // Facing her: a cower whimpering and panting by turns, a court beckoning, chattering half the time.
+      // Facing her: a cower whimpering (it stands still, so never panting), a court beckoning, chattering half the time.
       const want = Math.atan2(r.hx - r.x, r.hz - r.z)
       r.heading += Math.atan2(Math.sin(want - r.heading), Math.cos(want - r.heading)) * Math.min(1, TURN_RATE * dt)
       r.voice -= dt
       r.left -= dt
       if (r.state === 'cower') {
-        if (r.voice <= 0) { r.voice = between(this.rand, WHIMPER_S); r.panted = !r.panted; this._say(r, r.panted ? 'panting' : 'leafkinWhimper') }
+        if (r.voice <= 0) { r.voice = between(this.rand, WHIMPER_S); this._say(r, 'leafkinWhimper') }
         if (r.left <= 0) { const c = this.rand() < 0.25 ? 'recoil' : 'cower'; this._play(r, c, this.durations[c]) }
       } else {
         if (r.voice <= 0) {

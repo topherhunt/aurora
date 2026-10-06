@@ -52,7 +52,16 @@ Small theory-of-mind touches that pay for themselves: they remember what they to
 
 **You can lie.** "Tell..." injects a belief: "Mara sent me", "the bridge is out", "the boy is safe". The listener checks it against what they know. If they know it is false, or a wariness roll catches it, their suspicion rises and they turn cold, maybe for good. Otherwise they adopt it, act on it, and gossip it onward.
 
-**Speech is text only, in a simplified grammar.** Short, plain lines from templates, coloured by temperament (terse or rambling, hedges, filler). **Leafkin speak a pidgin**: dropped articles, third person, a small vocabulary that grows with their trust ("Leafkin know. Big-folk go there. Bad-dark."). They turn, point and use the existing gesture clips, but there is no pantomime language and no new animation for it.
+**Speech is text in a simplified grammar, under a voiced clip.** Short, plain lines from templates, coloured by temperament (terse or rambling, hedges, filler); see Voice below for what is heard. **Leafkin speak a pidgin**: dropped articles, third person, a small vocabulary that grows with their trust ("Leafkin know. Big-folk go there. Bad-dark."). They turn, point and use the existing gesture clips, but there is no pantomime language and no new animation for it.
+
+## Voice
+
+**The clip carries the speech act and the mood; the text carries the fact.** "Listen, I saw something" is heard while the panel says the boy went north past the tarn. A clip never names a person, place, direction or number, so voice and text can never disagree. Each speech act is an *atom* (greet a friend, hedge, refuse for a price, plead for a missing child, grumble about the cold) recorded in about three wordings; the inventory, with the engine state that fires each atom, is `tools/voice/atoms.js`, recorded with `voice-recorder.html` into `tools/voice/work/`.
+
+- **One performer, many voices.** Every line is recorded once per performance (base, elder, a light take as the source for women), then voice-converted offline into about six voice types shared across the 19 bodies; a per-person playback-rate offset of a semitone or two separates people who share one. Conversion keeps the performance and changes the timbre; gravelly takes convert badly, hence the light take.
+- **Leafkin have their own atoms**, voiced by the same performer and played fast (rate about 1.5 moves pitch and formants together, which reads as small). Each atom has three trust tiers: a stranger hears only their native tongue (a small fixed vocabulary: *hoola* hello, *tikka* friend, *momo* food), trust mixes in pidgin, and a friend speaks the pidgin of the text. The relationship is audible.
+- **Repetition is a scheduling problem before it is a wording problem.** A shuffle bag per atom, cooldowns per speaker and per atom within earshot, speaking on her arrival rather than while she stays, and escalation over time (a parent grows more urgent) so a repeat is story, not a loop. Clip picks are keyed by seed so both players hear the same line.
+- **Later**: swappable nouns spliced into a carrier phrase ("head *north*", "go to the *cave*").
 
 ## In the headset
 
@@ -98,11 +107,12 @@ Engine (three-free, gated by `check-talk.mjs`): `mind.js` (names, ties, temperam
 4. **Telling and gossip.** Built in the engine (`tell` for "X sent me" and "Y is at Z", `gossip`); nothing calls `gossip` from the talk state yet, and rapport lives only in memory, not the save or the room.
 5. **The headset panel, hails and overhead bubbles.** Not started: needs `townsfolk.js`, `villagers.js` and `main.js`, which other sessions are in.
 6. **The message.** Built: someone asks her to carry a phrase to a grown-up in the nearest town; the recipient asks what was said and she picks from the true words and three near-misses. True words warm the recipient and the sender thanks her and owes her; garbled words turn the recipient cold for good. The discretion variant ("not where her husband can hear") is not built.
-7. Go-and-look, trades, the rest of the quest list.
+7. **Voice.** Atom inventory and recorder built (`tools/voice/`, `voice-recorder.html`); not yet recorded, converted, scheduled or played.
+8. Go-and-look, trades, the rest of the quest list.
 
 ## Decided
 
-- Text only for now.
+- Text carries facts; recorded clips carry speech acts and mood, never names (Voice).
 - Leafkin speak a pidgin and gesture with existing clips only.
 - The player can lie; detection is knowledge first, then a wariness roll, and a caught lie turns the listener cold.
 - Other players overhear through small bubbles over the speakers.
@@ -113,7 +123,3 @@ Engine (three-free, gated by `check-talk.mjs`): `mind.js` (names, ties, temperam
 - Do facts go stale (gossip from three chapters ago that the world has since moved past)? Realistic, harder to tune.
 - Can a quest fail for good (the child lost for this chapter), or does it wait for you?
 - Body sex: names and kin words are neutral until the avatars are tagged.
-
-## Wishlist
-
-- Voiced lines, or at least short voice samples matched to each line's meaning (greeting, refusal, alarm, a lie told nervously), per body. See the TTS item in `TASKS.md`.

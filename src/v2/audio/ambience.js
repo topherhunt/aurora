@@ -180,9 +180,9 @@ export const RULES = {
   // The crawlers' feet: one quiet loop while any crab within `reach` is moving, at the nearest, its level the sum of each one's near/distance, capped at 1. A crawler or startler that takes fright (a layer's startled()) plays the clip once, from where it is, at `startle` times the level.
   crawl: { reach: 6, near: 1, level: 0.075, startle: 1, gain: [0.6, 1.0] },
   // A voiced layer's one-shots (a leafkin's chatter, panting, squeal, scream, whimper), each from where the body is, within `reach`: `level` up to `near` metres off, falling as near/distance and fading out over the last `edge` metres to nothing at the reach. The wild forager is heard across its wood before it is seen, so its reach runs past its cull...
-  voice: { reach: 60, near: 5, edge: 10, level: 0.8, gain: [0.8, 1.0] },
+  voice: { reach: 60, near: 5, edge: 10, level: 0.8, gain: [0.8, 1.0], walled: true },
   // ...and a glade's villagers, a dozen within earshot of each other, are heard across its pond, not across its wood.
-  villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0] },
+  villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0], walled: true },
   // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A strider's chirp or fidget flutter, heard across a town's rails.
@@ -843,7 +843,7 @@ export class Ambience {
         const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
         if (d > V.reach) continue
         const level = V.level * (V.near / Math.max(V.near, d)) * clamp((V.reach - d) / V.edge, 0, 1)
-        this.fire(v.sound, { rate: this.rate() * (v.rate === undefined ? 1 : v.rate), gain: level * this.between(...V.gain) * (v.gain === undefined ? 1 : v.gain), at: { x: v.x, y: v.y, z: v.z }, bus })
+        this.fire(v.sound, { rate: this.rate() * (v.rate === undefined ? 1 : v.rate), gain: level * this.between(...V.gain) * (v.gain === undefined ? 1 : v.gain), at: { x: v.x, y: v.y, z: v.z }, bus, walled: V.walled === true && bus !== 'near' })
       }
     }
   }

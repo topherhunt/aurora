@@ -392,9 +392,31 @@ export const SKY_GLSL = /* glsl */ `
       // the horizon colour as it recedes, the aerial perspective the terrain
       // gets from lighting.js, so a ceiling meets the fog instead of ending
       // on it.
-      vec3 cloud = mix( uCloudLit, uCloudShade, smoothstep( uCloud.y, uCloud.z + 0.35, cl.y ) );
+      //
+      // Away from the sun the layer shows more belly, through the shade mix
+      // since by day uCloudLit is already near white. Toward the sun or moon
+      // it brightens (forward scatter), after the horizon fade: a low sun's
+      // clouds are low too, and the fade would eat the glow exactly when it
+      // matters. sunUp reaches below the horizon because the afterglow on cloud
+      // outlasts the disc uSunFade tracks. The moon's light is added, not
+      // scaled, since a night cloud is near black; uMoon.y carries the cover dim.
+      float sunUp = smoothstep( -0.12, 0.02, uSunDir.y );
+      float sToward = max( sun, 0.0 );
+      float mToward = max( md, 0.0 );
+      vec3 moonCol = vec3( 0.62, 0.70, 0.90 );
+      float thick = smoothstep( uCloud.y, uCloud.z + 0.35, cl.y );
+      vec3 cloud = mix( uCloudLit, uCloudShade, min( 1.0, thick + 0.7 * sunUp * max( -sun, 0.0 ) ) );
       cloud = mix( cloud, uHorizon, ( 1.0 - smoothstep( 0.03, 0.45, dir.y ) ) * 0.85 );
+      cloud *= 1.0 + 0.45 * sunUp * pow( sToward, 5.0 );
+      cloud += moonCol * ( uMoon.y * ( 1.0 - thick * 0.7 ) * 0.2 * pow( mToward, 8.0 ) );
       col = mix( col, cloud, cl.x );
+      // The silver lining: thin edges near the light glow brighter than the sky
+      // behind them. Added over the composite with sqrt(cl.x), because those
+      // edges are where cl.x is smallest and a mix would hand the glow back to
+      // the sky. An overcast has no backlit edge, hence the cover term.
+      vec3 rim = sunTint * ( sunUp * ( 1.0 - uCloud.x * uCloud.x ) * 0.8 * pow( sToward, 16.0 ) )
+               + moonCol * ( uMoon.y * 0.5 * pow( mToward, 40.0 ) );
+      col += rim * ( ( 1.0 - thick ) * sqrt( cl.x ) );
     }
 
     return col;

@@ -7,6 +7,7 @@ tools/creatures/work/
 tools/trees/v9/work/
 tools/props/gen/work/
 tools/music/work/
+tools/voice/work/
 devops/deploy.env
 .env
 .DS_Store

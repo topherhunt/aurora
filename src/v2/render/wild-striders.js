@@ -53,8 +53,8 @@ export const WILD = {
     swing: 1.2, heave: 0.15, face: 0.35, dwell: 0.6,
     // Her eye `eye` m over the seat, the seat's height followed over `lift` s (shortening with speed), and a stride's bob of `bob` m at a walk, `gallop` as often at a run.
     eye: 0.75, lift: 0.35, bob: 0.035, gallop: 0.25,
-    // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface: it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), bobs `duck` m every `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s.
-    swim: { draft: 0.5, speed: 1.4, stroke: [0.35, 1], back: -0.8, duck: 0.08, paddle: 0.8, splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40] },
+    // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface (to its chest, the rider's toes wet): it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), weaving `sway` rad each side of her course, a side every `weave` s, and dips `duck` m deeper (to its chin; never through the bed) every `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s.
+    swim: { draft: 1.3, speed: 2.8, stroke: [0.35, 1], back: -0.8, sway: [0.12, 0.3], weave: [2, 4], duck: 0.45, paddle: 1.4, splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40] },
   },
   // In the headset it hops where she lobs (main.js aimTeleport), keeping its heading: `reach` times her walking lob straight ahead, falling off as the square of the cosine off its way to `side` of that at a right angle and behind, grown `grow` a hop by hops within `line` rad of the last that used `full` of it, to `most`; a sharper turn sheds it in proportion to a right angle, and `rest` s standing sheds it over `fade` s. The lob stops `cap` m of her own under its feet: a hop there is a leap, and it falls. It treads `tread` s after a hop (by how far) and clucks after one in `cluck`; standing, it fidgets every `fidget` s, shifting her `shift` m and `sway` rad.
   hop: { reach: 2, side: 0.1, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, cap: 3.5, tread: [0.5, 1.4], cluck: 0.35, fidget: [6, 16], shift: 0.03, sway: 0.04 },
@@ -644,7 +644,7 @@ export class WildStriders {
           p.speed = 0
           if (mine && Math.abs(wrap(m.aim - p.heading)) < 1) { m.aim = wrap(p.heading + Math.PI); m.voice = between(S.wander) + Math.PI / (W.turn * 0.4) }
         }
-        this._bob(m, dt, level, p.speed)
+        this._bob(m, dt, level, g, p.speed)
         return
       }
       case 'follow': case 'led': {
@@ -720,7 +720,7 @@ export class WildStriders {
     else m.v += ((back ? -d : d) / Math.max(dt, 1e-3) - m.v) * ease(0.25, dt)
     if (Math.abs(m.v) > 0.3) p.heading = wrap(p.heading + swing(p.heading, back ? way + Math.PI : way) * ease(0.3, dt))
     p.swim = this._deep(m, p.x, p.z, p.y)
-    if (p.swim) this._bob(m, dt, this.walk.waterAt(p.x, p.z), m.v)
+    if (p.swim) this._bob(m, dt, this.walk.waterAt(p.x, p.z), p.y, m.v)
     if (this.now < m.shake) {
       // Shaking.
     } else if (p.swim) this._set(m, 'idle', m.v)
@@ -1094,6 +1094,8 @@ export class WildStriders {
       fall: null,
       // Water (R.swim): afloat, been afloat since it was last dry, willing to go in, seconds coaxed of the `need`, and to the next squawk and end of a balk.
       swim: m.pose.swim, wet: m.pose.swim, willing: m.pose.swim, coax: 0, need: between(R.swim.coax), squawk: 0, balk: 0,
+      // Its weave swimming forward: the phase (a side every pi), this side's seconds and reach, and the offset now on its heading.
+      weave: 0, half: between(R.swim.weave), reach: between(R.swim.sway), sway: 0,
     }
     player.mountAt(_v.x, _v.y + R.eye * player.scale, _v.z, m.pose.heading)
     this._owe(m, 'ridden')
@@ -1184,6 +1186,15 @@ export class WildStriders {
         if (off !== undefined) p.heading = wrap(p.heading + Math.sign(off) * R.dodge * dt)
       }
     }
+    if (r.v > 0 && r.swim) {
+      // Swimming forward it weaves: its heading swung off her course and back, to one side then the other, by more the faster it goes.
+      const ph = r.weave + (Math.PI * dt) / r.half
+      if (Math.floor(ph / Math.PI) !== Math.floor(r.weave / Math.PI)) { r.half = between(S.weave); r.reach = between(S.sway) }
+      r.weave = ph % (2 * Math.PI)
+      const sway = r.reach * clamp(r.v / (S.speed * big), 0, 1) * Math.sin(r.weave)
+      p.heading = wrap(p.heading + sway - r.sway)
+      r.sway = sway
+    } else r.weave = r.sway = 0
     if (r.v !== 0 && !this._rideStep(m, r.v * dt, dt)) r.v = r.a = 0
     this._float(m, dt)
     const owed = this._swing(m, dt)
@@ -1223,7 +1234,7 @@ export class WildStriders {
     r.swim = p.swim = this._deep(m, p.x, p.z, g, level)
     if (r.swim) {
       r.wet = true
-      this._bob(m, dt, level, r.v)
+      this._bob(m, dt, level, g, r.v)
       return
     }
     p.y = g
@@ -1235,11 +1246,11 @@ export class WildStriders {
     }
   }
 
-  /** `m` afloat on water at `level`, swimming `v` m/s: bobbing, now and then splashing, and swooshing under way. */
-  _bob(m, dt, level, v) {
+  /** `m` afloat on water at `level` over a bed at `g`, swimming `v` m/s: bobbing, now and then splashing, and swooshing under way. */
+  _bob(m, dt, level, g, v) {
     const S = WILD.ride.swim, f = m.float, p = m.pose, big = p.size / STRIDER.size.mean
     f.t += dt
-    p.y = level - S.draft * big + S.duck * big * Math.sin((2 * Math.PI * f.t) / S.paddle)
+    p.y = Math.max(g, level - (S.draft + S.duck * 0.5 * (1 - Math.cos((2 * Math.PI * f.t) / S.paddle))) * big)
     if ((f.splash -= dt) <= 0) {
       f.splash = between(S.splash)
       this._say(m, 'splash', between([0.8, 1.2]), 0.6)

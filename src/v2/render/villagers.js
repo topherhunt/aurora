@@ -174,6 +174,7 @@ export const FUSS_S = [2, 4]
 const NO_CHASES = []
 const NO_LURES = []
 const NOBODY = () => false
+const NOWHERE = { x: 1e6, y: 0, z: 1e6 }
 const PREFIX = { startle: '', find: 'f', frog: 'g', lure: 'l', offer: 'o', greet: 'w', hail: 'h' }
 // Ticks between looks for someone to talk to, or to call for a mushroom.
 const MEET_TICKS = 10
@@ -666,6 +667,9 @@ export class Villagers {
     if (c.state === 'sit' && c.phase === 'up') { this._rise(c); return }
     c.left = c.dur = STEP_S
   }
+
+  /** The village stepped to `seconds` with her nowhere near it, as while she is in a house: who is indoors, as a saved house opens, and who comes and goes after. */
+  settle(seconds, dt = 0) { this.update(NOWHERE, NOWHERE, seconds, dt) }
 
   /** Everyone into their houses at the start of the chapter `seconds` falls in, each a roll of INSIDE_S from coming out; the village's tick is the chapter's first, which is never stepped. The startles before it are let go. */
   _placeAll(seconds) {

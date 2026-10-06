@@ -83,6 +83,8 @@ export const ECHO_LP = 1500
 export const ECHO_LEVEL = 0.7
 // The world outside heard through a house's walls: `air`'s low-pass cutoff (Hz) and level indoors, eased over `tau` seconds. Crickets and songbirds are nearly all above 2.5 kHz: a cutoff much lower than this silences them outright.
 export const INDOORS = { lp: 1100, gain: 0.25, tau: 0.3 }
+// `walled` on a shot, while indoors: a further low-pass and level on top of INDOORS, so a voice outside (leafkin chatter) comes dark and low where the walls' own cutoff stays up for the crickets.
+export const WALLED = { lp: 450, gain: 0.5 }
 
 // Equal-power fade curve, sampled once; scaled per cycle by the cycle's gain.
 const FADE_STEPS = 32
@@ -180,6 +182,7 @@ export class SoundEngine {
     this.loops = new Set()
     // The one-shots playing, { src, g, nodes, gain }, and the shots lost: under the floor, or to the cap (dropped at it, or displaced by a louder one).
     this.voices = []
+    this.inside = false
     this.floored = 0
     this.culled = 0
   }
@@ -268,6 +271,7 @@ export class SoundEngine {
 
   /** Put the house's walls between her and `air`, or take them away. */
   setIndoors(inside) {
+    this.inside = inside
     const now = this.ctx.currentTime
     setParam(this.walls.frequency, inside ? INDOORS.lp : LP_MAX, now, INDOORS.tau)
     setParam(this.through.gain, inside ? INDOORS.gain : 1, now, INDOORS.tau)
@@ -303,12 +307,13 @@ export class SoundEngine {
    * its clock is frozen then, so every shot started would queue on the same
    * instant and the lot would fire together the moment unlock() lands.
    */
-  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, echo = 0, bright = false } = {}) {
+  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, echo = 0, bright = false, walled = false } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
     if (!(distance >= 0)) throw new Error(`SoundEngine.play(${name}): distance must be non-negative, got ${distance}`)
     if (!(echo >= 0 && echo <= 1)) throw new Error(`SoundEngine.play(${name}): echo must be 0-1, got ${echo}`)
     if (!this.running) return null
+    if (walled && this.inside) gain *= WALLED.gain
     if (gain < VOICE_FLOOR) {
       this.floored++
       return null
@@ -350,6 +355,14 @@ export class SoundEngine {
       hp.connect(shelf)
       head = shelf
       nodes.push(hp, shelf)
+    }
+    if (walled && this.inside) {
+      const lp = ctx.createBiquadFilter()
+      lp.type = 'lowpass'
+      lp.frequency.value = WALLED.lp
+      head.connect(lp)
+      head = lp
+      nodes.push(lp)
     }
     head.connect(g)
     let tail = g
