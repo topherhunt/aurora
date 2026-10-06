@@ -1113,6 +1113,9 @@ const PLACEMENT_CELL = 4.0
 // 2 * (INSET - JITTER) apart. A new `roll` moves every site in the world and
 // keeps which tiles hold one.
 const DEEP = { step: 15, keep: 0.6, inset: 60, jitter: 7, roll: 1 }
+// The clear ring every other bed keeps past an entrance boulder's hull, and the rungs one no mouth fits climbs: DESIGN.md §30 Siting.
+const HOLLOW_CLEAR_M = 2
+const HOLLOW_LADDER = ['sink', 1.25, 1.5, 2]
 
 // THE TILE WALK IS BUCKETED BY PHASE AND A BUCKET IS WALKED ONLY WHEN ITS ANSWER
 // CAN HAVE CHANGED -- render/trees.js's STILL_M scheme, whose header argues it,
@@ -1858,6 +1861,13 @@ class RockBed {
           `rocks that cover a prop. Widen \`tile\`, shrink the top size, or drop \`blocks\`.`
       )
     }
+    // A hollow bed's: how far the other beds keep off each tile's candidate (crowdsHollow), the candidates by tile, and the mouth test its ladder asks (Rocks.fitHollows).
+    this.clearR = cfg.hollow ? reach + HOLLOW_CLEAR_M : 0
+    this._sites = cfg.hollow ? new Map() : null
+    this.fitter = null
+    this._centre = new Float64Array(4)
+    // Boulders the ladder settled, by rung, and those it left blind.
+    this.laddered = Object.fromEntries([...HOLLOW_LADDER, 'blind'].map((r) => [r, 0]))
     // WHAT THE BOULDER COVERS OF THE GROUND, at instance scale 1, for
     // Rocks.anchorsInto, which multiplies by the instance's own scale and hands the
     // result out. Measured here rather than at query time because it is a scan of
@@ -2307,6 +2317,99 @@ class RockBed {
     let best = -1
     for (let j = lo; j <= hi && best < 0; j++) for (let i = lo; i <= hi; i++) if (dist[j * n + i] >= this.deep && pick-- === 0) { best = j * n + i; break }
     return { x: x0 + (best % n) * step, z: z0 + ((best / n) | 0) * step }
+  }
+
+  /** A hollow bed's candidate in tile (tx, tz) as [x, z], or null: `_deepSite` jittered by pass one's first two draws, ahead of every other test, so a superset of where its boulders stand. Memoized by tile. */
+  hollowSite(tx, tz) {
+    const k = tx * 0x10000 + tz
+    let s = this._sites.get(k)
+    if (s === undefined) {
+      const rand = mulberry32(tileSeed(tx, tz, this.seed, this.cfg.field))
+      const ux = rand(), uz = rand()
+      const d = this._deepSite(tx, tz)
+      s = d === null ? null : [d.x + (ux * 2 - 1) * DEEP.jitter, d.z + (uz * 2 - 1) * DEEP.jitter]
+      this._sites.set(k, s)
+    }
+    return s
+  }
+
+  /** Whether a rock of radius `r` at (x, z) stands within `clearR` of a hollow bed's candidate. */
+  crowdsHollow(x, z, r) {
+    const d = this.clearR + r, tile = this.tile
+    for (let tx = Math.floor((x - d) / tile); tx <= Math.floor((x + d) / tile); tx++) {
+      for (let tz = Math.floor((z - d) / tile); tz <= Math.floor((z + d) / tile); tz++) {
+        const s = this.hollowSite(tx, tz)
+        if (s !== null && (x - s[0]) ** 2 + (z - s[1]) ** 2 < d * d) return true
+      }
+    }
+    return false
+  }
+
+  /** Slots 0..3 of `_hollowsInto`'s stride for boulder `id`, written at `out[o]`. */
+  _hollowCentre(id, out, o) {
+    const e = this.instM
+    const m = id * 16
+    const half = this.shape.measured.height * 0.5
+    out[o] = e[m + 12] + e[m + 4] * half
+    out[o + 1] = this.field.heightAt(this.instX[id], this.instZ[id]) - this.instSink[id] + e[m + 5] * half
+    out[o + 2] = e[m + 14] + e[m + 6] * half
+    out[o + 3] = this.hull.radius * this.instScale[id]
+  }
+
+  /** Whether a stone `span` across at (x, z) reaches within ROAD_CLEARANCE of a road's kerb, or into `keepOut`. */
+  _offRoadFails(x, z, span) {
+    if (this.layers.paths !== undefined) {
+      const road = this.layers.paths.nearest(x, z, 'road')
+      if (road !== null && road.dist < road.halfWidth + span * 0.5 + ROAD_CLEARANCE) return true
+    }
+    return this.keepOut !== null && this.keepOut(x, z, span * 0.5)
+  }
+
+  /** HOLLOW_LADDER on entrance boulder `id`, while `fitter.seats` turns it down: the first rung a mouth fits stays, and with none it stands as placed. Returns the rung, or null. */
+  _fitHollow(id) {
+    const { seats, moved } = this.fitter
+    const c = this._centre
+    const x = this.instX[id], z = this.instZ[id]
+    const scale = this.instScale[id]
+    const r = this.hull.radius * scale
+    const reach = r * HOLLOW_LADDER[HOLLOW_LADDER.length - 1]
+    // Ground cached before this tile was resident, or while it stood at another rung, would answer for the wrong stone.
+    moved(x, z, reach)
+    this._hollowCentre(id, c, 0)
+    if (seats(c[0], c[1], c[2], c[3])) return null
+    const e = this.instM
+    const m = id * 16
+    const sink = this.instSink[id], span = this.instSpan[id], lod = this.instLod[id], y = this.instY[id]
+    const was = e.slice(m, m + 16)
+    let lo = Infinity
+    for (let b = 0; b < 8; b++) lo = Math.min(lo, this.field.heightAt(x + r * Math.cos(b * Math.PI / 4), z + r * Math.sin(b * Math.PI / 4)))
+    const drop = this.field.heightAt(x, z) - lo
+    const set = (s, k) => {
+      this.instSink[id] = s
+      this.instScale[id] = scale * k
+      this.instSpan[id] = span * k
+      this.instLod[id] = lod * k
+      for (let o = 0; o < 12; o++) e[m + o] = was[o] * k
+      // The drawn ground stays where it was: `y + sink`.
+      this.instY[id] = e[m + 13] = y + sink - s
+      moved(x, z, reach)
+    }
+    for (const rung of HOLLOW_LADDER) {
+      // Level ground has nothing lower to match.
+      if (rung === 'sink' && drop < 0.1) continue
+      if (rung !== 'sink' && this._offRoadFails(x, z, span * rung)) continue
+      if (rung === 'sink') set(sink + drop, 1)
+      else set(sink * rung, rung)
+      this._hollowCentre(id, c, 0)
+      if (seats(c[0], c[1], c[2], c[3])) {
+        this._placeTier(id)
+        this.laddered[rung]++
+        return rung
+      }
+    }
+    set(sink, 1)
+    this.laddered.blind++
+    return null
   }
 
   /**
@@ -3139,6 +3242,7 @@ class RockBed {
     const ids = existing ? existing.ids : new Int32Array(this.perTile)
     const rank = existing ? existing.rank : new Float32Array(this.perTile)
     let n = existing ? existing.n : 0
+    const n0 = n
 
     // The three numbers the terrain shades itself with. Hoisted because they are
     // constant for the whole tile and `shade` wants them per rock -- see
@@ -3327,15 +3431,8 @@ class RockBed {
       const { m00, m01, m02, m10, m11, m12, m20, m21, m22 } = b
       let { yMax, yMin, stand, planX, planZ, span } = b
 
-      // OFF THE ROAD, footprint and all -- see ROAD_CLEARANCE. Here, once the span is known, and before the fit ladder, which only ever shrinks it.
-      if (this.layers.paths !== undefined) {
-        const road = this.layers.paths.nearest(x, z, 'road')
-        if (road !== null && road.dist < road.halfWidth + span * 0.5 + ROAD_CLEARANCE) {
-          this.rejected.road++
-          continue
-        }
-      }
-      if (this.keepOut !== null && this.keepOut(x, z, span * 0.5)) {
+      // OFF THE ROAD, footprint and all -- see ROAD_CLEARANCE. Here, once the span is known, and before the fit ladder, which only ever shrinks it (HOLLOW_LADDER grows it, and asks again).
+      if (this._offRoadFails(x, z, span)) {
         this.rejected.road++
         continue
       }
@@ -3686,6 +3783,8 @@ class RockBed {
       bucket.push(fresh)
       this._markDue(fresh)
     }
+    // Once the tile is resident, so the mouth test's rays meet the boulder.
+    if (this.fitter !== null) for (let k = n0; k < n; k++) this._fitHollow(ids[k])
   }
 
   /**
@@ -3991,8 +4090,6 @@ class RockBed {
    */
   _hollowsInto(x0, z0, x1, z1, out, w, cap) {
     const tile = this.tile
-    const e = this.instM
-    const half = this.shape.measured.height * 0.5
     const gx1 = Math.ceil(x1 / tile) - 1, gz1 = Math.ceil(z1 / tile) - 1
     for (let gx = Math.floor(x0 / tile); gx <= gx1; gx++) {
       for (let gz = Math.floor(z0 / tile); gz <= gz1; gz++) {
@@ -4005,11 +4102,7 @@ class RockBed {
           if (x < x0 || x >= x1 || z < z0 || z >= z1) continue
           if (w >= cap) return w
           const o = w * PERCH_STRIDE
-          const m = id * 16
-          out[o] = e[m + 12] + e[m + 4] * half
-          out[o + 1] = this.field.heightAt(x, z) - this.instSink[id] + e[m + 5] * half
-          out[o + 2] = e[m + 14] + e[m + 6] * half
-          out[o + 3] = this.hull.radius * this.instScale[id]
+          this._hollowCentre(id, out, o)
           out[o + 4] = this.shapeLod * this.instScale[id]
           w++
         }
@@ -4519,7 +4612,11 @@ export class Rocks {
     const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
     // The world's own biome field, for the beds that gate on cover (the hollow bed).
     const biome = beds.some((cfg) => cfg.deep > 0) ? new BiomeField({ seed }) : null
-    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds, keepOut }))
+    // Every other bed keeps clear of the entrance boulders' ground: see HOLLOW_CLEAR_M.
+    let hollow = null
+    const clear = (x, z, r) => (keepOut !== null && keepOut(x, z, r)) || hollow.crowdsHollow(x, z, r)
+    this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds, keepOut: hollows && !cfg.hollow ? clear : keepOut }))
+    hollow = hollows ? this.beds.find((b) => b.cfg.hollow) : null
     this._hollowCol = new Float64Array(SPAN_STRIDE)
 
     // ONE MESH PER TIER FOR THE WHOLE LAYER, capped at the sum of what every bed
@@ -4939,6 +5036,18 @@ export class Rocks {
     if (bid < 0) throw new Error(`Rocks.hollowTintAt: no entrance boulder within 20 m of ${x.toFixed(1)}, ${z.toFixed(1)}`)
     const n = this.beds[bx].natural
     return out.setRGB(n[bid * 3], n[bid * 3 + 1], n[bid * 3 + 2])
+  }
+
+  /**
+   * The mouth test the entrance boulders' ladder asks (HOLLOW_LADDER): `seats(cx, cy, cz, r)`, whether a mouth fits the boulder `_hollowsInto` would report so, and `moved(x, z, reach)`, that stone within `reach` of (x, z) changed. Every resident boulder is fitted now, and every later one as its tile grows.
+   */
+  fitHollows(fitter) {
+    if (typeof fitter.seats !== 'function' || typeof fitter.moved !== 'function') throw new Error('Rocks.fitHollows: needs seats and moved')
+    for (const bed of this.beds) {
+      if (!bed.cfg.hollow) continue
+      bed.fitter = fitter
+      for (const t of bed.tiles.values()) for (let k = 0; k < t.n; k++) bed._fitHollow(t.ids[k])
+    }
   }
 
   /** rayAt against the hollow beds alone, any size, each boulder at its field seating: where a ray meets an entrance boulder's own hull, the same on every client. */

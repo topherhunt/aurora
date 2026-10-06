@@ -2226,6 +2226,44 @@ console.log('\nscatter')
     check(faces.every((f) => f.t > 10 && f.t < 20 && f.dot < 0 && f.size >= 8),
       'hollowRayAt meets each boulder\'s face from every bearing with the normal facing back',
       `${faces.length} rays, ${faces.filter((f) => f.t === Infinity).length} missed, nearest ${Math.min(...faces.map((f) => f.t)).toFixed(1)} m`)
+
+    // HOLLOW_CLEAR_M: no stone of another bed has its footprint within the hollow bed's clearR of a boulder's site.
+    let crowding = 0, others = 0
+    for (const b of forestRocks.beds) {
+      if (b.cfg.hollow) continue
+      for (const t of b.tiles.values()) {
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          others++
+          if (rows.some((r) => Math.hypot(b.instX[id] - r.x, b.instZ[id] - r.z) < bed.clearR + b.instSpan[id] * 0.5 - 1e-3)) crowding++
+        }
+      }
+    }
+    check(others > 0 && crowding === 0, 'every other bed keeps its stones clear of the entrance boulders', `${crowding} of ${others} within ${bed.clearR.toFixed(1)} m`)
+
+    // HOLLOW_LADDER, against a mouth test that takes a boulder only at 1.4 times its size or more: each climbs to the 1.5 rung, its burial scaled with it and the ground under it forgotten; one that takes none stands exactly as placed.
+    const pose = (b, id) => [b.instScale[id], b.instSink[id], b.instY[id], ...b.instM.subarray(id * 16, id * 16 + 16)]
+    const fitWith = (takes) => {
+      const r = build(forest)
+      const b = r.beds.find((x) => x.cfg.hollow)
+      const ids = [...b.tiles.values()].flatMap((t) => Array.from(t.ids.subarray(0, t.n)))
+      const before = new Map(ids.map((id) => [id, pose(b, id)]))
+      const r0 = new Map(ids.map((id) => [id, b.hull.radius * b.instScale[id]]))
+      const nearest = (x, z) => ids.reduce((a, id) => (Math.hypot(b.instX[id] - x, b.instZ[id] - z) < Math.hypot(b.instX[a] - x, b.instZ[a] - z) ? id : a))
+      let forgot = 0
+      r.fitHollows({ seats: (x, y, z, rad) => takes(rad / r0.get(nearest(x, z))), moved: () => forgot++ })
+      return { b, ids, before, forgot }
+    }
+    const grown = fitWith((k) => k > 1.4)
+    const climbed = grown.ids.every((id) => {
+      const [s0, k0] = grown.before.get(id)
+      return Math.abs(grown.b.instScale[id] - s0 * 1.5) < 1e-6 && Math.abs(grown.b.instSink[id] - k0 * 1.5) < 1e-6
+    })
+    check(climbed && grown.b.laddered['1.5'] === grown.ids.length && grown.forgot > 0, 'a boulder no mouth fits climbs HOLLOW_LADDER to the first rung one does, burial and all',
+      `${JSON.stringify(grown.b.laddered)}, ${grown.forgot} forgets`)
+    const none = fitWith(() => false)
+    const stood = none.ids.every((id) => pose(none.b, id).every((v, i) => Math.abs(v - none.before.get(id)[i]) < 1e-9))
+    check(stood && none.b.laddered.blind === none.ids.length, 'and one no rung fits stands exactly as placed', `${none.b.laddered.blind} blind of ${none.ids.length}`)
   }
 
   // --- off the road, footprint and all ------------------------------------------

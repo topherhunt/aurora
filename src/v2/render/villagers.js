@@ -62,16 +62,20 @@
 //            once all do): it comes, beckons and chatters GREET_S, goes on.
 //            Her client alone knows her hands and her trust (trust.js), so
 //            lures, offers and greetings are events like a startle.
+//   peer     she is PEER.size or smaller (leafkin.js): her feet frighten
+//            nobody, and one free within PEER.m that does not trust her stops,
+//            faces her and gestures PEER.s, then goes on; an event too.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { CHAPTER_S, SILENT_TICKS, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
+import { atMost } from '../eating.js'
 import { CARRY_MAX, CARRIERS } from '../hands.js'
 import { Spline } from '../layers/spline.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier } from './critters.js'
-import { CARRY_SPAN, STARTLE_S } from './leafkin.js'
+import { CARRY_SPAN, PEER, STARTLE_S } from './leafkin.js'
 import { lodFadeS, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
 import { loadBipedGlb } from './snowmen.js'
@@ -191,7 +195,7 @@ const NO_CHASES = []
 const NO_LURES = []
 const NOBODY = () => false
 const NOWHERE = { x: 1e6, y: 0, z: 1e6 }
-const PREFIX = { startle: '', find: 'f', frog: 'g', lure: 'l', offer: 'o', greet: 'w', hail: 'h' }
+const PREFIX = { startle: '', find: 'f', frog: 'g', lure: 'l', offer: 'o', greet: 'w', hail: 'h', peer: 'p' }
 // Ticks between looks for someone to talk to, or to call for a mushroom.
 const MEET_TICKS = 10
 // Seconds before a chapter's turn that everyone makes for home, so the turn finds them indoors.
@@ -202,7 +206,7 @@ const SNAPS = 30
 // A startle's anchor: its extra fields are the villagers it names (server/src/main.js ANCHOR_MAX_FIELDS).
 const MAX_NAMED = 15
 // A villager's state the rollback keeps; route, partner and seat are kept beside them.
-const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'calm', 'glad', 'greeted', 'warm']
+const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'calm', 'glad', 'greeted', 'warm', 'peered']
 // Salts the chapter's forage roll off the villagers' own.
 const FORAGE_SALT = 0xf0a6e
 
@@ -503,7 +507,7 @@ export class Villagers {
         x: 0, y: 0, z: 0, heading: 0, px: 0, py: 0, pz: 0, ph: 0, aim: 0,
         // The frame's pose, what the puppet and the ear are given.
         pose: { x: 0, y: 0, z: 0, heading: 0, k: 1, speed: 0, clip: 'idle', cycle: 0, size: 1 },
-        // inside, walk, stand, gaze, sit, talk, startle, flee, away, give, pick, frog, court or greet; inside or away, it is drawn by nobody.
+        // inside, walk, stand, gaze, sit, talk, startle, flee, away, give, pick, frog, court, greet or peer; inside or away, it is drawn by nobody.
         state: 'inside', hidden: true,
         // The node it stands at or is making for, the route on from it (`{ x, z, node }`, node -1 off the road), the point of it it is on, and what the route's end is for: stand, gaze, sit, enter, hide, errand, leave, take, pick.
         at: 0, route: [], wp: 0, then: 'stand',
@@ -517,8 +521,8 @@ export class Villagers {
         trip: '', bundle: 0, saw: false, fed: false, feast: false, carrier: null,
         // The frog it is seeing to, `[tx, tz, index]` (frogs.js keyOf), the bank it walks it to and the water it throws it at, `{ ex, ez, wx, wz }`, and the second it let go; and its hold as frogs.js reads it.
         frog: null, toss: null, tossAt: null, claim: { phase: 'wait', x: 0, y: 0, z: 0, heading: 0, t0: 0, from: { x: 0, y: 0, z: 0 }, to: { x: 0, z: 0 } },
-        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, till she can frighten it again, whether it chatters home with her mushroom, till it greets her again, and whether the greeting is a friend's.
-        lapse: 0, calm: 0, glad: false, greeted: 0, warm: false,
+        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, till she can frighten it again, whether it chatters home with her mushroom, till it greets her again, whether the greeting is a friend's, and till it peers at her again.
+        lapse: 0, calm: 0, glad: false, greeted: 0, warm: false, peered: 0,
         lod: LOD_TIERS, puppet: null,
         ...easeFields(),
       }
@@ -570,6 +574,9 @@ export class Villagers {
     this.talks = 0
     this.gifts = 0
     this.startles = 0
+    this.peers = 0
+    // Her size (eating.js), set each frame by sized().
+    this.size = 1
     this.offers = 0
     this.greets = 0
 
@@ -624,9 +631,9 @@ export class Villagers {
   }
 
   get stats() {
-    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, startle: 0, flee: 0, away: 0, give: 0, pick: 0, frog: 0, court: 0, greet: 0 }
+    const states = { inside: 0, walk: 0, stand: 0, gaze: 0, sit: 0, talk: 0, startle: 0, flee: 0, away: 0, give: 0, pick: 0, frog: 0, court: 0, greet: 0, peer: 0 }
     for (const c of this.all) states[c.state]++
-    return { count: this.all.length, states, forager: this.forager, gifts: this.gifts, offers: this.offers, greets: this.greets, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
+    return { count: this.all.length, states, forager: this.forager, gifts: this.gifts, offers: this.offers, greets: this.greets, puppets: this.puppets.length - this.freePuppets.length, starved: this.starved, talks: this.talks, startles: this.startles, peers: this.peers, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, popped: this.popped, nodes: this.graph.nodes.length, seats: this.seats.length, taken: this.seats.filter((s) => s.by !== null).length }
   }
 
   /** Every villager drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -729,7 +736,7 @@ export class Villagers {
       c.trip = c.id === this.forager ? 'out' : ''
       c.bundle = 0
       c.saw = c.fed = c.feast = c.glad = c.warm = false
-      c.lapse = c.calm = c.greeted = 0
+      c.lapse = c.calm = c.greeted = c.peered = 0
       c.frog = c.toss = c.tossAt = null
       if (c.seat !== null) this._leaveSeat(c)
       this._inside(c, c.trip === 'out' ? between(c.rand, LEAVE_S) : c.rand() * INSIDE_S[1] * (1 + this.pull.home * NIGHT.longer))
@@ -1301,9 +1308,9 @@ export class Villagers {
     return cl
   }
 
-  /** Free to come to her mushroom: free to go after one, or already courting or greeting her. */
+  /** Free to come to her mushroom: free to go after one, or already courting, greeting or peering at her. */
   _courtable(c) {
-    return this._findable(c) || ((c.state === 'court' || c.state === 'greet') && !this.homing)
+    return this._findable(c) || ((c.state === 'court' || c.state === 'greet' || c.state === 'peer') && !this.homing)
   }
 
   /** Free to take her mushroom: out, nothing in its arms, and not running, hurt or seated. */
@@ -1437,6 +1444,34 @@ export class Villagers {
     this._turn(c, dt)
     this._fuss(c, dt)
     if (c.hold <= 0) { c.phase = ''; this._errand(c) }
+  }
+
+  /** She is small (PEER): it stops where it is, faces where her feet were and gestures at her a while, neither coming nor going. */
+  _peer(c, e) {
+    if (!e.done && this.voicing) this.peers++
+    c.peered = PEER.coolS
+    c.fx = e.fx
+    c.fz = e.fz
+    c.state = 'peer'
+    c.hold = between(c.rand, PEER.s)
+    c.aim = this._toward(c, e.fx, e.fz)
+    c.voice = 0.5
+    c.route.length = 0
+    c.wp = 0
+    this._play(c, 'idle', STEP_S)
+  }
+
+  _tickPeer(c, dt) {
+    c.hold -= dt
+    this._turn(c, dt)
+    c.voice -= dt
+    if (c.voice <= 0) {
+      c.voice = between(c.rand, PEER.every)
+      if (c.rand() < 0.4) this._voice(c, this._chatter(c))
+      const g = PEER.clips[(c.rand() * PEER.clips.length) | 0]
+      this._play(c, g, this.durations[g] / c.pace)
+    }
+    if (c.hold <= 0 || this.homing) this._errand(c)
   }
 
   /** Standing for her: every FUSS_S a beckon, a wave or a talk gesture, and a word with half of them (most, a friend's). */
@@ -1676,6 +1711,11 @@ export class Villagers {
     }
     c.greeted = Math.max(0, c.greeted - dt)
     c.calm = Math.max(0, c.calm - dt)
+    c.peered = Math.max(0, c.peered - dt)
+    if (this._findable(c) && c.peered <= 0) {
+      const e = this._eventOf(c, 'peer')
+      if (e) this._peer(c, e)
+    }
     if (this._takes(c) && this._eventOf(c, 'offer')) this._accept(c)
     if (this._findable(c)) {
       const e = this._eventOf(c, 'find')
@@ -1780,6 +1820,7 @@ export class Villagers {
       case 'frog': this._tickFrog(c, dt); break
       case 'court': this._tickCourt(c, dt); break
       case 'greet': this._tickGreet(c, dt); break
+      case 'peer': this._tickPeer(c, dt); break
       case 'flee':
         c.voice -= dt
         if (c.voice <= 0) this._call(c, 'leafkinWhimper', WHIMPER_S)
@@ -1878,10 +1919,19 @@ export class Villagers {
     this.voicing = t > this.live
     this.homing = t >= this.turnTick - HOMING_S * TICK_HZ
     if (this.voicing && t > target - SILENT_TICKS) {
-      // A mushroom in her hand startles nobody, nor do her feet anyone that trusts her, is coming to her, or was lured within CALM_S of now.
-      const ids = []
-      if (this.held.length === 0) for (const c of this.all) if (this._startlable(c) && !this.trusts(c.id) && c.state !== 'court' && c.state !== 'greet' && c.calm <= 0 && Math.hypot(c.x - this.feet.x, c.y - this.feet.y, c.z - this.feet.z) < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
-      if (ids.length > 0) this._flinch(this._raise('startle', this.feet.x, this.feet.y, this.feet.z, ids.slice(0, MAX_NAMED), t + LEAD_TICKS))
+      // A mushroom in her hand startles nobody, nor do her feet anyone that trusts her, is coming to her, or was lured within CALM_S of now; small, her feet startle nobody and are peered at by those free to.
+      const ids = [], peers = []
+      const f = this.feet, small = atMost(this.size, PEER.size)
+      if (this.held.length === 0) {
+        for (const c of this.all) {
+          if (this.trusts(c.id)) continue
+          const d = Math.hypot(c.x - f.x, c.y - f.y, c.z - f.z)
+          if (!small && this._startlable(c) && c.state !== 'court' && c.state !== 'greet' && c.calm <= 0 && d < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
+          else if (small && this._findable(c) && c.peered <= 0 && d < PEER.m && !this._owed(c.id, t, 'peer')) peers.push(c.id)
+        }
+      }
+      if (ids.length > 0) this._flinch(this._raise('startle', f.x, f.y, f.z, ids.slice(0, MAX_NAMED), t + LEAD_TICKS))
+      if (peers.length > 0) this._raise('peer', f.x, f.y, f.z, peers.slice(0, MAX_NAMED), t + LEAD_TICKS)
       this._seeHer(t, t + LEAD_TICKS)
       if (this.hands && t % MEET_TICKS === 0) this._seek(t + LEAD_TICKS)
       if (t % MEET_TICKS === 0) this._seeFrogs(t + LEAD_TICKS)
@@ -1950,6 +2000,12 @@ export class Villagers {
     for (const a of this.outbox) into.push(a)
     this.outbox.length = 0
     return into
+  }
+
+  /** Her size this frame (eating.js Effects.size). */
+  sized(size) {
+    if (!(size > 0)) throw new Error(`Villagers.sized: ${size}`)
+    this.size = size
   }
 
   /** The villagers she has fed since the last call, by id, drained: each trusts her now (trust.js). */

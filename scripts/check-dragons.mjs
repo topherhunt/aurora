@@ -33,7 +33,7 @@ import {
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
-  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, BANDS, WALL_RISE, CELL, GRID_N, buildFortress, gridCell,
+  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, buildFortress, gridCell,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
@@ -177,12 +177,27 @@ console.log('\nroost fortress')
   const pos = (g) => g.getAttribute('position').array
   check(pos(f.geometries[0]).every((x, i) => x === pos(again.geometries[0])[i]) && pos(f.geometries[0]).some((x, i) => x !== pos(other.geometries[0])[i]), 'the fortress is a function of its seed: the same twice, another with another seed')
 
-  const wall = f.stones.filter((s) => s.band === 0)
+  const wall = f.stones.filter((s) => s.wall)
+  const scree = f.stones.filter((s) => !s.wall)
   check(wall.every((s) => s.bottom < s.ground[0] && s.top - s.ground[1] >= WALL_RISE - 1e-6), `every wall stone bedded under its lowest ground and standing WALL_RISE ${WALL_RISE} m over its highest`, `lowest rise ${fmt(Math.min(...wall.map((s) => s.top - s.ground[1])))} m`)
   check(f.stones.every((s) => s.bottom < s.ground[0]), 'and every other stone set into the ground, none sitting on it')
-  const byBand = BANDS.map((_, k) => f.stones.filter((s) => s.band === k))
-  const meanAcross = byBand.map((ss) => ss.reduce((n, s) => n + s.across, 0) / ss.length)
-  check(meanAcross.every((m, k) => k === 0 || m < meanAcross[k - 1]) && byBand.slice(1).every((ss) => ss.length > wall.length), 'the stones grade from the wall in: each ring smaller than the one outside it, and each inner ring more of them than the wall', byBand.map((ss, k) => `${ss.length}x${fmt(meanAcross[k])}`).join(' '))
+  // The scree in thirds by distance out: each smaller than the one outside it.
+  const out = (s) => Math.hypot(s.x, s.z)
+  const thirds = [0, 1, 2].map((k) => scree.filter((s) => out(s) >= FLOOR_R + (k * (SCREE.out - FLOOR_R)) / 3 && out(s) < FLOOR_R + ((k + 1) * (SCREE.out - FLOOR_R)) / 3))
+  const meanAcross = thirds.map((ss) => ss.reduce((n, s) => n + s.across, 0) / ss.length)
+  check(meanAcross[0] < meanAcross[1] && meanAcross[1] < meanAcross[2] && scree.length > 5 * wall.length, 'the scree grades from the wall in, smaller towards the floor, many stones to each of the wall\'s', `${scree.length} against ${wall.length}; ${thirds.map((ss, k) => `${ss.length}x${fmt(meanAcross[k])}`).join(' ')}`)
+  // Not rings: no 0.4 m band of distance out holds a fifth of the scree, and stones of a size lie at many distances.
+  let crowd = 0
+  for (let r = FLOOR_R; r < SCREE.out; r += 0.1) crowd = Math.max(crowd, scree.filter((s) => out(s) >= r && out(s) < r + 0.4).length)
+  const mid = scree.filter((s) => s.across > 0.8 && s.across < 1.2).map(out)
+  check(crowd < scree.length / 5 && Math.max(...mid) - Math.min(...mid) > 1.5, 'and is scattered, not ringed: no narrow band of distance crowded, a stone of a size found at many distances', `most in 0.4 m: ${crowd} of ${scree.length}; 0.8-1.2 m stones over ${fmt(Math.max(...mid) - Math.min(...mid))} m`)
+  const overlaps = scree.filter((s) => f.stones.some((o) => o !== s && Math.hypot(o.x - s.x, o.z - s.z) < 0.8 * (s.across + o.across) / 2)).length
+  const heaped = scree.filter((s) => s.ground[1] > rough(s.x, s.z) + 0.6).length
+  check(overlaps > scree.length / 2 && heaped > scree.length / 10, 'heaped: most stones overlap a neighbour, and some lie up on another', `${overlaps} overlapping, ${heaped} heaped of ${scree.length}`)
+  // The logs thrown down anyhow: at many headings to the ring and distances out, none across the floor.
+  const across = f.logs.map((l) => Math.abs(Math.sin(l.yaw + Math.atan2(l.z, l.x))))
+  const reach = f.logs.map((l) => { const ux = Math.cos(l.yaw), uz = -Math.sin(l.yaw), t = Math.max(-l.len / 2, Math.min(l.len / 2, -(l.x * ux + l.z * uz))); return Math.hypot(l.x + ux * t, l.z + uz * t) })
+  check(Math.max(...across) - Math.min(...across) > 0.5 && Math.max(...f.logs.map(out)) - Math.min(...f.logs.map(out)) > 0.8 && reach.every((r) => r > FLOOR_R), 'the logs lie anyhow -- along, across and aslant the ring, near and far out -- and none over the floor', `nearest ${fmt(Math.min(...reach))} m`)
   const spread = (v) => Math.max(...v) / Math.min(...v)
   check(spread(wall.map((s) => s.across)) > 1.25 && spread(wall.map((s) => s.tall / s.across)) > 1.2 && spread(wall.map((s) => s.depth / s.across)) > 1.2, 'the wall\'s stones vary in size, height and squash', `across x${fmt(spread(wall.map((s) => s.across)))}, tall x${fmt(spread(wall.map((s) => s.tall / s.across)))}, deep x${fmt(spread(wall.map((s) => s.depth / s.across)))}`)
   const warmth = f.stones.map((s) => s.color[0] / s.color[2])

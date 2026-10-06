@@ -115,7 +115,7 @@ export const PORTAL = { reach: 20, walk: 0.5, blink: 0.8, into: 0.5 }
 // normal is within `faceDeg` of horizontal, a second ray from the mouth point
 // `wall` higher meets stone within `wallReach()`, and the ground at the hit
 // and at the mouth point is within `level` of the ray's own.
-export const PROBE = { out: 1, eye: 0.75, wall: 1.5, recede: 0.3, faceDeg: 20, level: 0.5, bearings: 16 }
+export const PROBE = { out: 1, eye: 0.75, wall: 1.5, recede: 0.3, faceDeg: 20, level: 0.5, bearings: 64 }
 // The mouth point: this far out from the face, on the ground.
 export const MOUTH_STEP_M = 0.7
 /** How far the wall ray may travel: the step, the lean a face at the limit has over `wall` metres, and `recede` of slack. */
@@ -123,6 +123,10 @@ export const wallReach = () => MOUTH_STEP_M + PROBE.wall * Math.tan((PROBE.faceD
 
 const HOLLOW_STRIDE = 5
 const POOL = 48
+// The ladder's answers kept for _seat; past this many the far ones are dropped and probed again on arrival.
+const FOUND_CAP = 256
+// A boulder's key from its centre, read through float32 as hollowsInto hands it out, so the ladder's key is _reseat's.
+const hollowKey = (x, z) => `hollow:${Math.fround(x).toFixed(1)}:${Math.fround(z).toFixed(1)}`
 // Pieces of one kind the resident mouths may stand at once; the trees' `plantRoom`.
 export const SCREEN_POOL = POOL * SCREEN.count
 
@@ -169,10 +173,10 @@ export class Entrances {
   /**
    * @param field  V2Height: heightAt
    * @param water  WaterSurfaces: isSubmerged
-   * @param rocks  Rocks: hollowsInto, hollowRayAt, boulder, boulderSpanAt, hollowTintAt
+   * @param rocks  Rocks: hollowsInto, hollowRayAt, boulder, boulderSpanAt, hollowTintAt, fitHollows
    * @param opts.bank  mouthBankFrom's answer. Required.
    * @param opts.fixed  a room's own mouths in place of the rocks' hollows: `[{ key, x, z, nx, nz }]`, the face point and its outward normal, seated once.
-   * @param opts.ground  LeafkinGround (cell), which every screen is walked over; required unless `fixed`.
+   * @param opts.ground  LeafkinGround (cell, forget), which every screen is walked over; required unless `fixed`.
    * @param opts.trees  Trees (plant, unplant, plantShape, addStone, restone), booted with `plantRoom` SCREEN_POOL, for the screen's pines and to stand on its stones; required unless `fixed`.
    * @param opts.cards  the LitterCards that draws the far rung; required.
    * @param opts.ferns  Ferns, optional: the screen's stones are stone to them as to the trees (addStone, restone).
@@ -182,8 +186,8 @@ export class Entrances {
     if (!bank || !Array.isArray(bank.tiers)) throw new Error('Entrances: needs the bank from loadMouthBank (or mouthBankFrom)')
     if (!field || typeof field.heightAt !== 'function') throw new Error('Entrances: needs a V2Height with heightAt')
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Entrances: needs WaterSurfaces with isSubmerged')
-    if (!rocks || ['hollowsInto', 'hollowRayAt', 'boulder', 'boulderSpanAt', 'hollowTintAt'].some((f) => typeof rocks[f] !== 'function')) {
-      throw new Error('Entrances: needs Rocks with hollowsInto, hollowRayAt, boulder, boulderSpanAt and hollowTintAt')
+    if (!rocks || ['hollowsInto', 'hollowRayAt', 'boulder', 'boulderSpanAt', 'hollowTintAt', 'fitHollows'].some((f) => typeof rocks[f] !== 'function')) {
+      throw new Error('Entrances: needs Rocks with hollowsInto, hollowRayAt, boulder, boulderSpanAt, hollowTintAt and fitHollows')
     }
     this.field = field
     this.water = water
@@ -194,7 +198,7 @@ export class Entrances {
       throw new Error('Entrances: `fixed` is a list of { key, x, z, nx, nz }')
     }
     this.fixed = fixed
-    if (fixed === null && (!ground || typeof ground.cell !== 'function')) throw new Error('Entrances: needs the LeafkinGround, to walk each screen')
+    if (fixed === null && (!ground || typeof ground.cell !== 'function' || typeof ground.forget !== 'function')) throw new Error('Entrances: needs the LeafkinGround (cell, forget), to walk each screen')
     if (fixed === null && (!trees || ['plant', 'unplant', 'plantShape', 'addStone', 'restone'].some((f) => typeof trees[f] !== 'function'))) throw new Error('Entrances: needs Trees with plant, unplant, plantShape, addStone and restone')
     this.ground = ground
     this.trees = trees
@@ -280,6 +284,21 @@ export class Entrances {
     scene.add(this.batch)
     scene.add(this.holes)
     scene.add(this.flank)
+
+    // The rocks ask whether a mouth fits each entrance boulder as it grows, and sink or grow one it does not (rocks.js HOLLOW_LADDER); key -> { cy, r, mouth }.
+    this.found = new Map()
+    if (fixed === null) {
+      rocks.fitHollows({
+        seats: (cx, cy, cz, r) => {
+          const key = hollowKey(cx, cz)
+          const mouth = this._find(key, cx, cy, cz, r)
+          if (this.found.size >= FOUND_CAP) this.found.clear()
+          this.found.set(key, { cy, r, mouth })
+          return mouth !== null
+        },
+        moved: (x, z, reach) => ground.forget(x, z, reach),
+      })
+    }
   }
 
   /** Seat a mouth on every resident hollow within the radius. For boot and for a relief edit. */
@@ -387,7 +406,7 @@ export class Entrances {
     seen.clear()
     for (let k = 0; k < n; k++) {
       const o = k * HOLLOW_STRIDE
-      const key = `hollow:${this.hollows[o].toFixed(1)}:${this.hollows[o + 2].toFixed(1)}`
+      const key = hollowKey(this.hollows[o], this.hollows[o + 2])
       seen.add(key)
       if (this.resident.has(key)) continue
       this._seat(key, this.hollows[o], this.hollows[o + 1], this.hollows[o + 2], this.hollows[o + 3])
@@ -399,13 +418,25 @@ export class Entrances {
     }
   }
 
-  /**
-   * The mouth on the boulder centred at (cx, cy, cz) with hull radius `r`: the
-   * first of PROBE.bearings bearings off the key's roll whose face passes, or
-   * none. A site that fails every bearing is recorded so it is not probed
-   * again while resident.
-   */
+  /** Seat `_find`'s mouth, the ladder's answer when it asked about this boulder last (`found`); a site with none is recorded so it is not probed again while resident. */
   _seat(key, cx, cy, cz, r) {
+    const f = this.found.get(key)
+    this.found.delete(key)
+    const mouth = f !== undefined && Math.abs(f.cy - cy) < 1e-3 && Math.abs(f.r - r) < 1e-3 ? f.mouth : this._find(key, cx, cy, cz, r)
+    if (mouth === null) {
+      this.rejected.none++
+      this.resident.set(key, { key, id: -1, blind: true })
+      return
+    }
+    this._place(key, ...mouth)
+  }
+
+  /**
+   * The mouth on the boulder centred at (cx, cy, cz) with hull radius `r`, as
+   * `_place`'s arguments after the key: the first of PROBE.bearings bearings
+   * off the key's roll whose face passes, or null.
+   */
+  _find(key, cx, cy, cz, r) {
     const rand = mulberry32(keyHash(key) ^ this.seed)
     const a0 = rand() * Math.PI * 2
     const { scale, fits } = rand() < MOUTH.small.chance ? MOUTH.small : MOUTH
@@ -460,11 +491,9 @@ export class Entrances {
       if (this.water.isSubmerged(mx, mz, my)) { this.rejected.water++; continue }
       // Sealed: no way out over the leafkin's ground as far as its leafkin is placed out (leafkin.js _emerge), so none could come home.
       if (!this._pathable(mx, mz, NO_STONES, OUT_FAR_M)) { this.rejected.sealed++; continue }
-      this._place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale, fits)
-      return
+      return [hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale, fits]
     }
-    this.rejected.none++
-    this.resident.set(key, { key, id: -1, blind: true })
+    return null
   }
 
   /**
@@ -558,7 +587,7 @@ export class Entrances {
       state = {}
       this.memory.set(key, state)
     }
-    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, scale, fits, state, flank: [], flankReach: 0, shadow: null }
+    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, bulge, ax, ay, az, holeX, holeZ, scale, fits, state, flank: [], flankReach: 0, shadow: null }
     if (r > 0) this._screen(site, hx, hz)
     this.resident.set(key, site)
     this._restone(site)

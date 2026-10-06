@@ -65,7 +65,9 @@ for (let z = -WORLD_HALF + STEP / 2; z < WORLD_HALF; z += STEP) {
     hollowBed.radius = 300
     hollowBed.place(x, z)
     entrances.place(x, z)
-    const n = rocks.hollowsInto(x - STEP / 2, z - STEP / 2, x + STEP / 2, z + STEP / 2, out)
+    // The edge boxes run on past the map: the bed grows boulders out there too.
+    const ex = (v) => (Math.abs(v) + STEP / 2 >= WORLD_HALF ? STEP / 2 : 0)
+    const n = rocks.hollowsInto(x - STEP / 2 - (x < 0 ? ex(x) : 0), z - STEP / 2 - (z < 0 ? ex(z) : 0), x + STEP / 2 + (x > 0 ? ex(x) : 0), z + STEP / 2 + (z > 0 ? ex(z) : 0), out)
     for (let i = 0; i < n; i++) {
       const hx = out[i * 5], hz = out[i * 5 + 2]
       hollows.set(`${hx.toFixed(0)},${hz.toFixed(0)}`, { x: hx, z: hz, size: out[i * 5 + 4] })
@@ -80,7 +82,8 @@ if (near) list.sort((a, b) => Math.hypot(a.x - near[0], a.z - near[1]) - Math.hy
 else list.sort((a, b) => a.x - b.x || a.z - b.z)
 console.log(`\n${hollows.size} entrance boulders in the overworld, ${list.length} with a mouth (${hollows.size - list.length} blind), in ${(ms / 1000).toFixed(1)} s`)
 console.log(`  candidates refused: ${JSON.stringify(hollowBed.rejected)}`)
-console.log(`  bearings refused: ${JSON.stringify(entrances.rejected)}\n`)
+console.log(`  bearings refused: ${JSON.stringify(entrances.rejected)}`)
+console.log(`  laddered (per grow, so a boulder under two centres counts twice): ${JSON.stringify(hollowBed.laddered)}\n`)
 for (const h of hollows.values()) {
   if (!blind.has(`hollow:${h.x.toFixed(1)}:${h.z.toFixed(1)}`)) continue
   const g = height.heightAt(h.x, h.z), e = 3

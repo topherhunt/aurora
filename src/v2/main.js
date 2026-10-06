@@ -1192,6 +1192,8 @@ function stepEating(dt) {
   if (crabs) crabs.sized(effects.size)
   if (spiders) spiders.sized(effects.size)
   if (fish) fish.sized(effects.size)
+  if (leafkin) leafkin.sized(effects.size)
+  if (villagers) villagers.sized(effects.size)
   if (wildStriders) wildStriders.madden(effects.maddened, effects.dread)
   if (townsfolk) townsfolk.madden(effects.maddened, effects.dread)
   if (buzz) buzz.gain.setTargetAtTime(BUZZ_GAIN * effects.seeing, sound.ctx.currentTime, 0.1)
@@ -8015,7 +8017,7 @@ function stepOverworld(dt, now) {
   if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
-  // The leafkin is startled by her feet and steps on the room's clock (sim/score.js), last frame's reading.
+  // The leafkin is startled by her feet (peers at them, she small: sized above) and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
   // The villagers likewise, under the leafkin's row.
   if (villagers) stepAnimal('leafkin', () => {

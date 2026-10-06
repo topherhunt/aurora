@@ -45,7 +45,7 @@ import { COWER_WHIMPER_S, PICK, Residents } from '../src/v2/render/residents.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 import { houseUniforms } from '../src/v2/render/interior.js'
 import { TORCHES } from '../src/lighting.js'
-import { STARTLE_S } from '../src/v2/render/leafkin.js'
+import { PEER, STARTLE_S } from '../src/v2/render/leafkin.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 import { HER_SCALE, buildVillage, rollVillage } from '../src/v2/rooms/village.js'
@@ -556,6 +556,43 @@ console.log('\nher feet')
   // Passers-by within her reach are startled too, so the count is at least the ones she was put beside.
   check(v.stats.startles >= fleers, 'the stats count the startles', JSON.stringify(v.stats))
   check(WHIMPER_S[0] > 0 && TALK_S[0] < TALK_S[1] && INSIDE_S[0] < INSIDE_S[1], 'the tunables are ranges')
+}
+
+// --- small, she is peered at ---------------------------------------------------------
+console.log('\nthe peer')
+{
+  const v = make()
+  let t = run(v, T0, 120, FAR)
+  v.sized(PEER.size)
+  const c = v.all.find((o) => !o.hidden && o.state === 'walk')
+  const feet = { ...feetAt(c), x: c.x + 1 }
+  const states = [], clips = new Set()
+  let moved = 0, x0 = null, z0 = null, fled = 0
+  t = run(v, t, PEER.s[0], feet, () => {
+    if (states.at(-1) !== c.state) states.push(c.state)
+    if (c.state === 'peer') { clips.add(c.clip); x0 ??= c.x; z0 ??= c.z; moved = Math.max(moved, Math.hypot(c.x - x0, c.z - z0)) }
+    for (const o of v.all) if (o.state === 'flee' || o.state === 'startle') fled++
+    v.voices([])
+  })
+  check(states.includes('peer') && fled === 0 && v.stats.startles === 0 && v.stats.peers >= 1, `she at ${PEER.size} of her size, her feet a stride off startle nobody: it stops to peer at her`, states.join(' > '))
+  const toHer = Math.atan2(-(feet.z - c.z), feet.x - c.x)
+  check(c.state === 'peer' && moved === 0 && Math.abs(swing(c.heading, toHer)) < 0.05, 'standing where it stopped, facing her', `${c.state}, ${moved.toFixed(2)} m moved, ${swing(c.heading, toHer).toFixed(2)} rad off`)
+  check(PEER.clips.some((g) => clips.has(g)) && [...clips].every((g) => g === 'idle' || PEER.clips.includes(g)), 'gesturing at her, nothing but the gestures and the idle', [...clips].join(' '))
+  let after = null
+  t = run(v, t, PEER.s[1], feet, () => { if (after === null && c.state !== 'peer') after = c.state; v.voices([]) })
+  check(after !== null && after !== 'flee' && after !== 'startle' && v.stats.startles === 0, 'and then goes about its business, unfrightened', `${after}`)
+
+  // Grown back past PEER.size while one peers, she startles it as ever.
+  const g = make()
+  t = run(g, T0, 120, FAR)
+  g.sized(PEER.size)
+  const gc = g.all.find((o) => !o.hidden && o.state === 'walk')
+  const gfeet = { ...feetAt(gc), x: gc.x + 1 }
+  t = run(g, t, 0.5, gfeet)
+  const was = gc.state
+  g.sized(PEER.size * 2)
+  t = run(g, t, 0.5, gfeet)
+  check(was === 'peer' && gc.state === 'flee' && g.stats.startles >= 1, `peering, and she grows to ${PEER.size * 2}: it runs`, `${was} then ${gc.state}`)
 }
 
 // --- a carrier startled --------------------------------------------------------------

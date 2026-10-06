@@ -20,9 +20,9 @@ import { LAYER } from '../../textures.js'
 // if no neighbour's within SPACING is higher, so roosts keep their distance.
 // The fortress is then seated on the flattest ground within SEAT_REACH of it.
 //
-// THE FORTRESS IS THE ROCKS' OWN BOULDER, set into the ground: rings of stones
-// (BANDS) from a closed wall of house-sized ones in to cobbles round a clear
-// floor, with logs among them. Each roost is built on its own ground, so it is
+// THE FORTRESS IS THE ROCKS' OWN BOULDER, set into the ground: a closed WALL
+// of house-sized stones, then SCREE heaped inside it, smaller towards a clear
+// floor, with logs thrown among it. Each roost is built on its own ground, so it is
 // its own geometry, one Mesh a roost re-rung on the rocks' ladder, and its own
 // walk grid (columnAt), which is what keeps her and the dragons out of the
 // stone. It stands in until the prop roster's 'roost-dragon' pick ships (§29).
@@ -58,16 +58,15 @@ const RIM8 = Array.from({ length: 16 }, (_, i) => {
 // The fortress, metres: about WIDTH across, and the clear floor inside the stones (the site's `r`).
 export const WIDTH = 18
 export const FLOOR_R = 2.6
-// The rings from the wall in: centre radius `at` (wandering by `wander`), metres `across` along the ring, `depth` across it and `tall` as fractions of
-// across, `sink` of its height under its lowest ground, `fill` of the ring's length stood on, `turn` and `lean` radians of jitter, `flip` whether it may
-// lie upturned, and the boulder tier per fortress tier (-1 for none). The wall alone is raised to WALL_RISE over its highest ground.
-export const BANDS = [
-  { wall: true, at: 7, wander: 0.4, across: [3.6, 5.4], depth: [0.6, 0.95], tall: [0.6, 1], sink: 0.25, fill: 1, turn: 0.3, lean: 0.08, flip: false, tiers: [0, 1, 2, 3] },
-  { at: 5.4, wander: 0.5, across: [1.8, 2.8], depth: [0.6, 1], tall: [0.5, 0.9], sink: 0.2, fill: 1, turn: 1, lean: 0.2, flip: true, tiers: [0, 1, 2, 3] },
-  { at: 4.3, wander: 0.4, across: [1, 1.6], depth: [0.6, 1], tall: [0.5, 0.85], sink: 0.2, fill: 0.9, turn: 3, lean: 0.3, flip: true, tiers: [1, 2, 3, -1] },
-  { at: 3.6, wander: 0.3, across: [0.55, 0.9], depth: [0.6, 1], tall: [0.45, 0.8], sink: 0.2, fill: 0.8, turn: 3, lean: 0.3, flip: true, tiers: [1, 2, -1, -1] },
-  { at: 3, wander: 0.2, across: [0.3, 0.5], depth: [0.6, 1], tall: [0.4, 0.75], sink: 0.15, fill: 0.5, turn: 3, lean: 0.3, flip: true, tiers: [2, 3, -1, -1] },
-]
+// The wall: one closed ring at `at` (wandering by `wander`), its stones `across` metres along it, `depth` and `tall` as fractions of that, `sink` of
+// their height under their lowest ground, `turn` and `lean` radians of jitter; each raised to WALL_RISE over its highest ground.
+export const WALL = { at: 7, wander: 0.4, across: [3.6, 5.4], depth: [0.6, 0.95], tall: [0.6, 1], sink: 0.25, turn: 0.3, lean: 0.08 }
+// The scree inside it, scattered by area from the floor's edge out to `out` (into the wall's foot): `across` grows from its first to its second metres
+// with distance out, times e^±spread/2, until the footprints rolled cover `cover` of the ground; laid largest first, a stone is refused centred within
+// `apart` of a laid one's half-length, and heaps on what it lands on, tilted to it by at most `heap` radians.
+export const SCREE = { out: 6.4, across: [0.3, 2], spread: 1.1, cover: 1.8, apart: 0.45, depth: [0.6, 1], tall: [0.45, 0.85], sink: 0.2, lean: 0.25, heap: 0.6 }
+// The boulder tier per fortress tier (-1 for none) by a stone's across, largest first.
+const SIZE_TIERS = [[1.8, [0, 1, 2, 3]], [1, [1, 2, 3, -1]], [0.55, [1, 2, -1, -1]], [0, [2, 3, -1, -1]]]
 // Stones under this across are cobbles she walks over: walk.js's ROCK_WALK_MIN.
 const SOLID_ACROSS = 0.5
 // The fraction of a stone's length its neighbour in the ring overlaps, before the ring is closed tighter still.
@@ -78,7 +77,8 @@ const CLIFF = 1
 // Each stone's tint over the peak's: a lightness and a warmth, red up and blue down.
 const LIGHT = [0.82, 1.12]
 const WARM = [-0.08, 0.14]
-const LOGS = { n: 6, r: [0.16, 0.28], len: [2.8, 4.5], at: [3.4, 4.8], lean: [0.2, 0.45], barkM: 1.2 }
+// Logs: their ends between the floor and `reach` metres out, tilted to what they rest on by at most `tilt` radians.
+const LOGS = { n: 7, r: [0.14, 0.26], len: [1.4, 3.2], at: [3.4, 5.2], reach: 6.4, tilt: 0.4, barkM: 1.2 }
 const LOG_SIDES = [10, 6, 4, 0]
 export const LODS = LOG_SIDES.length
 // The rock size the ladder is read at.
@@ -212,7 +212,7 @@ function mergeParts(parts) {
  * `groundAt(x, z)`, both in a frame whose origin is the floor's centre on the
  * ground. `tint` is the peak's stone colour, [r, g, b]. Returns its LODS
  * geometries and their triangles, the walk grid (`top`/`bottom` per cell,
- * -Infinity/Infinity where it is clear) and every stone as laid.
+ * -Infinity/Infinity where it is clear) and every stone and log as laid.
  */
 export function buildFortress(shape, seed, groundAt, tint) {
   const rand = mulberry32(seed ^ 0x51ed)
@@ -221,66 +221,104 @@ export function buildFortress(shape, seed, groundAt, tint) {
   const w = b.max.x - b.min.x, h = b.max.y - b.min.y, d = b.max.z - b.min.z
   const centre = new THREE.Matrix4().makeTranslation(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2)
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), zero = new THREE.Vector3()
-  const box = new THREE.Box3()
+  const box = new THREE.Box3(), zeroTilt = new THREE.Quaternion()
 
   const stones = []
-  BANDS.forEach((band, bandIdx) => {
-    // Lengths rolled until the ring is full, then every step shortened alike so it closes on itself.
-    const ring = 2 * Math.PI * band.at
-    const rolls = []
-    for (let used = 0; used < ring;) {
-      const across = between(rand, band.across)
-      const step = (across * (1 - OVERLAP)) / band.fill
-      rolls.push({ across, step })
-      used += step
+  // The heap's top at (x, z): the ground, or a laid stone's dome over it -- what the next stone or log comes to rest on.
+  const restAt = (x, z) => {
+    let y = groundAt(x, z)
+    for (const st of stones) {
+      const dx = x - st.x, dz = z - st.z
+      const ex = (dx * st.c - dz * st.sn) / (st.across / 2), ez = (dx * st.sn + dz * st.c) / (st.depth / 2)
+      const rho = ex * ex + ez * ez
+      if (rho < 1) y = Math.max(y, st.ground[0] + (st.top - st.ground[0]) * Math.sqrt(1 - rho))
     }
-    const k = ring / rolls.reduce((n, r) => n + r.step, 0)
-    let a = rand() * Math.PI * 2
-    for (const { across, step } of rolls) {
-      const mid = a + (step * k) / 2 / band.at
-      a += (step * k) / band.at
-      const r = band.at + (rand() - 0.5) * band.wander
-      const x = Math.cos(mid) * r, z = Math.sin(mid) * r
-      const depth = across * between(rand, band.depth)
-      let tall = across * between(rand, band.tall)
-      // Long along the ring, so the wall's stones lie flank to flank.
-      const yaw = -mid - Math.PI / 2 + (rand() - 0.5) * band.turn
-      const flip = band.flip && rand() < 0.5 ? Math.PI : 0
-      q.setFromEuler(e.set(flip + (rand() - 0.5) * 2 * band.lean, yaw, (rand() - 0.5) * 2 * band.lean, 'YXZ'))
-      // Bedded under its lowest ground across its footprint.
-      const c = Math.cos(yaw), sn = Math.sin(yaw)
-      let gMin = groundAt(x, z), gMax = gMin
-      for (let j = 0; j < 8; j++) {
-        const ex = Math.cos((j / 8) * Math.PI * 2) * across * 0.45, ez = Math.sin((j / 8) * Math.PI * 2) * depth * 0.45
-        const g = groundAt(x + ex * c + ez * sn, z - ex * sn + ez * c)
-        gMin = Math.min(gMin, g)
-        gMax = Math.max(gMax, g)
-      }
-      if (band.wall) tall = Math.max(tall, (gMax - gMin + WALL_RISE) / (1 - band.sink))
-      m.compose(zero, q, s.set(across / w, tall / h, depth / d)).multiply(centre)
-      box.copy(b).applyMatrix4(m)
-      const lift = gMin - band.sink * (box.max.y - box.min.y) - box.min.y
-      m.premultiply(new THREE.Matrix4().makeTranslation(x, lift, z))
-      const light = between(rand, LIGHT), warm = between(rand, WARM)
-      stones.push({
-        band: bandIdx, x, z, across, depth, tall, ground: [gMin, gMax], bottom: box.min.y + lift, top: box.max.y + lift,
-        m: m.clone(), color: [tint[0] * light * (1 + warm), tint[1] * light, tint[2] * light * (1 - warm)],
-      })
+    return y
+  }
+  const up = new THREE.Vector3(0, 1, 0), n = new THREE.Vector3(), tilt = new THREE.Quaternion()
+  const lay = (x, z, across, spec, wall, yaw, flip) => {
+    const depth = across * between(rand, spec.depth)
+    let tall = across * between(rand, spec.tall)
+    // Bedded under the lowest of what it lands on across its footprint -- the wall on the ground alone -- and the scree tilted to its fall.
+    const c = Math.cos(yaw), sn = Math.sin(yaw)
+    const on = wall ? groundAt : restAt
+    const at = (ex, ez) => on(x + ex * c + ez * sn, z - ex * sn + ez * c)
+    let gMin = at(0, 0), gMax = gMin
+    for (let j = 0; j < 8; j++) {
+      const g = at(Math.cos((j / 8) * Math.PI * 2) * across * 0.45, Math.sin((j / 8) * Math.PI * 2) * depth * 0.45)
+      gMin = Math.min(gMin, g)
+      gMax = Math.max(gMax, g)
     }
-  })
+    if (wall) tall = Math.max(tall, (gMax - gMin + WALL_RISE) / (1 - spec.sink))
+    q.setFromEuler(e.set(flip + (rand() - 0.5) * 2 * spec.lean, yaw, (rand() - 0.5) * 2 * spec.lean, 'YXZ'))
+    if (!wall) {
+      const hx = across * 0.4, hz = depth * 0.4
+      n.set(-(restAt(x + hx, z) - restAt(x - hx, z)) / (2 * hx), 1, -(restAt(x, z + hz) - restAt(x, z - hz)) / (2 * hz)).normalize()
+      tilt.setFromUnitVectors(up, n)
+      q.premultiply(tilt.slerp(zeroTilt, Math.max(0, 1 - SCREE.heap / Math.max(1e-6, up.angleTo(n)))))
+    }
+    m.compose(zero, q, s.set(across / w, tall / h, depth / d)).multiply(centre)
+    box.copy(b).applyMatrix4(m)
+    const lift = gMin - spec.sink * (box.max.y - box.min.y) - box.min.y
+    m.premultiply(new THREE.Matrix4().makeTranslation(x, lift, z))
+    const light = between(rand, LIGHT), warm = between(rand, WARM)
+    stones.push({
+      wall, x, z, c, sn, across, depth, tall, ground: [gMin, gMax], bottom: box.min.y + lift, top: box.max.y + lift,
+      tiers: SIZE_TIERS.find(([least]) => across >= least)[1],
+      m: m.clone(), color: [tint[0] * light * (1 + warm), tint[1] * light, tint[2] * light * (1 - warm)],
+    })
+  }
 
+  // The wall: lengths rolled until the ring is full, then every step shortened alike so it closes on itself, each stone long along the ring.
+  const ring = 2 * Math.PI * WALL.at
+  const rolls = []
+  for (let used = 0; used < ring;) {
+    const across = between(rand, WALL.across)
+    rolls.push({ across, step: across * (1 - OVERLAP) })
+    used += rolls[rolls.length - 1].step
+  }
+  const k = ring / rolls.reduce((sum, r) => sum + r.step, 0)
+  let a = rand() * Math.PI * 2
+  for (const { across, step } of rolls) {
+    const mid = a + (step * k) / 2 / WALL.at
+    a += (step * k) / WALL.at
+    const r = WALL.at + (rand() - 0.5) * WALL.wander
+    lay(Math.cos(mid) * r, Math.sin(mid) * r, across, WALL, true, -mid - Math.PI / 2 + (rand() - 0.5) * WALL.turn, 0)
+  }
+
+  // The scree: rolled by area, then laid largest first so the small ones fall among and onto the large.
+  const rolled = []
+  const spread = Math.PI * (SCREE.out ** 2 - FLOOR_R ** 2) * SCREE.cover
+  for (let covered = 0; covered < spread;) {
+    const r = Math.sqrt(FLOOR_R ** 2 + rand() * (SCREE.out ** 2 - FLOOR_R ** 2))
+    const t = (r - FLOOR_R) / (SCREE.out - FLOOR_R)
+    const across = (SCREE.across[0] + (SCREE.across[1] - SCREE.across[0]) * t) * Math.exp((rand() - 0.5) * SCREE.spread)
+    if (r - across / 2 < FLOOR_R + 0.05) continue
+    rolled.push({ r, a: rand() * Math.PI * 2, across, yaw: rand() * Math.PI * 2, flip: rand() < 0.5 ? Math.PI : 0 })
+    covered += (Math.PI / 4) * across * across * 0.8
+  }
+  rolled.sort((p, q2) => q2.across - p.across)
+  for (const p of rolled) {
+    const x = Math.cos(p.a) * p.r, z = Math.sin(p.a) * p.r
+    if (stones.some((st) => !st.wall && Math.hypot(x - st.x, z - st.z) < SCREE.apart * (st.across / 2))) continue
+    lay(x, z, p.across, SCREE, false, p.yaw, p.flip)
+  }
+
+  // The logs: anywhere off the floor inside the wall at any heading, each resting on whatever is under its two ends.
   const logs = []
   for (let i = 0; i < LOGS.n; i++) {
-    const a = rand() * Math.PI * 2
-    const r = between(rand, LOGS.at)
     const radius = between(rand, LOGS.r)
     const len = between(rand, LOGS.len)
-    const x = Math.cos(a) * r, z = Math.sin(a) * r
-    // Along the ring, every other one leant up at one end.
-    const lean = i % 2 ? between(rand, LOGS.lean) * (rand() < 0.5 ? 1 : -1) : 0
-    q.setFromEuler(e.set(0, -a - Math.PI / 2, lean, 'YXZ'))
-    const y = groundAt(x, z) + radius * 0.5 + Math.abs(Math.sin(lean)) * len * 0.5
-    logs.push({ radius, len, m: new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q.clone(), new THREE.Vector3(1, 1, 1)) })
+    let x, z, yaw, ux, uz
+    do {
+      const r = between(rand, LOGS.at), at = rand() * Math.PI * 2
+      x = Math.cos(at) * r; z = Math.sin(at) * r
+      yaw = rand() * Math.PI * 2
+      ux = Math.cos(yaw); uz = -Math.sin(yaw)
+    } while ((Math.abs(x * uz - z * ux) < FLOOR_R + radius && Math.abs(x * ux + z * uz) < len / 2 + FLOOR_R) || Math.hypot(Math.abs(x) + (Math.abs(ux) * len) / 2, Math.abs(z) + (Math.abs(uz) * len) / 2) > LOGS.reach)
+    const y0 = restAt(x - (ux * len) / 2, z - (uz * len) / 2), y1 = restAt(x + (ux * len) / 2, z + (uz * len) / 2)
+    q.setFromEuler(e.set(0, yaw, Math.max(-LOGS.tilt, Math.min(LOGS.tilt, Math.atan2(y1 - y0, len))), 'YXZ'))
+    logs.push({ x, z, yaw, radius, len, m: new THREE.Matrix4().compose(new THREE.Vector3(x, (y0 + y1) / 2 + radius * 0.6, z), q.clone(), new THREE.Vector3(1, 1, 1)) })
   }
 
   const top = new Float32Array(GRID_N * GRID_N).fill(-Infinity)
@@ -288,16 +326,16 @@ export function buildFortress(shape, seed, groundAt, tint) {
   const geometries = LOG_SIDES.map((sides, tier) => {
     const parts = []
     for (const st of stones) {
-      const bt = BANDS[st.band].tiers[tier]
+      const bt = st.tiers[tier]
       if (bt < 0) continue
       const g = placedRock(shape.tiers[bt], st.m, Math.sqrt(st.across / w), st.color)
-      if (tier === 0 && st.across >= SOLID_ACROSS) rasterise(g, top, bottom, BANDS[st.band].wall ? groundAt : null)
+      if (tier === 0 && st.across >= SOLID_ACROSS) rasterise(g, top, bottom, st.wall ? groundAt : null)
       parts.push(g)
     }
     if (sides) for (const l of logs) parts.push(logGeometry(l.radius, l.len, sides).applyMatrix4(l.m))
     return mergeParts(parts)
   })
-  return { geometries, tris: geometries.map((g) => g.index.count / 3), grid: { top, bottom }, stones }
+  return { geometries, tris: geometries.map((g) => g.index.count / 3), grid: { top, bottom }, stones, logs }
 }
 
 /** The stone of `g` into the walk grid, a cell at a time under its box; with `groundAt`, a wall stone, cliffed to its crest past CLIFF. */

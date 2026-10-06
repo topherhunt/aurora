@@ -17,7 +17,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import {
-  Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, OUT_M, OUT_FAR_M, SEEK_M, GATHER_KEY, GIVE_UP_S, STARTLE_M, STARTLE_S, FINAL_M, HOME_M, EMPTY_S, HOMING_S, CHATTER_S, WHIMPER_S, SQUEAL_S, CARRY_SPAN, ARC_M, ARC_CURVE,
+  Leafkin, CLIPS, LOD_TIERS, MAX, PUPPETS, SIZE_M, SIZE_VAR, ROAM_M, RETARGET_S, OUT_M, OUT_FAR_M, SEEK_M, GATHER_KEY, GIVE_UP_S, STARTLE_M, STARTLE_S, PEER, FINAL_M, HOME_M, EMPTY_S, HOMING_S, CHATTER_S, WHIMPER_S, SQUEAL_S, CARRY_SPAN, ARC_M, ARC_CURVE,
 } from '../src/v2/render/leafkin.js'
 import { LeafkinGround, CELL, OPEN, BLOCKED } from '../src/v2/render/leafkin-ground.js'
 import { Hands, CARRY_MAX, CARRIERS, POOL_CAP, LOOSE_MAX } from '../src/v2/hands.js'
@@ -562,6 +562,48 @@ console.log('\nthe startle')
   t = run(w, t, EMPTY_S + 1, at, (c, now) => { if (out === null && c.state === 'roam') out = { now, tick: c.tick, x: c.px, z: c.pz } }, 20)
   check(out && out.tick === c.until && Math.hypot(out.x, out.z) >= OUT_M && Math.hypot(out.x, out.z) <= OUT_FAR_M, `and ${EMPTY_S} s on, placed out in its wood again`, out && `tick ${out.tick - goneTick}, ${fmt(Math.hypot(out.x, out.z))} m out`)
   w.dispose()
+}
+
+// --- small, she is peered at ---------------------------------------------------------
+console.log('\nthe peer')
+{
+  const w = make()
+  let t = meet(w, NEAR, START)
+  const c = one(w)
+  t = run(w, t, 2, NEAR)
+  w.sized(PEER.size)
+  const at = beside(c)
+  const said = []
+  let peerAt = null
+  t = run(w, t, 0.2 + LEAD_TICKS * TICK_S, at, (c, now) => { w.voices(said); if (c.state === 'peer' && peerAt === null) peerAt = now })
+  const owed = w.pending([])
+  check(peerAt !== null && w.frights === 0 && !said.some((v) => v.sound === 'leafkinScream'), `she at ${PEER.size} of her size, her feet a stride off frighten it not: it stops to peer at her`, `${c.state}, ${w.frights} frights`)
+  check(owed.length === 1 && owed[0][7] === 'peer' && w.peers === 1, 'a peer owed the room, once', JSON.stringify(owed))
+  const clips = new Set()
+  let moved = 0, peering = true
+  const x0 = c.x, z0 = c.z
+  t = run(w, t, PEER.s[0] - 0.5, at, (c) => { clips.add(c.clip); moved = Math.max(moved, Math.hypot(c.x - x0, c.z - z0)); if (c.state !== 'peer') peering = false })
+  const toHer = Math.atan2(-(at.z - c.z), at.x - c.x)
+  check(peering && moved === 0 && Math.abs(swing(c.heading, toHer)) < 0.05, `it stands where it was ${PEER.s[0]} s and more, facing her`, `${fmt(moved)} m moved, ${fmt(swing(c.heading, toHer))} rad off`)
+  check(PEER.clips.some((g) => clips.has(g)) && [...clips].every((g) => g === 'idle' || PEER.clips.includes(g)), 'gesturing at her, nothing but the gestures and the idle', [...clips].join(' '))
+  let after = null
+  t = run(w, t, PEER.s[1], at, (c) => { if (after === null && c.state !== 'peer') after = c.state })
+  check(after === 'roam' && w.frights === 0, 'and then goes back to its roam, unfrightened', `${after}`)
+  w.dispose()
+
+  // Grown back past PEER.size while it peers, she frightens it as ever.
+  const g = make()
+  t = meet(g, NEAR, START)
+  t = run(g, t, 2, NEAR)
+  g.sized(PEER.size)
+  const gc = one(g)
+  const gat = beside(gc)
+  t = run(g, t, 0.2 + LEAD_TICKS * TICK_S, gat)
+  const was = gc.state
+  g.sized(PEER.size * 2)
+  t = run(g, t, 0.2 + LEAD_TICKS * TICK_S, gat)
+  check(was === 'peer' && gc.state === 'startle' && g.frights === 1, `peering, and she grows to ${PEER.size * 2}: it is startled`, `${was} then ${gc.state}`)
+  g.dispose()
 }
 
 // --- the slide round a wall --------------------------------------------------------

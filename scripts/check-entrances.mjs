@@ -146,7 +146,7 @@ console.log('\nthe hole is inside the ring')
 
 // --- the face ---------------------------------------------------------------
 //
-// From the mouth point, looking along -n: the stone is MOUTH_STEP_M away, a
+// From the mouth point, looking along -n: the stone is MOUTH_STEP_M and the face's bulge away, a
 // wall for PROBE.wall above the eye, and its normal is within PROBE.faceDeg of
 // the plane. Then the hole: a ray from the mouth point to the centre of its
 // outline's box meets the hole before the stone, and one to each corner too.
@@ -165,7 +165,7 @@ console.log('\nthe face')
     const t = rocks.hollowRayAt(x, y + PROBE.eye, z, -nx, 0, -nz, 4, out)
     const flat = Math.abs(out.ny) <= Math.sin((PROBE.faceDeg * Math.PI) / 180)
     faced += t < wallReach() && flat ? 1 : 0
-    walled += rocks.hollowRayAt(x, y + PROBE.eye + PROBE.wall, z, -nx, 0, -nz, wallReach(), out) < Infinity ? 1 : 0
+    walled += rocks.hollowRayAt(x, y + PROBE.eye + PROBE.wall, z, -nx, 0, -nz, wallReach() + site.bulge, out) < Infinity ? 1 : 0
     // The hole, off the layer's own matrix: the centre and corners of its
     // outline's box in the world, each a ray target from the mouth point.
     m.fromArray(e.holeM, site.id * 16)
@@ -320,7 +320,7 @@ console.log('\nthe face')
   // Ground walled in past FINAL_M, or open only OUT_FAR_M / 2 about one mouth (any face of its boulder): no leafkin could come home, so the mouth is not seated.
   const bareTrees = () => new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, plantRoom: SCREEN_POOL })
   const sealed = (cell) => {
-    const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, cards: new LitterCards(512), ground: { cell }, trees: bareTrees() })
+    const shut = new Entrances(new THREE.Scene(), field, water, rocks, { seed: 7, radius: 450, bank: e.bank, cards: new LitterCards(512), ground: { cell, forget() {} }, trees: bareTrees() })
     shut.place(-900, -900)
     return shut
   }

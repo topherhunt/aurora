@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // THE LEAFKIN: one per village entrance (render/entrances.js), a metre tall,
 // scurrying about its own ROAM_M of wood for mushrooms, chattering as it goes,
-// and bolting home the moment she comes near. DESIGN.md §30 has the whole of
+// and bolting home the moment she comes near -- unless she is smaller than it
+// (PEER.size), when it stops to look at her. DESIGN.md §30 has the whole of
 // it; here is the state machine and how it is stepped.
 //
 // LOCKSTEP (DESIGN.md §30 Netplay): every client steps a site's leafkin alike
@@ -11,7 +12,8 @@
 // turn, and is stepped while her feet are within its roam and cull; met
 // mid-chapter it replays from the start, hidden until caught up. The room
 // hears only her doings, as `lk` anchors: a `fright` (her feet within
-// STARTLE_M) and a `pick` (a cap her hand took inside its reach), each logged
+// STARTLE_M), a `peer` (the same, she PEER.size or smaller, within PEER.m)
+// and a `pick` (a cap her hand took inside its reach), each logged
 // on its tick and stepped again from the last state kept before it when heard
 // late, as the villagers' startles are.
 //
@@ -23,6 +25,8 @@
 //            into the bundle (CARRY_MAX); then the next cap in reach, else roam.
 //   startle  a fright: face her, recoil, the bundle scattered, a scream,
 //            STARTLE_S; then
+//   peer     she is small: face her and gesture PEER.s, neither friend nor
+//            foe, then roam again; her growing back past PEER.size frightens it.
 //   flee     run home on a path planned over the ground (A* on a CELL grid,
 //            planPath), weaving about it; inside FINAL_M of the mouth, straight
 //            at the arch, and inside within HOME_M of it for EMPTY_S.
@@ -34,6 +38,7 @@ import THREE from '../../three-instance.js'
 import { clamp, mulberry32 } from '../../sim/mathx.js'
 import { CATCH_UP_TICKS, CHAPTER_S, SILENT_TICKS, TICK_HZ, TICK_S, chapterOf, hash32, keyHash, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
+import { atMost } from '../eating.js'
 import { CARRY_MAX, CARRIERS } from '../hands.js'
 import { TOLERANCE_M } from '../taken.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, cullRange } from './critters.js'
@@ -76,6 +81,8 @@ export const GIVE_UP_S = 4
 // Her feet within this of its own, and it is startled; how long the recoil holds before it runs.
 export const STARTLE_M = 3
 export const STARTLE_S = 1.0
+// Her size at or under which a leafkin (and a villager, villagers.js) is curious of her, not frightened: the glade is built for her at 1/2, a leafkin's own (village.js HER_SCALE), so this is smaller than it. Within `m` it stops, faces her and makes a gesture of `clips` every `every` s for `s` s; not again for `coolS`.
+export const PEER = { size: 0.25, m: 4, s: [4, 7], every: [1.5, 3], coolS: 30, clips: ['talk-point', 'talk-shrug', 'talk-nod', 'talk-gesture'] }
 // The mouth point this close, and it makes for the arch itself, its step no longer probed and stone underfoot allowed -- the boulder's own; the arch this close is home.
 export const FINAL_M = 1.2
 export const HOME_M = 0.3
@@ -118,13 +125,18 @@ const FADE_S = 0.25
 // State kept every SNAP_TICKS, SNAPS deep, for an anchor heard late to roll back to; one older than that replays the chapter.
 const SNAP_TICKS = 20
 const SNAPS = 30
-const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'budget', 'sought', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until']
+const KEPT = ['rs', 'x', 'z', 'heading', 'px', 'pz', 'ph', 'aim', 'state', 'tx', 'tz', 'retarget', 'curve', 'arc', 'detour', 'refused', 'wob', 'wobv', 'wp', 'planned', 'budget', 'sought', 'cx', 'cz', 'chase', 'took', 'bundle', 'hold', 'voice', 'panted', 'squeal', 'clip', 'left', 'dur', 'cycle', 'speed', 'until', 'peerAt']
 
-export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil']
+export const CLIPS = ['idle', 'run', 'run-carry', 'gather', 'recoil', ...PEER.clips]
 // The clips whose feet stay put (puppet.js FootIK): a recoil steps back, a gait walks.
-export const PLANTED = new Set(['idle', 'gather'])
+export const PLANTED = new Set(['idle', 'gather', ...PEER.clips])
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
+// The anchors' kinds, each's index salting its key.
+const KINDS = ['fright', 'pick', 'peer']
+// Out and about, it may be frightened (homing too) or peer at her.
+const frightable = (c) => c.state === 'roam' || c.state === 'gather' || c.state === 'home'
+const peerable = (c) => c.state === 'roam' || c.state === 'gather'
 // mulberry32 over a field, so the PRNG's state is kept with the rest.
 function roll(c) {
   c.rs = (c.rs + 0x6d2b79f5) >>> 0
@@ -301,8 +313,8 @@ export class Leafkin {
         path: [], wp: 0, cells: new Map(), planned: -1, budget: PLAN_OPEN, sought: -1, search: null,
         // The cap it is going for, seconds left before it gives the cap up, whether this gather has taken it, the caps gone this chapter (flat x, z: its own takes, her picks and the caps it gave up), and the bundle: caps carried, and the carrier drawing them.
         cx: 0, cz: 0, chase: 0, took: false, eaten: [], bundle: 0, carrier: null,
-        // Seconds the recoil has left, and to the next call or pant, and whether the last was a pant.
-        hold: 0, voice: 0, panted: false, squeal: 0,
+        // Seconds the recoil or the peer has left, and to the next call, pant or gesture, whether the last was a pant, and the tick it may peer at her again.
+        hold: 0, voice: 0, panted: false, squeal: 0, peerAt: 0,
         // The clip playing, how long it holds, that step's whole length, the clip's own length, a count of starts, and the ground speed.
         clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
         lod: LOD_TIERS, puppet: null,
@@ -340,7 +352,10 @@ export class Leafkin {
     this.overflow = 0
     this.fled = 0
     this.frights = 0
+    this.peers = 0
     this.picks = 0
+    // Her size (eating.js), set each frame by sized().
+    this.size = 1
     this.rewinds = 0
     // The deepest rollback yet in ticks, and pops drawn and when one was last said (net-ease.js).
     this.maxRewind = 0
@@ -397,9 +412,9 @@ export class Leafkin {
   }
 
   get stats() {
-    const states = { roam: 0, gather: 0, startle: 0, flee: 0, home: 0, inside: 0 }
+    const states = { roam: 0, gather: 0, startle: 0, peer: 0, flee: 0, home: 0, inside: 0 }
     for (const c of this.byKey.values()) states[c.state]++
-    return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, fled: this.fled, frights: this.frights, picks: this.picks, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, starved: this.starved, overflow: this.overflow }
+    return { alive: this.byKey.size, states, puppets: this.puppets.length - this.freePuppets.length, fled: this.fled, frights: this.frights, peers: this.peers, picks: this.picks, rewinds: this.rewinds, maxRewind: this.maxRewind, jumps: this.jumps, starved: this.starved, overflow: this.overflow }
   }
 
   /** Every leafkin drawn this frame, for the ear: its frame pose, with x, y, z, size, clip, cycle and speed. */
@@ -463,6 +478,7 @@ export class Leafkin {
     c.rs = hash32(keyHash(c.key), index)
     c.eaten.length = 0
     c.bundle = 0
+    c.peerAt = 0
     c.carrier?.clear()
     const log = this.logs.get(c.wire)
     if (log) for (const t of log.keys()) if (t <= c.startTick) log.delete(t)
@@ -583,6 +599,30 @@ export class Leafkin {
     this._play(c, 'recoil', STARTLE_S)
   }
 
+  /** She is small (PEER): stop, face where her feet were, and gesture at her a while; its bundle kept. */
+  _peer(c, e) {
+    if (!e.done) this.peers++
+    c.state = 'peer'
+    c.hold = between(c.rand, PEER.s)
+    c.peerAt = c.tick + Math.round(PEER.coolS * TICK_HZ)
+    c.aim = this._toward(c, e.x, e.z)
+    c.voice = 0.5
+    this._play(c, 'idle', STEP_S)
+  }
+
+  _tickPeer(c, dt) {
+    c.hold -= dt
+    this._turn(c, dt)
+    c.voice -= dt
+    if (c.voice <= 0) {
+      c.voice = between(c.rand, PEER.every)
+      if (c.rand() < 0.4) this._voice(c, `leafkinChatter${1 + Math.min(CHATTERS - 1, (c.rand() * CHATTERS) | 0)}`)
+      const g = PEER.clips[(c.rand() * PEER.clips.length) | 0]
+      this._play(c, g, this.durations[g])
+    }
+    if (c.hold <= 0) this._roam(c)
+  }
+
   /** The way home, fleeing or (`calm`) homing. */
   _flee(c, calm) {
     c.state = calm ? 'home' : 'flee'
@@ -604,6 +644,7 @@ export class Leafkin {
       if (!this._seek(c)) this._roam(c)
       return
     }
+    if (c.state === 'peer') { this._play(c, 'idle', STEP_S); return }
     c.left = c.dur = c.speed > 0 ? STEP_S : STARTLE_S
   }
 
@@ -871,23 +912,26 @@ export class Leafkin {
     }
     c.tick = t
     c.voicing = c.loud && t > c.live
-    if (c.voicing && t > want - SILENT_TICKS && (c.state === 'roam' || c.state === 'gather' || c.state === 'home')) {
+    if (c.voicing && t > want - SILENT_TICKS && (frightable(c) || c.state === 'peer')) {
       const f = this.feet
-      if (Math.hypot(c.x - f.x, c.z - f.z) < STARTLE_M && Math.abs(this.walk.heightAt(c.x, c.z) - f.y) < STARTLE_M && !this._owed(c, t)) {
+      const small = atMost(this.size, PEER.size)
+      const d = Math.hypot(c.x - f.x, c.z - f.z), dy = Math.abs(this.walk.heightAt(c.x, c.z) - f.y)
+      if (!small && d < STARTLE_M && dy < STARTLE_M && !this._owed(c, t, 'fright')) {
         // Raised LEAD_TICKS on so a peer hears it before stepping that tick (net-ease.js), and screamed now on this client.
         const e = this._raise(c.wire, t + LEAD_TICKS, 'fright', f.x, f.y, f.z)
         e.screamed = true
         this.calls.push({ sound: 'leafkinScream', x: c.x, y: this.walk.heightAt(c.x, c.z) + c.size * CHEST, z: c.z })
-      }
+      } else if (small && peerable(c) && t >= c.peerAt && d < PEER.m && dy < PEER.m && !this._owed(c, t, 'peer')) this._raise(c.wire, t + LEAD_TICKS, 'peer', f.x, f.y, f.z)
     }
     const events = this.logs.get(c.wire)?.get(t)
     if (events) {
       for (const e of events) {
         if (e.kind === 'pick') c.eaten.push(e.x, e.z)
-        else if (c.state === 'roam' || c.state === 'gather' || c.state === 'home') { if (!e.done) this.frights++; this._startle(c, e) }
+        else if (e.kind === 'peer') { if (peerable(c)) this._peer(c, e) }
+        else if (frightable(c) || c.state === 'peer') { if (!e.done) this.frights++; this._startle(c, e) }
       }
     }
-    if (t >= c.homingTick && (c.state === 'roam' || c.state === 'gather')) this._flee(c, true)
+    if (t >= c.homingTick && (peerable(c) || c.state === 'peer')) this._flee(c, true)
     this._tick(c, t)
     if (events) for (const e of events) e.done = true
     c.live = Math.max(c.live, t)
@@ -907,6 +951,7 @@ export class Leafkin {
         this._turn(c, dt, FLEE_TURN)
         if (c.hold <= 0) this._flee(c, false)
         break
+      case 'peer': this._tickPeer(c, dt); break
       case 'flee': case 'home': this._tickFlee(c, tick, dt); break
       case 'inside':
         if (tick >= c.until && tick < c.homingTick) this._emerge(c)
@@ -918,10 +963,10 @@ export class Leafkin {
     if (c.left <= 0) this._step(c)
   }
 
-  /** Whether a fright already stands on tick `t` (stepped after this looks) or one her lead could reach. */
-  _owed(c, t) {
+  /** Whether an anchor of `kind` already stands on tick `t` (stepped after this looks) or one her lead could reach. */
+  _owed(c, t, kind) {
     const log = this.logs.get(c.wire)
-    if (log) for (let k = t; k <= t + LEAD_TICKS; k++) if (log.get(k)?.some((e) => e.kind === 'fright')) return true
+    if (log) for (let k = t; k <= t + LEAD_TICKS; k++) if (log.get(k)?.some((e) => e.kind === kind)) return true
     return false
   }
 
@@ -956,7 +1001,7 @@ export class Leafkin {
   /** Her doing on tick `tick` at a site: snapped as the room will carry it, logged, and owed to the room. */
   _raise(wire, tick, kind, x, y, z) {
     x = snap(x); y = snap(y); z = snap(z)
-    const key = `${wire}${tick.toString(36)}:${hash32(Math.round(x * 1000), Math.round(z * 1000), kind === 'pick' ? 1 : 0).toString(36)}`
+    const key = `${wire}${tick.toString(36)}:${hash32(Math.round(x * 1000), Math.round(z * 1000), KINDS.indexOf(kind)).toString(36)}`
     const e = this._log(wire, { key, tick, kind, x, y, z, done: false })
     this.outbox.push([key, tick / TICK_HZ, x, y, z, 0, 0, kind, null])
     return e
@@ -986,19 +1031,25 @@ export class Leafkin {
     }
   }
 
-  /** Her anchors since the last call, as `[key, T, x, y, z, 0, 0, 'fright' | 'pick', null]`, drained. */
+  /** Her anchors since the last call, as `[key, T, x, y, z, 0, 0, kind, null]` (KINDS), drained. */
   pending(into) {
     for (const a of this.outbox) into.push(a)
     this.outbox.length = 0
     return into
   }
 
-  /** Someone's fright or pick: logged, and stepped again from before it if its site is stepped past it. One before its site's chapter, or already logged, is let go. */
+  /** Her size this frame (eating.js Effects.size). */
+  sized(size) {
+    if (!(size > 0)) throw new Error(`Leafkin.sized: ${size}`)
+    this.size = size
+  }
+
+  /** Someone's fright, peer or pick: logged, and stepped again from before it if its site is stepped past it. One before its site's chapter, or already logged, is let go. */
   apply(a) {
     const kind = a[7]
     const at = typeof a[0] === 'string' && a[0].startsWith('lk:') ? a[0].indexOf(':', 3) : -1
     const tick = Math.round(a[1] * TICK_HZ)
-    if (at < 0 || (kind !== 'fright' && kind !== 'pick') || ![tick, a[2], a[3], a[4]].every(Number.isFinite)) throw new Error(`Leafkin: a malformed anchor ${JSON.stringify(a)}`)
+    if (at < 0 || !KINDS.includes(kind) || ![tick, a[2], a[3], a[4]].every(Number.isFinite)) throw new Error(`Leafkin: a malformed anchor ${JSON.stringify(a)}`)
     const wire = a[0].slice(0, at + 1)
     const c = this.byKey.get(this._siteOf(wire))
     if (c && tick <= c.startTick) return

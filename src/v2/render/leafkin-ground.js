@@ -81,6 +81,14 @@ export class LeafkinGround {
     return v
   }
 
+  /** Drop the answers for every cell within `reach` of (x, z), a square: stone there has moved (an entrance boulder's ladder, rocks.js HOLLOW_LADDER). */
+  forget(x, z, reach) {
+    const i1 = Math.round((x + reach) / CELL) + 1, j1 = Math.round((z + reach) / CELL) + 1
+    for (let i = Math.round((x - reach) / CELL) - 1; i <= i1; i++) {
+      for (let j = Math.round((z - reach) / CELL) - 1; j <= j1; j++) this.cells.delete(cellKey(i, j))
+    }
+  }
+
   _cell(x, z) {
     this.asked++
     const { h, tan } = this.field.heightAndSlopeAt(x, z)
