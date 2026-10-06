@@ -27,14 +27,15 @@
 //   for GROUND_PAUSE_S), turning back from water and the snow line and,
 //   GROUND_ROAM_M from its point, back toward it.
 //
-// NO SPIDER HAS A SKELETON. Every spider is an instance of one of two
-// InstancedMeshes, two draw calls for the lot, on the world's arc ladder
+// NO SPIDER HAS A SKELETON. Every spider is an instance of the one near
+// InstancedMesh or of the shared litter-card pool (litter-cards.js, one draw
+// call for every layer's far cards), on the world's arc ladder
 // (critters.js critterTier, CARD_RUNGS) by its own size: over the four mesh
 // rungs the shipped GLB's tier MESH_TIER as plain instanced geometry -- the
 // one mesh tier, the pick (tier 0) being photographed for the card and never
-// drawn -- on the card rung one quad, the bind pose photographed from above
-// (critters.js, the 'top' view), lying against its surface under the same
-// matrix the mesh would wear, and past that neither drawn nor simulated. A
+// drawn -- on the card rung one FIXED pool quad, the bind pose photographed from above
+// (critters.js, the 'top' view), laid flat against its surface under the same
+// matrix the mesh would wear (its slot's id is its pool instance's), and past that neither drawn nor simulated. A
 // 0.3 m spider is the mesh to 10.8 m and the card to 21.6; a 0.1 m one to
 // 3.6 and 7.2. THE LEGS ARE THE VERTEX SHADER: at setAsset the
 // tier's vertices are read against the skeleton's JOINTS_0/WEIGHTS_0 and the
@@ -111,10 +112,12 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
-  CRITTER_GLB, createCritterCardMaterial, setCritterCard,
+  CRITTER_GLB, critterCardExtents,
   LOD_RUNGS, CARD_RUNGS, critterTier, cullRange, bakeCritterCard, tierTintSplice, tileKey, walkTiles,
 } from './critters.js'
 import { loadSkinnedAsset } from './puppet.js'
+import { PropArena } from './prop-arena.js'
+import { cardPicture } from './litter-cards.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
@@ -230,6 +233,9 @@ const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 const _mat = new THREE.Matrix4()
+const _flat = new THREE.Matrix4()
+const _lay = new THREE.Matrix4().makeRotationX(-Math.PI / 2)
+const _col = new THREE.Color()
 const _hit = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, ox: 0, oz: 0, size: 0 }
 // A waypoint: a seat in its host's own two coordinates (`u`, `v` -- round and up a trunk or a rock, east and north over the ground) and the world seat, normal and bark radius those resolve to.
 const seat = () => ({ u: 0, v: 0, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, tx: 0, ty: 1, tz: 0, r: 1 })
@@ -322,9 +328,11 @@ export class Spiders {
    * @param water   WaterSurfaces: isSubmerged (a host under water carries none) and levelAt (a wet face seats nobody)
    * @param opts.trees  Trees: trunksInto and trunkProfile
    * @param opts.rocks  Rocks: perchesInto and rayAt
+   * @param opts.cards  the shared LitterCards: the far spiders are its instances, one per slot
    * @param opts.assets a loaded asset (loadSpiderGlb's shape) for a gate; the world fetches the GLB
    */
-  constructor(scene, height, water, { seed = 1, trees, rocks, assets = null } = {}) {
+  constructor(scene, height, water, { seed = 1, trees, rocks, assets = null, cards = null } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Spiders needs the LitterCards its far card is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.snowLineAt !== 'function') throw new Error('Spiders needs a height field with heightAt and snowLineAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.isSubmerged !== 'function') throw new Error('Spiders needs WaterSurfaces, for levelAt and isSubmerged')
     if (!trees || typeof trees.trunksInto !== 'function' || !Array.isArray(trees.trunkProfile)) throw new Error('Spiders needs Trees, for trunksInto and trunkProfile')
@@ -375,20 +383,21 @@ export class Spiders {
       this.gaits.push(gait)
     }
     this.counts = new Uint16Array(LOD_TIERS)
-    // The far spiders, as cards; hidden until the picture is baked, and until then every spider in range is a mesh and the rest are not drawn.
-    this.cardMaterial = createCritterCardMaterial('spiders', { hue: false })
-    this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
-    this.card.name = 'v2-spiders-card'
-    this.card.count = 0
-    this.card.visible = false
-    this.card.frustumCulled = false
-    this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    this.card.instanceColor = makeTint()
+    // The far spiders, as instances of the shared litter quad, one per slot (a slot's id is its card's); drawn once the picture is baked, and until then every spider in range is a mesh and the rest are not drawn.
+    cards.claim('spiders', MAX)
+    this.litterCards = cards
+    this.cardPicture = -1
+    this.cardReady = false
+    this.cardCount = 0
+    this.cards = PropArena.over(cards.meshes, MAX, 'v2-spiders-card')
+    for (let i = 0; i < MAX; i++) {
+      this.cards.addInstance(0)
+      this.cards.setVisibleAt(i, false)
+    }
     // The layer toggle flips the group.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-spiders'
     for (const mesh of this.meshes) this.batch.add(mesh)
-    this.batch.add(this.card)
     scene.add(this.batch)
 
     this.slots = []
@@ -412,7 +421,7 @@ export class Spiders {
         // Fleeing: where it is making for, how far off it was last tick, and the seconds it has gone without closing on it. `near` is whether a body was within FLEE_M last frame. The flight steps at TICK_HZ on absolute world ticks: `tick` is the last one taken and `alpha` how far the frame is past it, for the draw to lead by. `bolt` is the column a released spider runs from -- fixed at the release, so every client runs the one flight -- and null for a flight a body startled, which re-aims at that body as it moves.
         ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false, tick: 0, alpha: 0, bolt: null,
         // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase, the phase it rolled to start from and their swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
-        rung: -1, lod: LOD_TIERS, gait: 0, gait0: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
+        cardOn: false, cardStamp: -1, rung: -1, lod: LOD_TIERS, gait: 0, gait0: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
       })
     }
     this.free = this.slots.slice()
@@ -477,22 +486,34 @@ export class Spiders {
     }
     // Every kept matrix was scaled by the old span.
     for (const c of this.slots) c.dirty = true
-    setCritterCard(this.card, this.bounds, ['top'])
+    // The card lies flat: the top view is the shared quad turned down about X, so the picture's up is -Z, centred at the body's middle height.
+    const ext = critterCardExtents(this.bounds)
+    this.cardLift = (ext.y0 + ext.y1) / 2
+    if (this.cardPicture < 0) {
+      this.cardPicture = this.litterCards.addPicture({ kind: 'fixed', cx: 0, cy: 0, hw: ext.hx, hh: ext.hz })
+      for (let i = 0; i < MAX; i++) this.cards.setLayerShiftAt(i, this.cardPicture)
+    }
     this.loaded = true
   }
 
   /** Photograph the bind pose from above onto the card and start drawing the far spiders. Once, after `ready`. */
   bakeCard(renderer) {
     if (!this.loaded) throw new Error('Spiders.bakeCard: the asset has not landed')
-    this.setCard(bakeCritterCard(renderer, this.asset.tiers[0], this.asset.map, this.bounds, ['top']))
+    const texture = bakeCritterCard(renderer, this.asset.tiers[0], this.asset.map, this.bounds, ['top'])
+    this.litterCards.setCritterPixels(this.cardPicture, texture.image.data)
+    texture.dispose()
+    this.setCard()
   }
 
-  setCard(map) {
-    if (map) {
-      this.cardMaterial.map = map
-      this.cardMaterial.needsUpdate = true
-    }
-    this.card.visible = true
+  /** Start drawing the far spiders (the picture is in the pool). */
+  setCard() {
+    this.cardReady = true
+  }
+
+  /** Draw the whole layer or none of it; the far cards are shared instances, so the batch's `visible` alone would leave them. */
+  setShown(shown) {
+    this.batch.visible = shown
+    this.cards.setShown(shown)
   }
 
   _enter(tx, tz) {
@@ -1020,7 +1041,7 @@ export class Spiders {
     }
     return {
       alive: MAX - this.free.length, tiles: this.tiles.size, hosts, groups,
-      meshes: this.meshes.map((m) => m.count), cards: this.card.count, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped, spells: this.spells,
+      meshes: this.meshes.map((m) => m.count), cards: this.cardCount, overflow: this.overflow, saturated: this.saturated, dropped: this.dropped, spells: this.spells,
     }
   }
 
@@ -1564,14 +1585,11 @@ export class Spiders {
     this.frame++
     this.startles.length = 0
 
-    const cmat = this.card.instanceMatrix.array
-    const ctint = this.card.instanceColor.array
-    const cards = this.card.visible
+    const cards = this.cardReady
     const meshes = this.loaded
     const flee2 = (FLEE_M + WALK.radius) * (FLEE_M + WALK.radius)
     const counts = this.counts
     counts.fill(0)
-    let m = 0
     for (const t of this.tiles.values()) {
       for (const host of t.hosts.values()) {
         let dropped = 0
@@ -1630,7 +1648,8 @@ export class Spiders {
           // Mid-tick of a flight, the drawn pose runs on along the heading: the tick's own step is that line, so the lead meets the next tick where it lands.
           const lead = c.state === 'flee' ? c.speed * TICK_S * c.alpha : 0
           const gait = lead > 0 ? (c.gait + (TAU * lead * this.span) / (c.size * STRIDE.run)) % TAU : c.gait
-          if (c.dirty) {
+          const rebuilt = c.dirty
+          if (rebuilt) {
             const k = c.size / this.span
             const sink = SINK * this.bodyH * k
             _pos.set(c.x + c.tx * lead - c.nx * sink, c.y + c.ty * lead - c.ny * sink, c.z + c.tz * lead - c.nz * sink)
@@ -1661,10 +1680,9 @@ export class Spiders {
               t[n * 3] = c.tr; t[n * 3 + 1] = c.tg; t[n * 3 + 2] = c.tb
               counts[lod] = n + 1
             }
-          } else if (cards && m < MAX) {
-            cmat.set(c.m, m * 16)
-            ctint[m * 3] = c.tr; ctint[m * 3 + 1] = c.tg; ctint[m * 3 + 2] = c.tb
-            m++
+          } else if (cards) {
+            if (rebuilt || !c.cardOn) this._writeCard(c)
+            c.cardStamp = this.frame
           }
         }
         if (host.kind === 'tree') host.moved = false
@@ -1682,9 +1700,27 @@ export class Spiders {
       mesh.instanceColor.needsUpdate = true
       this.gaits[k].needsUpdate = true
     }
-    this.card.count = m
-    this.card.instanceMatrix.needsUpdate = true
-    this.card.instanceColor.needsUpdate = true
+    // A card not stamped this frame is a spider that went to a mesh, out of range or away.
+    let n = 0
+    for (const c of this.slots) {
+      if (c.cardOn && c.cardStamp !== this.frame) {
+        this.cards.setVisibleAt(c.id, false)
+        c.cardOn = false
+      }
+      if (c.cardOn) n++
+    }
+    this.cardCount = n
+  }
+
+  _writeCard(c) {
+    _mat.fromArray(c.m).multiply(_flat.makeTranslation(0, this.cardLift, 0).multiply(_lay))
+    this.cards.setMatrixAt(c.id, _mat)
+    _col.setRGB(c.tr, c.tg, c.tb)
+    this.cards.setColorAt(c.id, _col)
+    if (!c.cardOn) {
+      this.cards.setVisibleAt(c.id, true)
+      c.cardOn = true
+    }
   }
 
   dispose() {
@@ -1692,8 +1728,6 @@ export class Spiders {
     this.material.dispose()
     this.asset?.map?.dispose()
     for (const g of this.asset?.tiers ?? []) g.dispose()
-    this.card.geometry.dispose()
-    this.cardMaterial.map?.dispose()
-    this.cardMaterial.dispose()
+    for (const c of this.slots) if (c.cardOn) this.cards.setVisibleAt(c.id, false)
   }
 }

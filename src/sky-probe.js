@@ -89,10 +89,10 @@ export const PROBE = {
   // Per face. The aurora is a soft diffuse curtain being reflected in moving
   // water; there is nothing here that 64 pixels cannot hold.
   size: 64,
-  // Frames between updates. One face per update, five faces to go round, so a
-  // full refresh takes this many frames times five -- 10 frames, about 0.14 s
-  // at 72 Hz, against an aurora whose fastest fold takes about a second.
-  everyNFrames: 2,
+  // Seconds between faces. One face per update, five faces to go round, so a
+  // full capture takes five of these: one a second, about the rate the aurora's
+  // own sky map is rebuilt at (skymap/skymap.js MAP_INTERVALS).
+  faceSeconds: 0.2,
   // How strongly the captured light shows up in the water. 1.0 is "as bright
   // as the sky above it"; the reflection tint in water.js takes its cut on top.
   gain: 1.0,
@@ -135,7 +135,9 @@ export class SkyProbe {
     this.rig.layers.set(PROBE_LAYER)
 
     this.face = 0
-    this.frame = 0
+    // Seconds until the next face; whether the cube holds nothing (it starts transparent black, so is blank until the first capture).
+    this.wait = 0
+    this.blank = true
     this.captures = 0
   }
 
@@ -145,14 +147,44 @@ export class SkyProbe {
     for (const o of objects) o.layers.enable(PROBE_LAYER)
   }
 
+  _blank(renderer) {
+    const wasXR = renderer.xr.enabled
+    const prevTarget = renderer.getRenderTarget()
+    renderer.getClearColor(scratchColor)
+    const prevAlpha = renderer.getClearAlpha()
+    renderer.xr.enabled = false
+    renderer.setClearColor(0x000000, 0)
+    for (const face of FACES) {
+      renderer.setRenderTarget(this.target, face)
+      renderer.clear(true, false, false)
+    }
+    renderer.setRenderTarget(prevTarget)
+    renderer.setClearColor(scratchColor, prevAlpha)
+    renderer.xr.enabled = wasXR
+    this.blank = true
+    this.face = 0
+  }
+
   /**
    * One face, or nothing. Call once per frame BEFORE the main render: it binds
    * a render target and leaves it unbound, and doing that between the XR
    * framebuffer being set up and the scene being drawn into it is how you get
    * a frame drawn into the wrong buffer.
+   *
+   * `on` is whether there is an aurora to capture. Off, the cube is cleared once
+   * and nothing else runs, so the water reflects no curtain by day and the
+   * aurora's vertex pass is not paid.
    */
-  update(renderer, scene, head) {
-    if (this.frame++ % PROBE.everyNFrames !== 0) return
+  update(renderer, scene, head, dt, on) {
+    if (!(dt >= 0)) throw new Error(`SkyProbe.update: needs a real dt, got ${dt}`)
+    if (!on) {
+      if (!this.blank) this._blank(renderer)
+      return
+    }
+    this.blank = false
+    this.wait -= dt
+    if (this.wait > 0) return
+    this.wait = PROBE.faceSeconds
 
     // The six cameras come out of the constructor with no orientation at all --
     // CubeCamera only points them in updateCoordinateSystem(), which its own

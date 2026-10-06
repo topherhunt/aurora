@@ -49,7 +49,8 @@ import { TICK_S } from '../src/sim/score.js'
 import { WALK } from '../src/v2/walk.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { TRUNK_STRIDE } from '../src/v2/render/trees.js'
-import { CRITTER_GLB, LOD_RUNGS, CARD_RUNGS, TIER_TINTS, lodReach } from '../src/v2/render/critters.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
+import { CRITTER_GLB, critterCardExtents, LOD_RUNGS, CARD_RUNGS, TIER_TINTS, lodReach } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
 import { TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -369,12 +370,12 @@ function makeAsset({ legs = true } = {}) {
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const spiders = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+const spiders = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
 check(spiders.loaded && Math.abs(spiders.span - 1) < 1e-6 && Math.abs(spiders.bodyH - 0.25) < 1e-6, 'asset set: span 1, body 0.25 high', `span ${spiders.span} body ${spiders.bodyH}`)
 check(spiders.material.isMeshLambertMaterial && spiders.materials === undefined, 'ONE material for every mesh spider, and nothing else to patch')
 check(spiders.meshes.length === LOD_TIERS && spiders.meshes.every((m, k) => m.isInstancedMesh && !m.isSkinnedMesh && m.material === spiders.material && m.count === 0 && m.instanceMatrix.count === MAX && m.geometry === spiders.asset.tiers[MESH_TIER + k] && m.geometry.getAttribute('aGait') === spiders.gaits[k] && m.geometry.getAttribute('aLeg')?.itemSize === 2) && spiders.asset.tiers[0].getAttribute('aLeg') === undefined, `${LOD_TIERS} InstancedMesh, no skeleton on it, the asset's tier ${MESH_TIER} with its legs baked on and its gaits per instance, none drawn yet; the pick untouched, for the card`)
 check(spiders.gaits.every((g) => g.isInstancedBufferAttribute && g.itemSize === 2 && g.count === MAX), 'a gait -- phase and amplitude -- per instance per tier')
-check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.children.length === LOD_TIERS + 1 && spiders.meshes.every((m) => spiders.batch.children.includes(m)), 'the card is hidden until baked, and the tiers and the card are the whole batch')
+check(!spiders.cardReady && spiders.cardCount === 0 && spiders.batch.children.length === LOD_TIERS && spiders.meshes.every((m) => spiders.batch.children.includes(m)), 'the card is not drawn until baked, and the tiers are the whole batch')
 {
   // The legs as baked onto the drawn tier: a side-face vertex swings with its leg, a body vertex never does.
   const geo = spiders.asset.tiers[MESH_TIER]
@@ -393,7 +394,7 @@ check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.childre
   const half = (l) => [...halves].filter((h) => h.startsWith(`${l}:`)).map((h) => +h.split(':')[1])
   check([0, 3, 4, 7].every((l) => half(l).length === 1 && half(l)[0] === 0) && [1, 2, 5, 6].every((l) => half(l).length === 1 && Math.abs(half(l)[0] - Math.PI) < 1e-6), 'the alternating tetrapod: L1 R2 L3 R4 step together, R1 L2 R3 L4 half a cycle behind')
   let threw = false
-  try { new Spiders(scene, height, water, { seed: 1, trees, rocks, assets: makeAsset({ legs: false }) }) } catch { threw = true }
+  try { new Spiders(scene, height, water, { seed: 1, trees, rocks, cards: new LitterCards(4096), assets: makeAsset({ legs: false }) }) } catch { threw = true }
   check(threw, 'a skeleton naming no legs is refused at setAsset')
 }
 {
@@ -407,13 +408,11 @@ check(!spiders.card.visible && spiders.card.count === 0 && spiders.batch.childre
   const want = TIER_TINTS[MESH_TIER].color.getHex()
   const near = (v, byte) => Math.abs(v * 255 - byte) < 1
   check(/<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(shader.fragmentShader) && near(tint.x, (want >> 16) & 255) && near(tint.y, (want >> 8) & 255) && near(tint.z, want & 255), `the tint row paints the mesh tier ${MESH_TIER}'s own colour over the output`, `#${want.toString(16)}`)
-  const cshader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n' }
-  spiders.cardMaterial.onBeforeCompile(cshader)
-  check(!cshader.vertexShader.includes('attribute float aHue;') && spiders.cardMaterial.customProgramCacheKey().endsWith('-flat'), 'and the card wears no hue either, there being none on the mesh it takes over from')
-  const geo = spiders.card.geometry
-  const pos = geo.getAttribute('position')
-  const ys = new Set(Array.from({ length: pos.count }, (_, i) => pos.getY(i).toFixed(6)))
-  check(geo.index.count === 6 && pos.count === 4 && ys.size === 1, 'the card is ONE quad, lying flat at the body\'s middle', `${geo.index.count / 3} tris at y ${[...ys].join(',')}`)
+  const pic = spiders.cardPicture
+  const lc = spiders.litterCards
+  const ext = critterCardExtents(spiders.bounds)
+  check(pic >= 0 && lc.kind[pic] === 2 && Math.abs(lc.box[pic].z - ext.hx) < 1e-6 && Math.abs(lc.box[pic].w - ext.hz) < 1e-6 && lc.box[pic].y === 0, 'the card is a FIXED picture of the shared pool, as wide as the body and as long, centred on the quad\'s own origin', `picture ${pic}, ${lc.box[pic].z.toFixed(3)} x ${lc.box[pic].w.toFixed(3)}`)
+  check(spiders.cards.layer.every((v) => v === pic) && lc.claimed === MAX, 'every slot\'s card instance wears that picture, and the pool was told MAX', `claimed ${lc.claimed}`)
 }
 
 // --- placement -----------------------------------------------------------------
@@ -427,7 +426,7 @@ const hosted = { tree: 0, rock: 0, ground: 0 }
 const hostedOf = new Map()
 let dropped = 0
 for (let seed = 1; seed <= SEEDS; seed++) {
-  const k = new Spiders(scene, height, water, { seed, trees, rocks, assets: makeAsset() })
+  const k = new Spiders(scene, height, water, { seed, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
   k.place(0, 0)
   dropped += k.overflow + k.saturated
   for (const t of k.tiles.values()) {
@@ -483,7 +482,7 @@ spiders.place(0, 0)
   const onThin = onTrees.filter((c) => hostOf(c).name === 'birch2')
   check(onThin.length > 0 && onThin.every((c) => c.y - GROUND <= 1.9 + 1e-6) && onThin.some((c) => c.y - GROUND > 1.5), `and the thin birch only up to where its bark thins under ${TRUNK_MIN_R} m, two metres up`, `${onThin.length} on it, highest ${onThin.length ? Math.max(...onThin.map((c) => c.y - GROUND)).toFixed(2) : '-'} m`)
   // Determinism: the same seed lays the same spiders twice, and place() after leave puts them back where they were.
-  const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
   again.place(0, 0)
   const key = (of) => alive(of).map((c) => `${c.x.toFixed(4)},${c.y.toFixed(4)},${c.z.toFixed(4)},${c.size.toFixed(4)},${c.tr.toFixed(4)},${c.tg.toFixed(4)},${c.tb.toFixed(4)}`).sort().join('|')
   check(key(again) === key(spiders) && alive(spiders).length > 0, 'the scatter, tints and all, is a pure function of the seed', `${alive(spiders).length} spiders`)
@@ -494,12 +493,12 @@ spiders.place(0, 0)
     const inRange = all.every((c) => c.tr <= 1 + 1e-9 && c.tr >= TINT_DARK - 1e-9 && c.tg <= c.tr + 1e-9 && c.tb <= c.tg + 1e-9 && c.tg >= c.tr * (1 - TINT_BROWN.g) - 1e-9 && c.tb >= c.tr * (1 - TINT_BROWN.b) - 1e-9)
     const shades = all.map((c) => c.tr), warmths = all.map((c) => 1 - c.tb / c.tr)
     check(inRange && Math.max(...shades) - Math.min(...shades) > 0.3 && Math.max(...warmths) - Math.min(...warmths) > 0.3, 'every spider is tinted between the map and dark brown, and the scatter is spread across the range', `shade ${Math.min(...shades).toFixed(2)}..${Math.max(...shades).toFixed(2)}, warmth ${Math.min(...warmths).toFixed(2)}..${Math.max(...warmths).toFixed(2)}`)
-    check(spiders.meshes.every((m) => m.instanceColor?.isInstancedBufferAttribute && m.instanceColor.count === MAX) && spiders.card.instanceColor?.isInstancedBufferAttribute && spiders.card.instanceColor.count === MAX, 'the tint rides in instanceColor on every tier and on the card')
+    check(spiders.meshes.every((m) => m.instanceColor?.isInstancedBufferAttribute && m.instanceColor.count === MAX), 'the tint rides in instanceColor on every tier')
   }
   // A tile whose hosts land late gets its spiders on the rescan.
   liveTrunks = []
   liveRocks = []
-  const late = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  const late = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
   late.place(0, 0)
   check(alive(late).length > 0 && alive(late).every((c) => c.host.kind === 'ground'), 'no trunks and no rocks, only the ground\'s spiders', `${alive(late).length} on the ground`)
   liveTrunks = TRUNKS
@@ -510,7 +509,7 @@ spiders.place(0, 0)
   late.dispose()
   // Above the snow line, the same hosts carry nobody.
   snowLine = GROUND - 1
-  const snowed = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  const snowed = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
   snowed.place(0, 0)
   check(snowed.stats.hosts === spiders.stats.hosts && alive(snowed).length === 0, 'a host above the snow line carries no group', `${snowed.stats.hosts} hosts, ${alive(snowed).length} spiders`)
   snowed.dispose()
@@ -531,8 +530,8 @@ spiders.place(0, 0)
   // Standing in the middle of the wood: every spider is on its own rung by its size, and the ones past their cull are neither drawn nor simulated.
   const HER = [0, GROUND + EYE, 0]
   const before = alive().map((c) => ({ c, x: c.x, y: c.y, z: c.z, left: c.left }))
-  spiders.setCard(null)
-  check(spiders.card.visible, 'setCard shows the card')
+  spiders.setCard()
+  check(spiders.cardReady, 'setCard starts the far cards')
   let ms = 0
   const states = new Set()
   const clipsSeen = new Set()
@@ -577,23 +576,24 @@ spiders.place(0, 0)
   const onRung = (c) => (c.rung === 0 || dist(c) >= lodReach(c.size, c.rung - 1) * 0.9 - 1e-9) && (c.rung === CARD_RUNGS || dist(c) <= lodReach(c.size, c.rung) * 1.1 + 1e-9)
   const meshed = alive().filter((c) => c.rung < LOD_RUNGS), carded = alive().filter((c) => c.rung === LOD_RUNGS), culled = alive().filter((c) => c.rung === CARD_RUNGS)
   check(alive().every(onRung) && meshed.every((c) => c.lod === 0) && carded.every((c) => c.lod === LOD_TIERS), 'every spider is on the rung its size and distance earn: the mesh to 36 sizes, the card to 72, nothing past', alive().filter((c) => !onRung(c)).map((c) => `${c.size.toFixed(2)} m at ${dist(c).toFixed(1)} m on rung ${c.rung}`).join(', '))
-  check(meshed.length > 0 && carded.length > 0 && culled.length > 0 && spiders.stats.meshes[0] === meshed.length && spiders.card.count === carded.length, 'from the middle of the wood some are meshes, some cards and some culled, each drawn once or not at all', `${meshed.length} meshes, ${carded.length} cards, ${culled.length} culled of ${alive().length}`)
+  check(meshed.length > 0 && carded.length > 0 && culled.length > 0 && spiders.stats.meshes[0] === meshed.length && spiders.cardCount === carded.length && spiders.litterCards.stats.used === carded.length, 'from the middle of the wood some are meshes, some cards and some culled, each drawn once or not at all', `${meshed.length} meshes, ${carded.length} cards, ${culled.length} culled of ${alive().length}`)
   check(legs.walking > 0 && legs.sitting > 0 && legs.wrong === 0 && legs.over === 0, 'a spider in the middle of a scoot swings its legs half a stride, sitting not at all, and never more than half the run', `${legs.walking} walking and ${legs.sitting} sitting spider-frames, ${legs.wrong} wrong`)
   check(legs.phase === 0, 'the phase runs while it walks and holds while it sits', `${legs.phase} wrong`)
   const perFrame = ms / 600
   check(perFrame < 3, `a frame of ${alive().length} spiders costs under 3 ms`, `${perFrame.toFixed(3)} ms, ${rocks.rays} rays`)
-  // The card lies where its spider clings, sunk into the surface, its up along the normal. Instance 0 is the first card in tile order.
+  // The card lies where its spider clings, sunk into the surface, its up along the normal. The card is its slot's own instance.
   const c = [...spiders.tiles.values()].flatMap((t) => [...t.hosts.values()]).flatMap((h) => h.spiders).find((c) => c.rung === LOD_RUNGS)
-  const m = new THREE.Matrix4().fromArray(spiders.card.instanceMatrix.array, 0)
+  const m = spiders.cards.getMatrixAt(c.id, new THREE.Matrix4())
   const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
   m.decompose(p, q, s)
-  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
-  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+  // The shared quad is XY, its normal +Z: laid down about X, the quad's up is the heading and its normal the surface's.
+  const up = new THREE.Vector3(0, 0, 1).applyQuaternion(q)
+  const fwd = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
   const k = c.size / spiders.span
   const sink = SINK * spiders.bodyH * k
-  check(Math.abs(s.x - k) < 1e-6 && Math.abs(s.y - k) < 1e-6 && p.distanceTo(new THREE.Vector3(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)) < 1e-5, 'the first card is at its spider\'s size, sunk into its surface', `scale ${s.x.toFixed(3)}, sink ${sink.toFixed(4)} m`)
-  const ct = spiders.card.instanceColor.array
-  check(Math.abs(ct[0] - c.tr) < 1e-6 && Math.abs(ct[1] - c.tg) < 1e-6 && Math.abs(ct[2] - c.tb) < 1e-6, 'and carries its spider\'s tint', `${c.tr.toFixed(3)} ${c.tg.toFixed(3)} ${c.tb.toFixed(3)}`)
+  check(Math.abs(s.x - k) < 1e-6 && Math.abs(s.y - k) < 1e-6 && p.distanceTo(new THREE.Vector3(c.x - c.nx * sink + c.nx * spiders.cardLift * k, c.y - c.ny * sink + c.ny * spiders.cardLift * k, c.z - c.nz * sink + c.nz * spiders.cardLift * k)) < 1e-5, 'the first card is at its spider\'s size, at the body\'s middle height over its sunk seat', `scale ${s.x.toFixed(3)}, sink ${sink.toFixed(4)} m`)
+  const ct = spiders.cards.getColorAt(c.id, new THREE.Color())
+  check(Math.abs(ct.r - c.tr) < 1e-6 && Math.abs(ct.g - c.tg) < 1e-6 && Math.abs(ct.b - c.tb) < 1e-6, 'and carries its spider\'s tint', `${c.tr.toFixed(3)} ${c.tg.toFixed(3)} ${c.tb.toFixed(3)}`)
   check(up.distanceTo(new THREE.Vector3(c.nx, c.ny, c.nz)) < 1e-5 && fwd.distanceTo(new THREE.Vector3(c.tx, c.ty, c.tz)) < 1e-5, 'its up is the surface normal and its face is its heading')
   check(spiders.stats.dropped === 0, 'no stone went from under anybody', `${spiders.stats.dropped} dropped`)
 }
@@ -754,7 +754,7 @@ spiders.place(0, 0)
     for (let f = 0; f < frames; f++) { her = at(d); tick(spiders, ...her, 1 / 60) }
     return target.lod
   }
-  const drawn = () => spiders.stats.meshes.reduce((a, b) => a + b, 0) + spiders.card.count
+  const drawn = () => spiders.stats.meshes.reduce((a, b) => a + b, 0) + spiders.cardCount
   // A flight steps on the world's ticks, so mid-tick the drawn pose runs on along the heading by what is left of the step, its legs with it.
   const lead = (c) => (c.state === 'flee' ? c.speed * TICK_S * c.alpha : 0)
   const seat = (c) => { const sink = SINK * spiders.bodyH * c.size / spiders.span, d = lead(c); return new THREE.Vector3(c.x + c.tx * d - c.nx * sink, c.y + c.ty * d - c.ny * sink, c.z + c.tz * d - c.nz * sink) }
@@ -796,7 +796,7 @@ spiders.place(0, 0)
     check(target.state === 'go' && speed > 0 && Math.abs(turned - (2 * Math.PI * speed * (1 / 60) * spiders.span) / (target.size * STRIDE[clip])) < 1e-9, 'a frame\'s scoot turns the phase by that step over the stride', `${turned.toFixed(4)} rad at ${speed.toFixed(4)} m/s`)
   }
   const simulated = () => alive().filter((c) => c.rung < CARD_RUNGS).length
-  check(alive().every((c) => (c.rung < LOD_RUNGS) === (c.lod === 0)) && drawn() === simulated() && spiders.stats.meshes[target.lod] >= 1, 'every spider on a mesh rung is a mesh and every one on the card rung a card, each drawn once, and the culled not at all', `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards, ${simulated()} of ${alive().length} simulated`)
+  check(alive().every((c) => (c.rung < LOD_RUNGS) === (c.lod === 0)) && drawn() === simulated() && spiders.stats.meshes[target.lod] >= 1, 'every spider on a mesh rung is a mesh and every one on the card rung a card, each drawn once, and the culled not at all', `tiers ${spiders.stats.meshes.join('/')}, ${spiders.cardCount} cards, ${simulated()} of ${alive().length} simulated`)
   // The four mesh rungs are all the one mesh: on the second and at the end of the fourth alike.
   const mid = lodReach(target.size, 1) * Math.SQRT2, last = lodReach(target.size, LOD_RUNGS - 1) * 0.95
   const tMid = tiersAt(mid), rMid = target.rung, iMid = instanceOf(0, target)
@@ -806,7 +806,7 @@ spiders.place(0, 0)
   // Stepping past the mesh rungs: the next frame it is a card, and NOTHING is drawn twice. Past the card rung it is gone, and frozen.
   const cardAt = lodReach(target.size, LOD_RUNGS - 1) * 1.15
   const tCard = tiersAt(cardAt, 1)
-  check(tCard === LOD_TIERS && target.rung === LOD_RUNGS && instanceOf(0, target) < 0 && drawn() === simulated(), `at ${cardAt.toFixed(2)} m, past the fourth rung by more than its hysteresis, it is a card the next frame, a mesh or a card and never both`, `tiers ${spiders.stats.meshes.join('/')}, ${spiders.card.count} cards, ${simulated()} simulated`)
+  check(tCard === LOD_TIERS && target.rung === LOD_RUNGS && instanceOf(0, target) < 0 && drawn() === simulated(), `at ${cardAt.toFixed(2)} m, past the fourth rung by more than its hysteresis, it is a card the next frame, a mesh or a card and never both`, `tiers ${spiders.stats.meshes.join('/')}, ${spiders.cardCount} cards, ${simulated()} simulated`)
   const cullAt = lodReach(target.size, LOD_RUNGS) * 1.15
   const wasAt = [target.x, target.y, target.z]
   for (let f = 0; f < 2; f++) tick(spiders, target.x, target.y + cullAt, target.z, 1 / 60)
@@ -916,7 +916,7 @@ spiders.place(0, 0)
   const HEAD = GROUND + 3
   const frame = (k, t) => k.update(0, HEAD, 0, t, HEAD - EYE)
   const pose = (of) => alive(of).map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.tx.toFixed(9)},${c.ty.toFixed(9)},${c.tz.toFixed(9)}|${c.state}|${c.clip}|${c.gait.toFixed(9)},${c.amp.toFixed(9)}`).sort().join('\n')
-  const make = () => { const k = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() }); k.place(0, 0); return k }
+  const make = () => { const k = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() }); k.place(0, 0); return k }
   const slow = make()
   const fast = make()
   // One at 24 fps from the wood's first second; one at 144 with a stutter every seventh frame, joining at the same second.
@@ -987,7 +987,7 @@ spiders.place(0, 0)
 
 // --- her hand: a spider picked off its host, the host never regrowing it, one let go of fleeing on the ground --
 {
-  const k = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  const k = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
   k.place(0, 0)
   const c = alive(k).find((g) => g.host.kind === 'tree')
   const host = c.host
@@ -1008,7 +1008,7 @@ spiders.place(0, 0)
   try { k.dress({ ...slot, kind: 'crab' }) } catch { wrong = true }
   check(wrong, 'and throws for another kind')
   check(c.host === null && !host.spiders.includes(c) && alive(k).length === before - 1, 'and the spider is off its trunk')
-  const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, assets: makeAsset() })
+  const again = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset() })
   again.place(0, 0)
   tick(again, ...nearTo(c), 1 / 60)
   // By host and place in its group, which a flee does not change.

@@ -74,10 +74,15 @@ export class Sculptor {
     // colliding with terrain that is no longer being drawn.
     this.field = field
     this.terrain = terrain
-    // Called after every flush with the world rect the ground changed in, plus
-    // every river it re-routed, so the water surfaces can re-trace the lakes
-    // and rebuild the rivers there; the terrain itself is told through patchHeight.
+    // Called with the world rect the ground changed in, plus every river it
+    // re-routed, so the water surfaces can re-trace the lakes and rebuild the
+    // rivers there; the terrain itself is told through patchHeight. Once per
+    // STROKE, on pointer-up, not per flush: the shipped ocean's box touches
+    // every rect, so each call re-traces its 20 km shore (~180 ms) and rebuilds
+    // every river ribbon, which at FLUSH_MS made the brush crawl. The water
+    // lags the ground for the length of a drag.
     this.onGroundChanged = onGroundChanged
+    this._groundRect = null // world rect patched this stroke, not yet handed to onGroundChanged
 
     this.mode = 'raise'
     this.radius = RADIUS.def
@@ -160,6 +165,7 @@ export class Sculptor {
     const { snap, moved } = this._stroke
     this._stroke = null
     this._flush(true)
+    this._groundChanged()
     // A press that moved nothing -- a click with the brush off the grid, or on a
     // summit already at the ceiling -- must not push an undo entry, or Ctrl-Z
     // starts doing nothing visible several times in a row.
@@ -176,6 +182,7 @@ export class Sculptor {
     this.heightmap.patch(entry.rect, entry.data)
     this.field.coarsePatched(entry.rect)
     this._patch(entry.rect, entry.data)
+    this._groundChanged()
     // Still dirty: the file on disk does not match this field either way, and an
     // undo back to the imported shape is exactly when Save matters most.
     this.dirty = true
@@ -256,7 +263,18 @@ export class Sculptor {
       maxZ: Math.max(world.maxZ, rivers.maxZ),
     }
     this.terrain.patchHeight(rect, data, changed)
-    if (this.onGroundChanged !== null) this.onGroundChanged(changed)
+    this._groundRect = this._groundRect === null ? changed : {
+      minX: Math.min(this._groundRect.minX, changed.minX),
+      minZ: Math.min(this._groundRect.minZ, changed.minZ),
+      maxX: Math.max(this._groundRect.maxX, changed.maxX),
+      maxZ: Math.max(this._groundRect.maxZ, changed.maxZ),
+    }
+  }
+
+  _groundChanged() {
+    const rect = this._groundRect
+    this._groundRect = null
+    if (rect !== null && this.onGroundChanged !== null) this.onGroundChanged(rect)
   }
 }
 

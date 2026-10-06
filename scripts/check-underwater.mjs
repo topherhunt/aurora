@@ -447,9 +447,9 @@ check(
   // must hold is that the slow path is genuinely slow -- this is a full scene
   // traversal per face, and the whole argument for affording it is the cadence.
   check(
-    WORLD_PROBE.refreshFrames >= 50,
-    'and it refreshes slowly while she stands still, which is what makes it affordable',
-    `five faces every ${WORLD_PROBE.refreshFrames} frames`
+    WORLD_PROBE.refreshSeconds >= 0.5 && WORLD_PROBE.staleSeconds >= 2 * WORLD_PROBE.refreshSeconds,
+    'and it refreshes the faces she looks toward about once a second and the rest less often, which is what makes it affordable',
+    `faced faces every ${WORLD_PROBE.refreshSeconds} s, the others at ${WORLD_PROBE.staleSeconds} s`
   )
   check(
     WORLD_PROBE.moveRefresh > 0 && WORLD_PROBE.moveRefresh < 50,
@@ -468,6 +468,7 @@ check(
 {
   const scene2 = new THREE.Scene()
   const written = []
+  const sceneFaces = []
   const stub = {
     coordinateSystem: THREE.WebGLCoordinateSystem,
     xr: { enabled: true },
@@ -477,11 +478,11 @@ check(
     setClearColor: () => {},
     setRenderTarget: (t, face) => written.push({ t, face }),
     clear: () => {},
-    render: () => {},
+    render: (sc) => { if (sc === scene2) sceneFaces.push(written[written.length - 1].face) },
   }
   const DT = 1 / 72
-  // Five faces, each followed by faceGap frames of rest.
-  const BURST_FRAMES = 5 * (WORLD_PROBE.faceGap + 1)
+  // Five faces, each followed by faceGapSeconds of rest: the last lands on the final frame of this many.
+  const BURST_FRAMES = 4 * (Math.ceil(WORLD_PROBE.faceGapSeconds / DT) + 1) + 1
   const head = new THREE.Vector3()
 
   // SHE IS STANDING ON A BANK 5 m ABOVE A LAKE, and the lake's dilated polygon
@@ -600,7 +601,7 @@ check(
   const anchorBefore = p7.anchor.clone()
   written.length = 0
   let firstFade = -1
-  for (let k = 0; k < WORLD_PROBE.refreshFrames + 5; k++) {
+  for (let k = 0; k < Math.ceil((WORLD_PROBE.refreshSeconds + 5 * (WORLD_PROBE.faceGapSeconds + DT)) / DT) + 5; k++) {
     p7.update(stub, scene2, head, null, DT)
     if (firstFade < 0 && p7.fade !== shown) firstFade = k
   }
@@ -616,6 +617,54 @@ check(
     'and then fades over to it from the same anchor, rather than cutting',
     `live ${shown} -> ${p7.live}, fade began ${firstFade} frames in, at ${p7.fade.toFixed(3)} now`
   )
+
+  // FACING FIRST. With her looking down +X the timed refresh re-renders the faces
+  // she faces, first, and copies the rest from the cube on screen; a face older
+  // than staleSeconds is re-rendered whichever way she looks.
+  {
+    const p8 = new WorldProbe()
+    const look = new THREE.Vector3(1, 0, 0)
+    head.set(0, 105, 0)
+    const run = (seconds) => { for (let k = 0; k < Math.ceil(seconds / DT); k++) p8.update(stub, scene2, head, null, DT, null, look) }
+    run(BURST_FRAMES * DT)
+    const firstStamp = Array.from(p8.stamp[p8.live])
+    sceneFaces.length = 0
+    run(WORLD_PROBE.refreshSeconds + 3 * DT)
+    check(
+      sceneFaces.length >= 1 && sceneFaces.length <= 2 && sceneFaces[0] === 0,
+      'looking down +X, the next timed refresh renders only the faces she faces, +X first, and copies the rest',
+      `rendered faces ${sceneFaces.join(',')}`
+    )
+    const live = Array.from(p8.stamp[p8.live])
+    check(
+      live[0] > firstStamp[0] && live.slice(1).every((t, i) => t === firstStamp[i + 1] || sceneFaces.includes(i + 1)),
+      'the faces it did not render keep their old time through the copy',
+      `stamps ${live.map((t) => t.toFixed(2)).join(' ')} against ${firstStamp.map((t) => t.toFixed(2)).join(' ')}`
+    )
+    sceneFaces.length = 0
+    run(WORLD_PROBE.staleSeconds + 3)
+    check(
+      [0, 1, 2, 3, 4].every((i) => p8.clock - p8.stamp[p8.live][i] <= WORLD_PROBE.staleSeconds + WORLD_PROBE.refreshSeconds * 3),
+      'and a face she has not faced is re-rendered once it is stale',
+      `ages ${Array.from(p8.stamp[p8.live]).map((t) => (p8.clock - t).toFixed(1)).join(' ')}`
+    )
+  }
+
+  // THE SKY PROBE runs only while there is an aurora, a face every faceSeconds.
+  {
+    const sp = new SkyProbe()
+    const log = []
+    const sstub = { ...stub, render: () => log.push('render'), clear: () => log.push('clear'), setRenderTarget: () => {} }
+    for (let k = 0; k < 144; k++) sp.update(sstub, scene2, head, DT, false)
+    check(log.length === 0, 'by day the sky probe draws nothing and clears nothing', `${log.length} calls`)
+    for (let k = 0; k < 72; k++) sp.update(sstub, scene2, head, DT, true)
+    const renders = log.filter((l) => l === 'render').length
+    check(renders >= 4 && renders <= 6, 'by night it captures a face every faceSeconds, about one full capture a second', `${renders} faces in a second`)
+    log.length = 0
+    sp.update(sstub, scene2, head, DT, false)
+    sp.update(sstub, scene2, head, DT, false)
+    check(log.filter((l) => l === 'render').length === 0 && log.filter((l) => l === 'clear').length === 5, 'and when the aurora goes it clears the cube once, so the water stops reflecting it', `${log.join(',')}`)
+  }
 
   // THE VANTAGE. The host may put the capture out on the water; when it does,
   // the anchor is the point it named, and the re-anchor distance is still
@@ -919,7 +968,7 @@ check(
 {
   const v2 = fs.readFileSync(new URL('../src/v2/main.js', import.meta.url), 'utf8')
   check(
-    /worldProbe\.update\(renderer, scene, headTmp, waterY, dt, airHook\)/.test(v2),
+    /worldProbe\.update\(renderer, scene, headTmp, waterY, dt, airHook, /.test(v2),
     'v2 hands the capture the air hook on every frame'
   )
   const hook = /const airHook = \{([\s\S]*?)\n\}/.exec(v2)

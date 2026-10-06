@@ -13,7 +13,7 @@ import { atFace, dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRID
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
 import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
-import { DOOR_FADE_S, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, pathTo } from './villagers.js'
+import { DOOR_FADE_S, NIGHT, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, nightPull, pathTo } from './villagers.js'
 
 // The towns' people (DESIGN.md §32): a campfire and stools in each clearing (hearth.js, grown to a human seat), and townsfolk walking the town's ways between the doors, the fire and the roads, stopping to chat, and turning to greet her. Each town's day is a deterministic sim over the room's clock, replayed from its chapter's start when the town comes alive; the greeting is this client's alone.
 
@@ -130,8 +130,6 @@ export const TOWNSFOLK = {
     child: [['visit', 0.4], ['home', 0.1], ['sit', 0.1], ['wander', 0.4]],
   },
   childPace: 1.2,
-  // The hours' pulls (TownLife._pull), each eased up over its first two hours and down over its last two: to the fire from dusk, home through the night. The fire's weighs a `fire` errand (a stool, else a stand on the ring facing it) and stretches a sit by up to `sitLonger`; home's weighs a `home` errand by `home`, cuts a trade's round by up to `work`, stretches a time indoors by up to `longer`, and keeps one indoors on with up to `stay` odds.
-  night: { fire: [16.5, 18, 21.5, 23], home: [21, 23, 5, 7], weight: { fire: 1.2, home: 1.2 }, gather: [20, 60], sitLonger: 1, work: 0.6, longer: 3, stay: 0.75 },
   // An errand's chance of being its trade's round instead; a shopkeeper's (potions, inn) times indoors are `keep` times as long. The smith's round is `rounds` heats, each held at the forge, struck on an anvil, quenched at the tub and struck again; a farmer tends `spots` places along the carrot rows; the woodcutter splits at the stump and stacks, `rounds` times. Each mark is held for its seconds.
   trade: {
     work: 0.65, keep: 3,
@@ -169,13 +167,6 @@ const SHY_WIRE = 'ts:'
 const SHY_PHASES = ['run', 'wait', 'back', 'turn']
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
-const ease = (x) => { const t = clamp(x, 0, 1); return t * t * (3 - 2 * t) }
-/** 0..1 at hour `h` over `[up, full, fade, gone]`, which may run past midnight. */
-const pullAt = (h, [up, full, fade, gone]) => {
-  const at = (x) => ((x - up) % 24 + 24) % 24
-  const d = at(h)
-  return Math.min(ease(d / at(full)), 1 - ease((d - at(fade)) / (at(gone) - at(fade))))
-}
 const pick = (rand, pairs) => {
   let r = rand() * pairs.reduce((s, [, w]) => s + w, 0)
   for (const [name, w] of pairs) if ((r -= w) < 0) return name
@@ -409,11 +400,11 @@ export class TownLife {
     c.k = c.size / this.bodies[c.body].height
   }
 
-  /** The hour's pulls to the fire and home (TOWNSFOLK.night) at room time `seconds`. */
+  /** The hour's pulls to the fire and home (villagers.js NIGHT) at room time `seconds`. */
   _pull(seconds) {
-    const h = this.hourAt(seconds), N = TOWNSFOLK.night
-    this.pull.fire = pullAt(h, N.fire)
-    this.pull.home = pullAt(h, N.home)
+    const h = this.hourAt(seconds)
+    this.pull.fire = nightPull(h, NIGHT.fire)
+    this.pull.home = nightPull(h, NIGHT.home)
   }
 
   _placeAll(seconds) {
@@ -449,7 +440,7 @@ export class TownLife {
       c.seat = null
       c.talked = 0
       c.phase = ''
-      this._inside(c, c.rand() * TOWNSFOLK.inside[1] * (1 + this.pull.home * TOWNSFOLK.night.longer))
+      this._inside(c, c.rand() * TOWNSFOLK.inside[1] * (1 + this.pull.home * NIGHT.longer))
     }
     if (this.journeys) this._plan(index, start)
   }
@@ -619,12 +610,12 @@ export class TownLife {
 
   _errand(c) {
     if (this.homing) { this._go(c, c.home, 'enter'); return }
-    const N = TOWNSFOLK.night, { fire, home } = this.pull
-    const pairs = TOWNSFOLK.errands[c.role].map(([k, w]) => [k, k === 'home' ? w + home * N.weight.home : w])
-    if (fire > 0) pairs.push(['fire', fire * N.weight.fire])
+    const { fire, home } = this.pull
+    const pairs = TOWNSFOLK.errands[c.role].map(([k, w]) => [k, k === 'home' ? w + home * NIGHT.weight.home : w])
+    if (fire > 0) pairs.push(['fire', fire * NIGHT.weight.fire])
     const kind = pick(c.rand, pairs)
     if (kind === 'lead' && this._lead(c)) return
-    if (c.work !== null && c.rand() < TOWNSFOLK.trade.work * (1 - home * N.work)) { this._trade(c); return }
+    if (c.work !== null && c.rand() < TOWNSFOLK.trade.work * (1 - home * NIGHT.work)) { this._trade(c); return }
     const { doors, targets } = this.graph
     if (kind === 'visit') {
       let door = doors[(c.rand() * doors.length) | 0]
@@ -677,7 +668,7 @@ export class TownLife {
     switch (phase) {
       case 'turn': c.aim = this._toward(c, c.seat.lookX, c.seat.lookZ); this._play(c, 'idle', STEP_S); break
       case 'down': this._play(c, 'sit', SIT_CUT[0] / c.pace); break
-      case 'hold': c.hold = between(c.rand, TOWNSFOLK.sit) * (1 + this.pull.fire * TOWNSFOLK.night.sitLonger); this._play(c, 'idle-sit', STEP_S); break
+      case 'hold': c.hold = between(c.rand, TOWNSFOLK.sit) * (1 + this.pull.fire * NIGHT.sitLonger); this._play(c, 'idle-sit', STEP_S); break
       case 'up': this._play(c, 'sit', (sit - SIT_CUT[1]) / c.pace, SIT_CUT[1]); break
       default: throw new Error(`TownLife: no sit phase named ${phase}`)
     }
@@ -686,7 +677,7 @@ export class TownLife {
   _arrive(c) {
     switch (c.then) {
       case 'stand': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.stand); this._play(c, 'idle', STEP_S); break
-      case 'gather': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.night.gather); c.aim = this._toward(c, this.town.x, this.town.z); this._play(c, 'idle', STEP_S); break
+      case 'gather': c.state = 'stand'; c.hold = between(c.rand, NIGHT.gather); c.aim = this._toward(c, this.town.x, this.town.z); this._play(c, 'idle', STEP_S); break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
       case 'enter': this._inside(c, this._indoors(c)); break
       case 'errand': this._errand(c); break
@@ -697,7 +688,7 @@ export class TownLife {
 
   /** Seconds for a time indoors: a shopkeeper's `keep` times as long, and longer by the night's pull home. */
   _indoors(c) {
-    return between(c.rand, TOWNSFOLK.inside) * (c.trade === 'potions' || c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1) * (1 + this.pull.home * TOWNSFOLK.night.longer)
+    return between(c.rand, TOWNSFOLK.inside) * (c.trade === 'potions' || c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1) * (1 + this.pull.home * NIGHT.longer)
   }
 
   _talk(a, b) {
@@ -1091,7 +1082,7 @@ export class TownLife {
       case 'inside':
         c.hold -= dt
         if (c.hold > 0 || this.homing) break
-        if (c.at === c.home && this.pull.home > 0 && c.rand() < this.pull.home * TOWNSFOLK.night.stay) c.hold = this._indoors(c)
+        if (c.at === c.home && this.pull.home > 0 && c.rand() < this.pull.home * NIGHT.stay) c.hold = this._indoors(c)
         else { c.hidden = false; this._errand(c) }
         break
       case 'walk':

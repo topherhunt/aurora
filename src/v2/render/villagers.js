@@ -99,6 +99,22 @@ export const STAND_S = [3, 10]
 export const GAZE_S = [15, 40]
 export const SIT_S = [20, 60]
 export const ERRANDS = [['home', 0.2], ['gaze', 0.25], ['sit', 0.25], ['wander', 0.3]]
+// The hours' pulls on village life, here and in the towns (townsfolk.js), each `[up, full, fade, gone]` hours eased in and out (nightPull): to the fire from dusk, home through the night, to bed in its middle. The fire's weighs a `fire` errand (a hearth stool, else a stand by one facing the fire, `gather` seconds) and stretches a sit by up to `sitLonger`; home's weighs a `home` errand by `home`, cuts a trade's round by up to `work`, stretches a time indoors by up to `longer`, and keeps one at home indoors on with up to `stay` odds; bed's multiplies a bed's pick indoors (residents.js, town-residents.js) by up to `gain`.
+export const NIGHT = { fire: [16.5, 18, 21.5, 23], home: [21, 23, 5, 7], bed: [21.5, 22.5, 3.5, 4.5], weight: { fire: 1.2, home: 1.2 }, gather: [20, 60], sitLonger: 1, work: 0.6, longer: 3, stay: 0.75, gain: 2 }
+const smooth = (x) => { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t) }
+/** 0..1 at hour `h` over NIGHT's `[up, full, fade, gone]`, which may run past midnight. */
+export function nightPull(h, [up, full, fade, gone]) {
+  const at = (x) => ((x - up) % 24 + 24) % 24
+  const d = at(h)
+  return Math.min(smooth(d / at(full)), 1 - smooth((d - at(fade)) / (at(gone) - at(fade))))
+}
+/** A pick from `[kind, weight]` pairs (weights summing to 1) indoors at hour `h`, the bed's weight multiplied by up to NIGHT.gain in the night's middle. */
+export function pickIndoors(rand, pairs, h) {
+  const gain = 1 + (NIGHT.gain - 1) * nightPull(h, NIGHT.bed)
+  let u = rand() * (1 + (gain - 1) * pairs.find(([k]) => k === 'bed')[1]), kind = pairs[pairs.length - 1][0]
+  for (const [k, w] of pairs) { const g = k === 'bed' ? w * gain : w; if (u < g) { kind = k; break } u -= g }
+  return kind
+}
 // The sit clip is one round trip, down by SIT_CUT[0] seconds and rising from SIT_CUT[1], the hold between them idle-sit's pose (tools/creatures/anim/clips/human/sit.json); at the hold the hips sit `back` of the wheelbase behind the feet, and the body is set down by what touches the stool (seatY). The feet stand `clear` metres past the stool's edge at the least, or the walker would lift the sitter onto it, reached within `near` metres (NODE_M's slack would leave the hips off the stool), and it comes round the stool `round` metres wide of its side.
 export const SIT_CUT = [1.4, 3.0]
 // Metres a SIZE_M leafkin's seated underside rides over the ground it sits down on: what a stool's top is cut to (hearth.js cutStool). The runtime measures each body's own (seatY) and setAsset refuses an asset whose sit has drifted from this, since the stools were cut before it loaded.
@@ -403,8 +419,10 @@ export class Villagers {
    * @param opts.asset   a loaded asset, for a gate; the world fetches the GLB
    * @param opts.exit    the exit mouth, `{ x, z, nx, nz }` (village.js), for the forage trip; without it there is none
    * @param opts.hands   Hands and the room's Mushrooms together, for the bundle drawn in its arms; without them it is not drawn
+   * @param opts.fire    the hearth, `{ x, z }`: the seats looking at it are its stools, for the evening's `fire` errand; without it there is none
+   * @param opts.hourAt  (seconds) => the hour of day at a room time (clock.js WorldClock.hourAt), for NIGHT's pulls; noon when absent
    */
-  constructor(scene, water, { walk, roads, doors, lake, seats = [], seed = 1, asset = null, exit = null, hands = null, mushrooms = null } = {}) {
+  constructor(scene, water, { walk, roads, doors, lake, seats = [], seed = 1, asset = null, exit = null, hands = null, mushrooms = null, fire = null, hourAt = () => 12 } = {}) {
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Villagers need WaterSurfaces, for isSubmerged')
     if (!walk || typeof walk.heightAt !== 'function') throw new Error('Villagers need the WalkSurface, for heightAt')
     if (!Number.isInteger(seed) || seed < 0) throw new Error(`Villagers: the seed is a uint32, got ${seed}`)
@@ -413,6 +431,10 @@ export class Villagers {
     if (!Array.isArray(seats)) throw new Error('Villagers: seats is a list')
     if (exit !== null && ![exit.x, exit.z, exit.nx, exit.nz].every(Number.isFinite)) throw new Error('Villagers: the exit is { x, z, nx, nz }')
     if ((hands === null) !== (mushrooms === null)) throw new Error('Villagers: the bundle needs both the hands and the mushrooms')
+    if (fire !== null && ![fire.x, fire.z].every(Number.isFinite)) throw new Error('Villagers: the fire is { x, z }')
+    this.fire = fire
+    this.hourAt = hourAt
+    this.pull = { fire: 0, home: 0 }
     this.hands = hands
     this.mushrooms = mushrooms
     this.water = water
@@ -436,6 +458,7 @@ export class Villagers {
       }
       return { x: s.x, z: s.z, top: s.top, r: s.r, lookX: s.lookX, lookZ: s.lookZ, node, by: null }
     })
+    this.fireSeats = fire === null ? [] : this.seats.filter((s) => s.lookX === fire.x && s.lookZ === fire.z)
     // The gazing spots: GAZE_SPOTS nodes spread along the loop, each with a stand a step toward the water where it can stand there, and no stool stands.
     const loop = nodes.map((n, i) => i).filter((i) => nodes[i].road === 'd2')
     if (loop.length === 0) throw new Error('Villagers: no loop to gaze from')
@@ -672,9 +695,17 @@ export class Villagers {
   settle(seconds, dt = 0) { this.update(NOWHERE, NOWHERE, seconds, dt) }
 
   /** Everyone into their houses at the start of the chapter `seconds` falls in, each a roll of INSIDE_S from coming out; the village's tick is the chapter's first, which is never stepped. The startles before it are let go. */
+  /** The hour's pulls to the fire and home (NIGHT) at room time `seconds`. */
+  _pull(seconds) {
+    const h = this.hourAt(seconds)
+    this.pull.fire = nightPull(h, NIGHT.fire)
+    this.pull.home = nightPull(h, NIGHT.home)
+  }
+
   _placeAll(seconds) {
     const { index, start } = chapterOf(seconds, this.key)
     this.tick = tickOf(start)
+    this._pull(start)
     this.turnTick = tickAfter(start + CHAPTER_S)
     const trip = mulberry32(hash32(this.seed, index, FORAGE_SALT))
     this.forager = this.mouth !== null && trip() < FORAGE_ODDS ? (trip() * this.all.length) | 0 : -1
@@ -701,7 +732,7 @@ export class Villagers {
       c.lapse = c.calm = c.greeted = 0
       c.frog = c.toss = c.tossAt = null
       if (c.seat !== null) this._leaveSeat(c)
-      this._inside(c, c.trip === 'out' ? between(c.rand, LEAVE_S) : c.rand() * INSIDE_S[1])
+      this._inside(c, c.trip === 'out' ? between(c.rand, LEAVE_S) : c.rand() * INSIDE_S[1] * (1 + this.pull.home * NIGHT.longer))
     }
     for (const t of this.log.keys()) if (t <= this.tick) this.log.delete(t)
     this.snaps.length = 0
@@ -769,10 +800,19 @@ export class Villagers {
       this._go(c, node, 'stand')
       return
     }
-    let roll = c.rand() * ERRANDS.reduce((s, [, w]) => s + w, 0)
-    let kind = ERRANDS[ERRANDS.length - 1][0]
-    for (const [k, w] of ERRANDS) { roll -= w; if (roll < 0) { kind = k; break } }
+    const { fire, home } = this.pull
+    const pairs = ERRANDS.map(([k, w]) => [k, k === 'home' ? w + home * NIGHT.weight.home : w])
+    if (fire > 0 && this.fireSeats.length > 0) pairs.push(['fire', fire * NIGHT.weight.fire])
+    let roll = c.rand() * pairs.reduce((s, [, w]) => s + w, 0)
+    let kind = pairs[pairs.length - 1][0]
+    for (const [k, w] of pairs) { roll -= w; if (roll < 0) { kind = k; break } }
     if (kind === 'home' && c.at !== c.home) { this._go(c, c.home, 'enter'); return }
+    if (kind === 'fire') {
+      const free = this.fireSeats.filter((s) => s.by === null)
+      if (free.length > 0) { this._seat(c, free[(c.rand() * free.length) | 0]); return }
+      this._go(c, this.fireSeats[(c.rand() * this.fireSeats.length) | 0].node, 'gather')
+      return
+    }
     if (kind === 'gaze') {
       const s = this.spots[(c.rand() * this.spots.length) | 0]
       this._go(c, s.node, 'gaze', s.x === this.graph.nodes[s.node].x && s.z === this.graph.nodes[s.node].z ? [] : [s])
@@ -833,7 +873,7 @@ export class Villagers {
     switch (phase) {
       case 'turn': c.aim = this._toward(c, c.seat.lookX, c.seat.lookZ); this._play(c, 'idle', STEP_S); break
       case 'down': this._play(c, 'sit', SIT_CUT[0] / c.pace); break
-      case 'hold': c.hold = between(c.rand, SIT_S); this._play(c, 'idle-sit', STEP_S); break
+      case 'hold': c.hold = between(c.rand, SIT_S) * (1 + this.pull.fire * NIGHT.sitLonger); this._play(c, 'idle-sit', STEP_S); break
       case 'up': this._play(c, 'sit', (this.durations.sit - SIT_CUT[1]) / c.pace, SIT_CUT[1]); break
       default: throw new Error(`Villagers: no sit phase named ${phase}`)
     }
@@ -844,6 +884,12 @@ export class Villagers {
     switch (c.then) {
       case 'stand': this._stand(c, between(c.rand, STAND_S)); break
       case 'gaze': this._gaze(c); break
+      case 'gather':
+        c.state = 'gaze'
+        c.hold = between(c.rand, NIGHT.gather)
+        c.aim = this._toward(c, this.fire.x, this.fire.z)
+        this._play(c, 'idle', STEP_S)
+        break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
       case 'enter':
       case 'hide': {
@@ -852,7 +898,7 @@ export class Villagers {
         c.x = sill.x
         c.z = sill.z
         this._voice(c, 'door', 'door')
-        this._inside(c, between(c.rand, c.then === 'hide' ? HIDE_S : INSIDE_S))
+        this._inside(c, c.then === 'hide' ? between(c.rand, HIDE_S) : between(c.rand, INSIDE_S) * (1 + this.pull.home * NIGHT.longer))
         break
       }
       case 'errand': this._errand(c); break
@@ -1659,6 +1705,8 @@ export class Villagers {
     switch (c.state) {
       case 'inside':
         c.hold -= dt
+        // The night's stay is rolled once, on the tick its hold runs out: a roll each tick it waits for the door to clear would keep it in.
+        if (c.hold <= 0 && c.hold + dt > 0 && c.trip === '' && this.pull.home > 0 && c.rand() < this.pull.home * NIGHT.stay) c.hold = between(c.rand, INSIDE_S) * (1 + this.pull.home * NIGHT.longer)
         if (c.hold <= 0 && !this.homing && !this.all.some((o) => o !== c && !o.hidden && Math.hypot(o.x - c.x, o.z - c.z) < this._space(c, o))) this._exit(c)
         break
       case 'walk':
@@ -1826,6 +1874,7 @@ export class Villagers {
       return
     }
     this.tick = t
+    this._pull(t / TICK_HZ)
     this.voicing = t > this.live
     this.homing = t >= this.turnTick - HOMING_S * TICK_HZ
     if (this.voicing && t > target - SILENT_TICKS) {

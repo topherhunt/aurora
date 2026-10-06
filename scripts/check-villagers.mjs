@@ -33,7 +33,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, BECKONS, COURT_STOP_M, dijkstra, roadGraph,
+  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, BECKONS, COURT_STOP_M, dijkstra, pickIndoors, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { keyOf as frogKey } from '../src/v2/render/frogs.js'
 import { WalkSurface } from '../src/v2/walk.js'
@@ -41,7 +41,8 @@ import { LEAD_TICKS, popM } from '../src/v2/render/net-ease.js'
 import { CHAPTER_S, chapterOf, keyHash } from '../src/sim/score.js'
 import { CARRIERS, CARRY_MAX } from '../src/v2/hands.js'
 import { rollInterior } from '../src/v2/rooms/interior.js'
-import { COWER_WHIMPER_S, Residents } from '../src/v2/render/residents.js'
+import { COWER_WHIMPER_S, PICK, Residents } from '../src/v2/render/residents.js'
+import { mulberry32 } from '../src/sim/mathx.js'
 import { houseUniforms } from '../src/v2/render/interior.js'
 import { TORCHES } from '../src/lighting.js'
 import { STARTLE_S } from '../src/v2/render/leafkin.js'
@@ -349,6 +350,34 @@ console.log('\na day with her far off')
   check(hiddenVoice === 0, 'nothing is heard from indoors')
   check(doorCalls === entries + exits && doorOff === 0, 'a door is heard once as each goes in or comes out, from its sill, on the door rule', `${doorCalls} doors for ${entries + exits} crossings, ${doorOff} elsewhere`)
   check(v.stats.talks > 0 && v.stats.startles === 0, 'the stats agree', JSON.stringify(v.stats))
+}
+
+console.log('\nthe night')
+{
+  // A day's chapter with the clock held at hour `h`, sampled every 2 s: those indoors, and those out sitting or gazing within reach of the fire.
+  const reach = Math.max(...hearth.stools.map((s) => Math.hypot(s.x, s.z))) + 1.5
+  const atHour = (h) => {
+    const v = new Villagers(new THREE.Scene(), water, { walk, roads: room.doc.roads, doors, lake: room.lake, seats, seed: spec.seed, asset: makeAsset(), exit: room.exit, fire: hearthAt, hourAt: () => h })
+    let inside = 0, fire = 0, about = 0, n = 0
+    run(v, T0, 400, FAR, () => {
+      if (++n % 120) { v.voices([]); return }
+      v.voices([])
+      for (const c of v.all) {
+        if (c.hidden) inside++
+        else if ((c.state === 'sit' || c.state === 'gaze') && Math.hypot(c.x - hearthAt.x, c.z - hearthAt.z) < reach) fire++
+        else about++
+      }
+    })
+    return { inside, fire, about }
+  }
+  const noon = atHour(12), dusk = atHour(20), deep = atHour(1)
+  check(dusk.fire > noon.fire * 1.5, 'come nightfall more of the village gathers at the fire than at noon', `fire ${dusk.fire} at 20:00, ${noon.fire} at noon`)
+  check(deep.inside > noon.inside * 1.5, 'deep in the night more of the village is indoors than at noon', `inside ${deep.inside} at 01:00, ${noon.inside} at noon`)
+  check(deep.about + deep.fire > 0 && dusk.inside > 0, 'and neither is a curfew: someone is still out at 01:00, someone indoors at 20:00', `out ${deep.about + deep.fire} at 01:00, inside ${dusk.inside} at 20:00`)
+  const beds = (h) => { const rand = mulberry32(7); let n = 0; for (let i = 0; i < 20000; i++) if (pickIndoors(rand, PICK, h) === 'bed') n++; return n / 20000 }
+  const day = beds(12), night = beds(1), dawn = beds(6)
+  const odds = (p) => p / (1 - p)
+  check(Math.abs(day - 0.12) < 0.01 && Math.abs(odds(night) / odds(day) - 2) < 0.25 && Math.abs(dawn - day) < 0.01, 'indoors, a bed is picked twice as readily between 22:00 and 04:00 as by day, and the day\'s picks are as they were', `bed ${(day * 100).toFixed(1)}% at noon, ${(night * 100).toFixed(1)}% at 01:00, ${(dawn * 100).toFixed(1)}% at 06:00`)
 }
 
 // --- in each other's way -------------------------------------------------------------------

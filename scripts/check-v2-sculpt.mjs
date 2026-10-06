@@ -569,6 +569,22 @@ function sectionSculptor() {
     check(rf.asked.length > 0 && rf.asked[0].minX < 0 && rf.asked[0].maxX > 0, 'the rivers are told the world rect the stroke changed', rf.asked[0] === undefined ? 'never asked' : `${rf.asked[0].minX.toFixed(0)}..${rf.asked[0].maxX.toFixed(0)} m`)
     check(p.worldRect.minX <= riverRect.minX && p.worldRect.minZ <= riverRect.minZ && p.worldRect.maxX >= 200 && p.worldRect.maxZ >= 200, 'the terrain remeshes the brush and the re-routed river together', `${p.worldRect.minX.toFixed(0)}..${p.worldRect.maxX.toFixed(0)} m`)
     check(moved.length === 1 && moved[0].minX === p.worldRect.minX && moved[0].maxX === p.worldRect.maxX && moved[0].minZ === p.worldRect.minZ && moved[0].maxZ === p.worldRect.maxZ, 'and the water surfaces hear the same union', `${moved.length} calls`)
+
+    // The water hears a stroke once, on pointer-up, however many flushes it took:
+    // a rebuild re-traces the ocean's shore, far too slow to pay per flush.
+    moved.length = 0
+    const before = rt.patches.length
+    const pastFlush = () => { for (const t = performance.now(); performance.now() - t < 120;) {} } // past FLUSH_MS, so the next stroke flushes
+    rs.begin()
+    pastFlush()
+    rs.stroke(0, 0, 1 / 10)
+    pastFlush()
+    rs.stroke(1000, 0, 1 / 10)
+    const flushes = rt.patches.length - before
+    const midStroke = moved.length
+    rs.end()
+    check(flushes >= 2 && midStroke === 0 && moved.length === 1, 'the water surfaces hear a multi-flush stroke once, at its end', `${flushes} flushes, ${midStroke} calls mid-stroke, ${moved.length} after`)
+    check(moved[0].minX < 0 && moved[0].maxX > 1000, 'covering every flush of the stroke', `${moved[0].minX.toFixed(0)}..${moved[0].maxX.toFixed(0)} m`)
   }
 
   // A press that moved nothing must not push an entry, or Ctrl-Z starts doing

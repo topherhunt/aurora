@@ -75,7 +75,7 @@ const CROWN_DROP = 0.05
 const POKE = [0.023, 0.03]
 
 // Metres to the mesh's edge, and the rung it leaves for the card (critters.js ladderTier).
-const NEAR_M = 12
+const NEAR_M = 10
 const RUNG_MESH = 0
 const RUNG_CARD = 1
 

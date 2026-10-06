@@ -22,7 +22,7 @@ import { CARRY_SPAN } from './leafkin.js'
 import { makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
 import { DARK_FILL, HELD_TORCH } from './interior.js'
-import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, gripAt } from './villagers.js'
+import { BECKONS, CALM_S, COURT_STOP_M, FUSS_S, LURE_M, OFFER_M, OFFER_UP, PACE, REPLAN_M, SIT, SIT_CUT, SIZE_M, SIZE_VAR, TALKS, gripAt, pickIndoors } from './villagers.js'
 
 // The house's own leafkin, beyond its villagers indoors: up to this many, trusted under ids from HOMEBODY_ID (trust.js keeps ids under 256).
 export const HOMEBODIES = 2
@@ -40,7 +40,7 @@ const LIE_CUT = [1.7, 3.7]
 const LIE_SLIDE = 0.4
 // Seconds each activity holds, and how likely each is picked.
 const HOLD_S = { seat: [20, 50], read: [25, 60], cook: [10, 25], gaze: [8, 20], bed: [40, 90], wander: [3, 8], talk: [10, 20] }
-const PICK = [['seat', 0.25], ['read', 0.15], ['cook', 0.15], ['gaze', 0.1], ['bed', 0.12], ['wander', 0.15], ['talk', 0.08]]
+export const PICK = [['seat', 0.25], ['read', 0.15], ['cook', 0.15], ['gaze', 0.1], ['bed', 0.12], ['wander', 0.15], ['talk', 0.08]]
 // Seconds between one's mutters to itself while it walks, sits or potters; a pair talking, a third of that. Never asleep.
 const MUTTER_S = [15, 45]
 // A feast's hold at the table, and the seconds between its squeals.
@@ -100,11 +100,12 @@ export class Residents {
    * @param seed     the village's seed
    * @param hands    hands.js, and the mushrooms layer its feasts hold, both or neither
    */
-  constructor(scene, room, { asset, sitY, who, seed, ox, oy, oz, hands = null, mushrooms = null }) {
+  constructor(scene, room, { asset, sitY, who, seed, ox, oy, oz, hands = null, mushrooms = null, hour = () => 12 }) {
     if (!asset || !(sitY > 0)) throw new Error('Residents: need the villagers\' loaded asset and its seated height')
     if ((hands === null) !== (mushrooms === null)) throw new Error('Residents: hands and mushrooms come together')
     this.hands = hands
     this.mushrooms = mushrooms
+    this.hour = hour
     this.seed = seed
     this.room = room
     this.asset = asset
@@ -181,8 +182,7 @@ export class Residents {
     }
     const shy = (p) => !r.wary || Math.hypot(p.x - r.hx, p.z - r.hz) >= SHY_M
     for (let tries = 0; tries < 8; tries++) {
-      let u = this.rand(), kind = PICK[PICK.length - 1][0]
-      for (const [k, w] of PICK) { if (u < w) { kind = k; break } u -= w }
+      const kind = pickIndoors(this.rand, PICK, this.hour())
       if (kind === 'talk') {
         const other = this.all.find((o) => o !== r && o.state === 'act' && (o.spot?.kind === 'wander' || o.spot?.kind === 'gaze'))
         if (other && !now && room.spots.every((s) => s.kind !== 'talk' || shy(s))) { this._release(other); this._talk(r, other, false); return }

@@ -3123,6 +3123,7 @@ const questToggles = {
 }
 const eyeLevel = new EyeLevel()
 const _eyeDir = new THREE.Vector3()
+const probeLook = new THREE.Vector3()
 
 const perfTrace = new PerfTrace({
   camera,
@@ -3201,7 +3202,7 @@ function applyAnimalVisibility() {
   butterflies.batch.visible = animalOn('butterflies')
   grasshoppers.batch.visible = animalOn('grasshoppers')
   fireflies.batch.visible = animalOn('fireflies')
-  spiders.batch.visible = animalOn('spiders')
+  spiders.setShown(animalOn('spiders'))
   wildlife.batch.visible = animalOn('wildlife')
   snowmen.batch.visible = animalOn('snowmen')
   if (leafkin) leafkin.batch.visible = animalOn('leafkin')
@@ -3402,9 +3403,10 @@ async function bootWorld() {
   // A saved game is where she boots, and it decides where every layer is first
   // placed -- so it is read HERE and not applied after the fact, or the forest
   // would be planted around the room's spawn and she would be standing outside it.
+  // The editor ignores it and always boots at the new game's spawn.
   flares = new Flares(scene)
   sparks = new Flares(scene, { look: SPARK, cap: SPARK_CAP, fadeS: SPARK_S, size: SPARK_M })
-  let saved = readSave()
+  let saved = EDITOR_MODE ? null : readSave()
   let room = ROOMS[saved?.room ?? 'overworld']
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)
   if (room.village) {
@@ -3713,7 +3715,7 @@ async function openHouse(e) {
   const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const home = villagers.graph.doorNodes[e.k]
   const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace, feast: c.feast }))
-  const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz, hands, mushrooms })
+  const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz, hands, mushrooms, hour: () => clock.hour })
   const rDoor = rAt(room.rs, Math.PI)
   indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, y: oy, z: oz, nx: -1, nz: 0 }, outside: walk }
   if (sound) sound.setIndoors(true)
@@ -3748,7 +3750,7 @@ async function openTownHouse(t, i) {
   scene.add(view.group)
   const inner = new WalkSurface({ heightAt: (x, z) => oy + townFloorAt(room, x - ox, z - oz) }, new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
-  const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz })
+  const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz, hour: () => clock.hour })
   const e = townDoor(t, i)
   indoors = { town: { t, i }, e, back: e.back, room, view, residents, door: { x: ox + room.door.x, y: oy, z: oz + room.door.z, nx: room.door.nx, nz: room.door.nz }, cellar, outside: walk }
   if (sound) sound.setIndoors(true)
@@ -4810,9 +4812,8 @@ async function buildRoom(room, at) {
   // a scatter that climbs the trees and the rocks, so after both. One material
   // for the mesh, its legs in the vertex shader, and one for the card.
   await bootStep('spiders')
-  spiders = new Spiders(scene, height, waterSurfaces, { seed, trees, rocks })
+  spiders = new Spiders(scene, height, waterSurfaces, { seed, trees, rocks, cards: litterCards })
   lighting.patch(spiders.material, { mode: 'vertex', cacheKey: 'v2-spiders' })
-  lighting.patch(spiders.cardMaterial, { mode: 'vertex', cacheKey: 'v2-spiders-card' })
   spiders.place(spawn.x, spawn.z)
   spiders.ready.then(() => { if (build === roomBuild) spiders.bakeCard(renderer) })
   console.log(`[v2] spiders ${spiders.stats.alive} in ${spiders.stats.groups} groups at boot`)
@@ -4977,7 +4978,7 @@ async function buildRoom(room, at) {
     await bootStep('villagers')
     // Their seats: the hearth's stools, sat on facing the fire, and the scattered ones.
     const seats = [...hearth.stools.map((s) => ({ x: hearth.x + s.x, z: hearth.z + s.z, top: hearth.y + s.top, r: s.r, lookX: hearth.x, lookZ: hearth.z })), ...stools.seats()]
-    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seats, seed: villageSeed(), exit: roomSpec.exit, hands, mushrooms })
+    villagers = new Villagers(scene, waterSurfaces, { walk, roads: roomSpec.doc.roads, doors: roomProps.doors(), lake: roomSpec.lake, seats, seed: villageSeed(), exit: roomSpec.exit, hands, mushrooms, fire: { x: hearth.x, z: hearth.z }, hourAt: (s) => clock.hourAt(s) })
     for (const m of villagers.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-villagers' })
     villagers.ready.then(() => console.log(`[v2] villagers ${villagers.all.length} over ${villagers.graph.nodes.length} road nodes`))
     creatureNet.add(villagers, ['vg'])
@@ -7725,7 +7726,7 @@ function tick() {
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
   spikes.lap('editor+panel')
-  if (questToggles.reflections && cave === null && !indoors) probe.update(renderer, scene, headTmp)
+  if (questToggles.reflections && cave === null && !indoors) probe.update(renderer, scene, headTmp, dt, aurora.mesh.visible)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -7733,7 +7734,7 @@ function tick() {
   // The air hook on every frame: the linear ramp ends are wanted for every
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
-  if (questToggles.reflections && cave === null && !indoors) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook)
+  if (questToggles.reflections && cave === null && !indoors) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook, camera.getWorldDirection(probeLook))
   if (cave !== null) stepCave(headTmp, now / 1000)
   else if (indoors) stepIndoors()
   spikes.lap('probes')

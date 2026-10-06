@@ -53,9 +53,13 @@
  * So the refresh policy is built around movement first. Standing still, the
  * cube is re-taken every couple of seconds for the light and the wind; walk far
  * enough for the parallax to matter and it is re-anchored at once. Either way
- * the five faces land in the cube that is NOT on screen and are faded over the
- * one that is, so the reflection never changes in a single frame. See
- * refreshFrames and fadeSeconds below.
+ * the faces land in the cube that is NOT on screen and are faded over the one
+ * that is, so the reflection never changes in a single frame. See
+ * refreshSeconds and fadeSeconds below.
+ *
+ * A refresh that has not moved re-renders only the faces she is looking toward
+ * (and any other that has gone stale); the rest are copied forward from the live
+ * cube by a cheap pass that draws no scene.
  *
  * WHERE IT IS CAPTURED FROM: 20 cm above the water, OUT ON THE WATER when the
  * host can find some within reach (see setVantage), else at her own x/z. Not at
@@ -106,17 +110,24 @@ export const WORLD_PROBE = {
   // it has checked is under the surface, and no floor is needed.
   duck: 1.2,
 
-  // Frames between refreshes while she is standing still: about 2 s at 72 Hz,
-  // five faces each, so the same average cost as one face every 30 frames.
-  // Slow on purpose -- each face is a full scene traversal, and what changes
-  // on this timescale is the light and the wind in the trees, not the land.
-  refreshFrames: 150,
+  // Seconds between refreshes while she is standing still. Each refresh
+  // re-renders the faces within `facingDot` of her view (one or two), so what she
+  // is looking at is at most about this old plus the fade.
+  refreshSeconds: 1.0,
 
-  // Frames of rest after each face. A face is a whole scene submission -- as
-  // dear as an eye's own render on the Quest -- so five in a row is five
-  // over-budget frames in a row; spaced out it is one hitch of that size every
-  // few frames, and a refresh takes 5 * (faceGap + 1) frames to land.
-  faceGap: 5,
+  // A face she is not looking toward is re-rendered once it is this many seconds
+  // old: what changes on this timescale is the light and the wind in the trees,
+  // not the land, and it is the last thing she will see when she turns.
+  staleSeconds: 4.0,
+
+  // The cosine of the angle between her view and a face's axis inside which the
+  // face counts as faced. At least one face always is.
+  facingDot: 0.35,
+
+  // Seconds of rest after each face of a burst. A face is a whole scene
+  // submission -- as dear as an eye's own render on the Quest -- so faces in a
+  // row are over-budget frames in a row; spaced out it is one hitch at a time.
+  faceGapSeconds: 0.1,
 
   // How far she can move from the anchor before the capture is re-taken from
   // where she is now, in metres, without waiting for the timer. The case this
@@ -223,9 +234,15 @@ export class WorldProbe {
     // Left on layer 0 -- the ordinary scene, which is the entire point. What is
     // excluded is excluded by visibility, below, not by layer.
 
+    // The FACES indices this burst renders, in order, and the next one.
+    this.plan = []
     this.face = 0
-    // Frames since the last refresh began; refreshFrames of them starts the next.
+    // Seconds since the last refresh began; refreshSeconds of them starts the next.
     this.idle = 0
+    // Seconds the probe has run, and when each face of each cube was last rendered.
+    this.clock = 0
+    this.stamp = [new Float64Array(FACES.length), new Float64Array(FACES.length)]
+    this.copier = null
     this.captures = 0
 
     // Where the current cube was taken from.
@@ -236,7 +253,7 @@ export class WorldProbe {
     // always anchors.
     this.origin = new THREE.Vector3(Infinity, Infinity, Infinity)
 
-    // Faces still owed on the cube being filled, and frames to rest before the next.
+    // Faces still owed on the cube being filled, and seconds to rest before the next.
     this.burst = 0
     this.rest = 0
 
@@ -302,8 +319,10 @@ export class WorldProbe {
    * closures rather than a mode: enter() before the render, leave() after, and
    * a frame that captures nothing never calls either.
    */
-  update(renderer, scene, head, surfaceY, dt, air = null) {
+  update(renderer, scene, head, surfaceY, dt, air = null, look = null) {
     if (!(dt >= 0)) throw new Error(`WorldProbe.update: needs a real dt, got ${dt}`)
+    if (look !== null && !(Math.abs(look.lengthSq() - 1) < 1e-3)) throw new Error('WorldProbe.update: `look` must be a unit vector')
+    this.clock += dt
 
     // THE CROSS-FADE, stepped first so a fade that finishes this frame frees the
     // probe to start the next burst in the same frame rather than the one after.
@@ -313,7 +332,7 @@ export class WorldProbe {
     }
 
     const busy = this.filling >= 0 || this.fade !== this.live
-    this.idle++
+    this.idle += dt
 
     // START A REFRESH: at once if she has moved, otherwise on the timer. Moved
     // is squared distance from her head, deliberately including y: swimming
@@ -328,6 +347,7 @@ export class WorldProbe {
     // round this feature was asked for.
     if (!busy) {
       const moved = head.distanceToSquared(this.origin) > WORLD_PROBE.moveRefresh * WORLD_PROBE.moveRefresh
+      const due = this.idle >= WORLD_PROBE.refreshSeconds
       if (moved) {
         this.origin.copy(head)
         if (this.vantage === null || !this.vantage(head, this.anchor)) {
@@ -339,17 +359,18 @@ export class WorldProbe {
           this.anchor.set(head.x, y, head.z)
         }
       }
-      if (moved || this.idle >= WORLD_PROBE.refreshFrames) {
+      if (moved || due) {
         this.idle = 0
         this.filling = 1 - this.live
-        this.burst = FACES.length
+        this._plan(renderer, moved || !this.everFilled[this.live], look)
         this.face = 0
+        this.rest = 0
       }
     }
 
     if (this.filling < 0) return
     if (this.rest > 0) {
-      this.rest--
+      this.rest -= dt
       return
     }
     this.burst--
@@ -400,7 +421,8 @@ export class WorldProbe {
       this.hidden[i].visible = false
     }
 
-    const face = FACES[this.face]
+    const faceAt = this.plan[this.face]
+    const face = FACES[faceAt]
     const cam = this.rig.children[face]
     // The target's own viewport, which setRenderTarget applies -- not
     // renderer.setViewport, which is the canvas's and is scaled by pixel ratio.
@@ -423,9 +445,10 @@ export class WorldProbe {
     // AFTER the background is back, per the note at the top of the swap.
     if (air !== null) air.leave()
 
-    this.face = (this.face + 1) % FACES.length
+    this.stamp[this.filling][faceAt] = this.clock
+    this.face++
     this.captures++
-    this.rest = WORLD_PROBE.faceGap
+    this.rest = WORLD_PROBE.faceGapSeconds
 
     // BURST COMPLETE: hand the finished cube to the shader. `live` is what the
     // fade walks toward, so moving it is the entire handover -- and it is set
@@ -442,6 +465,84 @@ export class WorldProbe {
       // loads. Snap instead.
       if (first && !this.everFilled[1 - this.live]) this.fade = this.live
     }
+  }
+
+  /**
+   * Decide which faces this burst renders and fill the rest of the spare cube
+   * from the live one. `full` (the anchor moved, or nothing has ever landed)
+   * renders all five, since a copy would carry the old viewpoint. Otherwise the
+   * faces within facingDot of `look` -- the best one, if none -- and any face
+   * older than staleSeconds, the faced ones first.
+   */
+  _plan(renderer, full, look) {
+    const spare = 1 - this.live
+    const stamp = this.stamp[this.live]
+    const facing = FACES.map((f) => {
+      if (look === null) return 1
+      const axis = f >> 1
+      const sign = f & 1 ? -1 : 1
+      return sign * (axis === 0 ? look.x : axis === 1 ? look.y : look.z)
+    })
+    const best = facing.indexOf(Math.max(...facing))
+    const render = []
+    const copy = []
+    for (let i = 0; i < FACES.length; i++) {
+      const faced = i === best || facing[i] > WORLD_PROBE.facingDot
+      const stale = this.clock - stamp[i] > WORLD_PROBE.staleSeconds
+      if (full || faced || stale) render.push(i)
+      else copy.push(i)
+    }
+    render.sort((x, y) => facing[y] - facing[x])
+    this.plan = render
+    this.burst = render.length
+    if (copy.length) {
+      this._copyFaces(renderer, copy, this.live === 0 ? this.a : this.b, spare === 0 ? this.a : this.b)
+      for (const i of copy) this.stamp[spare][i] = stamp[i]
+    }
+  }
+
+  /** `faces` (FACES indices) of cube `from` drawn into the same faces of cube `to`, by sampling it from a box about the anchor: no scene, 128 px per face. */
+  _copyFaces(renderer, faces, from, to) {
+    if (this.copier === null) {
+      const material = new THREE.ShaderMaterial({
+        uniforms: { tCube: { value: null } },
+        vertexShader: 'varying vec3 vDir;\nvoid main() {\n  vDir = position;\n  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );\n}',
+        fragmentShader: 'uniform samplerCube tCube;\nvarying vec3 vDir;\nvoid main() {\n  gl_FragColor = textureCube( tCube, normalize( vDir ) );\n}',
+        side: THREE.BackSide, blending: THREE.NoBlending, depthTest: false, depthWrite: false, toneMapped: false,
+      })
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), material)
+      mesh.frustumCulled = false
+      const scene = new THREE.Scene()
+      scene.add(mesh)
+      this.copier = { scene, mesh, material }
+    }
+    if (this.rig.coordinateSystem !== renderer.coordinateSystem) {
+      this.rig.coordinateSystem = renderer.coordinateSystem
+      this.rig.updateCoordinateSystem()
+      const size = WORLD_PROBE.size
+      for (const i of SIDE_FACES) this.rig.children[i].setViewOffset(size, size, 0, size - SIDE_ROWS, size, SIDE_ROWS)
+    }
+    const { scene, mesh, material } = this.copier
+    material.uniforms.tCube.value = from.texture
+    mesh.position.copy(this.anchor)
+    this.rig.position.copy(this.anchor)
+    this.rig.updateMatrixWorld(true)
+    const wasXR = renderer.xr.enabled
+    const prevTarget = renderer.getRenderTarget()
+    renderer.getClearColor(scratchColor)
+    const prevAlpha = renderer.getClearAlpha()
+    renderer.xr.enabled = false
+    renderer.setClearColor(0x000000, 0)
+    for (const i of faces) {
+      const face = FACES[i]
+      to.viewport.set(0, 0, WORLD_PROBE.size, face === 2 ? WORLD_PROBE.size : SIDE_ROWS)
+      renderer.setRenderTarget(to, face)
+      renderer.clear(true, true, false)
+      renderer.render(scene, this.rig.children[face])
+    }
+    renderer.setRenderTarget(prevTarget)
+    renderer.setClearColor(scratchColor, prevAlpha)
+    renderer.xr.enabled = wasXR
   }
 
   /** The fade with its ends eased, which is what the shader actually mixes by.

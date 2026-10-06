@@ -9,7 +9,7 @@ import { residentLight, residentLightAt, roomLit } from './residents.js'
 import { heldTorchAt } from './interior.js'
 import { townLight } from './town-interior.js'
 import { TOWNSFOLK } from './townsfolk.js'
-import { SIT, SIT_CUT, TALKS, TURN_RATE } from './villagers.js'
+import { SIT, SIT_CUT, TALKS, TURN_RATE, pickIndoors } from './villagers.js'
 import { navRoute } from '../rooms/town-interior.js'
 
 // The lie clip's hold between lying back and sitting up (tools/creatures/anim/clips/human/lie.json), and how far it shuffles up the bed as it lies.
@@ -36,9 +36,10 @@ export class TownResidents {
    * @param bodies   the townsfolk's loaded bodies (Townsfolk.bodies)
    * @param who      the house's folk indoors, `[{ id, body, size, pace }]`
    */
-  constructor(scene, room, { bodies, who, seed, ox, oy, oz }) {
+  constructor(scene, room, { bodies, who, seed, ox, oy, oz, hour = () => 12 }) {
     if (!bodies) throw new Error('TownResidents: need the townsfolk\'s loaded bodies')
     this.room = room
+    this.hour = hour
     // Not `this.bodies`: that would shadow bodies(into), which ambience calls.
     this.kinds = bodies
     this.group = new THREE.Group()
@@ -104,8 +105,7 @@ export class TownResidents {
       if (shop) { this._goTo(r, shop, now); return }
     }
     for (let tries = 0; tries < 8; tries++) {
-      let u = this.rand(), kind = PICK[PICK.length - 1][0]
-      for (const [k, w] of PICK) { if (u < w) { kind = k; break } u -= w }
+      const kind = pickIndoors(this.rand, PICK, this.hour())
       if (kind === 'talk') {
         const other = this.all.find((o) => o !== r && o.state === 'act' && (o.spot.kind === 'wander' || o.spot.kind === 'gaze'))
         if (other && !now && room.spots.some((s) => s.kind === 'talk' && this._free(s))) { this._release(other); this._talk(r, other, false); return }
