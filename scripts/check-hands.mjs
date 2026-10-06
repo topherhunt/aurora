@@ -84,8 +84,9 @@ const build = () => {
   const pack = []
   const thuds = []
   const splashes = []
+  const eatens = []
   let room = 8
-  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), splash: (x, y, z) => splashes.push({ x, y, z }), rand: mulberry32(3) })
+  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), splash: (x, y, z) => splashes.push({ x, y, z }), eaten: (lure, eater) => eatens.push(eater), rand: mulberry32(3) })
   const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('fish', 2, 0, 0, 0.6), { ...thing('crab', 4, 0, 0, 1.5), bulky: true }, thing('crab', 6, 0, 0, 2.5)])
   hands.addSource(src, ['mushroom', 'fish', 'crab'])
   const node = new THREE.Group()
@@ -94,7 +95,7 @@ const build = () => {
   const head = { x: 0, y: 1.6, z: 0, yaw: 0 }
   const at = (x, y, z) => { node.position.set(x, y, z); node.updateMatrixWorld(true) }
   const run = (s, dt = 1 / 60) => { for (let t = 0; t < s; t += dt) hands.update(dt, head) }
-  return { scene, hands, src, node, head, at, run, pulses, pack, thuds, splashes, setRoom: (n) => { room = n } }
+  return { scene, hands, src, node, head, at, run, pulses, pack, thuds, splashes, eatens, setRoom: (n) => { room = n } }
 }
 
 // --- the constructor refuses a missing world ---------------------------------
@@ -104,7 +105,7 @@ const build = () => {
     try { new Hands(new THREE.Scene(), bad) } catch { threw++ }
   }
   check(threw === 6, 'the constructor throws without the walk surface, the water, the buzz, the backpack, the thud or the splash', `${threw} of 6`)
-  const h = new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {} })
+  const h = new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {}, eaten() {} })
   let bad = 0
   try { h.addSource({}) } catch { bad++ }
   try { h.addSource({ pickAt() {}, take() {} }, 'x') } catch { bad++ }
@@ -124,6 +125,23 @@ const build = () => {
   let lied = false
   try { h.press('right', { x: 0, y: 0, z: 0, yaw: 0 }) } catch (e) { lied = /crab/.test(e.message) }
   check(lied, 'a source handing out a kind that is not its own throws, naming it')
+}
+
+// --- eating: hers, and a creature's of what she holds ---------------------------
+{
+  const w = build()
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  const rec = w.hands.eat('right')
+  check(rec.kind === 'mushroom' && w.hands.holding('right') === null && w.hands.stats.held === 0, 'eating what a hand holds empties it and hands back its record')
+  let empty = false
+  try { w.hands.eat('right') } catch { empty = true }
+  check(empty, 'eating from an empty hand throws')
+  w.at(2, 0.5, 0)
+  w.hands.press('right', w.head)
+  const [lure] = w.hands.lures([])
+  check(w.hands.eatLure(lure, 'fox') && w.hands.holding('right') === null && w.eatens.join() === 'fox', 'a creature eating her lure empties the hand and names itself to eaten()')
+  check(!w.hands.eatLure(lure, 'fox') && w.eatens.length === 1, 'a lure no hand holds is not eaten twice')
 }
 
 // --- the grab ------------------------------------------------------------------
@@ -800,7 +818,7 @@ const build = () => {
   const K = 0.5
   const scene = new THREE.Scene()
   const pulses = []
-  const hands = new Hands(scene, { walk, water, haptic: (key) => pulses.push(key), stow: () => true, thud() {}, splash() {}, rand: mulberry32(3), scale: K })
+  const hands = new Hands(scene, { walk, water, haptic: (key) => pulses.push(key), stow: () => true, thud() {}, splash() {}, eaten() {}, rand: mulberry32(3), scale: K })
   const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('crab', 4, 0, 0, 1.5)])
   hands.addSource(src, ['mushroom', 'crab'])
   const node = new THREE.Group()
@@ -809,7 +827,7 @@ const build = () => {
   const head = { x: 0, y: 0.8, z: 0, yaw: 0 }
   const at = (x, y, z) => { node.position.set(x, y, z); node.updateMatrixWorld(true) }
   let threw = false
-  try { new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {}, scale: 0 }) } catch { threw = true }
+  try { new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {}, eaten() {}, scale: 0 }) } catch { threw = true }
   check(threw, 'a scale that is not positive throws')
   at(0, 0.1 + REACH_M * K + 0.02, 0)
   check(hands.press('right', head) === null, 'at half size a thing just past half her reach is out of it', `hand ${(REACH_M * K + 0.02).toFixed(3)} m over a 0.2 m cap`)

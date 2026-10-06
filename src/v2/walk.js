@@ -72,16 +72,9 @@ export class WalkSurface {
    */
   constructor(field, rocks, trees, { scale = 1 } = {}) {
     if (!field || !rocks || !trees) throw new Error('WalkSurface: needs the field, the rocks and the trees')
-    if (!(scale > 0)) throw new Error(`WalkSurface: scale must be positive, not ${scale}`)
     this.field = field
     this.trees = trees
-    this.scale = scale
-    this.reach = WALK.reach * scale
-    this.height = WALK.height * scale
-    this.radius = WALK.radius * scale
-    this.rockMin = ROCK_WALK_MIN * scale
-    this.trunkPad = TRUNK_PAD * scale
-    this.slopeEps = SLOPE_EPS * scale
+    this.setScale(scale)
     // Every layer that is stone to her, the rocks first. Each answers
     // `columnAt(x, z, minSize, out)` and `blockTopAt(x, z, minSize)` in
     // Rocks' terms and is read on its own into the one span buffer; one with
@@ -90,6 +83,18 @@ export class WalkSurface {
     // Layers of bodies that stand in her way as a trunk does (addBody).
     this.bodies = []
     this._water = null
+  }
+
+  /** Her size against the world, from now: what the constructor's `scale` sets. */
+  setScale(scale) {
+    if (!(scale > 0)) throw new Error(`WalkSurface: scale must be positive, not ${scale}`)
+    this.scale = scale
+    this.reach = WALK.reach * scale
+    this.height = WALK.height * scale
+    this.radius = WALK.radius * scale
+    this.rockMin = ROCK_WALK_MIN * scale
+    this.trunkPad = TRUNK_PAD * scale
+    this.slopeEps = SLOPE_EPS * scale
   }
 
   /**

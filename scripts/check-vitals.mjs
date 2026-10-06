@@ -1,4 +1,4 @@
-// Node-side gates for her health and sleep (src/v2/vitals.js, the fall in src/player.js, design/33-vitals.md).
+// Node-side gates for her health, sleep and eating (src/v2/vitals.js, src/v2/eating.js, the fall in src/player.js, design/33-vitals.md).
 //
 //   node scripts/check-vitals.mjs
 //
@@ -12,6 +12,7 @@ import { InteriorStone, flatField, rollInterior } from '../src/v2/rooms/interior
 import { celestial, CLOCK } from '../src/clock.js'
 import { WILD, WildStriders } from '../src/v2/render/wild-striders.js'
 import { BED_REACH_M, FALL, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from '../src/v2/vitals.js'
+import { Bites, EAT, Effects, edible } from '../src/v2/eating.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -221,6 +222,93 @@ console.log('sleep')
   run(d, 1, still)
   const got = run(d, 0.1, () => ({ ...still(), lying: false }))
   check(got.join() === 'up' && d.state === 'awake', 'getting out of bed before sleeping is getting up', d.state)
+}
+
+console.log('eating')
+{
+  const h = new Health()
+  h.harm(30)
+  h.heal(EAT.heal)
+  check(h.hp === 80, 'food heals by its share, not to full', `hp ${h.hp}`)
+  h.heal(50)
+  check(h.hp === MAX_HP, 'and never past full', `hp ${h.hp}`)
+  h.harm(MAX_HP)
+  h.heal(EAT.heal)
+  check(h.dead, 'the dead are not fed back to life')
+
+  const carrot = { kind: 'carrot' }, fish = { kind: 'fish' }, cap = { kind: 'mushroom', name: 'ink cap' }
+  check(edible(carrot) && edible(fish) && edible(cap) && !edible({ kind: 'spider' }) && !edible(null), 'carrots, fish and mushrooms are food; a spider and an empty hand are not')
+  let threw = false
+  try { edible({ kind: 'mushroom', name: 'toadstool' }) } catch { threw = true }
+  check(threw, 'a mushroom eating.js does not know throws')
+
+  const b = new Bites()
+  const steps = (n, at) => { let ate = 0; for (let i = 0; i < n; i++) if (b.step('left', at, 0.1)) ate++; return ate }
+  check(steps(19, true) === 0 && Math.abs(b.progress('left') - 0.95) < 1e-9, `short of ${EAT.holdS} s at her mouth, nothing is eaten`, `progress ${b.progress('left')}`)
+  steps(1, false)
+  check(b.progress('left') === 0 && steps(19, true) === 0, 'taking it from her mouth starts the bite over')
+  check(steps(1, true) + steps(1, true) === 1, `${EAT.holdS} s there and it is eaten, once`)
+
+  const e = new Effects()
+  const run = (s) => { for (let t = 0; t < s - 1e-9; t += 0.05) e.update(0.05) }
+  check(e.eat(carrot).heal === EAT.heal && e.eat(carrot).harm === 0, 'a carrot heals and does not harm')
+  const ink = e.eat(cap)
+  check(ink.harm === EAT.harm && ink.sound === 'zoom', 'an ink cap harms, and zooms')
+  run(EAT.size.easeS / 2)
+  check(Math.abs(e.size - Math.SQRT1_2) < 1e-6, 'halfway through the ease she is halfway to half, in ratio', e.size.toFixed(4))
+  run(EAT.size.easeS / 2 + 0.1)
+  check(Math.abs(e.size - 0.5) < 1e-9, `after ${EAT.size.easeS} s she is half her size`, e.size)
+  for (let i = 0; i < 4; i++) e.eat(cap)
+  run(EAT.size.easeS + 0.1)
+  check(e.size === EAT.size.min, 'ink caps stack down to an eighth and no further', e.size)
+  const up = e.eat({ kind: 'mushroom', name: 'parasol' })
+  run(EAT.size.easeS + 0.1)
+  check(up.sound === 'zoomBack' && e.size === 2 * EAT.size.min, 'a parasol doubles her, zooming backward', e.size)
+  for (let i = 0; i < 5; i++) e.eat({ kind: 'mushroom', name: 'parasol' })
+  run(EAT.size.easeS + 0.1)
+  check(e.size === EAT.size.max, 'parasols stack up to twice and no further', e.size)
+
+  const A = EAT.agaric
+  e.eat({ kind: 'mushroom', name: 'fly agaric' })
+  run(A.inS / 2)
+  const halfIn = e.seeing
+  run(A.inS / 2 + 0.1)
+  check(Math.abs(halfIn - 0.5) < 0.02 && e.seeing === 1 && e.tint[1] > e.tint[0], 'the fly agaric fades in green', `${halfIn.toFixed(2)} then ${e.seeing}`)
+  run(A.s - A.inS)
+  check(e.seeing > 0 && e.seeing < 1, `and fades out from ${A.s} s`, e.seeing.toFixed(2))
+  run(A.outS)
+  check(e.seeing === 0, 'and is gone')
+
+  const P = EAT.porcini, porcini = { kind: 'mushroom', name: 'porcini' }
+  e.eat(porcini)
+  check(e.guard === 1, 'a porcini does not guard against its own harm', `guard ${e.guard}`)
+  run(P.inS)
+  const one = e.tint[3]
+  e.eat(porcini)
+  run(P.inS)
+  check(e.guard === P.guard * P.guard && e.tint[3] > one, 'two porcini guard twice as hard and brown the view deeper', `guard ${e.guard}`)
+  run(P.s - P.inS)
+  check(e.guard === P.guard, `each guards for ${P.s} s`, `guard ${e.guard}`)
+  run(P.inS + P.outS)
+  check(e.guard === 1 && e.porcini.length === 0, 'and then none')
+
+  const C = EAT.chanterelle
+  e.eat({ kind: 'mushroom', name: 'chanterelle' })
+  run(C.inS + 0.1)
+  check(e.maddened && e.dread === 1 && e.tint[3] > 0, 'a chanterelle maddens the animals and darkens the view')
+  run(C.s - C.inS)
+  check(!e.maddened && e.dread > 0, `for ${C.s} s, the dark fading after`)
+  run(C.outS)
+  check(e.dread === 0 && e.tint[3] === 0, 'and then nothing')
+
+  e.eat(porcini); e.eat({ kind: 'mushroom', name: 'chanterelle' })
+  e.clear()
+  check(e.guard === 1 && !e.maddened && e.size === EAT.size.max, 'a revival clears what she is under and keeps her size')
+  e.reset()
+  check(e.size === 1, 'a new game gives her her own size back')
+  e.setSize(0.25)
+  e.update(1)
+  check(e.size === 0.25, 'a loaded size stands, uneased')
 }
 
 console.log(`\n${failures === 0 ? 'all vitals checks passed' : `${failures} vitals check(s) FAILED`}\n`)

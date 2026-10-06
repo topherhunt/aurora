@@ -29,8 +29,10 @@ export class Health {
     return this.dead
   }
 
-  heal() {
-    this.hp = MAX_HP
+  /** Restore `n`, to full by default; the dead are past it. */
+  heal(n = MAX_HP) {
+    if (this.dead && n < MAX_HP) return
+    this.hp = Math.min(MAX_HP, this.hp + n)
   }
 }
 

@@ -7,25 +7,16 @@
 // over one skeleton, the wyvern clip library with `fly` in it, the wyvern
 // extras at the roster's size, a bind pose standing four-square on y = 0
 // facing +X -- because the world loads it by name and builds every puppet from
-// it. Then the roost: a bank of four mesh tiers each in two groups (bark, then
-// stone) with a four-triangle card under them whose one profile spins to her
-// and whose other lies flat, and a scatter on a flat field that is one per
-// 160 000 square metres, the same twice, and turned away by a slope, a tarn or
-// a road. Then the dragon itself, on a stand-in slab whose `fly` swings its
-// wings out, over a stand-in roost and a stand-in herd: that its chapter is a
-// closed-form chain of phrases from the nest and back to it, the same on every
-// instance; that flown on the room's clock it rests, flies, lands and rests
-// again with no tick turning, pitching, banking or speeding the body faster
-// than its rates and no snap at a phrase's end the eye would read; that two
-// instances stepped on different frame times agree to the bit at every tick,
-// as does one born mid-phrase once it has caught up; that a kill on the nest
-// is laid at one spot, walked round and eaten; that exploring it alights on
-// ground away from home that is neither steep nor drowned; that a fish in her
-// hand takes it off its score and, put away, a rejoin anchor puts it back, on
-// this client and on a peer's; that it is drawn between its last two ticks as
-// a puppet near, as two crossed cards fixed in its body's frame far, and as
-// nothing past that while still being simulated; that it goes with its roost,
-// and that a relief edit drops what it carried without a fade.
+// it. Then the roost: the fortress bank (a squashed plate, a ring of stones on
+// it, pebbles and logs inside, every tier its own LOD) and the scatter, which
+// seats one roost per tile within SEAT_REACH of its highest summit near the
+// snow line, none beside a higher one, the same twice, and turns one away from
+// water and roads. Then the dragons,
+// a stand-in slab whose `fly` swings its wings out, over a stand-in roost and
+// herd: one dragon's score, flight, meal, explore, lure, aggro and drawing on
+// the male alone (Solo), then the pair -- the guard resting on its half of the
+// nest every chapter while the male flies, the two abreast, each its own
+// colour -- and that the pair goes with its roost.
 //
 // What this can NOT check: whether a dragon coming over the ridge is a thing
 // to see. That needs eyes, in the world.
@@ -35,18 +26,21 @@ import fs from 'node:fs'
 import {
   Dragons, CLIPS, DRAGON_VIEWS, MAX, PUPPETS, SIZE_VARY, PATROL_MPS, DIVE_MPS, LAND_MPS, ACCEL, STRIDE_ACCEL,
   TURN_RATE, LAND_TURN_RATE, PITCH_RATE, BANK, ROLL_RATE, PATROL_M, MIN_AGL, LAND_M, LOITER_PACE, REST_S, FLIGHT_MIN_S, PERCH_S, EAT_S,
-  WAY, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf,
+  WAY, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf, GUARD_VIVID, MALE_VIVID, WALK_RING,
   HUNT_M, HUNT_MPS, STOOP_M, STOOP_AGL, STRIKE_AGL, MEAL_S,
   LURES, LURE, LURE_FORGET, MENACE_RUN, MENACE, ANCHOR_S, ANCHOR_STALE_S,
   SPOT_M, EYE_M, EYE_P, CIRCLE_M, LAND_SHORT, SPOT_S, CHARGE_MPS, BITE_M, HURT_M, BITE_HP, BITE_AT_S, CHOMP_S, GROWL_S, GIVE_UP_M, SPURN_S, AGGRO_ANCHOR_S, HER as HER_ID,
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
-  Roosts, DENSITY, TILE, DIAMETER, LODS, RUNGS, RADIUS_M, roostBank, roostLadder,
+  Roosts, TILE, SPACING, SEAT_REACH, LIFT, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, fortressBank,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
+import { buildRockBank } from '../src/props/rock-bank.js'
+import { LAYER } from '../src/textures.js'
+import { WALK } from '../src/v2/walk.js'
 import { propCull } from '../src/v2/render/gen-props.js'
-import { CARD_RUNGS, CRITTER_GLB, GLINT, LOD_RUNGS, cullRange, lodReach } from '../src/v2/render/critters.js'
+import { CARD_RUNGS, CRITTER_GLB, GLINT, LOD_RUNGS, lodReach } from '../src/v2/render/critters.js'
 import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -131,129 +125,152 @@ if (!wyvern) {
 }
 
 // --- the roost's bank ----------------------------------------------------------------
+// The rocks' own boulder, for the fortress to be cut from, and a stand-in Rocks round it: one stone material and a peak tint, recording the ground it is asked for.
+const BOULDER = buildRockBank().shapes.boulder
+const STONE = new THREE.MeshLambertMaterial()
+const TINT = [0.55, 0.6, 0.7]
+const tintedFor = new Set()
+const ROCKS = { boulder: () => ({ tiers: BOULDER.tiers, measured: BOULDER.measured, material: STONE }), tintAt: (x, z, env, out) => { tintedFor.add(env); return out.setRGB(...TINT) } }
 console.log('\nroost bank')
 {
-  const bank = roostBank(7)
-  const again = roostBank(7)
-  const other = roostBank(8)
-  const tris = bank.tiers.map((t) => t.geometries[0].index.count / 3)
-  check(bank.tiers.length === RUNGS && RUNGS === LODS + 1, `${LODS} mesh tiers and the card under them, ${RUNGS} rungs`, tris.join('/'))
-  check(tris.slice(0, LODS).every((t, k) => k === 0 || t < tris[k - 1]), 'every mesh tier is fewer triangles than the one above')
-  const grouped = bank.tiers.slice(0, LODS).every((t) => {
-    const g = t.geometries[0].groups
-    return g.length === 2 && g[0].materialIndex === 0 && g[1].materialIndex === 1 && g[0].count > 0 && g[1].count > 0 && g[0].start === 0 && g[1].start === g[0].count && g[0].count + g[1].count === t.geometries[0].index.count
-  })
-  check(grouped, 'each mesh tier is two groups over the one index, the branches on bark first and the rocks on stone after, covering every triangle')
-  const card = bank.tiers[LODS].geometries[0]
-  const spin = card.getAttribute('aSpin')
-  check(card.index.count === 12 && card.getAttribute('position').count === 8, 'the card tier is four triangles on eight vertices: two quads', `${card.index.count / 3} tris`)
-  check(spin && Array.from(spin.array).join(',') === '1,1,1,1,0,0,0,0', 'one quad spins to her (aSpin 1) and the other lies flat as the top view (aSpin 0)', spin && Array.from(spin.array).join(','))
-  check(bank.bounds.halfX > 0 && bank.bounds.halfZ > 0 && bank.bounds.height > 0 && bank.bounds.height < bank.bounds.halfX, 'the bank carries the bowl\'s bounds, a low mound wider than it is tall', `${fmt(bank.bounds.halfX)} x ${fmt(bank.bounds.height)} x ${fmt(bank.bounds.halfZ)}`)
-  const same = (a, b) => a.tiers.every((t, k) => { const p = t.geometries[0].getAttribute('position').array, q = b.tiers[k].geometries[0].getAttribute('position').array; return p.length === q.length && p.every((v, i) => v === q[i]) })
+  const bank = fortressBank(BOULDER.tiers, 7)
+  const again = fortressBank(BOULDER.tiers, 7)
+  const other = fortressBank(BOULDER.tiers, 8)
+  check(bank.geometries.length === LODS && bank.tris.every((t, k) => k === 0 || t < bank.tris[k - 1]), `${LODS} tiers, each fewer triangles than the one above`, bank.tris.join('/'))
+  check(bank.geometries.every((g) => g.index && g.groups.length === 0 && ['position', 'normal', 'uvProj', 'texLayer'].every((a) => g.getAttribute(a))), 'every tier is one indexed geometry on the rock material\'s four attributes, so a roost is one draw')
+  const layersOf = (g) => new Set(g.getAttribute('texLayer').array)
+  check(bank.geometries.every((g, k) => layersOf(g).has(LAYER.BARK) === (k < LODS - 1) && [...layersOf(g)].some((l) => l !== LAYER.BARK)), 'stone on every tier and logs in bark on all but the last', bank.geometries.map((g) => [...layersOf(g)].join(',')).join(' / '))
+  const b = bank.bounds
+  check(b.max.x - b.min.x > WIDTH * 0.95 && b.max.x - b.min.x < WIDTH * 1.15 && b.max.z - b.min.z > WIDTH * 0.95 && b.max.z - b.min.z < WIDTH * 1.15, `about ${WIDTH} m across`, `${fmt(b.max.x - b.min.x)} x ${fmt(b.max.z - b.min.z)} m`)
+  check(Math.abs(b.min.y - bank.base) < 1e-4 && bank.base < -3 && b.max.y > WALK.height, 'the plate reaches its base well under the floor and the ring stands over her head above it', `${fmt(b.min.y)}..${fmt(b.max.y)} m`)
+  const flat = Array.from(bank.profile).filter((_, k) => (k / (bank.profile.length - 1)) * (WIDTH / 2 - 0.5) <= FLOOR_R)
+  check(bank.profile[0] === 0 && flat.every((t) => t > -0.05) && bank.profile[bank.profile.length - 1] < -1, `the walker's plate is the flat floor out past FLOOR_R ${FLOOR_R} m, falling away at the rim`, Array.from(bank.profile, fmt).join(' '))
+  const ring = bank.columns.slice(0, 7)
+  check(bank.columns.length === 7 + 9 && ring.every((c) => c.top > WALK.reach && c.bottom < 0 && Math.hypot(c.x, c.z) > FLOOR_R + 2), 'sixteen stones as columns, the seven of the ring walls she cannot step onto, bedded in the plate, outside the floor', ring.map((c) => `${fmt(Math.hypot(c.x, c.z))}:${fmt(c.bottom)}..${fmt(c.top)}`).join(' '))
+  const same = (p, q) => p.geometries.every((g, k) => { const u = g.getAttribute('position').array, v = q.geometries[k].getAttribute('position').array; return u.length === v.length && u.every((x, i) => x === v[i]) })
   check(same(bank, again) && !same(bank, other), 'the bank is a function of its seed: the same twice, another with another seed')
-  check(bank.bytes > 0 && bank.bytes < 512 * 1024, 'the whole bank is under half a megabyte', `${Math.round(bank.bytes / 1024)} KB`)
-  const ladder = roostLadder(7)
-  check(ladder.geometries.length === LODS && ladder.geometries.every((g) => g.boundingBox && g.getAttribute('normal') && g.getAttribute('uv')), 'every mesh tier carries normals, UVs for the tiles and a bounding box')
+  check(bank.bytes < 1024 * 1024, 'the whole bank is under a megabyte', `${Math.round(bank.bytes / 1024)} KB`)
 }
 
-// --- the roost's scatter --------------------------------------------------------------
-console.log('\nroost scatter')
+// --- the roost's placement ------------------------------------------------------------
+console.log('\nroost placement')
 const DRY = { isSubmerged: () => false }
 const WET = { isSubmerged: () => true }
-const LAYERS = { paths: { nearest: () => null }, snow: { base: 900, band: 40 }, dirtAt: () => 0 }
-const ROADS = { paths: { nearest: () => ({ dist: 0, halfWidth: 3 }) }, snow: LAYERS.snow, dirtAt: () => 0 }
-const flatField = (h, tan = 0) => ({ heightAt: () => h, heightAndSlopeAt: () => ({ h, tan }) })
+const LAYERS = { paths: { nearest: () => null } }
+const ROADS = { paths: { nearest: () => ({ dist: 0, halfWidth: 3 }) } }
+const flatField = (h, tan = 0) => ({ heightAt: () => h, heightAndSlopeAt: () => ({ h, tan }), snowLineAt: () => Infinity })
 // A planar hillside rising gx per metre along +X and gz along +Z.
-const hillField = (h0, gx, gz) => ({ heightAt: (x, z) => h0 + gx * x + gz * z, heightAndSlopeAt: (x, z) => ({ h: h0 + gx * x + gz * z, tan: Math.hypot(gx, gz) }) })
+const hillField = (h0, gx, gz) => ({ heightAt: (x, z) => h0 + gx * x + gz * z, heightAndSlopeAt: (x, z) => ({ h: h0 + gx * x + gz * z, tan: Math.hypot(gx, gz) }), snowLineAt: () => Infinity })
 const GROUND = 12
-const roostsOn = (field, water, layers, seed) => {
-  const r = new Roosts(new THREE.Scene(), field, water, layers, { seed })
-  r.place(0, 0)
+// Round peaks [x, z, top] on a 50 m plain under a snow line at SNOW: A, C and E are roosts; B is within SPACING of the higher A, and D stands more than BELOW_SNOW under the snow.
+const PEAKS = { A: [300, 300, 900], B: [800, 300, 850], C: [300, 2400, 800], D: [2400, 2400, 250], E: [2400, 300, 700] }
+const SNOW = 500
+const peakField = (snow = SNOW) => {
+  const heightAt = (x, z) => {
+    let h = 50
+    for (const [px, pz, top] of Object.values(PEAKS)) h += (top - 50) * Math.exp(-((x - px) ** 2 + (z - pz) ** 2) / (2 * 120 * 120))
+    return h
+  }
+  return { heightAt, heightAndSlopeAt: (x, z) => ({ h: heightAt(x, z), tan: Math.hypot(heightAt(x + 0.5, z) - heightAt(x - 0.5, z), heightAt(x, z + 0.5) - heightAt(x, z - 0.5)) }), snowLineAt: () => snow }
+}
+// Every peak is inside this from MID.
+const MID = [1350, 1350]
+const ROOST_R = 1600
+const roostsOn = ({ field = peakField(), water = DRY, layers = LAYERS, seed = 5, egg = null, radius = ROOST_R, at = MID, Kind = Roosts } = {}) => {
+  const r = new Kind(new THREE.Scene(), field, water, layers, { seed, rocks: ROCKS, egg, radius })
+  r.place(...at)
   return r
 }
+const peakOf = (s) => Object.keys(PEAKS).reduce((a, n) => (Math.hypot(s.x - PEAKS[n][0], s.z - PEAKS[n][1]) < Math.hypot(s.x - PEAKS[a][0], s.z - PEAKS[a][1]) ? n : a))
+// The same land with every floor tilted to (0.1, -0.12): what the fortress and the egg are laid on is the site's plane, whatever made it.
+class Tilted extends Roosts {
+  _roll(key, tx, tz) {
+    const out = super._roll(key, tx, tz)
+    if (out.site) Object.assign(out.site, { gx: 0.1, gz: -0.12 })
+    return out
+  }
+}
 {
-  const r = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
-  const compile = (m) => {
-    const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n' }
-    m.onBeforeCompile(shader)
-    return shader
-  }
-  check(r.materials.length === 3 && r.materials[0].customProgramCacheKey() === 'gen-prop' && r.materials[1].customProgramCacheKey() === 'gen-prop' && r.materials[2].customProgramCacheKey() === 'gen-prop-billboard-mixed', 'three materials offered to the lighting: bark and stone on the one gen-prop program, and the mixed card', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
-  const cardShader = compile(r.card)
-  check(cardShader.vertexShader.includes('attribute float aSpin') && !r.card.visible && r.card.map === null, 'the card program reads aSpin to spin one quad and leave the other, and is not drawn until it is photographed')
-  check(r.radius === RADIUS_M && r.radius === 400 && r.radius < cullRange(DIAMETER[0], RUNGS), `the scatter reaches ${r.radius} m, short of the narrowest bowl's card cull, so a bowl is drawn wherever it is resident`, `card to ${cullRange(DIAMETER[0], RUNGS).toFixed(0)} m`)
-  check(r.batch.name === 'v2-roosts' && r.batch._max === r.stats.pool && r.batch.meshes.length === RUNGS && r.stats.pool > r.stats.tiles, 'the arena is one batch, a mesh a rung, sized to a roost a resident tile plus the fades in flight', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
-
-  // The rate over forty seeds against the tiles' own area: one to DENSITY, with a binomial's slack.
-  let placed = 0, tiles = 0
-  for (let seed = 1; seed <= 40; seed++) {
-    const q = roostsOn(flatField(GROUND), DRY, LAYERS, seed)
-    placed += q.stats.placed
-    tiles += q.stats.tiles
-    q.dispose()
-  }
-  const expected = tiles * TILE * TILE * DENSITY
-  check(Math.abs(placed - expected) < 3.5 * Math.sqrt(expected), `over forty seeds the scatter is one roost to ${1 / DENSITY} square metres`, `${placed} over ${tiles} tiles, expected ${expected.toFixed(0)}`)
-
+  const field = peakField()
+  const r = roostsOn({ field })
   const sites = r.sites()
-  const again = roostsOn(flatField(GROUND), DRY, LAYERS, 5).sites()
-  check(sites.length === r.stats.placed && sites.length > 3 && JSON.stringify(sites) === JSON.stringify(again), 'sites() lists every placed roost, and the same seed lays the same roosts twice', `${sites.length} sites`)
-  check(sites.every((s) => Number.isFinite(s.key) && s.r >= DIAMETER[0] / 2 && s.r <= DIAMETER[1] / 2), `every site carries its tile key and a rim radius from ${DIAMETER[0] / 2} to ${DIAMETER[1] / 2} m`)
-  check(sites.every((s) => s.y < GROUND && s.y > GROUND - 0.1 * s.r && s.gx === 0 && s.gz === 0), 'and a floor a little under the turf, the bottom branches bedded in, lying level on level ground')
-  check(new Set(sites.map((s) => s.key)).size === sites.length && sites.every((s) => r.tiles.get(s.key)?.site === s), 'one roost to a tile at most, each keyed by its tile')
+  check(sites.map(peakOf).sort().join('') === 'ACE', 'a roost on every summit within BELOW_SNOW of the snow line and highest within SPACING: A, C and E, not B beside the higher A, nor D low under the snow', sites.map(peakOf).join(''))
+  const off = sites.map((s) => Math.hypot(s.x - PEAKS[peakOf(s)][0], s.z - PEAKS[peakOf(s)][1]))
+  check(off.every((d) => d <= SEAT_REACH), `each seated within SEAT_REACH ${SEAT_REACH} m of its summit`, off.map(fmt).join(' '))
+  const lifts = sites.map((s) => s.y - field.heightAt(s.x, s.z))
+  check(lifts.every((l) => l >= LIFT[0] - 1e-9 && l <= LIFT[1] + 1e-9) && sites.every((s) => Math.hypot(s.gx, s.gz) <= MAX_TILT + 1e-12), `its floor ${LIFT[0]}..${LIFT[1]} m over the ground at its centre, tilted no more than MAX_TILT`, lifts.map(fmt).join(' '))
+  check(sites.every((s) => Number.isFinite(s.key) && s.r === FLOOR_R && r.tiles.get(s.key)?.site === s) && new Set(sites.map((s) => s.key)).size === sites.length, `every site keyed by its territory, one to a territory, its floor's clear radius FLOOR_R`)
+  const pose = (q) => q.sites().map(({ x, y, z, gx, gz }) => [x, y, z, gx, gz].join())
+  check(JSON.stringify(sites) === JSON.stringify(roostsOn({ field }).sites()) && JSON.stringify(pose(r)) === JSON.stringify(pose(roostsOn({ field, seed: 9 }))), 'the same seed lays the same roosts twice, and another seed lays them on the same seats: the summits are the land\'s')
+  check(r.place(...MID) === sites.length && pose(r).join() === sites.map(({ x, y, z, gx, gz }) => [x, y, z, gx, gz].join()).join(), 'a relief edit under the same camera lays the same set again')
+  check(r.materials.length === 0 && r.material === STONE && r.batch.name === 'v2-roosts' && r.batch.meshes.length === LODS && r.batch._max === r.stats.pool && r.stats.pool > r.stats.tiles, 'the fortress is drawn in the rocks\' own stone, one arena a tier, nothing new offered to the lighting', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
+  const c = new THREE.Color()
+  check(sites.every((s) => r.batch.getColorAt(r.tiles.get(s.key).ids[0], c).r === Math.fround(TINT[0]) && c.b === Math.fround(TINT[2])) && [...tintedFor].join() === 'peak', 'each tinted as the rocks tint stone on a peak')
+  check(r.radius === ROOST_R && RADIUS_M >= SPACING, `the radius is the one asked for; the world's ${RADIUS_M} m is past SPACING, so a neighbour's roost is always resident`)
 
-  r.update(sites[0].x, GROUND + 1.7, sites[0].z)
-  const near = r.tierAt[r.tiles.get(sites[0].key).ids[0]]
-  // The farthest roost still inside its OWN cull and the scatter's radius: past either the rim hides it and it has no tier.
-  const off = (s) => Math.hypot(s.x - sites[0].x, s.z - sites[0].z)
-  const farSite = r.sites().filter((s) => off(s) < Math.min(r.radius, cullRange(s.r * 2, RUNGS)) * 0.9).reduce((a, b) => (off(b) > off(a) ? b : a))
-  const far = r.tierAt[r.tiles.get(farSite.key).ids[0]]
-  check(near === 0 && far > near && r.stats.tris > 0, 'a frame later the roost at her feet is on the top tier and the farthest in sight on a lower one, and the triangles are counted', `near tier ${near}, far tier ${far} at ${off(farSite).toFixed(0)} m`)
-  const resident = r.sites().length
-  check(r.place(sites[0].x, sites[0].z) === r.stats.placed && r.sites().length === resident, 'a relief edit under the same camera lays the same set again', `${resident} sites`)
-  r.update(sites[0].x + 4000, GROUND + 1.7, sites[0].z)
-  check(r.sites().every((s) => !sites.includes(s)) && r.stats.used === r.stats.placed, 'walked 4 km off, every roost she left is released and the pool holds only what stands')
+  // The LOD on the rocks' ladder at the fortress's size: on top at its floor, lower further off.
+  const a = sites.find((s) => peakOf(s) === 'A')
+  const ida = r.tiles.get(a.key).ids[0]
+  const tierFrom = (d) => { r.update(a.x + d, a.y + 1.7, a.z); return r.tierAt[ida] }
+  const tiers = [0, 100, 400, 0].map(tierFrom)
+  check(tiers.join() === `0,2,${LODS - 1},0` && r.stats.tris > 0, 'standing on it, the top tier; 100 m off the third; 400 m off the last; back on it, the top again', tiers.join(' '))
+  r.update(a.x + 4000, a.y, a.z)
+  check(r.sites().length === 0 && r.stats.used === 0, 'walked 4 km off, every roost is released and the pool is empty')
   r.dispose()
 
-  // A 20-degree hillside: every bowl lies on it, tilted to its plane and seated at the ground under its centre, its rim bedded the same depth all round.
-  const HILL = Math.tan((20 * Math.PI) / 180)
-  const hill = hillField(GROUND, HILL * 0.6, HILL * 0.8)
-  const hillside = roostsOn(hill, DRY, LAYERS, 5)
-  const hillSites = hillside.sites()
-  const m = new THREE.Matrix4()
-  const p = new THREE.Vector3()
-  let rimOff = 0, tiltOff = 0
-  for (const s of hillSites) {
-    hillside.batch.getMatrixAt(hillside.tiles.get(s.key).ids[0], m)
-    for (const [u, v] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      p.set(u, 0, v).applyMatrix4(m)
-      rimOff = Math.max(rimOff, Math.abs(p.y - hill.heightAt(p.x, p.z) + 0.06 * s.r))
-    }
-    p.set(0, 1, 0).transformDirection(m)
-    tiltOff = Math.max(tiltOff, p.distanceTo(new THREE.Vector3(-s.gx, 1, -s.gz).normalize()))
-  }
-  check(hillSites.length === sites.length && hillSites.every((s) => Math.abs(s.gx - HILL * 0.6) < 1e-9 && Math.abs(s.gz - HILL * 0.8) < 1e-9 && Math.abs(s.y - (hill.heightAt(s.x, s.z) - 0.06 * s.r)) < 1e-9), 'on a 20-degree hillside every site carries the hill\'s own slope and a floor 0.06 r under the ground at its centre', `${hillSites.length} sites`)
-  check(rimOff < 1e-4 && tiltOff < 1e-6, 'and every bowl is tilted to the hill, its Y the hill\'s normal and all four rim points bedded exactly 0.06 r into the turf, none buried and none floating', `rim off ${rimOff.toExponential(1)} m, tilt off ${tiltOff.toExponential(1)}`)
-  hillside.dispose()
+  // Past the radius: siteAt answers what the wide world laid, and null where it laid none.
+  const narrow = roostsOn({ field, radius: 400, at: [a.x, a.z] })
+  const tileOf = (p) => [Math.floor(p[0] / TILE), Math.floor(p[1] / TILE)]
+  const far = sites.find((s) => peakOf(s) === 'C')
+  check(narrow.sites().length === 1 && JSON.stringify(narrow.siteAt(far.tx, far.tz)) === JSON.stringify(far) && narrow.siteAt(...tileOf(PEAKS.B)) === null && narrow.siteAt(...tileOf(PEAKS.D)) === null, 'siteAt past the radius is the site the wide world laid, and null for B and D')
+  narrow.dispose()
 
-  const steep = roostsOn(flatField(GROUND, Math.tan((30 * Math.PI) / 180)), DRY, LAYERS, 5)
-  const wet = roostsOn(flatField(GROUND), WET, LAYERS, 5)
-  const road = roostsOn(flatField(GROUND), DRY, ROADS, 5)
-  check(steep.stats.placed === 0 && steep.stats.rejected.slope === sites.length, 'a 30-degree slope takes every roost, counted against the slope', JSON.stringify(steep.stats.rejected))
-  check(wet.stats.placed === 0 && wet.stats.rejected.water === sites.length, 'so does water', JSON.stringify(wet.stats.rejected))
-  check(road.stats.placed === 0 && road.stats.rejected.path === sites.length, 'so does a road through every candidate', JSON.stringify(road.stats.rejected))
-  for (const q of [steep, wet, road]) q.dispose()
+  // To the walker the floor is the plate's top, the ring stones are columns over it, and past the plate there is nothing.
+  const w = roostsOn({ field, Kind: Tilted })
+  const t = w.tiles.get(w.sites().find((s) => peakOf(s) === 'A').key)
+  const s = t.site
+  const spans = new Float64Array(16)
+  const n = w.columnAt(s.x + 1, s.z + 1, 0, spans)
+  check(Math.abs(w.blockTopAt(s.x, s.z) - s.y) < 1e-6 && Math.abs(w.blockTopAt(s.x + 1, s.z - 1) - (s.y + s.gx - s.gz)) < 1e-4 && n === 1 && spans[0] < s.y - 3, 'the floor is the walk surface on the site\'s tilted plane, a span reaching down through the plate', `top ${fmt(w.blockTopAt(s.x, s.z) - s.y)} off, base ${fmt(spans[0] - s.y)}`)
+  const cols = t.cols
+  let ringOff = 0, ringLow = Infinity
+  for (let k = 0; k < 7 * 5; k += 5) {
+    const u = cols[k] - s.x, v = cols[k + 1] - s.z
+    ringLow = Math.min(ringLow, cols[k + 4] - (s.y + s.gx * u + s.gz * v))
+    ringOff = Math.max(ringOff, Math.abs(w.blockTopAt(cols[k], cols[k + 1]) - Math.max(cols[k + 4], w.blockTopAt(cols[k], cols[k + 1]))))
+  }
+  check(cols.length === 16 * 5 && ringLow > WALK.reach && ringOff === 0, 'every ring stone a column standing higher over the floor than she can step', `lowest ${fmt(ringLow)} m over it`)
+  check(w.blockTopAt(s.x + WIDTH, s.z) === -Infinity && w.columnAt(s.x + WIDTH, s.z, 0, spans) === 0, 'and a fortress-width off it, no stone at all')
+
+  // Laid on the tilted floor: its Y the plane's normal, its origin the floor's centre.
+  const m = new THREE.Matrix4(), p = new THREE.Vector3()
+  let tiltOff = 0, atOff = 0
+  for (const site of w.sites()) {
+    w.batch.getMatrixAt(w.tiles.get(site.key).ids[0], m)
+    tiltOff = Math.max(tiltOff, p.set(0, 1, 0).transformDirection(m).distanceTo(new THREE.Vector3(-site.gx, 1, -site.gz).normalize()))
+    atOff = Math.max(atOff, p.setFromMatrixPosition(m).distanceTo(new THREE.Vector3(site.x, site.y, site.z)))
+  }
+  check(tiltOff < 1e-6 && atOff < 1e-3, 'each fortress stands on its floor\'s plane, its Y that plane\'s normal and its origin the floor\'s centre', `tilt off ${tiltOff.toExponential(1)}, centre off ${atOff.toExponential(1)} m`)
+  w.dispose()
+
+  const snowless = roostsOn({ field: peakField(2000) })
+  const wet = roostsOn({ water: WET })
+  const road = roostsOn({ layers: ROADS })
+  check(snowless.stats.placed === 0, 'with the snow line far over every peak there are none')
+  check(wet.stats.placed === 0 && wet.stats.rejected.water === 3, 'none drowned, counted against the water', JSON.stringify(wet.stats.rejected))
+  check(road.stats.placed === 0 && road.stats.rejected.path === 3, 'nor on a road, counted against the path', JSON.stringify(road.stats.rejected))
+  for (const q of [snowless, wet, road]) q.dispose()
 }
 
 // --- the egg in the nest ----------------------------------------------------------------
 console.log('\nroost egg')
+// A stand-in pick the shape of the shipped egg: an ellipsoid on its broad end with its foot on y = 0, as loadCritterGlb frames a pick.
+const pickOf = (w, h, d) => {
+  const g = new THREE.SphereGeometry(0.5, 48, 32).scale(w, h, d).translate(0, h / 2, 0)
+  return { pos: g.getAttribute('position').array, nrm: g.getAttribute('normal').array, uv: g.getAttribute('uv').array, idx: Array.from(g.index.array), map: null }
+}
 {
   const throws = (fn) => { try { fn(); return false } catch { return true } }
-  // A stand-in pick the shape of the shipped egg: an ellipsoid on its broad end with its foot on y = 0, as loadCritterGlb frames a pick.
-  const pickOf = (w, h, d) => {
-    const g = new THREE.SphereGeometry(0.5, 48, 32).scale(w, h, d).translate(0, h / 2, 0)
-    return { pos: g.getAttribute('position').array, nrm: g.getAttribute('normal').array, uv: g.getAttribute('uv').array, idx: Array.from(g.index.array), map: null }
-  }
   check(fs.existsSync(new URL(`../public/${EGG_GLB}`, import.meta.url)) && fs.existsSync(new URL(`../public/${EGG_GLB.replace(/\.glb$/, '.webp')}`, import.meta.url)), `${EGG_GLB} and its map are shipped -- run tools/props/gen/ship.mjs egg-dragon`)
   check(throws(() => eggBankFrom(pickOf(1, 0.6, 0.6))), 'eggBankFrom refuses a pick lying on its side')
   const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
@@ -263,17 +280,11 @@ console.log('\nroost egg')
   check(EGG_TINTS.length === 5 && EGG_TINTS.every(([name, hex]) => typeof name === 'string' && !(c.setHex(hex).r > 0.8 && c.g > 0.8 && c.b > 0.8)), 'five clutch colours, none of them white -- a white tint is the unpainted pick', EGG_TINTS.map(([n]) => n).join(' '))
   check(EGG_ODDS > 0 && EGG_ODDS < 1 && EGG_LIE[0] > 0 && EGG_LIE[1] < Math.PI / 2 && EGG_HEIGHT[0] > 0 && EGG_HEIGHT[1] < 1, 'an egg is a chance, lies over short of flat, and is under a metre tall')
 
-  const eggRoostsOn = (field, water, layers, seed) => {
-    const r = new Roosts(new THREE.Scene(), field, water, layers, { seed, egg })
-    r.place(0, 0)
-    return r
-  }
-  const r = eggRoostsOn(flatField(GROUND), DRY, LAYERS, 5)
-  const bare = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
-  check(r.materials.length === 4 && r.materials[3].customProgramCacheKey() === 'gen-prop-gloss' && r.batch.meshes.length === RUNGS + 1 && r.eggTier === RUNGS, 'with a bank the arena grows a tier past the card, the egg on its own gloss gen-prop material', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
+  const r = roostsOn({ egg })
+  const bare = roostsOn()
+  check(r.materials.length === 1 && r.materials[0] === r.eggMaterial && r.eggMaterial.customProgramCacheKey() === 'gen-prop-gloss' && r.batch.meshes.length === LODS + 1 && r.eggTier === LODS, 'with a bank the arena grows a tier past the fortress, the egg on its own gloss gen-prop material, the one material offered to the lighting', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
   // The shine: a Standard at EGG_ROUGHNESS with no metalness, the whole lobe left on it, and the rim fade still spliced in.
   check(r.eggMaterial.isMeshStandardMaterial && r.eggMaterial.roughness === EGG_ROUGHNESS && EGG_ROUGHNESS > 0 && EGG_ROUGHNESS <= 0.3 && r.eggMaterial.metalness === 0, 'the egg is a Standard material at EGG_ROUGHNESS, no rougher than the wet creatures, with no metalness', `${r.eggMaterial.type} roughness ${r.eggMaterial.roughness}`)
-  check(r.materials.slice(0, 3).every((m) => m.isMeshLambertMaterial), 'the roost itself stays Lambert')
   {
     const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n#include <lights_fragment_end>\n' }
     r.eggMaterial.onBeforeCompile(shader)
@@ -283,109 +294,85 @@ console.log('\nroost egg')
   check(JSON.stringify(r.sites()) === JSON.stringify(bare.sites()) && r.stats.placed === bare.stats.placed, 'the eggs move no roost: the same seed lays the same sites with them or without', `${r.stats.placed} sites`)
   check(r.stats.pool === r.batch._max && r.stats.pool > 2 * r.stats.tiles && bare.stats.pool < r.stats.pool, 'and the pool holds a roost and an egg for every resident tile, plus the fades', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
   bare.dispose()
+  r.dispose()
 
-  let placed = 0, eggs = 0
-  for (let seed = 1; seed <= 40; seed++) {
-    const q = eggRoostsOn(flatField(GROUND), DRY, LAYERS, seed)
-    placed += q.stats.placed
-    eggs += q.stats.eggs
-    q.dispose()
-  }
-  check(eggs > 0 && eggs < placed && Math.abs(eggs - placed * EGG_ODDS) < 3.5 * Math.sqrt(placed * EGG_ODDS * (1 - EGG_ODDS)), `over forty seeds ${EGG_ODDS} of the roosts hold an egg and the rest are empty`, `${eggs} eggs in ${placed} roosts`)
-
-  // Every egg over ten seeds: at its bowl's centre, tinted from the clutch, laid over within EGG_LIE, EGG_HEIGHT tall, and its lowest vertex resting on the floor branches with EGG_SINK of its width bedded in. The matrices come back as float32, so the tolerances are metres of that.
-  const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(), v = new THREE.Vector3()
+  // Every egg over sixty seeds: at its floor's centre, tinted from the clutch, laid over within EGG_LIE, EGG_HEIGHT tall, its lowest point EGG_SINK of its width into a floor tilted to (0.1, -0.12). The matrices come back as float32, so the tolerances are metres of that.
+  const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(), v = new THREE.Vector3(), n = new THREE.Vector3(), lift = new THREE.Vector3()
   const pos = egg.geometry.getAttribute('position')
-  const lowest = (matrix) => {
-    let low = Infinity
-    for (let i = 0; i < pos.count; i++) low = Math.min(low, v.fromBufferAttribute(pos, i).applyMatrix4(matrix).y)
-    return low
-  }
   const tints = new Set()
-  let eggCount = 0, centreOff = 0, restOff = 0, lieLo = Infinity, lieHi = -Infinity, hLo = Infinity, hHi = -Infinity, badScale = 0, badTier = 0, badCull = 0
-  for (let seed = 1; seed <= 10; seed++) {
-    const w = seed === 5 ? r : eggRoostsOn(flatField(GROUND), DRY, LAYERS, seed)
+  let placed = 0, eggCount = 0, alongOff = 0, restOff = 0, lieLo = Infinity, lieHi = -Infinity, hLo = Infinity, hHi = -Infinity, badScale = 0, badTier = 0, badCull = 0
+  for (let seed = 1; seed <= 60; seed++) {
+    const w = roostsOn({ egg, seed, Kind: Tilted })
+    placed += w.stats.placed
     for (const t of w.tiles.values()) {
       if (t.n !== 2) continue
       eggCount++
       const id = t.ids[1]
       w.batch.getMatrixAt(id, m)
       m.decompose(p, q, s)
-      centreOff = Math.max(centreOff, Math.hypot(p.x - t.site.x, p.z - t.site.z))
+      n.set(-t.site.gx, 1, -t.site.gz).normalize()
+      lift.set(p.x - t.site.x, p.y - t.site.y, p.z - t.site.z)
+      alongOff = Math.max(alongOff, lift.clone().cross(n).length())
       const height = s.y * egg.bounds.height
-      const width = s.x * egg.bounds.width
       hLo = Math.min(hLo, height); hHi = Math.max(hHi, height)
       if (Math.abs(s.x - s.y) > 1e-6 || Math.abs(s.z - s.y) > 1e-6 || Math.abs(w.instR[id] - height) > 1e-6) badScale++
-      const lie = Math.acos(up.set(0, 1, 0).applyQuaternion(q).y)
+      const lie = Math.acos(up.set(0, 1, 0).applyQuaternion(q).dot(n))
       lieLo = Math.min(lieLo, lie); lieHi = Math.max(lieHi, lie)
-      restOff = Math.max(restOff, Math.abs(lowest(m) - (t.site.y + 0.04 * t.site.r - EGG_SINK * width)))
+      // The lowest point over the tilted floor: every vertex's height along the normal, against the floor's.
+      let low = Infinity
+      for (let i = 0; i < pos.count; i++) low = Math.min(low, v.fromBufferAttribute(pos, i).applyMatrix4(m).sub(p).dot(n))
+      restOff = Math.max(restOff, Math.abs(lift.dot(n) + low + EGG_SINK * s.x * egg.bounds.width))
       tints.add(w.batch.getColorAt(id, c).getHex())
       if (w.tierAt[id] !== w.eggTier) badTier++
       if (Math.abs(w.rim.gone[id] - Math.min(w.radius, propCull(height))) > 1e-3) badCull++
     }
-    if (w !== r) w.dispose()
+    w.dispose()
   }
-  check(eggCount > 10 && centreOff < 1e-3, 'every egg lies at its bowl\'s centre', `${eggCount} eggs over ten seeds, centre off ${centreOff.toExponential(1)} m`)
+  check(Math.abs(eggCount - placed * EGG_ODDS) < 3.5 * Math.sqrt(placed * EGG_ODDS * (1 - EGG_ODDS)), `over sixty seeds ${EGG_ODDS} of the roosts hold an egg and the rest are empty`, `${eggCount} eggs in ${placed} roosts`)
+  check(alongOff < 1e-3, 'every egg is lifted from its floor\'s centre along the floor\'s normal', `off the normal by ${alongOff.toExponential(1)} m`)
   check(lieLo >= EGG_LIE[0] - 1e-6 && lieHi <= EGG_LIE[1] + 1e-6 && lieHi - lieLo > 0.2, `laid over ${EGG_LIE[0]}..${EGG_LIE[1]} rad off the floor's normal, no two alike`, `lie ${fmt(lieLo)}..${fmt(lieHi)}`)
   check(hLo >= EGG_HEIGHT[0] - 1e-6 && hHi <= EGG_HEIGHT[1] + 1e-6 && hHi - hLo > 0.05 && badScale === 0, `${EGG_HEIGHT[0]}..${EGG_HEIGHT[1]} m tall, scaled evenly, its height its rim size`, `${fmt(hLo)}..${fmt(hHi)} m, ${badScale} scaled unevenly`)
-  check(restOff < 0.01, `its lowest point ${EGG_SINK} of its width into the floor branches, on a stand-in ellipsoid's own vertices`, `rest off ${restOff.toExponential(1)} m`)
+  check(restOff < 0.01, `its lowest point ${EGG_SINK} of its width into the floor, on a stand-in ellipsoid's own vertices`, `rest off ${restOff.toExponential(1)} m`)
   check([...tints].every((hex) => EGG_TINTS.some(([, h]) => h === hex)) && tints.size === EGG_TINTS.length, 'every egg tinted one of the clutch colours and every colour showing, so none white', [...tints].map((h) => EGG_TINTS.find(([, x]) => x === h)?.[0]).join(' '))
   check(badTier === 0 && badCull === 0, 'each on the egg tier for good, culled where a prop of its height is', `${badTier} off tier, ${badCull} off cull`)
+}
 
+// A seed whose three roosts hold two eggs or more, for the sweeps and the hand.
+const EGG_SEED = (() => {
+  const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
+  for (let seed = 1; ; seed++) {
+    const r = roostsOn({ egg, seed })
+    const eggs = r.stats.eggs
+    r.dispose()
+    if (eggs >= 2) return seed
+  }
+})()
+{
+  const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
+  const r = roostsOn({ egg, seed: EGG_SEED })
   const eggTiles = [...r.tiles.values()].filter((t) => t.n === 2)
-  r.update(eggTiles[0].site.x, GROUND + 1.7, eggTiles[0].site.z)
-  const bareAgain = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
-  bareAgain.update(eggTiles[0].site.x, GROUND + 1.7, eggTiles[0].site.z)
+  const at = eggTiles[0].site
+  r.update(at.x, at.y + 1.7, at.z)
+  const bareAgain = roostsOn({ seed: EGG_SEED })
+  bareAgain.update(at.x, at.y + 1.7, at.z)
   const shown = eggTiles.filter((t) => !r.rim.isHidden(t.ids[1])).length
   check(shown > 0 && r.stats.tris === bareAgain.stats.tris + shown * egg.tris, 'a frame later the eggs in sight are counted whole, over the roosts\' own count', `${shown} eggs shown, ${r.stats.tris} tris against ${bareAgain.stats.tris}`)
   bareAgain.dispose()
-  r.update(eggTiles[0].site.x + 4000, GROUND + 1.7, eggTiles[0].site.z)
-  check(r.stats.used === r.stats.placed + r.stats.eggs && r.stats.eggs > 0 && [...r.tiles.values()].every((t) => t.n === 0 || t.n === 1 || t.n === 2), 'walked 4 km off, every egg she left is released with its roost and the pool holds what stands', `${r.stats.eggs} eggs in ${r.stats.placed} roosts, ${r.stats.used} used`)
+  r.update(at.x + 4000, at.y, at.z)
+  check(r.stats.used === 0 && r.stats.eggs === 0 && r.stats.placed === 0, 'walked 4 km off, every egg she left is released with its roost')
   r.dispose()
-
-  // On the hillside the egg is lifted along the bowl's own normal and laid over from it, its rest measured on the tilted floor.
-  const HILL = Math.tan((20 * Math.PI) / 180)
-  const hill = hillField(GROUND, HILL * 0.6, HILL * 0.8)
-  const n = new THREE.Vector3(), lift = new THREE.Vector3()
-  let hillEggs = 0, alongOff = 0, hillLieLo = Infinity, hillLieHi = -Infinity, hillRestOff = 0
-  for (let seed = 1; seed <= 10; seed++) {
-    const hillside = eggRoostsOn(hill, DRY, LAYERS, seed)
-    for (const t of hillside.tiles.values()) {
-      if (t.n !== 2) continue
-      hillEggs++
-      hillside.batch.getMatrixAt(t.ids[1], m)
-      m.decompose(p, q, s)
-      n.set(-t.site.gx, 1, -t.site.gz).normalize()
-      lift.set(p.x - t.site.x, p.y - t.site.y, p.z - t.site.z)
-      alongOff = Math.max(alongOff, lift.clone().cross(n).length())
-      const lie = Math.acos(up.set(0, 1, 0).applyQuaternion(q).dot(n))
-      hillLieLo = Math.min(hillLieLo, lie); hillLieHi = Math.max(hillLieHi, lie)
-      // The lowest point over the tilted floor: every vertex's height along the normal, against the floor's.
-      let low = Infinity
-      for (let i = 0; i < pos.count; i++) low = Math.min(low, v.fromBufferAttribute(pos, i).applyMatrix4(m).sub(p).dot(n))
-      hillRestOff = Math.max(hillRestOff, Math.abs(lift.dot(n) + low - (0.04 * t.site.r - EGG_SINK * s.x * egg.bounds.width)))
-    }
-    hillside.dispose()
-  }
-  check(hillEggs === eggCount && alongOff < 1e-3, 'on a 20-degree hillside every egg is lifted from its bowl\'s centre along the hill\'s normal', `${hillEggs} eggs, off the normal by ${alongOff.toExponential(1)} m`)
-  check(hillLieLo >= EGG_LIE[0] - 1e-6 && hillLieHi <= EGG_LIE[1] + 1e-6 && hillRestOff < 0.01, 'laid over from that normal within EGG_LIE, and resting on the tilted floor', `lie ${fmt(hillLieLo)}..${fmt(hillLieHi)}, rest off ${hillRestOff.toExponential(1)} m`)
 }
 
 // --- the egg in her hand ------------------------------------------------------------------
 console.log('\nroost egg taken')
 {
-  const pickOf = (w, h, d) => {
-    const g = new THREE.SphereGeometry(0.5, 48, 32).scale(w, h, d).translate(0, h / 2, 0)
-    return { pos: g.getAttribute('position').array, nrm: g.getAttribute('normal').array, uv: g.getAttribute('uv').array, idx: Array.from(g.index.array), map: null }
-  }
   const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
   taken.clear()
   // Grown and swept from over one nest with an egg -- the first, or the one at (x, z) -- so the eggs in sight are shown.
   const grow = (x = null, z = null) => {
-    const r = new Roosts(new THREE.Scene(), flatField(GROUND), DRY, LAYERS, { seed: 5, egg })
-    r.place(0, 0)
+    const r = roostsOn({ egg, seed: EGG_SEED })
     const t = x === null ? [...r.tiles.values()].find((t) => t.n === 2).site : { x, z }
-    r.update(t.x, GROUND + 1.7, t.z)
+    r.update(t.x, PEAKS.A[2], t.z)
     return r
   }
   const r = grow()
@@ -411,8 +398,8 @@ console.log('\nroost egg taken')
   let threw = false
   try { r.dress({ kind: 'fern' }) } catch { threw = true }
   check(threw, 'dress throws on another kind')
-  const bare = roostsOn(flatField(GROUND), DRY, LAYERS, 5)
-  check(bare.dress({ kind: 'egg' }) === null && bare.pickAt(0, GROUND, 0, 1000, 2) === null, 'a world with no eggs dresses none and offers none')
+  const bare = roostsOn()
+  check(bare.dress({ kind: 'egg' }) === null && bare.pickAt(PEAKS.A[0], PEAKS.A[2], PEAKS.A[1], 1000, 2) === null, 'a world with no eggs dresses none and offers none')
   bare.dispose()
   const again = grow(at.x, at.z)
   const same = [...again.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
@@ -431,6 +418,7 @@ console.log('\nroost egg taken')
   check(r.stats.used === r.stats.placed + r.stats.eggs, 'walked off, the nest releases cleanly without its egg')
   r.dispose()
   // A second world: an egg taken with stowMax at its height comes up in the hand but will not go in the backpack.
+  taken.clear()
   const w = grow()
   const t2 = [...w.tiles.values()].find((t) => t.n === 2 && !w.rim.isHidden(t.ids[1]))
   const h2 = w.pickAt(w.instX[t2.ids[1]], w.instY[t2.ids[1]], w.instZ[t2.ids[1]], 0.1, 2)
@@ -514,9 +502,11 @@ const stag = (x, z, y = GROUND, key = 'st:0,0:0') => ({ key, spawn: {}, x, y, z,
 const roostOf = (sites) => ({ sites: (into = []) => { into.push(...sites); return into }, siteAt: (tx, tz) => sites.find((s) => s.tx === tx && s.tz === tz) ?? null })
 const dry = { isSubmerged: () => false }
 // Its bites are logged on it: `hurt` her [n, why], `frights` a strider's [key, x, z].
-const dragonsOn = (field, sites, herd, seed = 3, water = dry) => {
+/** Dragons whose guards are never born: the gates of one dragon's own score, flight, meal and bite fly the male alone, and the pair is gated on its own. */
+class Solo extends Dragons { _spawn(site, guard, now) { return guard ? null : super._spawn(site, guard, now) } }
+const dragonsOn = (field, sites, herd, seed = 3, water = dry, Kind = Solo) => {
   const hurt = [], frights = []
-  const d = new Dragons(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), asset: makeAsset() })
+  const d = new Kind(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), asset: makeAsset() })
   return Object.assign(d, { hurt, frights })
 }
 const DT = 1 / 60
@@ -561,7 +551,7 @@ console.log('\ndragons')
 }
 
 // --- the score: a chapter of phrases, closed-form, chained, home at both ends, the same everywhere ---
-const homeSite = (key) => ({ key, tx: key, tz: 0, x: 0, y: GROUND, z: 0, r: (DIAMETER[0] + DIAMETER[1]) / 4, gx: 0, gz: 0 })
+const homeSite = (key) => ({ key, tx: key, tz: 0, x: 0, y: GROUND, z: 0, r: FLOOR_R, gx: 0, gz: 0 })
 /** A plan of nothing but rests on the nest, `durs` seconds each, for the gates that want the dragon kept home. */
 const restPlan = (d) => (key) => {
   const dr = d.byKey.get(key)
@@ -576,8 +566,9 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const t0 = chapterOf(1000, keyOf(site)).start
   d.update(HER.x, HER.y, HER.z, t0)
   const dr = d.byKey.get(keyOf(site))
-  check(dr && d.byKey.size === 1 && d.free.length === MAX - 1 && dr.site === site, 'the frame a site is listed a dragon is born to it, keyed by the roost\'s tile')
-  check(dr.state === 'roost' && Math.abs(dr.x - site.x) < 1e-9 && Math.abs(dr.z - site.z) < 1e-9 && dr.y > site.y && dr.y < site.y + 0.1 * site.r && dr.clip === 'idle', 'born on its nest at the chapter\'s turn, standing a hand over the floor, idling', `y ${fmt(dr.y)} over ${fmt(site.y)}`)
+  const nest = dr.site
+  check(dr && d.byKey.size === 1 && d.free.length === MAX - 1 && nest.key === site.key && Math.abs(Math.hypot(nest.x - site.x, nest.z - site.z) - 0.75 * site.r) < 1e-9 && nest.y === site.y, 'the frame a site is listed a dragon is born to it, keyed by the roost\'s tile, its own half of the floor three quarters of a radius off the centre')
+  check(dr.state === 'roost' && Math.abs(dr.x - nest.x) < 1e-9 && Math.abs(dr.z - nest.z) < 1e-9 && dr.y === nest.y && dr.clip === 'idle', 'born on its half of the nest at the chapter\'s turn, standing on the floor, idling', `y ${fmt(dr.y)} over ${fmt(nest.y)}`)
   check(Math.abs(dr.size / wyvern.sizeM - 1) <= SIZE_VARY && Math.abs(dr.k - dr.size / wyvern.span) < 1e-12 && Math.abs(dr.lodSize - dr.size * d.bulk) < 1e-12, `sized within ${SIZE_VARY * 100}% of the roster, the ladder sized by the flying bulk`, `${fmt(dr.size)} m, lod size ${fmt(dr.lodSize)}`)
   check(dr.lod === 0 && dr.puppet && dr.rec.tick === tickOf(t0), 'wearing a puppet with her beside the nest, stepped to the clock\'s tick')
   const twin = dragonsOn(flat, [site], makeHerd([]), 3)
@@ -589,20 +580,20 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const ph = ch.phrases
   const sum = ph.reduce((s, p) => s + p.dur, 0)
   check(ch.start === t0 && Math.abs(sum - CHAPTER_S) < 1e-6 && ph.every((p) => p.dur > 0), `the chapter is ${ph.length} phrases whose durations sum to CHAPTER_S ${CHAPTER_S} s exactly`, `${fmt(sum)} s`)
-  check(ph[0].kind === 'rest' && ph[0].at === site && ph[0].from === dr.home && ph[ph.length - 1].to === dr.home && ph[ph.length - 1].kind === 'rest', 'it opens with a rest on the nest from the home pose and closes with one ending at it')
+  check(ph[0].kind === 'rest' && ph[0].at === nest && ph[0].from === dr.home && ph[ph.length - 1].to === dr.home && ph[ph.length - 1].kind === 'rest', 'it opens with a rest on the nest from the home pose and closes with one ending at it')
   check(ph.every((p, i) => i === 0 || p.from === ph[i - 1].to), 'every phrase starts from the object the one before ends at: one chain, no two poses to disagree')
   check(ph.every((p) => Number.isFinite(p.to.speed) && (p.kind === 'fly' ? p.to.speed === p.mps * LOITER_PACE : p.to.speed === 0)), 'every end pose carries the speed the body arrives at: LOITER_PACE of the leg\'s cruise in the air, nothing on the ground')
   const flies = ph.filter((p) => p.kind === 'fly')
   const lands = ph.map((p, i) => [p, i]).filter(([p]) => p.kind === 'land')
   check(flies.length >= 3 && flies.every((p) => Math.hypot(p.to.x - site.x, p.to.z - site.z) <= PATROL_M + LAND_M + 1e-6 && p.to.y > GROUND + MIN_AGL), `the legs end within PATROL_M + LAND_M of the nest and well over the ground`, `${flies.length} legs`)
-  check(lands.length >= 1 && lands.every(([p, i]) => ph[i - 1].kind === 'fly' && ph[i - 1].dest === p.dest && ph[i + 1].kind === 'rest' && ph[i + 1].at === p.dest && Math.abs(p.to.y - (p.dest.y + (p.dest.turf ? 0 : 0.04 * p.dest.r))) < 1e-9), 'every landing follows a leg to its floor and is followed by a rest on it, touching down a hand over that floor')
-  check(ph.some((p) => p.kind === 'rest' && p.at === site && p !== ph[0] && p !== ph[ph.length - 1]) || ph.length <= 4, 'between flights it rests on the nest')
+  check(lands.length >= 1 && lands.every(([p, i]) => ph[i - 1].kind === 'fly' && ph[i - 1].dest === p.dest && ph[i + 1].kind === 'rest' && ph[i + 1].at === p.dest && Math.abs(p.to.y - p.dest.y) < 1e-9), 'every landing follows a leg to its floor and is followed by a rest on it, touching down on that floor')
+  check(ph.some((p) => p.kind === 'rest' && p.at === nest && p !== ph[0] && p !== ph[ph.length - 1]) || ph.length <= 4, 'between flights it rests on the nest')
   const chapters = (dd, n) => Array.from({ length: n }, (_, c) => dd.score.chapter(keyOf(site), t0 + c * CHAPTER_S))
   const modes = new Set(chapters(d, 12).flatMap((c) => c.phrases.filter((p) => p.kind === 'fly').map((p) => p.mode)))
   check(modes.has('patrol') && modes.has('explore') && modes.has('return'), 'over a dozen chapters it patrols hungry and explores fed, and every flight returns', [...modes].join(' '))
-  const budgets = chapters(d, 12).map((c) => c.phrases.filter((p) => p.kind !== 'rest' || p.at !== site).reduce((s, p) => s + p.dur, 0))
+  const budgets = chapters(d, 12).map((c) => c.phrases.filter((p) => p.kind !== 'rest' || p.at !== nest).reduce((s, p) => s + p.dur, 0))
   check(budgets.every((b) => b >= FLIGHT_MIN_S), `no chapter's flying, perches and all, is under FLIGHT_MIN_S ${FLIGHT_MIN_S} s`, budgets.map((b) => fmt(b)).join(' '))
-  const strip = (c) => JSON.stringify(c.phrases.map((p) => [p.kind, p.dur, p.to, p.mode ?? '', p.at === site || p.dest === site ? 'home' : p.dest?.turf || p.at?.turf ? 'turf' : '']))
+  const strip = (c) => JSON.stringify(c.phrases.map((p) => [p.kind, p.dur, p.to, p.mode ?? '', p.at?.key === site.key || p.dest?.key === site.key ? 'home' : p.dest?.turf || p.at?.turf ? 'turf' : '']))
   check(chapters(d, 3).every((c, i) => strip(c) === strip(chapters(twin, 3)[i])), 'and another instance plans the same three chapters to the digit: the plan is a function of the key and the chapter alone')
   twin.dispose()
   d.dispose()
@@ -872,7 +863,8 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   let cargoFrames = 0, lastHeading = dr.heading, tick = dr.rec.tick
   step()
   const kill = { x: stags[0].x, z: stags[0].z }
-  check(Math.hypot(kill.x - site.x, kill.z - site.z) < site.r && Math.hypot(kill.x - site.x, kill.z - site.z) > 0.5 && Math.abs(stags[0].y - site.y) < 1e-6 && stags[0].lain === true, 'the kill is laid on the nest floor off centre, on its flank', `at (${fmt(kill.x)}, ${fmt(kill.z)}), nest r ${site.r}`)
+  const spot = dr.site, ahead = { x: spot.x + Math.cos(dr.home.heading) * EAT_REACH * dr.k, z: spot.z - Math.sin(dr.home.heading) * EAT_REACH * dr.k }
+  check(Math.hypot(kill.x - ahead.x, kill.z - ahead.z) < 1e-9 && Math.abs(stags[0].y - site.y) < 1e-6 && stags[0].lain === true, 'the kill is laid on the nest floor EAT_REACH ahead of the dragon\'s own spot, on its flank', `at (${fmt(kill.x)}, ${fmt(kill.z)})`)
   for (let i = 0; i < 60 * 240 && nest.ateAt < 0; i++) {
     step()
     if (dr.cargo) cargoFrames++
@@ -881,11 +873,11 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
       tick = dr.rec.tick
       nest.moved += Math.hypot(dr.x - dr.px, dr.z - dr.pz)
       if (dr.speed > walkMps * 1.001) nest.walkFast++
-      if (Math.abs(dr.y - (site.y + 0.04 * site.r)) > 1e-6) nest.offFloor++
+      if (Math.abs(dr.y - site.y) > 1e-6) nest.offFloor++
       if (dr.state !== 'roost') throw new Error(`left the nest mid-meal: ${dr.state}`)
     }
     nest.headings += Math.abs(swing(lastHeading, dr.heading)); lastHeading = dr.heading
-    nest.farthest = Math.max(nest.farthest, Math.hypot(dr.x - site.x, dr.z - site.z))
+    nest.farthest = Math.max(nest.farthest, Math.hypot(dr.x - spot.x, dr.z - spot.z))
     if (dr.cargo && (Math.abs(stags[0].x - kill.x) > 1e-9 || Math.abs(stags[0].z - kill.z) > 1e-9)) nest.killMoved++
     if (dr.rest === 'eat' && nest.eatAt < 0) nest.eatAt = now - t0
     if (dr.rest === 'eat') {
@@ -895,7 +887,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
     if (!dr.cargo && nest.ateAt < 0) nest.ateAt = now - t0
   }
   check(nest.eatAt > 5 && nest.eatAt < 120, 'the dragon walks a circuit of the nest before it eats', `eating from ${fmt(nest.eatAt)} s`)
-  check(nest.moved > 1.5 * site.r && nest.headings > Math.PI && nest.farthest < site.r, 'the circuit walked more than a radius and a half and turned more than a half turn, all of it inside the rim', `${fmt(nest.moved)} m, ${fmt(nest.headings)} rad, ${fmt(nest.farthest)} m out at most`)
+  check(nest.moved > 1.5 * site.r && nest.headings > Math.PI && nest.farthest < site.r, 'the circuit walked more than a radius and a half and turned more than a half turn, all of it on its half of the floor', `${fmt(nest.moved)} m, ${fmt(nest.headings)} rad, ${fmt(nest.farthest)} m out at most`)
   check(nest.walkFast === 0 && nest.offFloor === 0, 'and never moved faster than the shipped walk gait at its size nor left the floor plane', `walk ${fmt(walkMps)} m/s; ${nest.walkFast} fast ticks, ${nest.offFloor} off the floor`)
   check(nest.killMoved === 0, 'the kill lay where it was laid through the whole circuit: it does not follow the dragon round')
   check(nest.eatFacing < 0.1 && Math.abs(nest.eatFrom - EAT_REACH * dr.k) < WAY * dr.k, `eating, it faces the kill with the kill ${fmt(EAT_REACH * dr.k)} m ahead, where the eat clip's snout plunges`, `off by ${fmt(nest.eatFacing)} rad, ${fmt(nest.eatFrom)} m`)
@@ -979,7 +971,8 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const t0 = chapterOf(1000, keyOf(site)).start
   d.update(HER.x, HER.y, HER.z, t0)
   const dr = d.byKey.get(keyOf(site))
-  check(Math.abs(dr.y - (site.y + 0.04 * site.r)) < 1e-9 && dr.y > hill.heightAt(site.x, site.z) - 0.1, 'born standing a hand over the floor at the bowl\'s centre, which is at the turf, not under the uphill half of the hill')
+  const nest = dr.site, nu = nest.x - site.x, nv = nest.z - site.z
+  check(Math.abs(nest.y - (site.y + gx * nu + gz * nv)) < 1e-9 && dr.y === nest.y, 'born standing on its half of the tilted floor, at that plane\'s own height there')
   // The kill laid on this nest, by hand.
   dr.cargo = stags[0]
   d._meal(dr)
@@ -987,7 +980,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const c = stags[0]
   const u = c.x - site.x, v = c.z - site.z
   const normal = new THREE.Vector3(-gx, 1, -gz).normalize()
-  check(c.lain === true && Math.hypot(u, v) > 0.5 && Math.hypot(u, v) < site.r && Math.abs(c.y - (site.y + gx * u + gz * v)) < 1e-9, 'a kill on this nest lies beside the dragon ON the tilted floor plane, at that plane\'s own height there, not at the centre\'s', `at (${fmt(u)}, ${fmt(v)}) off centre, y ${fmt(c.y)} for a floor of ${fmt(site.y + gx * u + gz * v)}`)
+  check(c.lain === true && Math.abs(Math.hypot(c.x - nest.x, c.z - nest.z) - EAT_REACH * dr.k) < 1e-9 && Math.abs(c.y - (site.y + gx * u + gz * v)) < 1e-9, 'a kill on this nest lies beside the dragon ON the tilted floor plane, at that plane\'s own height there, not at the centre\'s', `at (${fmt(u)}, ${fmt(v)}) off centre, y ${fmt(c.y)} for a floor of ${fmt(site.y + gx * u + gz * v)}`)
   check(c.up.distanceTo(normal) < 1e-9, 'and lies tilted with the floor, its up the nest plane\'s normal', `up (${fmt(c.up.x)}, ${fmt(c.up.y)}, ${fmt(c.up.z)})`)
   check((() => { try { dragonsOn(hill, [{ key: 32, tx: 32, tz: 0, x: 0, y: GROUND, z: 0, r: 4 }], makeHerd([])).update(0, 0, 0, t0); return false } catch (e) { return /floor plane/.test(e.message) } })(), 'a site with no floor plane is refused by name, not stood on at NaN')
   check((() => { try { d.update(0, 0, 0, NaN); return false } catch (e) { return /world time/.test(e.message) } })(), 'and a frame with no world time is refused: nothing about a dragon is timed from anything else')
@@ -1005,7 +998,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   let now = t0
   // She stands east of the nest, the hand a metre up, and never moves her feet: the hand is what the dragon reads.
   const her = { x: 12, y: GROUND + 1.6, z: 0 }
-  const hand = (kind, x, z = 0) => ({ kind, x, y: GROUND + 1, z })
+  const hand = (kind, x, z = dr.site.z) => ({ kind, x, y: GROUND + 1, z })
   let turned = 0
   const frame = (lures) => { now += DT; const tick = dr.rec.tick; d.update(her.x, her.y, her.z, now, lures); if (dr.rec.tick !== tick) turned = Math.max(turned, Math.abs(swing(dr.pheading, dr.heading)) / TICK_S) }
   const run = (s, lures, seen) => { for (let i = 0; i < s * 60; i++) { frame(lures); if (seen) seen() } }
@@ -1016,16 +1009,16 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const reach = (EAT_REACH + MENACE) * dr.k
   const gap = (l) => Math.hypot(l.x - dr.x, l.z - dr.z)
   // Out of reach, or the wrong thing: the dragon rests on.
-  run(2, [hand('fish', LURE * dr.k + 1)])
+  run(2, [hand('fish', dr.site.x + LURE * dr.k + 1)])
   check(dr.state === 'roost' && dr.lure === null && dr.live === null, `a fish ${fmt(LURE * dr.k + 1)} m off is not noticed`)
-  run(2, [hand('carrot', 2)])
+  run(2, [hand('carrot', dr.site.x + 2)])
   check(dr.state === 'roost' && dr.lure === null, 'nor is a carrot in reach', LURES.join(', '))
   // Eating its kill on the nest when the fish comes within reach: the kill is let go, and the dragon is up and alert.
   dr.cargo = stags[0]
   d._meal(dr)
   run(1, [])
   check(dr.state === 'roost' && dr.cargo === stags[0] && dr.queue.length > 0, 'settled on the nest with its kill, working through its circuit')
-  const fish = hand('fish', LURE * dr.k - 0.5)
+  const fish = hand('fish', dr.site.x + LURE * dr.k - 0.5)
   tick([fish])
   check(dr.state === 'menace' && dr.lure === fish && dr.live && dr.live.by === null && dr.cargo === null && stags[0].drops.join() === 'true' && dr.clip === 'alert' && dr.queue.length === 0, `a fish ${fmt(LURE * dr.k - 0.5)} m off has it drop the kill to fade and go LIVE to menace, alert, this client the authority`, `state ${dr.state}, clip ${dr.clip}, drops ${stags[0].drops.join()}`)
   // The stomp: at the walk gait inside MENACE_RUN, toward the hand, and stopped with its head at her, eating at her.
@@ -1059,7 +1052,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   check(ran && top > wyvern.gait.run * dr.k * 0.9 && dr.state === 'menace', `the hand ${fmt(MENACE_RUN * dr.k + 2)} m past its head, it runs at the run gait`, `top ${fmt(top)} of ${fmt(wyvern.gait.run * dr.k)} m/s`)
   check(dr.clip === 'eat' && stops(far) && Math.abs(dr.y - GROUND) < 1e-6, 'and is at her again, on the ground off the nest', `${fmt(gap(far))} m off, y ${fmt(dr.y)}`)
   // Carried off at a quarter again its walk: it stomps after her in rushes, run and stop, never far off.
-  const walk = hand('fish', far.x, 0)
+  const walk = hand('fish', far.x)
   let worst = 0
   let rushes = 0
   let running = false
@@ -1072,15 +1065,15 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const left = { x: dr.x, y: dr.y, z: dr.z }
   tick([hand('fish', dr.x + LURE_FORGET * dr.k + 1, dr.z)])
   const rejoin = d.pending()
-  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === site && dr.rejoin && dr.rejoin.phrases.map((p) => p.kind).join(' ').match(/^(fly )?fly land rest$/), `and one ${fmt(LURE_FORGET * dr.k + 1)} m off is given up: it is on its rejoin -- a leg out if it is too near the nest to come round, a leg home, a landing and a rest -- flying`, `state ${dr.state}`)
+  check(dr.state === 'rejoin' && dr.live === null && dr.lure === null && dr.clip === 'fly' && dr.dest === dr.site && dr.rejoin && dr.rejoin.phrases.map((p) => p.kind).join(' ').match(/^(fly )?fly land rest$/), `and one ${fmt(LURE_FORGET * dr.k + 1)} m off is given up: it is on its rejoin -- a leg out if it is too near the nest to come round, a leg home, a landing and a rest -- flying`, `state ${dr.state}`)
   check(rejoin.length === 1 && rejoin[0][7] === 'rejoin' && rejoin[0][8] === null && Math.hypot(rejoin[0][2] - left.x, rejoin[0][4] - left.z) < 1 && Math.abs(rejoin[0][1] - now) < TICK_S, 'the authority owes the room one rejoin anchor, from where the lure ended and when', JSON.stringify(rejoin[0]?.map((v) => (typeof v === 'number' ? +v.toFixed(2) : v))))
   let frames = 0
   while (dr.state !== 'roost' && frames++ < 60 * 120) frame([])
-  check(dr.state === 'roost' && Math.hypot(dr.x - site.x, dr.z - site.z) < site.r && dr.cargo === null && dr.rejoin !== null && dr.phrase.kind === 'rest' && Math.abs(dr.phraseEnd - dr.rejoin.end) < 1e-9, 'and is on its nest again, resting out the rejoin until the score\'s next rest on the nest', `${(frames / 60).toFixed(1)} s`)
+  check(dr.state === 'roost' && Math.hypot(dr.x - dr.site.x, dr.z - dr.site.z) < site.r && dr.cargo === null && dr.rejoin !== null && dr.phrase.kind === 'rest' && Math.abs(dr.phraseEnd - dr.rejoin.end) < 1e-9, 'and is on its nest again, resting out the rejoin until the score\'s next rest on the nest', `${(frames / 60).toFixed(1)} s`)
   check(d.pending().length === 0, 'with nothing more sent')
   const rjEnd = dr.rejoin.end
   while (now < rjEnd + 1) frame([])
-  check(dr.rejoin === null && dr.state === 'roost' && dr.phrase.kind === 'rest' && dr.phrase.at === site && dr.x === dr.home.x && dr.z === dr.home.z, 'at that rest it is on the score again, at its home pose, the rejoin forgotten')
+  check(dr.rejoin === null && dr.state === 'roost' && dr.phrase.kind === 'rest' && dr.phrase.at === dr.site && dr.x === dr.home.x && dr.z === dr.home.z, 'at that rest it is on the score again, at its home pose, the rejoin forgotten')
   // Put away in its face: given up at once, from the ground.
   const near = hand('fish', dr.x + reach, dr.z)
   run(3, [near])
@@ -1157,7 +1150,8 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const d = dragonsOn(flat, [site], makeHerd([]), 5)
   d.plan = restPlan(d)
   let now = chapterOf(1000, keyOf(site)).start
-  const her = { x: SPOT_M + 5, y: GROUND, z: 0, open: false, dead: false }
+  const spot = d._born(site, false).site
+  const her = { x: spot.x + SPOT_M + 5, y: GROUND, z: spot.z, open: false, dead: false }
   const quarry = { her, striders: [] }
   let turned = 0
   const frame = () => { now += DT; const tick = dr.rec.tick; d.update(her.x, her.y + 1.6, her.z, now, [], quarry); if (dr.rec.tick !== tick) turned = Math.max(turned, Math.abs(swing(dr.pheading, dr.heading)) / TICK_S) }
@@ -1168,7 +1162,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const snout = () => Math.hypot(her.x - dr.x - Math.cos(dr.heading) * EAT_REACH * dr.k, her.z - dr.z + Math.sin(dr.heading) * EAT_REACH * dr.k)
   run(2)
   check(dr.state === 'roost' && dr.live === null && dr.roarCue === 0, `her ${SPOT_M + 5} m off the resting dragon, it does not spot her`)
-  her.x = SPOT_M - 1
+  her.x = spot.x + SPOT_M - 1
   until(() => dr.live !== null, 1)
   check(dr.state === 'aggro' && dr.live.phase === 'spot' && dr.live.prey === HER_ID && dr.live.by === null && dr.clip === 'alert' && dr.roarCue === 1, `her ${SPOT_M - 1} m off, it spots her: live, aggro, alert, one roar, this client steering`, `state ${dr.state}, phase ${dr.live?.phase}, roars ${dr.roarCue}`)
   until(() => dr.live.phase !== 'spot', SPOT_S + 0.1)
@@ -1215,7 +1209,8 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const d = dragonsOn(flat, [site], makeHerd([]), 5)
   d.plan = restPlan(d)
   let now = chapterOf(1000, keyOf(site)).start
-  const her = { x: SPOT_M - 1, y: GROUND, z: 0, open: true, dead: false }
+  const spot = d._born(site, false).site
+  const her = { x: spot.x + SPOT_M - 1, y: GROUND, z: spot.z, open: true, dead: false }
   const striders = []
   const quarry = { her, striders }
   const frame = () => { now += DT; d.update(her.x, her.y + 1.6, her.z, now, [], quarry) }
@@ -1229,7 +1224,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   let left = false
   for (let i = 0; i < 4 * CHOMP_S * 60; i++) { frame(); if (dr.live === null || dr.live.phase !== 'chomp' || dr.clip !== 'eat') left = true }
   check(!left && dr.live.prey === HER_ID && dr.growlCue === growls && d.frights.length === 0 && d.hurt.length === 0, `dead, she is fed on: ${4 * CHOMP_S} s of the eat clip without a growl, a bite owed to harm, or a look at the strider 10 m off`, `phase ${dr.live?.phase}, clip ${dr.clip}, ${d.hurt.length} bites, ${d.frights.length} frights`)
-  check(d._spot(dr, now) === null && d._eye(dr, now) === null, 'and her body, close by and in the open, starts no chase of its own')
+  check(d._spot(dr, now) === null && d._eye(dr, now) !== HER_ID, 'and her body, close by and in the open, starts no chase of its own')
   her.dead = false
   her.x += 2 * GIVE_UP_M
   until(() => dr.live === null, 1)
@@ -1314,7 +1309,8 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const born = () => { const dd = dragonsOn(flat, [site], makeHerd([]), 5); dd.plan = restPlan(dd); return dd }
   const A = born(), B = born()
   let now = chapterOf(1000, keyOf(site)).start
-  const her = { x: SPOT_M - 1, y: GROUND, z: 0, open: false, dead: false }
+  const spot = A._born(site, false).site
+  const her = { x: spot.x + SPOT_M - 1, y: GROUND, z: spot.z, open: false, dead: false }
   A.update(her.x, her.y, her.z, now)
   B.update(her.x, her.y, her.z, now)
   const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))
@@ -1454,7 +1450,47 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d.dispose()
 }
 
-// --- a roost that goes, too many roosts, and too many in mesh range -------------------
+// --- the pair: the guard keeps its half of the nest every chapter while the male flies, the two abreast on one heading, each its own colour ----
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(4321)
+  const d = dragonsOn(flat, [site], makeHerd([]), 3, dry, Dragons)
+  const t0 = chapterOf(1000, keyOf(site)).start
+  d.update(HER.x, HER.y, HER.z, t0)
+  const g = d.byKey.get(keyOf(site, true)), m = d.byKey.get(keyOf(site))
+  check(d.byKey.size === 2 && g.guard && !m.guard && d.free.length === MAX - 2, 'a roost is born a pair: the guard, keyed :g, and the male')
+  const [gu, gv, mu, mv] = [g.site.x - site.x, g.site.z - site.z, m.site.x - site.x, m.site.z - site.z]
+  const H = g.home.heading
+  check(Math.abs(gu + mu) < 1e-9 && Math.abs(gv + mv) < 1e-9 && Math.abs(Math.hypot(gu, gv) - 0.75 * site.r) < 1e-9 && m.home.heading === H && Math.abs(gu * Math.cos(H) - gv * Math.sin(H)) < 1e-9, 'they stand abreast either side of the floor\'s centre, facing the same way')
+  const gch = Array.from({ length: 6 }, (_, c) => d.score.chapter(keyOf(site, true), t0 + c * CHAPTER_S))
+  check(gch.every((c) => c.phrases.every((p) => p.kind === 'rest' && p.at === g.site) && Math.abs(c.phrases.reduce((sum, p) => sum + p.dur, 0) - CHAPTER_S) < 1e-6) && gch.every((c) => c.phrases.slice(0, -1).every((p) => p.dur <= REST_S[1])), 'the guard\'s every chapter is rests on its own spot, none but the last longer than REST_S, summing to the chapter')
+  const states = { g: new Set(), m: new Set() }
+  let gFar = 0
+  for (let i = 1; i <= 60 * CHAPTER_S; i++) {
+    d.update(HER.x, HER.y, HER.z, t0 + i / 60)
+    states.g.add(g.state); states.m.add(m.state)
+    gFar = Math.max(gFar, Math.hypot(g.x - g.site.x, g.z - g.site.z))
+    if (d.stats.behind) throw new Error(`the pair fell behind the clock at frame ${i}`)
+  }
+  check(states.g.size === 1 && states.g.has('roost') && gFar <= WALK_RING * site.r + WAY * g.k, 'flown through a chapter the guard never leaves the nest, pottering about its own spot', `${[...states.g].join(' ')}, ${fmt(gFar)} m out at most`)
+  check(states.m.has('patrol') || states.m.has('explore'), 'while the male flies out', [...states.m].join(' '))
+  d.dispose()
+
+  // Colour: the roost's key rolls it, so every client paints the same pair, and the guard is the vivid one.
+  const chroma = (c) => Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b)
+  const sites = Array.from({ length: 12 }, (_, k) => ({ ...homeSite(500 + k), x: k * 40 }))
+  const many = dragonsOn(flat, sites, makeHerd([]), 3, dry, Dragons), twin = dragonsOn(flat, sites, makeHerd([]), 3, dry, Dragons)
+  many.update(HER.x, HER.y, HER.z, t0); twin.update(HER.x, HER.y, HER.z, t0 + 77)
+  const all = [...many.byKey.values()]
+  check(all.length === 24 && all.every((dr) => dr.tint.equals(twin.byKey.get(dr.key).tint)), 'every dragon\'s tint is a function of its key: another instance paints the same 24')
+  const lead = new Set(all.map((dr) => ['r', 'g', 'b'].reduce((a, c) => (dr.tint[c] > dr.tint[a] ? c : a))))
+  check(lead.size === 3, 'across a dozen roosts the hues run red, green and blue', [...lead].join(''))
+  const mean = (guard) => all.filter((dr) => dr.guard === guard).reduce((sum, dr) => sum + chroma(dr.tint), 0) / 12
+  check(mean(true) > mean(false) * 1.2, `the guards, pushed ${GUARD_VIVID} from grey where the males are held to ${MALE_VIVID}, are the more vivid`, `${fmt(mean(true))} over ${fmt(mean(false))}`)
+  many.dispose(); twin.dispose()
+}
+
+// --- a roost that goes, too many roosts, and too many in mesh range: every roost a pair -------------------
 {
   const flat = flatField(GROUND)
   const sites = [{ key: 1, tx: 1, tz: 0, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }]
@@ -1463,17 +1499,17 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   let now = chapterOf(1000, keyOf(sites[0])).start
   const step = () => { now += DT; d.update(HER.x, HER.y, HER.z, now) }
   step()
-  const dr = d.byKey.get(keyOf(sites[0]))
-  check(dr && dr.puppet, 'a dragon with her beside its nest wears a puppet')
+  const dr = d.byKey.get(keyOf(sites[0])), gd = d.byKey.get(keyOf(sites[0], true))
+  check(d.byKey.size === 2 && dr.puppet && gd.puppet, 'a roost is a pair, and with her beside the nest both wear puppets')
   sites.length = 0
   step()
-  check(d.byKey.size === 0 && d.free.length === MAX && dr.site === null && d.fading.length === 1 && d.freePuppets.length === PUPPETS - 1, 'the frame its roost goes the dragon is retired and its body left to dissolve')
+  check(d.byKey.size === 0 && d.free.length === MAX && dr.site === null && gd.site === null && d.fading.length === 2 && d.freePuppets.length === PUPPETS - 2, 'the frame its roost goes the pair are retired and their bodies left to dissolve')
   for (let i = 0; i < 60 * 3; i++) step()
   check(d.fading.length === 0 && d.freePuppets.length === PUPPETS, 'and the puppet is back in the pool once the dissolve is done')
 
-  for (let k = 0; k < MAX + 1; k++) sites.push({ key: 100 + k, tx: 100 + k, tz: 0, x: k * 8, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
+  for (let k = 0; k < MAX / 2 + 1; k++) sites.push({ key: 100 + k, tx: 100 + k, tz: 0, x: k * 8, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 })
   step()
-  check(d.byKey.size === MAX && d.stats.overflow === 1 && d.free.length === 0, `${MAX + 1} roosts in range is one more dragon than there are slots: ${MAX} fly and the overflow is counted`)
+  check(d.byKey.size === MAX && d.stats.overflow === 2 && d.free.length === 0, `${MAX / 2 + 1} roosts in range is one more pair than there are slots: ${MAX} fly and the overflow is counted`)
   check(d.stats.puppets === PUPPETS && d.stats.starved > 0 && Array.from(d.byKey.values()).filter((x) => x.puppet).length === PUPPETS, `all of them at her feet, ${PUPPETS} wear puppets and the rest are counted starved rather than drawn wrong`, `starved ${d.stats.starved}`)
   sites.length = 0
   step()

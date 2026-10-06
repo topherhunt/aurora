@@ -163,16 +163,18 @@ export class Hands {
    * record into the backpack and says whether it fit; `thud(x, y, z)` is a
    * dropped thing meeting the ground, and `splash(x, y, z)` one falling into
    * the water from above it. `rand` is the roll's, the flap's and
-   * the drift's own stream. `scale` is her size against the world (DESIGN.md
+   * the drift's own stream. `eaten(lure, eater)` is a creature eating what a
+   * hand of hers held (eatLure). `scale` is her size against the world (DESIGN.md
    * §30): each hand's reach, the size of thing it lifts and the backpack zone
    * about her head are hers, and shrink with her.
    */
-  constructor(scene, { walk, water, haptic, stow, thud, splash, rand = Math.random, scale = 1 }) {
+  constructor(scene, { walk, water, haptic, stow, thud, splash, eaten, rand = Math.random, scale = 1 }) {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Hands needs the WalkSurface, for heightAt and normalAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt')
-    if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z) and splash(x, y, z)')
+    if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function' || typeof eaten !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z), splash(x, y, z) and eaten(lure, eater)')
     if (!(scale > 0)) throw new Error(`Hands: scale must be positive, not ${scale}`)
     this.scale = scale
+    this.eaten = eaten
     this.walk = walk
     this.water = water
     this.haptic = haptic
@@ -351,14 +353,24 @@ export class Hands {
   /** Where her hand `key` is in the world, into `out`. */
   pointOf(key, out) { return out.copy(this._point(this._hand(key))) }
 
-  /** Her hand holding `lure` (one lures() handed out) loses the thing to a creature that ate it; false if no hand of hers holds it. */
-  eatLure(lure) {
+  /** Her hand holding `lure` (one lures() handed out) loses the thing to a creature that ate it, the `eater` ('stag', 'strider', 'leafkin'...) told to `eaten`; false if no hand of hers holds it. */
+  eatLure(lure, eater) {
     for (const hand of this.hands.values()) {
       if (hand.lure !== lure || !hand.held) continue
       this._unhold(hand)
+      this.eaten(lure, eater)
       return true
     }
     return false
+  }
+
+  /** She eats what hand `key` holds: it is gone from the hand, and its record returned. */
+  eat(key) {
+    const hand = this._hand(key)
+    if (!hand.held) throw new Error(`Hands.eat: ${key} holds nothing`)
+    const rec = hand.held.rec
+    this._unhold(hand)
+    return rec
   }
 
   _hand(key) {

@@ -11,6 +11,7 @@ import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S, loadBipedGlb } from './snowmen.js'
 import { atFace, dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
+import { EAT } from '../eating.js'
 import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
 import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
 import { DOOR_FADE_S, NIGHT, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, nightPull, pathTo } from './villagers.js'
@@ -1178,9 +1179,10 @@ export class Townsfolk {
    * @param opts.journeys  journeys.js Journeys over the roads, if any: the striders at the rails and the travellers
    * @param opts.bond      wild-striders.js's { trusted, grown }: a tied strider fed a fish trusts her, as a wild one does
    * @param opts.eat       (lure) => true once her hand holding it has lost it
+   * @param opts.harm      (n, why) => her hurt by a maddened tied strider (_fury)
    * @param opts.hourAt    (seconds) => the hour of day at a room time (clock.js WorldClock.hourAt), for the evening's fire and the night's homes
    */
-  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false, hourAt } = {}) {
+  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false, harm = () => {}, hourAt } = {}) {
     if (!Array.isArray(towns)) throw new Error('Townsfolk: needs the towns')
     if (typeof hourAt !== 'function') throw new Error('Townsfolk: needs hourAt')
     this.hourAt = hourAt
@@ -1193,6 +1195,9 @@ export class Townsfolk {
     this.journeys = journeys
     this.bond = bond
     this.eat = eat
+    this.harm = harm
+    // Whether the tied striders near her strike at her from their rails (madden).
+    this.maddened = false
     // Keys of the tied striders she rides (WildStriders.borrow), hidden at their rails meanwhile.
     this.lent = new Set()
     this.treats = 0
@@ -1392,6 +1397,7 @@ export class Townsfolk {
         if (!m.active && !m.puppet) continue
         this._feed(m, dt, lures)
         this._poseMount(m, life.alpha)
+        this._fury(m, dt, head)
         this._shy(m, dt, head, seconds, lures)
         m.dist = Math.hypot(m.pose.x - head.x, m.pose.y - head.y, m.pose.z - head.z)
         mounts.push(m)
@@ -1436,7 +1442,7 @@ export class Townsfolk {
       m.shy = null
     }
     if (!m.shy) {
-      if (m.state !== 'tied' || m.gone || m.treat || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
+      if (m.state !== 'tied' || m.gone || m.treat || m.fury || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
       if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || atFace(p, head) || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
       this._startle(m, { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), since: seconds, by: null, aim: Math.atan2(-(p.z - head.z), p.x - head.x) })
       this._oweShy(m, 'run')
@@ -1605,6 +1611,36 @@ export class Townsfolk {
     const r = TOWNSFOLK.girth + pad
     for (const c of this.shown) if (c.pose.hop === 0 && Math.abs(c.pose.x - x) < r && Math.abs(c.pose.z - z) < r && Math.hypot(c.pose.x - x, c.pose.z - z) < r) return true
     return false
+  }
+
+  /** Her chanterelle (eating.js): `on`, the tied striders within EAT.chanterelle.m strike at her (_fury); `dark` 0..1, every strider drawn that much toward black. */
+  madden(on, dark) {
+    this.maddened = on
+    if (this.striders) this.striders.darken(dark)
+  }
+
+  /** A tied strider maddened by her chanterelle, drawn over the sim's pose: turned to her at its rail and striking, her hurt as a wild one's strike hurts (WILD.harm) when she is within its reach. */
+  _fury(m, dt, head) {
+    const p = m.pose
+    if (m.fury && (!this.maddened || m.state !== 'tied' || m.gone)) m.fury = null
+    if (!m.fury) {
+      if (!this.maddened || m.state !== 'tied' || m.gone || m.treat || m.shy || !m.puppet) return
+      if (Math.hypot(p.x - head.x, p.z - head.z) >= EAT.chanterelle.m) return
+      m.fury = { t: 0, hit: false, cue: ++this.treats }
+    }
+    const f = m.fury
+    f.t += dt
+    p.heading = Math.atan2(-(head.z - p.z), head.x - p.x)
+    p.clip = 'attack'
+    p.speed = 0
+    p.cue = -1 - f.cue
+    if (!f.hit && f.t >= WILD.lunge) {
+      f.hit = true
+      if (Math.hypot(p.x - head.x, p.z - head.z) < WILD.charge.close * p.size + WILD.charge.reach) this.harm(WILD.harm, 'a maddened town strider')
+    }
+    const clip = this.striders.asset.clips.find((c) => c.name === 'attack')
+    if (!clip) throw new Error('Townsfolk: the strider has no attack clip')
+    if (f.t >= clip.duration) m.fury = null
   }
 
   /** A tied strider eating the fish she holds to its beak, over the sim's clip: it trusts her after, or if it did, grows. */

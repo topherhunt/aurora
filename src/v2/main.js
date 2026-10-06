@@ -67,7 +67,7 @@ import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
 import { Trust } from './trust.js'
 import { Hobs } from './render/hobs.js'
-import { Roosts, loadEggBank, loadRoostMaps, MAPS as ROOST_MAPS } from './render/roosts.js'
+import { Roosts, loadEggBank } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
 import { Entrances, PORTAL, SCREEN_POOL, holeBox, loadMouthBank } from './render/entrances.js'
 import { HOUSE_BOUNDS, RoomProps } from './render/room-props.js'
@@ -100,7 +100,7 @@ import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
 import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, pressSafety, roomKey } from './flaregun.js'
-import { Flares, fromWire, toWire } from './render/flares.js'
+import { FLARE, Flares, fromWire, toWire } from './render/flares.js'
 import { Flints, KIND as FLINT, SPARK, SPARK_CAP, SPARK_M, SPARK_S, STRIKE, clickBuffer, sparkColor, strikeCatches } from './flint.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
@@ -128,6 +128,7 @@ import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
+import { Bites, EAT, Effects, buzzBuffer, edible, reversedBuffer } from './eating.js'
 import { siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
 import { CaveWalk } from './caves/walk.js'
@@ -851,6 +852,8 @@ function saveGame() {
     // Her player id, and every villager's trust she knows of.
     trust: trust.save(),
     chalk: chalk.save(),
+    // Her size, as the mushrooms left it; their timed effects are not saved.
+    size: effects.size,
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -881,6 +884,8 @@ function applySave(doc) {
   if (doc.trust !== undefined) trust.load(doc.trust)
   // After trust, whose player the strokes are hers by. A save from before chalk has none.
   if (doc.chalk !== undefined) chalk.load(doc.chalk)
+  // A save from before eating has no `size`: she is her own.
+  effects.setSize(doc.size ?? 1)
 }
 
 /** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
@@ -979,6 +984,7 @@ function newGame() {
   rig.rotation.set(0, 0, 0)
   if (!sceneEl.is('vr-mode')) camera.rotation.set(0, 0, 0)
   health.heal()
+  effects.reset()
   placeQuestPanel()
   console.log(`[v2] new game at ${SPAWN.x}, ${SPAWN.z}`)
 }
@@ -987,6 +993,9 @@ function newGame() {
 
 const health = new Health()
 const sleep = new Sleep()
+// What she has eaten and is under (eating.js), and each hand's time at her mouth.
+const effects = new Effects()
+const bites = new Bites()
 let vitalsHud = null
 // The bed she was laid in (by a click, or by walking or teleporting onto it), the standing pose to give back, whether to stand her `beside` the bed instead, and `upAt` (ms) once she has woken, when she stands. Null when she is not laid in one.
 let laid = null
@@ -1086,6 +1095,7 @@ function getUp() {
 
 function harm(n, why) {
   if (n <= 0 || health.dead) return
+  n *= effects.guard
   const died = health.harm(n)
   console.log(`[vitals] ${why}: -${n} HP, ${health.hp} left`)
   vitalsHud.flash()
@@ -1117,6 +1127,8 @@ async function revive(doc) {
   else applySave(doc)
   if (doc !== null && doc.house) await intoSavedHouse(doc.house)
   health.heal()
+  effects.clear()
+  bites.clear()
   reviving = false
 }
 
@@ -1126,11 +1138,104 @@ function reviveFrom(load) {
   revive(load && hasSave() ? readSave() : null).catch(reportRuntimeError)
 }
 
+// --- eating (design/33-vitals.md §Eating) -------------------------------------
+
+// Her mouth, in the camera's frame: a little under and ahead of the eyes.
+const MOUTH = new THREE.Vector3(0, -0.07, -0.06)
+const mouthAt = new THREE.Vector3()
+const biteHand = new THREE.Vector3()
+// The fly agaric's sight: a green flare over each town, mouth and roost within EAT.agaric.m, VISION_UP m above it, the list re-found every VISION_EVERY_S.
+const VISION = { ...FLARE, sparks: 24, rate: 0.5, speed: 2.4, gravity: 0.1, gain: 2.4 }
+const VISION_COLOR = 0x60ff70
+const VISION_UP = 4
+const VISION_EVERY_S = 1
+let visions = null
+let visionsIn = 0
+// The fly agaric's buzz: a GainNode on a looping buzzBuffer, silent until she eats one (startBuzz).
+let buzz = null
+const BUZZ_GAIN = 0.12
+
+function startBuzz(sound) {
+  const src = sound.ctx.createBufferSource()
+  src.buffer = buzzBuffer(sound.ctx)
+  src.loop = true
+  const gain = sound.ctx.createGain()
+  gain.gain.value = 0
+  src.connect(gain).connect(sound.near)
+  src.start()
+  return gain
+}
+
+/** Every frame, before the desk hand is placed: a hand of food at her mouth for EAT.holdS is eaten, and what she is under carried to the world. */
+function stepEating(dt) {
+  effects.update(dt)
+  const xr = renderer.xr.isPresenting
+  const awake = !health.dead && laid === null && sleep.state === 'awake'
+  camera.localToWorld(mouthAt.copy(MOUTH))
+  for (const key of HAND_KEYS) {
+    const food = awake && edible(hands.holding(key))
+    const atMouth = key === 'desk'
+      ? food && !xr && deskPress !== null && deskPress.food
+      : food && xr && hands.pointOf(key, biteHand).distanceTo(mouthAt) < EAT.mouth * herScale()
+    if (bites.step(key, atMouth, dt)) eatFrom(key)
+  }
+  if (wildlife) wildlife.madden(effects.maddened, effects.dread)
+  if (wildStriders) wildStriders.madden(effects.maddened, effects.dread)
+  if (townsfolk) townsfolk.madden(effects.maddened, effects.dread)
+  if (buzz) buzz.gain.setTargetAtTime(BUZZ_GAIN * effects.seeing, sound.ctx.currentTime, 0.1)
+  stepVisions(dt)
+}
+
+function eatFrom(key) {
+  const rec = hands.eat(key)
+  const what = rec.kind === 'mushroom' ? rec.name : rec.kind
+  const { heal, harm: hurt, sound: fx } = effects.eat(rec)
+  if (ambience) {
+    sound.play('eat', { bus: 'near', gain: 0.9 })
+    if (fx !== null) sound.play(fx, { bus: 'near', gain: 0.8 })
+  }
+  if (heal > 0) { health.heal(heal); console.log(`[vitals] ate a ${what}: +${heal} HP, ${health.hp}`) }
+  harm(hurt, `ate a ${what}`)
+}
+
+function stepVisions(dt) {
+  const seeing = effects.seeing
+  visions.material.uniforms.uGain.value = VISION.gain * seeing
+  visionsIn -= dt
+  if (seeing > 0 && visionsIn <= 0) {
+    visionsIn = VISION_EVERY_S
+    const feet = player.originPosition()
+    const near = (s) => Math.hypot(s.x - feet.x, s.z - feet.z) < EAT.agaric.m
+    const sites = [
+      ...(townPlan ? townPlan.towns : []),
+      ...(entrances ? entrances.sites() : []),
+      ...(caveSites !== null ? caveSites.mouths : []),
+      ...(roosts ? roosts.sites() : []),
+    ].filter(near)
+    visions.clear()
+    for (const [i, s] of sites.entries()) {
+      const y = s.y + VISION_UP
+      visions.add({ id: `vision:${i}`, room: visions.room, ox: s.x, oy: y, oz: s.z, tx: s.x, ty: y, tz: s.z, color: VISION_COLOR, seed: (i * 0.618) % 1 }, 10)
+    }
+  }
+  if (seeing === 0) visions.clear()
+}
+
+/** Every frame: her size (herScale) onto the rig, the walks, the hands and the wire, when it has changed. A cave's walk is fixed at unit scale. */
+function stepSize() {
+  const k = herScale()
+  if (k === player.scale) return
+  player.setScale(k)
+  for (const w of [walk, indoors?.outside, cave?.outside]) if (w instanceof WalkSurface) w.setScale(k)
+  hands.scale = k
+  netplay.scale = k
+}
+
 /** Every frame from the top of the tick: the veil, the donut, the heartbeat and the death card. */
 function stepHud(dt) {
   vitalsHud.place(renderer.xr.isPresenting, camera.fov, camera.aspect)
   const card = health.dead && !reviving
-  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card })
+  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card, tint: effects.tint })
   if (beat && ambience) sound.play('heartbeat', { bus: 'near', gain: 0.25 + 0.35 * health.hurt })
   const buttons = card && vitalsHud.deathShown && !renderer.xr.isPresenting
   if (buttons !== (deathButtons.style.display === 'flex')) {
@@ -2366,8 +2471,13 @@ function buildQuestPanel() {
   const pointer = new THREE.Vector2()
   let downX = 0
   let downY = 0
-  renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY })
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    downX = e.clientX; downY = e.clientY
+    if (e.button === 0 && hands && !sceneEl.is('vr-mode')) deskPress = { at: performance.now(), food: edible(hands.holding('desk')) }
+  })
   window.addEventListener('pointerup', (e) => {
+    const press = e.button === 0 ? deskPress : null
+    if (e.button === 0) deskPress = null
     if (sceneEl.is('vr-mode')) return
     if (vitalsHold()) {
       if (e.button === 0 && e.target === renderer.domElement && Math.hypot(e.clientX - downX, e.clientY - downY) <= DESK_CLICK_PX) vitalsPress = true
@@ -2392,6 +2502,7 @@ function buildQuestPanel() {
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
+    if (press !== null && press.food && performance.now() - press.at >= DESK_EAT_PRESS_MS) return
     const reach = BED_REACH_M * herScale()
     const bed = sleep.state === 'awake' ? worldBeds().find((b) => b.free && (rayHitsBed(b, raycaster.ray.origin, raycaster.ray.direction) ?? Infinity) <= reach) : undefined
     if (bed) { lieDown(bed, false); return }
@@ -3000,6 +3111,10 @@ const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
 const DESK_CLICK_PX = 5
 const DESK_CLICK_M = 2
+// A desktop press held this long on food in the desk hand is a bite begun, not a click: its release neither drops nor picks.
+const DESK_EAT_PRESS_MS = 300
+// The left button held down on the desktop since `at` (ms), and whether the desk hand held food then; null when up.
+let deskPress = null
 // The flare gun (flaregun.js): its source, registered with every room's hands; every room's flares, drawn in the room she is in (render/flares.js), built at boot and never torn down; and the peers' shots heard within FLARE_HEARD_M, every shot's sound slowed to FLARE_RATE, then rolled like any other.
 const flareGuns = new FlareGuns()
 let flares = null
@@ -3338,8 +3453,8 @@ const ROOMS = {
   leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true, scale: HER_SCALE },
 }
 let currentRoom = ROOMS.overworld
-/** Her size against the room she is in. Set only under the swap's black, on the rig by the room's Player. */
-const herScale = () => currentRoom.scale
+/** Her size against the world: the room's, times what the mushrooms have made her (effects.size). Carried to the rig, walk, hands and wire by stepSize. */
+const herScale = () => currentRoom.scale * effects.size
 // What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
 let roomSpec = null
 let roomHeightmap = null
@@ -3396,7 +3511,11 @@ async function bootWorld() {
   // until the first gesture; see unlockSound.
   sound = new SoundEngine()
   soundReady = sound.load(SOUNDS).then(
-    () => { sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); sound.buffers.set('flintClick', clickBuffer(sound.ctx)); console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
+    () => {
+      sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); sound.buffers.set('flintClick', clickBuffer(sound.ctx))
+      sound.buffers.set('zoomBack', reversedBuffer(sound.ctx, sound.buffers.get('zoom')))
+      buzz = startBuzz(sound)
+      console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
     (err) => { console.error('[v2] sound disabled:', err); return false },
   )
 
@@ -3406,6 +3525,7 @@ async function bootWorld() {
   // The editor ignores it and always boots at the new game's spawn.
   flares = new Flares(scene)
   sparks = new Flares(scene, { look: SPARK, cap: SPARK_CAP, fadeS: SPARK_S, size: SPARK_M })
+  visions = new Flares(scene, { look: VISION })
   let saved = EDITOR_MODE ? null : readSave()
   let room = ROOMS[saved?.room ?? 'overworld']
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${saved.room}`)
@@ -3712,7 +3832,7 @@ async function openHouse(e) {
   const oy = top + 0.5
   const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz, mushrooms, lighting.uniforms.uTorch)
   scene.add(view.group)
-  const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
+  const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: herScale() })
   const home = villagers.graph.doorNodes[e.k]
   const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace, feast: c.feast }))
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz, hands, mushrooms, hour: () => clock.hour })
@@ -3748,7 +3868,7 @@ async function openTownHouse(t, i) {
   const ox = b.x, oy = b.y + 250, oz = b.z
   const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz, lighting.uniforms.uTorch)
   scene.add(view.group)
-  const inner = new WalkSurface({ heightAt: (x, z) => oy + townFloorAt(room, x - ox, z - oz) }, new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: currentRoom.scale })
+  const inner = new WalkSurface({ heightAt: (x, z) => oy + townFloorAt(room, x - ox, z - oz) }, new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: herScale() })
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
   const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz, hour: () => clock.hour })
   const e = townDoor(t, i)
@@ -3861,7 +3981,7 @@ const houseHidden = new Set()
 const chalkStones = new ChalkStones()
 for (const m of chalkStones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-chalk' })
 // The boulders' stone tile, worn by the cave rock and the chalk lumps.
-const caveStone = new THREE.TextureLoader().load(ROOST_MAPS.stone)
+const caveStone = new THREE.TextureLoader().load('rocks/stone.png')
 caveStone.colorSpace = THREE.SRGBColorSpace
 caveStone.wrapS = caveStone.wrapT = THREE.RepeatWrapping
 caveStone.anisotropy = 4
@@ -4035,7 +4155,7 @@ function closeCave() {
 
 /** Fills `keep` with the scene children that draw under any roof: her rig, hands, held things, peers, effects, the lights, the panel, and the baked bodies' batches (bakedRoot), which draw the residents and skip any body whose own group is hidden. */
 function keepUnderRoof(keep) {
-  keep.add(rig).add(heldLayer).add(bakedRoot).add(hands.batch).add(peerAvatars.group).add(flares.mesh).add(sparks.mesh).add(shotFlash.mesh).add(sun).add(sun.target).add(hemi)
+  keep.add(rig).add(heldLayer).add(bakedRoot).add(hands.batch).add(peerAvatars.group).add(flares.mesh).add(sparks.mesh).add(visions.mesh).add(shotFlash.mesh).add(sun).add(sun.target).add(hemi)
   for (const d of [wildfire.flames, wildfire.torches]) if (d.group) keep.add(d.group)
   if (questPanelGroup !== null) keep.add(questPanelGroup)
   if (questPointer !== null) keep.add(questPointer.dot).add(questPointer.line)
@@ -4173,6 +4293,7 @@ async function buildRoom(room, at) {
   currentRoom = room
   flares.setRoom(roomKey(room.id, room.village ? cameInBy : null))
   sparks.setRoom(flares.room)
+  visions.setRoom(flares.room)
   bootSteps.length = 0
   // ONE SEED FOR EVERY ROOM: the terrain worker seeds its own V2Height from the
   // shared constant (terrain/worker.js), so a room seeded otherwise would draw
@@ -4532,7 +4653,7 @@ async function buildRoom(room, at) {
 
   // She stands on the rocks and walks around the trunks, so she is placed only
   // once both are on the ground. See v2/walk.js.
-  walk = new WalkSurface(height, rocks, trees, { scale: room.scale })
+  walk = new WalkSurface(height, rocks, trees, { scale: herScale() })
   walk.setWater(waterLevelAt)
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
@@ -4540,7 +4661,7 @@ async function buildRoom(room, at) {
   if (towns) {
     walk.addStone(towns)
     const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies }) : null
-    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure), hourAt: (s) => clock.hourAt(s) })
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure, 'strider'), harm, hourAt: (s) => clock.hourAt(s) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
     if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addStone(townsfolk)
@@ -4562,8 +4683,8 @@ async function buildRoom(room, at) {
   // Only now: probeVantage reads the walk surface and the water polygons.
   worldProbe.setVantage(probeVantage)
   window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
-  player = new Player(rig, camera, walk, { scale: room.scale })
-  netplay.scale = room.scale
+  player = new Player(rig, camera, walk, { scale: herScale() })
+  netplay.scale = herScale()
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
   // A save before `y` was written lands on the topmost surface.
   player.spawnAt(spawn.x, spawn.z, fresh ? undefined : at.y)
@@ -4825,7 +4946,7 @@ async function buildRoom(room, at) {
   // the first frame after they land fills the tiles around her. A village holds
   // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, eat: (lure) => hands.eatLure(lure) })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, eat: (lure, sp) => hands.eatLure(lure, sp), harm })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -4836,7 +4957,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
@@ -4892,7 +5013,9 @@ async function buildRoom(room, at) {
     // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
     thud: (x, y, z) => { if (ambience) sound.play('footfall', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: heardAt({ x, y, z }) }) },
     splash: (x, y, z) => { if (ambience) sound.play('splash', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
-    scale: room.scale,
+    // A creature eating from her hand: deeper from a strider or a stag.
+    eaten: (lure, eater) => { if (ambience) sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) }) },
+    scale: herScale(),
   })
   hands.addSource(mushrooms, 'mushroom')
   hands.addSource(carrots, 'carrot')
@@ -4920,17 +5043,16 @@ async function buildRoom(room, at) {
   handsNet = new HandsNet(hands, netplay, peerAvatars, taken)
   window.v2handsNet = handsNet
 
-  // The dragons' roosts (render/roosts.js), a scatter like the bones with its
-  // own bark and stone maps and the shipped egg in half of them, and the
-  // dragons that live in them (render/dragons.js), hunting the wildlife's
+  // The dragons' roosts (render/roosts.js), fortresses of the rocks' own
+  // boulder on the peaks with the shipped egg in half of them, and the pairs
+  // of dragons that live in them (render/dragons.js), hunting the wildlife's
   // stags. The roosts stand at once; the dragons wait for their GLB like the rest.
   await bootStep('dragons')
   if (!room.village) {
-    const [roostMaps, eggBank] = await Promise.all([loadRoostMaps(), loadEggBank()])
-    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, maps: roostMaps, egg: eggBank })
+    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank() })
     for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
     roosts.place(spawn.x, spawn.z)
-    roosts.bakeCards(renderer)
+    walk.addStone(roosts)
     console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
     window.v2roosts = roosts
     hands.addSource(roosts, 'egg')
@@ -5582,6 +5704,7 @@ const HOTKEYS = [
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'hold click', what: `with a carrot, fish or mushroom in the hand, hold for ${EAT.holdS} s to eat it; in the headset, hold it to your mouth` },
       { keys: 'drag', what: `with chalk in the hand in a cave, draw on the rock under the cursor within ${DESK_CLICK_M} m; in the headset, hold the chalk to the rock` },
       { keys: 'e', what: 'let go of what the hand holds, where the hand is (a click no longer does)' },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
@@ -6549,6 +6672,7 @@ function readQuestFallback(st) {
 // Her head for the hands: where it is and the bearing it faces, the frame the
 // backpack zone is judged in. One object, rewritten each call.
 const handsHeadTmp = { x: 0, y: 0, z: 0, yaw: 0 }
+const deskMouth = new THREE.Vector3()
 // The desk hand's node under the camera: at rest while empty, and with a thing
 // in it at the bottom-right corner of the view, drawn at its size up to
 // DESK_HAND_MAX_M (a bigger thing is shrunk to that, hands.draw), far enough
@@ -6568,6 +6692,9 @@ function placeDeskHand() {
   const halfH = d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
   const halfW = halfH * camera.aspect
   deskHand.position.set(halfW - 0.35 * s, -(halfH - 0.35 * s), -d)
+  // A bite begun (stepEating) draws it to her mouth, there by the first half of EAT.holdS.
+  const bite = Math.min(1, 2 * bites.progress('desk'))
+  if (bite > 0) deskHand.position.lerp(deskMouth.set(0, -0.6 * halfH, -d), bite)
 }
 
 function handsHead() {
@@ -7646,6 +7773,8 @@ function tick() {
   if (cave === null && !indoors) stepOverworld(dt, now)
   // In a leafkin house the village goes on without her (~1 ms a second), so its own come home and go out (Residents.sync).
   else if (indoors && !indoors.town && villagers) stepAnimal('leafkin', () => villagers.settle(clock.seconds, dt))
+  stepEating(dt)
+  stepSize()
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
   placeDeskHand()
   hands.update(dt, handsHead())
@@ -7656,6 +7785,7 @@ function tick() {
   syncTrust()
   flares.update(dt, renderer.getDrawingBufferSize(flarePx).y)
   sparks.update(dt, flarePx.y)
+  visions.update(dt, flarePx.y)
   updateFire(dt)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()

@@ -51,6 +51,8 @@ import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from './sense.js'
 
 /** Every clip the ambience uses, by the name the rules call it. Paths are public/-relative like every other asset. */
 export const SOUNDS = {
+  eat: 'sounds/action-eat.mp3',
+  zoom: 'sounds/effect-zoom.mp3',
   crow: 'sounds/bird-crow.mp3',
   eagle: 'sounds/bird-eagle.mp3',
   hawk: 'sounds/bird-hawk.mp3',

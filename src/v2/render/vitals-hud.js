@@ -31,6 +31,7 @@ uniform float uPulse;
 uniform float uLid;
 uniform float uBlack;
 uniform float uFlash;
+uniform vec4 uTint;
 varying vec3 vDir;
 void main() {
   vec3 d = normalize(vDir);
@@ -41,8 +42,10 @@ void main() {
   float lids = max(smoothstep(open - 0.12, open, abs(s.y)), smoothstep(0.85, 1.0, uLid)) * step(0.001, uLid);
   float black = max(lids, uBlack);
   vec3 tint = mix(vec3(0.75, 0.02, 0.02), vec3(0.28, 0.0, 0.01), uHurt);
-  float a = black + red * (1.0 - black);
-  gl_FragColor = vec4(a > 0.0 ? tint * red * (1.0 - black) / a : vec3(0.0), a);
+  float ta = uTint.a * (0.6 + 0.4 * edge);
+  vec3 lit = (tint * red + uTint.rgb * ta * (1.0 - red)) * (1.0 - black);
+  float a = black + (red + ta * (1.0 - red)) * (1.0 - black);
+  gl_FragColor = vec4(a > 0.0 ? lit / a : vec3(0.0), a);
 }`
 
 const donutVert = /* glsl */ `
@@ -117,7 +120,7 @@ export class VitalsHud {
     this.veil = overlay(new THREE.Mesh(
       new THREE.SphereGeometry(0.9, 24, 16),
       new THREE.ShaderMaterial({
-        uniforms: { uHurt: { value: 0 }, uPulse: { value: 0 }, uLid: { value: 0 }, uBlack: { value: 0 }, uFlash: { value: 0 } },
+        uniforms: { uHurt: { value: 0 }, uPulse: { value: 0 }, uLid: { value: 0 }, uBlack: { value: 0 }, uFlash: { value: 0 }, uTint: { value: new THREE.Vector4() } },
         vertexShader: veilVert, fragmentShader: veilFrag,
         side: THREE.BackSide, transparent: true, depthTest: false, depthWrite: false,
       }),
@@ -191,9 +194,10 @@ export class VitalsHud {
   /**
    * One frame. `hp` of `max`, `hurt` 0..1 (vitals.js Health), `lid` 0..1
    * (Sleep), `dead`, and whether the death `card` may show once the view has
-   * gone wholly black (then `deathShown`). True on the frame a heartbeat is due.
+   * gone wholly black (then `deathShown`). `tint` is the mushrooms' wash,
+   * [r, g, b, a] (eating.js Effects.tint). True on the frame a heartbeat is due.
    */
-  update(dt, { hp, max, hurt, lid, dead, card }) {
+  update(dt, { hp, max, hurt, lid, dead, card, tint }) {
     this.black = Math.max(0, Math.min(1, this.black + (dead ? dt / DIE_S : -dt / REVIVE_S)))
     this.deathShown = dead && this.black === 1
     let beat = false
@@ -213,7 +217,8 @@ export class VitalsHud {
     u.uBlack.value = this.black
     this.flashT = Math.max(0, this.flashT - dt)
     u.uFlash.value = this.flashT / FLASH_S
-    this.veil.visible = hurt > 0 || lid > 0 || this.black > 0 || this.flashT > 0
+    u.uTint.value.fromArray(tint)
+    this.veil.visible = hurt > 0 || lid > 0 || this.black > 0 || this.flashT > 0 || tint[3] > 0
 
     const d = this.donut.material.uniforms
     d.uFrac.value = hp / max

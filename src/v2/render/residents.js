@@ -362,7 +362,7 @@ export class Residents {
       if (trusts(r.id)) { if (fearing) this._choose(r, false); continue }
       const lure = r.state === 'court' ? held.find((l) => this._under(r, l)) : undefined
       if (lure !== undefined) {
-        if (!this.hands.eatLure(lure)) throw new Error('Residents: her mushroom was offered from no hand of hers')
+        if (!this.hands.eatLure(lure, 'leafkin')) throw new Error('Residents: her mushroom was offered from no hand of hers')
         held.splice(held.indexOf(lure), 1)
         this.won.push(r.id)
         r.feast = true

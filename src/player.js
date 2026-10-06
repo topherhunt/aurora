@@ -141,11 +141,9 @@ export class Player {
    * here too. `terrainHeight` carries its own (WalkSurface's `scale`).
    */
   constructor(rig, camera, terrainHeight, { scale = 1 } = {}) {
-    if (!(scale > 0)) throw new Error(`Player: scale must be positive, not ${scale}`)
     this.rig = rig
     this.camera = camera
-    this.scale = scale
-    rig.scale.setScalar(scale)
+    this.setScale(scale)
     this.setGround(terrainHeight)
     this._obstacle = { x: 0, z: 0, r: 0 }
     this._push = { x: 0, z: 0 }
@@ -189,6 +187,13 @@ export class Player {
     this._step = new THREE.Vector3()
     this._q = new THREE.Quaternion()
     this._maxTan = Math.tan((LOCOMOTION.maxSlopeDeg * Math.PI) / 180)
+  }
+
+  /** Her size against the world, from now (see the constructor); her walk surface takes its own (WalkSurface.setScale). */
+  setScale(scale) {
+    if (!(scale > 0)) throw new Error(`Player: scale must be positive, not ${scale}`)
+    this.scale = scale
+    this.rig.scale.setScalar(scale)
   }
 
   /**

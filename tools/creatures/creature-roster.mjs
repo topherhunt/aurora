@@ -75,9 +75,8 @@ const ANIMALS = [
     id: 'fen-dragon',
     label: 'Fen Dragon',
     rigType: 'quadruped',
-    // Wingspan, not body length: with the wings spread they are the longest
-    // dimension, and sizeM is what places the creature in the world.
-    sizeM: 12,
+    // Body length, nose to tail: the bind pose's X extent is drawn at sizeM.
+    sizeM: 9,
     // Wings, but rigType stays quadruped: Tripo's RIG_TYPES has no draconic
     // skeleton, so the preset rigs the four legs and the wings ride along as
     // unweighted geometry until they get a hand-built hinge.

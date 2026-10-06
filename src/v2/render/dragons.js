@@ -1,9 +1,10 @@
 // ---------------------------------------------------------------------------
-// THE DRAGONS: one fen dragon to every roost (render/roosts.js), flying out
-// from its nest and carrying a kill home.
+// THE DRAGONS: a pair of fen dragons to every roost (render/roosts.js), the
+// guard (`:g`, more vivid) resting on the nest every chapter, the male flying
+// out from it and carrying a kill home. Each wears a strong hue (DRAGON_HUES).
 //
 // A DRAGON IS ITS ROOST'S. roosts.sites() lists the nests resident round her,
-// and this layer keeps exactly one dragon per site, born the frame the site
+// and this layer keeps exactly two dragons per site, born the frame the site
 // appears and retired (its body dissolving where it flies) the frame the site
 // goes. Where a dragon lives is where its roost was placed, and the roost is
 // the pure function of position; what it is doing is a pure function of the
@@ -47,11 +48,10 @@
 // talons is that stag's own slot (Wildlife.kill) while its chapter runs.
 //
 // A KILL ON THE NEST IS A MEAL. Landing with cargo, the kill is laid at a
-// FIXED spot on the nest floor (NEST_ASIDE off centre), the dragon walks a
-// circuit, then round to the far side of the kill and up to it, and `eat`s --
-// the eat clip plunging the head EAT_REACH ahead of the body, which is where
-// the kill lies -- for EAT_S, at the end of which the carcass is dropped to
-// fade.
+// FIXED spot EAT_REACH ahead of the dragon's own spot on the nest, the dragon
+// walks a circuit, then round behind its spot and up to it, and `eat`s -- the
+// eat clip plunging the head EAT_REACH ahead of the body, which is where the
+// kill lies -- for EAT_S, at the end of which the carcass is dropped to fade.
 //
 // A FISH IN HER HAND IS ITS: the one thing that takes a dragon off its score.
 // A grounded dragon with a `fish` lure within LURE drops whatever it has and
@@ -115,26 +115,31 @@ import {
   setCritterCard, tileSeed,
 } from './critters.js'
 import { stepLodFade, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet, rollTint, solverStub, tintFor } from './baked-puppet.js'
+import { makePuppet, puppetMode, solverStub, tintRange } from './baked-puppet.js'
 import { TailLag } from './tail-lag.js'
 import { TILE as ROOST_TILE } from './roosts.js'
 
-/** The room's key for the dragon of a roost: its tile, which is where the roost is a pure function of (creature-net.js routes the `dr` prefix here). */
-export const keyOf = (site) => `dr:${site.tx},${site.tz}`
-const KEY_RE = /^dr:(-?\d+),(-?\d+)$/
+/** The room's key for a dragon of a roost: its tile, which is where the roost is a pure function of, and `:g` for the guard (creature-net.js routes the `dr` prefix here). */
+export const keyOf = (site, guard = false) => `dr:${site.tx},${site.tz}${guard ? ':g' : ''}`
+const KEY_RE = /^dr:(-?\d+),(-?\d+)(:g)?$/
 
 export const CLIPS = ['idle', 'alert', 'walk', 'run', 'sit', 'lie', 'fly', 'eat']
 const ONE_SHOT = new Set(['sit', 'lie'])
 // The two pictures of a far dragon, and the order they sit in the texture.
 export const DRAGON_VIEWS = ['side', 'top']
 
-// Dragons at once, and puppets. A roost is one to 160 000 m^2, so the sites
-// resident round her number a handful; the puppets are for the ones in MESH
-// range, which is a couple.
-export const MAX = 16
+// Dragons at once, and puppets. A roost is one to a summit's territory, so the
+// sites resident round her number a handful, two dragons each; the puppets are
+// for the ones in MESH range, which is a pair or two.
+export const MAX = 24
 export const PUPPETS = 6
 // How far either side of the shipped size a dragon rolls.
 export const SIZE_VARY = 0.15
+// The colours a dragon rolls: linear RGB multipliers on the shipped olive texture, walked end to end (tintRange) -- purple, blue, sky, green, grey, brown, red, orange -- each pushed this far from its grey for the guard and pulled toward it for the male.
+export const DRAGON_HUES = [[1.2, 0.45, 1.45], [0.4, 0.65, 1.95], [0.5, 1.05, 1.55], [0.6, 1.6, 0.65], [0.95, 0.95, 1.1], [1.3, 0.95, 0.65], [1.95, 0.55, 0.45], [1.8, 1, 0.3]]
+export const GUARD_VIVID = 1.35
+export const MALE_VIVID = 0.85
+const rollHue = tintRange(DRAGON_HUES)
 // The scales' roughness: a rough gleam at half the sun's lobe (puppet.js gloss), broader and duller than the egg's shell.
 export const SCALE_ROUGHNESS = 0.5
 
@@ -208,7 +213,7 @@ export const REST_ODDS = [0.3, 0.2, 0.3, 0.1, 0.1]
 export const WALK_TURN_RATE = 1.5
 export const STRIDE_ACCEL = 3.2
 export const WAY = 0.5
-export const WALK_RING = 0.3
+export const WALK_RING = 0.6
 export const WALK_STEP = 1.3
 export const APPROACH = 1.2
 // How often an aim on an explore becomes a visit, the steepest ground a dragon will alight on, and how many nest radii from home a spot must be to count as away.
@@ -219,9 +224,8 @@ export const SPOT_AWAY = 3
 export const PROBE_EVERY = 2
 // Clip cross-fade.
 const FADE_S = 0.35
-// Where a dragon stands on its nest, above the floor as a fraction of the rim's radius, and how far to the side of it the kill lies.
-const NEST_STAND = 0.04
-const NEST_ASIDE = 0.35
+// How far either side of the floor's centre the pair stand abreast, as a fraction of the floor's radius: a fen dragon is half as wide as it is long, so two 9 m bodies need about 5 m between their centres.
+const NEST_PAIR = 0.75
 // How far ahead of the body's origin, in body units, the eat clip's snout plunges: measured on the shipped fen dragon at the bite, the snout's vertices lie 1.84 to 2.45 forward with the ground under them, so a kill this far ahead is what the head goes into.
 export const EAT_REACH = 2.1
 
@@ -236,6 +240,7 @@ export const ANCHOR_S = 1
 export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
+const PAIR = [true, false]
 
 // Aggression, in metres and seconds, every distance across the ground: a grounded dragon spots her within SPOT_M; a flying one eyes her in the open, or a strider, within EYE_M at EYE_P or STRIDER_P an encounter, circles CIRCLE_M round where it saw the quarry CIRCLE_AGL over it (one turn, at most CIRCLE_S), and lands LAND_SHORT short of it (at most AGGRO_LAND_S). Down, it stands SPOT_S facing the quarry, charges at CHARGE_MPS, chomps with its snout (EAT_REACH ahead) within BITE_M, the bite BITE_AT_S into the CHOMP_S chomp hurting BITE_HP within HURT_M, growls GROWL_S, and gives up past GIVE_UP_M, eyeing nobody for SPURN_S. A chase after her turns on any strider within SPOT_M.
 export const SPOT_M = 20
@@ -295,6 +300,7 @@ const _cargoMat = new THREE.Matrix4()
 const _tilt = new THREE.Quaternion()
 const _v = new THREE.Vector3()
 const UP = new THREE.Vector3(0, 1, 0)
+const WHITE = new THREE.Color(1, 1, 1)
 
 /** The shipped wyvern GLB (tools/creatures/ship-wyvern.mjs), its `wyvern` extras spread over the asset: sizeM, span, width, height, gait. */
 export async function loadWyvernGlb(url) {
@@ -425,7 +431,8 @@ export class Dragons {
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
-        id: i, site: null, key: null, seen: 0,
+        // `site` is this dragon's own half of the roost's floor (_born); `tint` the colour it wears.
+        id: i, site: null, key: null, guard: false, tint: new THREE.Color(), seen: 0,
         // The pose at the last tick, and at the tick before it, which the frame draws between.
         x: 0, y: 0, z: 0, heading: 0, pitch: 0, roll: 0, speed: 0,
         px: 0, py: 0, pz: 0, pheading: 0, ppitch: 0, proll: 0,
@@ -512,6 +519,9 @@ export class Dragons {
     setCritterCard(mesh, this._cardBounds(), DRAGON_VIEWS)
     mesh.geometry.translate(0, this.fly.minY, 0)
     this.cardFade = makeCardFadeAttribute(mesh, MAX)
+    // The card wears the dragon's colour only where the mesh it hands over to does: a skinned puppet is left white (baked-puppet.js tintFor).
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3).setUsage(THREE.DynamicDrawUsage)
+    this.tinted = puppetMode() === 'baked'
     this.cardMesh = mesh
     this.batch.add(mesh)
     this.loaded = true
@@ -541,34 +551,47 @@ export class Dragons {
   // Slots.
   // -------------------------------------------------------------------------
 
-  /** The dragon of a roost, from the roost's own seed so the same nest holds the same dragon every visit and on every client: its site, its size as a multiple of the species', the home pose its chapters turn at and its phase in the meander. Needs no GLB: the wildlife plans a stag's chapter through strikeOn before the dragon's body has landed. */
-  _born(site) {
+  /**
+   * A dragon of a roost, the guard or the male, from the roost's own seed so the same nest holds the same pair every visit and on every client: its own
+   * half of the floor (the site moved NEST_PAIR of its radius square to the heading the pair share, the guard to one side and the male the other), its
+   * size as a multiple of the species', the home pose its chapters turn at and its phase in the meander. Needs no GLB: the wildlife plans a stag's chapter through
+   * strikeOn before the dragon's body has landed.
+   */
+  _born(site, guard) {
     if (!Number.isFinite(site.gx + site.gz)) throw new Error(`Dragons: roost ${keyOf(site)} carries no floor plane (gx, gz)`)
-    const rand = mulberry32(tileSeed(site.key, 0x5d, this.seed))
+    const heading = mulberry32(tileSeed(site.key, 0x5c, this.seed))() * Math.PI * 2
+    const o = (guard ? -NEST_PAIR : NEST_PAIR) * site.r, u = Math.sin(heading) * o, v = Math.cos(heading) * o
+    const nest = { ...site, x: site.x + u, y: site.y + site.gx * u + site.gz * v, z: site.z + v }
+    const rand = mulberry32(tileSeed(site.key, guard ? 0x5e : 0x5d, this.seed))
     const scale = 1 + SIZE_VARY * (2 * rand() - 1)
-    const home = { x: site.x, y: this._standY(site), z: site.z, heading: rand() * Math.PI * 2, speed: 0 }
-    return { site, scale, home, phase: rand() * Math.PI * 2 }
+    const home = { x: nest.x, y: nest.y, z: nest.z, heading, speed: 0 }
+    return { site: nest, scale, home, phase: rand() * Math.PI * 2 }
   }
 
-  /** The site and home of the dragon keyed `key`, born or not: the live dragon's, else the roost's tile asked of the Roosts, which answers past the resident radius. */
+  /** The site, home and side of the dragon keyed `key`, born or not: the live dragon's, else the roost's tile asked of the Roosts, which answers past the resident radius. */
   _whoOf(key) {
     const d = this.byKey.get(key)
-    if (d) return { site: d.site, home: d.home }
+    if (d) return { site: d.site, home: d.home, guard: d.guard }
     const m = KEY_RE.exec(key)
     if (!m) throw new Error(`Dragons: no dragon is keyed ${key}`)
     const site = this.roosts.siteAt(Number(m[1]), Number(m[2]))
     if (!site) throw new Error(`Dragons: no roost on tile ${m[1]},${m[2]} for ${key}`)
-    const { home } = this._born(site)
-    return { site, home }
+    const guard = m[3] !== undefined
+    const born = this._born(site, guard)
+    return { site: born.site, home: born.home, guard }
   }
 
   /** A dragon born to its roost at world time `now`, placed where its score (or the room's anchor for it) has it. */
-  _spawn(site, now) {
+  _spawn(site, guard, now) {
     const d = this.free.pop()
     if (!d) { this.overflow++; return null }
-    const born = this._born(site)
-    d.site = site
-    d.key = keyOf(site)
+    const born = this._born(site, guard)
+    d.site = born.site
+    d.guard = guard
+    d.key = keyOf(site, guard)
+    rollHue(mulberry32(hash32(keyHash(d.key), 0x71a7)), d.tint)
+    const grey = (d.tint.r + d.tint.g + d.tint.b) / 3, vivid = guard ? GUARD_VIVID : MALE_VIVID
+    d.tint.setRGB(...[d.tint.r, d.tint.g, d.tint.b].map((c) => Math.max(0.05, grey + (c - grey) * vivid)))
     d.size = this.asset.sizeM * born.scale
     d.k = d.size / this.asset.span
     d.lodSize = d.size * this.bulk
@@ -578,7 +601,7 @@ export class Dragons {
     d.puppet = null
     d.cardWant = false
     d.cardP = 1
-    d.dest = site
+    d.dest = d.site
     this.byKey.set(d.key, d)
     this._replace(d, now)
     return d
@@ -611,16 +634,6 @@ export class Dragons {
     d.heading = d.pheading = pose.heading
     d.speed = pose.speed
     d.pitch = d.roll = d.ppitch = d.proll = 0
-  }
-
-  /** How far over its floor a dragon stands: a hand over a nest's branches, nothing over turf. */
-  _standOver(dest) {
-    return dest.turf ? 0 : NEST_STAND * dest.r
-  }
-
-  /** Where a dragon stands on `dest`: over the floor at its centre. */
-  _standY(dest) {
-    return dest.y + this._standOver(dest)
   }
 
   /** The floor's height at (dest.x + u, dest.z + v): a nest's is the plane the roost is laid on (roosts.js sites), a spot's is the ground itself. */
@@ -665,7 +678,7 @@ export class Dragons {
       const p = this.freePuppets.pop()
       if (!p) { this.starved++; return null }
       d.puppet = p
-      tintFor(p, d.key, rollTint)
+      if (p.baked) p.tint.copy(d.tint)
       this.batch.add(p.group)
       p.play(d.clip, d.cue)
     }
@@ -712,13 +725,13 @@ export class Dragons {
   _landPhrase(dest, from) {
     const s = TOUCHDOWN * LAND_SNAP_M
     const u = -Math.cos(from.heading) * s, v = Math.sin(from.heading) * s
-    const to = { x: dest.x + u, y: this._floorAt(dest, u, v) + this._standOver(dest), z: dest.z + v, heading: from.heading, speed: 0 }
+    const to = { x: dest.x + u, y: this._floorAt(dest, u, v), z: dest.z + v, heading: from.heading, speed: 0 }
     return { kind: 'land', dur: gap3(from, to) / (LAND_MPS * Math.sin(DIVE_PITCH)) + LAND_PAD_S, from, to, dest }
   }
 
   /** A rest on `at` from pose `from` for `dur`, ending at the floor's centre facing a rolled way; with a `kill` (`{ prey, struck }`, the stag and the world time it was taken) it is the meal. */
   _restPhrase(at, from, dur, rand, kill = null) {
-    return { kind: 'rest', dur, from, to: { x: at.x, y: this._standY(at), z: at.z, heading: rand() * Math.PI * 2, speed: 0 }, at, meal: kill !== null, kill }
+    return { kind: 'rest', dur, from, to: { x: at.x, y: at.y, z: at.z, heading: rand() * Math.PI * 2, speed: 0 }, at, meal: kill !== null, kill }
   }
 
   /** A leg from `from` to `to` at `mps` in `mode`, its clock sized by the distance; `dest` is the floor it lands on, if it does. A leg ends at its point at LOITER_PACE of its cruise, the ghost's pace, so the ease has no speed to make up there. */
@@ -838,14 +851,18 @@ export class Dragons {
     return out
   }
 
-  /** The chapter `chapter` of dragon `key`: a rest on the nest, then flights and rests while the chapter has FLIGHT_MIN_S and a rest left, the last flight cut to what is left and the last rest ending at the home pose. A pure function of the key and the chapter: the dragon need not be born. */
+  /** The chapter `chapter` of dragon `key`: a rest on the nest, then flights and rests while the chapter has FLIGHT_MIN_S and a rest left, the last flight cut to what is left and the last rest ending at the home pose. The guard's chapter is rests alone, each REST_S long so one born mid-chapter catches up in a few frames. A pure function of the key and the chapter: the dragon need not be born. */
   _plan(key, chapter, rand) {
-    const { site, home } = this._whoOf(key)
+    const { site, home, guard } = this._whoOf(key)
     const chapterS = this.score.chapterS
     const start = chapter * chapterS + (keyHash(key) % chapterS)
     const phrases = [this._restPhrase(site, home, roll(rand, REST_S), rand)]
     let t = phrases[0].dur
-    for (;;) {
+    while (guard && t < chapterS) {
+      phrases.push(this._restPhrase(site, phrases[phrases.length - 1].to, roll(rand, REST_S), rand))
+      t += phrases[phrases.length - 1].dur
+    }
+    while (!guard) {
       const hungry = rand() < HUNGRY_P
       const restS = Math.max(roll(rand, REST_S), hungry ? MEAL_S : 0)
       const budget = Math.min(roll(rand, FLIGHT_S), chapterS - t - restS)
@@ -861,8 +878,8 @@ export class Dragons {
 
   /**
    * When the dragons take the stag `key` in the window [t0, t1) of world
-   * time, or null: the earliest strike on it in the chapters of every dragon
-   * whose roost is within HUNT_M of the stag's home (the roster's own reach,
+   * time, or null: the earliest strike on it in the chapters of every male
+   * (the guard never hunts) whose roost is within HUNT_M of the stag's home (the roster's own reach,
    * from the other end). What the wildlife cuts the stag's chapter at, so it
    * is the strike the plan stamped on the kill, never re-summed from the
    * phrases: an ulp off and the kill would land a hair before its own dead
@@ -1000,19 +1017,17 @@ export class Dragons {
     const dest = d.site
     if (!d.cargo) throw new Error('Dragons: a meal with no kill')
     if (d.dest.turf) throw new Error('Dragons: a kill carried to a spot that is not the nest')
-    d.cargoU = -Math.sin(d.heading) * NEST_ASIDE * dest.r
-    d.cargoV = -Math.cos(d.heading) * NEST_ASIDE * dest.r
+    const ux = Math.cos(d.home.heading), uz = -Math.sin(d.home.heading)
+    d.cargoU = ux * EAT_REACH * d.k
+    d.cargoV = uz * EAT_REACH * d.k
     d.cargoYaw = d.heading + 0.6
     d.queue.length = 0
     const ring = WALK_RING * dest.r
     let a = Math.atan2(d.z - dest.z, d.x - dest.x)
     for (let i = 0; i < 3; i++) { a += WALK_STEP; d.queue.push({ kind: 'walk', u: Math.cos(a) * ring, v: Math.sin(a) * ring }) }
-    // The stance: EAT_REACH short of the kill along the line from the nest's centre out through it, reached from APPROACH further back so the body arrives facing the kill.
-    const len = Math.hypot(d.cargoU, d.cargoV)
-    const ux = d.cargoU / len, uz = d.cargoV / len
-    const stance = EAT_REACH * d.k
-    d.queue.push({ kind: 'walk', u: d.cargoU - (stance + APPROACH * d.k) * ux, v: d.cargoV - (stance + APPROACH * d.k) * uz })
-    d.queue.push({ kind: 'walk', u: d.cargoU - stance * ux, v: d.cargoV - stance * uz })
+    // The stance is its own spot, reached from APPROACH behind it so the body arrives facing the kill.
+    d.queue.push({ kind: 'walk', u: -APPROACH * d.k * ux, v: -APPROACH * d.k * uz })
+    d.queue.push({ kind: 'walk', u: 0, v: 0 })
     d.queue.push({ kind: 'eat' })
     d.homing = false
     this._restStep(d)
@@ -1044,7 +1059,7 @@ export class Dragons {
     d.speed += clamp(want - d.speed, -STRIDE_ACCEL * d.k * dt, STRIDE_ACCEL * d.k * dt)
     d.x += Math.cos(d.heading) * d.speed * dt
     d.z -= Math.sin(d.heading) * d.speed * dt
-    const floor = this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest)
+    const floor = this._floorAt(dest, d.x - dest.x, d.z - dest.z)
     d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
     d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
     d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
@@ -1282,7 +1297,7 @@ export class Dragons {
     d.z -= Math.sin(d.heading) * d.speed * dt
     const dest = d.dest
     let floor = this.field.heightAt(d.x, d.z)
-    if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z) + this._standOver(dest))
+    if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z))
     d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
     d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
     d.roll -= clamp(d.roll, -ROLL_RATE * dt, ROLL_RATE * dt)
@@ -1669,6 +1684,7 @@ export class Dragons {
   _drawCard(d) {
     const i = this.cardN++
     this.cardMesh.setMatrixAt(i, _mat)
+    this.cardMesh.setColorAt(i, this.tinted ? d.tint : WHITE)
     this.cardFade.array[i] = d.cardWant ? d.cardP : -(1 - d.cardP)
   }
 
@@ -1760,16 +1776,19 @@ export class Dragons {
     sites.length = 0
     this.roosts.sites(sites)
     for (const site of sites) {
-      const d = this.byKey.get(keyOf(site)) ?? this._spawn(site, now)
-      if (!d) continue
-      d.seen = this.frame
-      this._tick(d, hx, hy, hz, now, dt)
+      for (const guard of PAIR) {
+        const d = this.byKey.get(keyOf(site, guard)) ?? this._spawn(site, guard, now)
+        if (!d) continue
+        d.seen = this.frame
+        this._tick(d, hx, hy, hz, now, dt)
+      }
     }
     for (const d of this.byKey.values()) if (d.seen !== this.frame) this._retire(d)
 
     this.cardMesh.count = this.cardN
     if (this.cardN) {
       this.cardMesh.instanceMatrix.needsUpdate = true
+      this.cardMesh.instanceColor.needsUpdate = true
       this.cardFade.needsUpdate = true
     }
   }

@@ -1470,7 +1470,7 @@ export class Villagers {
         const c = this.all.find((o) => (o.state === 'court' || o.state === 'greet') && this._takes(o) && !this._owed(o.id, t, 'offer') && this._under(o, lure))
         if (c === undefined) continue
         this._raise('offer', lure.x, lure.y, lure.z, [c.id], tick)
-        if (!this.hands.eatLure(lure)) throw new Error('Villagers: her mushroom was offered from no hand of hers')
+        if (!this.hands.eatLure(lure, 'leafkin')) throw new Error('Villagers: her mushroom was offered from no hand of hers')
         this.held.splice(i, 1)
         this.won.push(c.id)
       }

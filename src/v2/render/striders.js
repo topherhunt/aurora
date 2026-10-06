@@ -214,6 +214,11 @@ export class Striders {
     this.starved = 0
   }
 
+  /** Every body drawn `dark` 0..1 of the way to black: her chanterelle (eating.js). */
+  darken(dark) {
+    for (const m of this.materials) m.color.setScalar(1 - dark)
+  }
+
   setAsset(asset) {
     this.asset = asset
     this.k = asset.sizeM / asset.span

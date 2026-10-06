@@ -6,6 +6,7 @@ import { atFace, clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountF
 import { FALL, fallDamage } from '../vitals.js'
 import { MAX_TRAVEL_S } from './avatar-rig.js'
 import { solverStub } from './baked-puppet.js'
+import { EAT } from '../eating.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -64,6 +65,8 @@ const MORE_CLIPS = ['peck', 'sit', 'attack']
 const WIRE = 'ws:'
 // The live states a client anchors to the room; `rejoin` is one gone calm there.
 const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'led', 'ridden', 'panic', 'shy', 'swim']
+// The states her chanterelle turns to a charge: not one led, ridden, eating, fleeing after a strike, panicked or afloat.
+const MADDENS = new Set(['calm', 'wary', 'follow', 'meek', 'shy'])
 // What a calm one does at its spot, weighted, each played one to three times and then stood idle.
 const ACTS = [['peck', 0.45], ['idle', 0.45], ['fidget', 0.1]]
 const _calm = { x: 0, z: 0, heading: 0, speed: 0, act: 'idle', seg: 0 }
@@ -171,6 +174,8 @@ export class WildStriders {
     // Keys tamed by any player in the room, as its anchors say (_owe); hers are bond.trusted besides.
     this.tamed = new Set()
     this.warned = false
+    // Whether every one of hers within EAT.chanterelle.m charges her, tamed or not (madden).
+    this.maddened = false
     this.inner = new Striders(scene, { walk, textures, patch })
     this.materials = this.inner.materials
     this.live = new Map()
@@ -525,6 +530,7 @@ export class WildStriders {
     const near = Math.hypot(p.x - head.x, p.z - head.z)
     const face = Math.atan2(-(head.z - p.z), head.x - p.x)
     const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this.isTamed(m.key)
+    if (mine && this.maddened && near < EAT.chanterelle.m && MADDENS.has(m.state)) { this._enter(m, 'charge'); return }
     switch (m.state) {
       case 'panic': {
         // Its aim is the owner's roll, which a peer's copy takes from the anchors (_fromAnchor).
@@ -884,6 +890,12 @@ export class WildStriders {
 
   /** Whether any player in the room has tamed the strider keyed `key`. */
   isTamed(key) { return this.bond.trusted.has(key) || this.tamed.has(key) }
+
+  /** Her chanterelle (eating.js): `on`, those near her charge her; `dark` 0..1, every body drawn that much toward black. */
+  madden(on, dark) {
+    this.maddened = on
+    this.inner.darken(dark)
+  }
 
   /** Its anchor owed the room now, in `mode`, and kept as the room's latest for it. */
   _owe(m, mode) {

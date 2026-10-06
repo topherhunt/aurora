@@ -142,6 +142,7 @@ import {
 } from './critters.js'
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
+import { EAT } from '../eating.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -247,7 +248,9 @@ export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
 // The modes an anchor may carry besides 'rejoin', each a live animal.
-const LIVE_MODES = new Set(['lure', 'flee', 'tame'])
+const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad'])
+// Under her chanterelle (eating.js), an animal within `m` m of her comes for her and strikes from `reach` body lengths: `harm` every strike, a strike `strikeS` then `idleS` before the next.
+export const MAD = { m: EAT.chanterelle.m, reach: 0.7, harm: 5, strikeS: 0.8, idleS: 1.2 }
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
 export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up', 'dead']
@@ -373,9 +376,10 @@ export class Wildlife {
    * @param opts.dayness  the world's day scalar at a world time (clock.js WorldClock.daynessAt), read by the plan; noon when absent
    * @param opts.assets a loaded asset per species, keyed by SPECIES.key, for a gate; the world fetches the GLBs
    * @param opts.species the SPECIES keys this room holds; every one when absent
-   * @param opts.eat  (lure) => true once her hand holding it has lost it (hands.js eatLure); a wary animal with her carrot at its face calls it
+   * @param opts.eat  (lure, species key) => true once her hand holding it has lost it (hands.js eatLure); a wary animal with her carrot at its face calls it
+   * @param opts.harm  (n, why) => her hurt by a maddened animal's strike (MAD)
    */
-  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null, harm = null } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.normalAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Wildlife needs a height field with heightAt, normalAt and snowLineAt')
     }
@@ -384,7 +388,11 @@ export class Wildlife {
     if (dayness !== null && typeof dayness !== 'function') throw new Error('Wildlife: dayness must be a function of world time')
     if (avoid !== null && typeof avoid !== 'function') throw new Error('Wildlife: avoid must be a function of (x, z)')
     if (eat !== null && typeof eat !== 'function') throw new Error('Wildlife: eat must be a function of a lure')
+    if (harm !== null && typeof harm !== 'function') throw new Error('Wildlife: harm must be a function of (n, why)')
     this.eat = eat
+    this.harm = harm
+    // Whether the animals near her come for her (madden).
+    this.maddened = false
     // (x, z) -> true where no animal may stand or walk (the towns' buildings). Must be pure in position, like seat.
     this.avoid = avoid
     this.height = height
@@ -956,6 +964,7 @@ export class Wildlife {
       case 'dig': return [['dig', onGrid(between(rand, DIG_S))], ['alert', onGrid(between(rand, ALERT_S))]]
       case 'notice': return [['alert', onGrid(d.alert)]]
       case 'startle': return [['alert', onGrid(STARTLE_S)]]
+      case 'strike': return [['alert', onGrid(MAD.strikeS)], ['idle', onGrid(MAD.idleS)]]
       case 'flee': return [[sp.flee, onGrid(FLEE_S)]]
       case 'gaze': return [['idle', onGrid(between(rand, GAZE_S))], ['alert', onGrid(d.alert)]]
       default: throw new Error(`Wildlife: no activity named ${act}`)
@@ -1237,13 +1246,17 @@ export class Wildlife {
     } else {
       if (act === 'eat') {
         if (this.eat === null) throw new Error('Wildlife: a carrot of hers at its face, and no eat() to take it with')
-        if (this.eat(c.lure)) {
+        if (this.eat(c.lure, c.sp.key)) {
           c.live.mode = 'tame'
           c.lure = null
           // The room hears it tame on this tick, not a second on.
           c.live.sendTick = tickOf(now)
           this._say(c)
         } else act = 'beg'
+      }
+      if (act === 'strike' && c.live.by === null) {
+        if (this.harm === null) throw new Error('Wildlife: a maddened animal strikes, and no harm() to hurt her with')
+        this.harm(MAD.harm, `a maddened ${c.sp.key}`)
       }
       // The room hears the run the tick it begins, its heading the way it runs.
       if (act === 'flee' && c.live.by === null) c.live.sendTick = tickOf(now)
@@ -1306,6 +1319,12 @@ export class Wildlife {
       if (d < best) { best = d; lure = l }
     }
     return lure !== null && best <= (c.live ? LURE_FORGET_M : c.sp.wary ? FLEE_M : LURE_M) ? lure : null
+  }
+
+  /** Maddened, and her head within MAD.m of this animal, across the ground and in height. */
+  _maddens(c) {
+    const h = this.head
+    return this.maddened && Math.hypot(h.x - c.sx, h.z - c.sz) <= MAD.m && Math.abs(h.y - c.y) <= MAD.m
   }
 
   /** Her head within FLEE_M of this animal, across the ground and in height. */
@@ -1372,6 +1391,7 @@ export class Wildlife {
     const l = c.lure
     if (l !== null && this._atFace(c)) { this._begin(c, c.sp.wary && l.by === null ? 'eat' : 'beg', now); return }
     const dist = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
+    if (c.live.mode === 'mad') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
     if (this._roams(c) && dist > c.near + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
     this._begin(c, c.sp.court, now)
   }
@@ -1379,7 +1399,7 @@ export class Wildlife {
   /** One tick live, by mode; then, on a peer's animal, the nudge onto its anchor, and on this client's, the anchor owed every ANCHOR_S. */
   _stepLive(c, k, now) {
     const live = c.live
-    const on = live.mode === 'lure' ? this._lureTick(c, k, now) : live.by !== null ? this._anchorTick(c, k, now) : live.mode === 'flee' ? this._fleeTick(c, k, now) : this._tameTick(c, k, now)
+    const on = live.mode === 'lure' ? this._lureTick(c, k, now) : live.by !== null ? this._anchorTick(c, k, now) : live.mode === 'flee' ? this._fleeTick(c, k, now) : live.mode === 'mad' ? this._madTick(c, k, now) : this._tameTick(c, k, now)
     if (!on) return
     if (live.anchor !== null && live.by !== null) {
       const [, T, ax, , az, ah] = live.anchor
@@ -1442,6 +1462,18 @@ export class Wildlife {
     c.goal = h
     c.near = c.sp.heel
     if (c.act !== 'eat') this._heed(c, k)
+    if (k >= c.stepEndTick) this._next(c, now)
+    this._move(c, k)
+    return true
+  }
+
+  /** Maddened: after her to MAD.reach body lengths, striking there. Her past LURE_FORGET_M, or the chanterelle worn off, ends it. False once it is off. */
+  _madTick(c, k, now) {
+    const h = this.head
+    if (!this.maddened || Math.hypot(h.x - c.sx, h.z - c.sz) > LURE_FORGET_M) { this._unlive(c, now); return false }
+    c.goal = h
+    c.near = c.size * MAD.reach
+    this._heed(c, k)
     if (k >= c.stepEndTick) this._next(c, now)
     this._move(c, k)
     return true
@@ -1558,6 +1590,12 @@ export class Wildlife {
     }
   }
 
+  /** Her chanterelle (eating.js): `on`, the animals within MAD.m come for her; `dark` 0..1, every body and card drawn that much toward black. */
+  madden(on, dark) {
+    this.maddened = on
+    for (const m of this.materials) m.color.setScalar(1 - dark)
+  }
+
   /** The anchors this client owes the room since the last call, moved into `into`. */
   pending(into = []) {
     for (const a of this.outbox) into.push(a)
@@ -1570,6 +1608,7 @@ export class Wildlife {
     const now = k * TICK_S
     c.lx = c.sx; c.lz = c.sz; c.lh = c.sh
     if (c.live) {
+      if (c.live.mode !== 'mad' && c.live.by === null && this._maddens(c)) this._golive(c, 'mad', null, null, now)
       this._stepLive(c, k, now)
       // The lure over this tick, the rejoin's first tick is posed like any phrase's, as a joiner placed on it would be.
       if (c.live) return
@@ -1580,6 +1619,7 @@ export class Wildlife {
       this._enter(c, this._phraseAt(c, Math.max(now, c.phraseEnd)))
     }
     if (c.act === 'dead') { this._posed(c, k - c.phraseTick0); return }
+    if (this._maddens(c)) { this._golive(c, 'mad', null, null, now); return }
     const lure = this._lure(c)
     if (lure !== null) { this._golive(c, 'lure', lure, lure.by ?? null, now); return }
     if (c.sp.wary && this._startled(c)) { this._golive(c, 'flee', null, null, now); return }
