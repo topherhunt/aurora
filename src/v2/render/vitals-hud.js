@@ -144,7 +144,16 @@ export class VitalsHud {
     this.saved.tex.needsUpdate = true
     this.card = textPlane(0.6, 0.3, 1024)
     overlay(this.card.mesh, ORDER + 2).position.set(0, 0.02, -0.8)
-    for (const m of [this.veil, this.donut, this.saved.mesh, this.card.mesh]) camera.add(m)
+    // The headset's choice under the card, pressed with the menu's pointer (main.js updateQuestPointer), drawn under it at `pointerOrder`.
+    this.buttons = ['load', 'new'].map((choice, i) => {
+      const b = textPlane(0.24, 0.07, 512)
+      overlay(b.mesh, ORDER + 3).position.set(i === 0 ? -0.135 : 0.135, -0.1, -0.8)
+      b.mesh.userData.death = choice
+      return { choice, ...b, lit: null }
+    })
+    this.pointerOrder = ORDER + 4
+    this.canLoad = false
+    for (const m of [this.veil, this.donut, this.saved.mesh, this.card.mesh, ...this.buttons.map((b) => b.mesh)]) camera.add(m)
     this.black = 0
     this.savedT = -1
     this.beatT = 0
@@ -176,8 +185,8 @@ export class VitalsHud {
     this.savedT = 0
   }
 
-  /** The death card: `lines` under "You died", or nothing more when the page's buttons carry the choice. */
-  showDeath(lines) {
+  /** The death card, "You died"; `canLoad` is whether its Load button is live. `now` is a death with no fade: the view is black this frame. */
+  showDeath(canLoad, now = false) {
     const { canvas, tex } = this.card
     const g = canvas.getContext('2d')
     g.clearRect(0, 0, canvas.width, canvas.height)
@@ -185,19 +194,54 @@ export class VitalsHud {
     g.textBaseline = 'middle'
     g.fillStyle = '#fff'
     setFace(g, this.face(120))
-    g.fillText('You died', canvas.width / 2, lines.length === 0 ? canvas.height / 2 : 140)
-    setFace(g, this.face(52, 'normal'))
-    lines.forEach((line, i) => g.fillText(line, canvas.width / 2, 300 + i * 80))
+    g.fillText('You died', canvas.width / 2, canvas.height / 2)
     tex.needsUpdate = true
+    this.canLoad = canLoad
+    for (const b of this.buttons) b.lit = null
+    if (now) this.black = 1
+  }
+
+  /** The button meshes the pointer may press while the card shows in the headset, each `userData.death` 'load' or 'new'. */
+  get deathTargets() {
+    return this.buttons.filter((b) => b.mesh.visible && (b.choice === 'new' || this.canLoad)).map((b) => b.mesh)
+  }
+
+  /** Redraw each button, `hot` ('load', 'new' or null) the one the pointer is on. */
+  _drawButtons(hot) {
+    for (const b of this.buttons) {
+      const live = b.choice === 'new' || this.canLoad
+      const lit = live && b.choice === hot
+      if (b.lit === lit) continue
+      b.lit = lit
+      const { canvas: c, tex } = b
+      const g = c.getContext('2d')
+      g.clearRect(0, 0, c.width, c.height)
+      g.globalAlpha = live ? 1 : 0.4
+      g.fillStyle = lit ? '#ffffffd0' : '#000000a0'
+      g.strokeStyle = '#ffffff90'
+      g.lineWidth = 4
+      g.beginPath()
+      g.roundRect(4, 4, c.width - 8, c.height - 8, 24)
+      g.fill()
+      g.stroke()
+      g.fillStyle = lit ? '#000' : '#fff'
+      g.textAlign = 'center'
+      g.textBaseline = 'middle'
+      setFace(g, this.face(48, 'normal'))
+      g.fillText(b.choice === 'load' ? 'Load saved game' : 'New game', c.width / 2, c.height / 2)
+      g.globalAlpha = 1
+      tex.needsUpdate = true
+    }
   }
 
   /**
    * One frame. `hp` of `max`, `hurt` 0..1 (vitals.js Health), `lid` 0..1
    * (Sleep), `dead`, and whether the death `card` may show once the view has
-   * gone wholly black (then `deathShown`). `tint` is the mushrooms' wash,
+   * gone wholly black (then `deathShown`), with its `buttons` (the headset's)
+   * and the one the pointer is on, `hot`. `tint` is the mushrooms' wash,
    * [r, g, b, a] (eating.js Effects.tint). True on the frame a heartbeat is due.
    */
-  update(dt, { hp, max, hurt, lid, dead, card, tint }) {
+  update(dt, { hp, max, hurt, lid, dead, card, buttons, hot, tint }) {
     this.black = Math.max(0, Math.min(1, this.black + (dead ? dt / DIE_S : -dt / REVIVE_S)))
     this.deathShown = dead && this.black === 1
     let beat = false
@@ -234,6 +278,11 @@ export class VitalsHud {
     this.saved.mesh.visible = this.savedT >= 0
     this.card.mesh.material.opacity = 1
     this.card.mesh.visible = card && this.deathShown
+    for (const b of this.buttons) {
+      b.mesh.material.opacity = 1
+      b.mesh.visible = this.card.mesh.visible && buttons
+    }
+    if (this.card.mesh.visible && buttons) this._drawButtons(hot)
     return beat
   }
 }

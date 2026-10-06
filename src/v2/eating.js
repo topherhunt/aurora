@@ -6,7 +6,7 @@ export const EAT = {
   mouth: 0.16,
   heal: 10,
   harm: 10,
-  // Her size, as a multiple of the room's: eased to each new target over `easeS` s, in ratio.
+  // Her size, as a multiple of her full height, the same in every room: eased to each new target over `easeS` s, in ratio.
   size: { min: 1 / 8, max: 2, easeS: 6 },
   // Each effect fades in over `inS`, holds to `s`, then fades out over `outS`.
   agaric: { s: 15, inS: 3, outS: 3, m: 500, rgba: [0.25, 1, 0.3, 0.32] },
@@ -14,6 +14,9 @@ export const EAT = {
   chanterelle: { s: 300, inS: 3, outS: 3, m: 10, rgba: [0, 0, 0, 0.45] },
   pulseHz: 0.6,
 }
+
+/** Whether her `size` is `k` of her full size or less; the ease lands a hair off its target. */
+export const atMost = (size, k) => size <= k * (1 + 1e-6)
 
 export const MUSHROOMS = ['ink cap', 'parasol', 'fly agaric', 'porcini', 'chanterelle']
 

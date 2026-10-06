@@ -3,7 +3,7 @@ import THREE from '../../three-instance.js'
 import { createGenPropMaterial, ladderBounds, ladderGeometries, propCull } from './gen-props.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { loadCritterGlb, tileKey, tileSeed } from './critters.js'
-import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
+import { createPropMaterial } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -18,21 +18,19 @@ import { LAYER } from '../../textures.js'
 // its highest summit -- a coarse scan, then a climb on the exact field -- if
 // that is no more than BELOW_SNOW under the snow line; a summit stands only
 // if no neighbour's within SPACING is higher, so roosts keep their distance.
-// The fortress is then seated on the flattest ground within SEAT_REACH of the
-// summit, since a true summit falls away too fast under 18 m of plate.
+// The fortress is then seated on the flattest ground within SEAT_REACH of it.
 //
-// THE FORTRESS IS THE ROCKS' OWN BOULDER (rocks.boulder()), on their stone
-// material so snow and moss come with it: a squashed plate WIDTH across with
-// its dome cut flat for a floor, house-sized stones ringed on its rim, smaller
-// stones and logs nestled inside. Every tier is ONE merged geometry, laid out
-// once from the seed, so a roost is one draw and one instance; it re-rungs on
-// the rocks' ladder read at FORTRESS_SIZE. Its floor is the site's plane:
-// `y` at the centre, tilted by (gx, gz), what the dragons stand and eat on.
+// THE FORTRESS IS THE ROCKS' OWN BOULDER, set into the ground: rings of stones
+// (BANDS) from a closed wall of house-sized ones in to cobbles round a clear
+// floor, with logs among them. Each roost is built on its own ground, so it is
+// its own geometry, one Mesh a roost re-rung on the rocks' ladder, and its own
+// walk grid (columnAt), which is what keeps her and the dragons out of the
+// stone. It stands in until the prop roster's 'roost-dragon' pick ships (§29).
 //
 // THE EGG: half the nests hold one, the shipped Tripo pick (§29) lying at an
 // angle at the floor's centre, tinted from EGG_TINTS through the instance
-// colour over its near-white shell, on a gloss material (EGG_ROUGHNESS). It
-// is the tile's second instance, culled at the props' range for its size.
+// colour over its near-white shell, on a gloss material (EGG_ROUGHNESS),
+// culled at the props' range for its size.
 // ---------------------------------------------------------------------------
 
 // One roost a territory at most, and no two summits nearer than SPACING.
@@ -48,11 +46,8 @@ export const SEAT_REACH = 64
 const SEAT_ROUGH = 4
 const SEAT_STEP = 8
 const SEAT_R = 8
-// The steepest plane the plate tilts to; the rest of a slope it is sunk into.
+// The steepest the floor's plane tilts to.
 export const MAX_TILT = Math.tan((10 * Math.PI) / 180)
-// Metres the floor stands over the ground at the seat: enough to clear the ground within LIFT_R of the middle, within these.
-export const LIFT = [0.4, 3]
-const LIFT_R = [2, 4, 6]
 const PATH_CLEARANCE = 3
 const NEIGHBOURS = [1, 0, -1, 0, 0, 1, 0, -1, 1, 1, 1, -1, -1, 1, -1, -1]
 const RIM8 = Array.from({ length: 16 }, (_, i) => {
@@ -60,30 +55,40 @@ const RIM8 = Array.from({ length: 16 }, (_, i) => {
   return i & 1 ? Math.sin(a) : Math.cos(a)
 })
 
-// The fortress, metres: the plate's width and depth before its dome is cut at CUT of it, and the floor's clear radius (the site's `r`).
+// The fortress, metres: about WIDTH across, and the clear floor inside the stones (the site's `r`).
 export const WIDTH = 18
-const PLATE_H = 9
-const CUT = 0.75
-export const FLOOR_R = 3.2
-// Each part's `at` is the radius it is laid out at: the ring on the edge of the cut floor, the pebbles and logs against its inner side.
-const RING = { n: 7, across: [4.5, 6], tall: [1, 1.4], lean: 0.12, at: [5.6, 6.2], sink: 0.12 }
-const PEBBLES = { n: 9, across: [0.8, 1.8], tall: [0.7, 1.1], at: [3.3, 4.3], sink: 0.25 }
-const LOGS = { n: 6, r: [0.16, 0.28], len: [2.8, 4.5], at: [3.4, 4.2], lean: [0.2, 0.45], barkM: 1.2 }
-// Per tier: the boulder tier each part is cut from (-1 for none), and the logs' sides.
-const TIERS = [
-  { plate: 0, ring: 0, pebble: 1, logSides: 10 },
-  { plate: 1, ring: 1, pebble: 2, logSides: 6 },
-  { plate: 2, ring: 2, pebble: 3, logSides: 4 },
-  { plate: 2, ring: 3, pebble: -1, logSides: 0 },
+export const FLOOR_R = 2.6
+// The rings from the wall in: centre radius `at` (wandering by `wander`), metres `across` along the ring, `depth` across it and `tall` as fractions of
+// across, `sink` of its height under its lowest ground, `fill` of the ring's length stood on, `turn` and `lean` radians of jitter, `flip` whether it may
+// lie upturned, and the boulder tier per fortress tier (-1 for none). The wall alone is raised to WALL_RISE over its highest ground.
+export const BANDS = [
+  { wall: true, at: 7, wander: 0.4, across: [3.6, 5.4], depth: [0.6, 0.95], tall: [0.6, 1], sink: 0.25, fill: 1, turn: 0.3, lean: 0.08, flip: false, tiers: [0, 1, 2, 3] },
+  { at: 5.4, wander: 0.5, across: [1.8, 2.8], depth: [0.6, 1], tall: [0.5, 0.9], sink: 0.2, fill: 1, turn: 1, lean: 0.2, flip: true, tiers: [0, 1, 2, 3] },
+  { at: 4.3, wander: 0.4, across: [1, 1.6], depth: [0.6, 1], tall: [0.5, 0.85], sink: 0.2, fill: 0.9, turn: 3, lean: 0.3, flip: true, tiers: [1, 2, 3, -1] },
+  { at: 3.6, wander: 0.3, across: [0.55, 0.9], depth: [0.6, 1], tall: [0.45, 0.8], sink: 0.2, fill: 0.8, turn: 3, lean: 0.3, flip: true, tiers: [1, 2, -1, -1] },
+  { at: 3, wander: 0.2, across: [0.3, 0.5], depth: [0.6, 1], tall: [0.4, 0.75], sink: 0.15, fill: 0.5, turn: 3, lean: 0.3, flip: true, tiers: [2, 3, -1, -1] },
 ]
-export const LODS = TIERS.length
-// The rock size the ladder is read at: the plate is twice this, a ring stone half.
+// Stones under this across are cobbles she walks over: walk.js's ROCK_WALK_MIN.
+const SOLID_ACROSS = 0.5
+// The fraction of a stone's length its neighbour in the ring overlaps, before the ring is closed tighter still.
+const OVERLAP = 0.3
+export const WALL_RISE = 2.4
+// A boulder's rounded flank is a stair she climbs (walk.js steps up WALK.reach 1.2 m), so to the walker a wall stone rises sheer to its crest wherever it stands over CLIFF of its ground: she may step onto its skirt, never up its face.
+const CLIFF = 1
+// Each stone's tint over the peak's: a lightness and a warmth, red up and blue down.
+const LIGHT = [0.82, 1.12]
+const WARM = [-0.08, 0.14]
+const LOGS = { n: 6, r: [0.16, 0.28], len: [2.8, 4.5], at: [3.4, 4.8], lean: [0.2, 0.45], barkM: 1.2 }
+const LOG_SIDES = [10, 6, 4, 0]
+export const LODS = LOG_SIDES.length
+// The rock size the ladder is read at.
 const FORTRESS_SIZE = 9
 const LOD_SQ = Float32Array.from(ROCK_LOD_AT, (k) => (k * FORTRESS_SIZE) ** 2)
 const LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * FORTRESS_SIZE * (1 + ROCK_LOD_HYSTERESIS)) ** 2)
-// The plate as the walker reads it: its top in RIM_BINS steps out to PLATE_WALK_R.
-const RIM_BINS = 16
-const PLATE_WALK_R = WIDTH / 2 - 0.5
+// The walk grid: CELL-metre cells, GRID_N to a side, centred on the fortress.
+export const CELL = 0.5
+export const GRID_N = 40
+const GRID_HALF = (CELL * GRID_N) / 2
 
 // How far out a roost is resident, and so its dragons alive; how much further it is kept, and how far the camera moves before the set is redone.
 export const RADIUS_M = 1200
@@ -92,8 +97,6 @@ const RESEAT_M = 64
 // Territories' summits and rolls kept for the ones asked of past the radius, the oldest forgotten first.
 const SUMMIT_CAP = 2048
 const ROLLED_CAP = 256
-// Ghosts the pool carries past its two-a-site bound, each a step's departing tier dissolving out.
-const FADE_MAX_INFLIGHT = 16
 
 const SEED_SALT = 0xd7a6
 
@@ -118,7 +121,7 @@ export const EGG_SINK = 0.12
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 
 // ---------------------------------------------------------------------------
-// The fortress bank
+// The fortress
 // ---------------------------------------------------------------------------
 
 /** `[bottom, top]` of the triangles of `geo` over the vertical at (x, z), or null over none. */
@@ -141,12 +144,20 @@ function spanOf(geo, x, z) {
   return hi >= lo ? [lo, hi] : null
 }
 
-/** A tier of the boulder, cloned and moved by `m`, its texture grain held near the boulder's own at `grain` times the size. */
-function placedRock(tier, m, grain) {
+/** A tier of the boulder, cloned and moved by `m`, its texture grain held near the boulder's own at `grain` times the size, tinted `color`. */
+function placedRock(tier, m, grain, color) {
   const g = tier.clone()
   g.applyMatrix4(m)
   const uv = g.getAttribute('uvProj')
   for (let i = 0; i < uv.array.length; i++) uv.array[i] *= grain
+  return tinted(g, color)
+}
+
+function tinted(g, [r, gr, b]) {
+  const n = g.getAttribute('position').count
+  const col = new Float32Array(n * 3)
+  for (let i = 0; i < n; i++) col.set([r, gr, b], i * 3)
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3))
   return g
 }
 
@@ -164,12 +175,12 @@ function logGeometry(radius, len, sides) {
   g.deleteAttribute('uv')
   g.setAttribute('uvProj', new THREE.BufferAttribute(proj, 2))
   g.setAttribute('texLayer', new THREE.BufferAttribute(new Float32Array(n).fill(LAYER.BARK), 1))
-  return g
+  return tinted(g, [1, 1, 1])
 }
 
-/** `parts` into one indexed geometry on the rock material's four attributes. */
+/** `parts` into one indexed geometry on the prop material's five attributes. */
 function mergeParts(parts) {
-  const names = { position: 3, normal: 3, uvProj: 2, texLayer: 1 }
+  const names = { position: 3, normal: 3, uvProj: 2, texLayer: 1, color: 3 }
   let verts = 0
   let idxN = 0
   for (const g of parts) {
@@ -196,68 +207,68 @@ function mergeParts(parts) {
 }
 
 /**
- * The fortress's LODS tiers off the rocks' boulder tiers (`shape.tiers`, origin
- * on its base), laid out once from `seed` in a frame whose origin is the
- * floor's centre. Also what the walker treats as stone: the plate's top along
- * its radius and how deep its rim reaches, and each stone as a column.
+ * One roost's fortress off the rocks' boulder (`shape.tiers`, origin on its
+ * base; `shape.measured`), laid out from `seed` and set into the ground
+ * `groundAt(x, z)`, both in a frame whose origin is the floor's centre on the
+ * ground. `tint` is the peak's stone colour, [r, g, b]. Returns its LODS
+ * geometries and their triangles, the walk grid (`top`/`bottom` per cell,
+ * -Infinity/Infinity where it is clear) and every stone as laid.
  */
-export function fortressBank(boulderTiers, seed = 1) {
+export function buildFortress(shape, seed, groundAt, tint) {
   const rand = mulberry32(seed ^ 0x51ed)
-  const b = boulderTiers[0].boundingBox ?? (boulderTiers[0].computeBoundingBox(), boulderTiers[0].boundingBox)
+  const t0 = shape.tiers[0]
+  const b = t0.boundingBox ?? (t0.computeBoundingBox(), t0.boundingBox)
   const w = b.max.x - b.min.x, h = b.max.y - b.min.y, d = b.max.z - b.min.z
   const centre = new THREE.Matrix4().makeTranslation(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2)
-  const floorAt = CUT * PLATE_H
-  const plateM = new THREE.Matrix4().makeTranslation(0, -floorAt, 0)
-    .multiply(new THREE.Matrix4().makeScale(WIDTH / w, PLATE_H / h, WIDTH / d)).multiply(centre)
-
-  // The plate, its dome cut flat at the floor: a face cut whole turns its normals straight up.
-  const plateOf = (tier) => {
-    const g = placedRock(boulderTiers[tier], plateM, Math.sqrt(WIDTH / w))
-    const p = g.getAttribute('position').array
-    const nr = g.getAttribute('normal').array
-    const idx = g.index.array
-    const cut = new Uint8Array(p.length / 3)
-    for (let i = 0; i < cut.length; i++) if (p[i * 3 + 1] > 0) { p[i * 3 + 1] = 0; cut[i] = 1 }
-    for (let i = 0; i < idx.length; i += 3) {
-      if (!(cut[idx[i]] && cut[idx[i + 1]] && cut[idx[i + 2]])) continue
-      for (let k = 0; k < 3; k++) nr.set([0, 1, 0], idx[i + k] * 3)
-    }
-    return g
-  }
-  const plate0 = plateOf(0)
-  const topAt = (x, z) => spanOf(plate0, x, z)?.[1] ?? -floorAt
-
-  // The ring, then the pebbles, then the logs, each a matrix and what it leaves the walker.
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), at = new THREE.Vector3()
-  const stones = []
-  const columns = []
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), s = new THREE.Vector3(), zero = new THREE.Vector3()
   const box = new THREE.Box3()
-  const seat = (across, tall, x, z, yaw, lean, sink) => {
-    const k = across / w
-    q.setFromEuler(e.set(lean, yaw, 0, 'YXZ'))
-    m.compose(at.set(x, 0, z), q, s.set(k, k * tall, k)).multiply(centre)
-    box.copy(b).applyMatrix4(m)
-    // Bedded on the plate under its middle and its inward edge; its outward edge may overhang the plate's.
-    const inward = 1 - (0.3 * across) / Math.max(1e-6, Math.hypot(x, z))
-    const under = Math.min(topAt(x, z), topAt(x * inward, z * inward))
-    const height = box.max.y - box.min.y
-    const y = under - sink * height - box.min.y
-    m.premultiply(new THREE.Matrix4().makeTranslation(0, y, 0))
-    stones.push({ m: m.clone(), grain: Math.sqrt(k) })
-    columns.push({ x, z, r: 0.4 * across, bottom: box.min.y + y, top: box.max.y + y })
-  }
-  for (let i = 0; i < RING.n; i++) {
-    const a = ((i + (rand() - 0.5) * 0.5) / RING.n) * Math.PI * 2
-    const across = between(rand, RING.across)
-    const r = between(rand, RING.at)
-    seat(across, between(rand, RING.tall), Math.cos(a) * r, Math.sin(a) * r, -a - Math.PI / 2 + (rand() - 0.5) * 0.6, (rand() - 0.5) * 2 * RING.lean, RING.sink)
-  }
-  const ringN = stones.length
-  for (let i = 0; i < PEBBLES.n; i++) {
-    const a = rand() * Math.PI * 2
-    const r = between(rand, PEBBLES.at)
-    seat(between(rand, PEBBLES.across), between(rand, PEBBLES.tall), Math.cos(a) * r, Math.sin(a) * r, rand() * Math.PI * 2, 0, PEBBLES.sink)
-  }
+
+  const stones = []
+  BANDS.forEach((band, bandIdx) => {
+    // Lengths rolled until the ring is full, then every step shortened alike so it closes on itself.
+    const ring = 2 * Math.PI * band.at
+    const rolls = []
+    for (let used = 0; used < ring;) {
+      const across = between(rand, band.across)
+      const step = (across * (1 - OVERLAP)) / band.fill
+      rolls.push({ across, step })
+      used += step
+    }
+    const k = ring / rolls.reduce((n, r) => n + r.step, 0)
+    let a = rand() * Math.PI * 2
+    for (const { across, step } of rolls) {
+      const mid = a + (step * k) / 2 / band.at
+      a += (step * k) / band.at
+      const r = band.at + (rand() - 0.5) * band.wander
+      const x = Math.cos(mid) * r, z = Math.sin(mid) * r
+      const depth = across * between(rand, band.depth)
+      let tall = across * between(rand, band.tall)
+      // Long along the ring, so the wall's stones lie flank to flank.
+      const yaw = -mid - Math.PI / 2 + (rand() - 0.5) * band.turn
+      const flip = band.flip && rand() < 0.5 ? Math.PI : 0
+      q.setFromEuler(e.set(flip + (rand() - 0.5) * 2 * band.lean, yaw, (rand() - 0.5) * 2 * band.lean, 'YXZ'))
+      // Bedded under its lowest ground across its footprint.
+      const c = Math.cos(yaw), sn = Math.sin(yaw)
+      let gMin = groundAt(x, z), gMax = gMin
+      for (let j = 0; j < 8; j++) {
+        const ex = Math.cos((j / 8) * Math.PI * 2) * across * 0.45, ez = Math.sin((j / 8) * Math.PI * 2) * depth * 0.45
+        const g = groundAt(x + ex * c + ez * sn, z - ex * sn + ez * c)
+        gMin = Math.min(gMin, g)
+        gMax = Math.max(gMax, g)
+      }
+      if (band.wall) tall = Math.max(tall, (gMax - gMin + WALL_RISE) / (1 - band.sink))
+      m.compose(zero, q, s.set(across / w, tall / h, depth / d)).multiply(centre)
+      box.copy(b).applyMatrix4(m)
+      const lift = gMin - band.sink * (box.max.y - box.min.y) - box.min.y
+      m.premultiply(new THREE.Matrix4().makeTranslation(x, lift, z))
+      const light = between(rand, LIGHT), warm = between(rand, WARM)
+      stones.push({
+        band: bandIdx, x, z, across, depth, tall, ground: [gMin, gMax], bottom: box.min.y + lift, top: box.max.y + lift,
+        m: m.clone(), color: [tint[0] * light * (1 + warm), tint[1] * light, tint[2] * light * (1 - warm)],
+      })
+    }
+  })
+
   const logs = []
   for (let i = 0; i < LOGS.n; i++) {
     const a = rand() * Math.PI * 2
@@ -265,40 +276,53 @@ export function fortressBank(boulderTiers, seed = 1) {
     const radius = between(rand, LOGS.r)
     const len = between(rand, LOGS.len)
     const x = Math.cos(a) * r, z = Math.sin(a) * r
-    // Along the ring's tangent, every other one leant up on a stone at one end.
+    // Along the ring, every other one leant up at one end.
     const lean = i % 2 ? between(rand, LOGS.lean) * (rand() < 0.5 ? 1 : -1) : 0
     q.setFromEuler(e.set(0, -a - Math.PI / 2, lean, 'YXZ'))
-    const y = topAt(x, z) + radius * 0.7 + Math.abs(Math.sin(lean)) * len * 0.5
+    const y = groundAt(x, z) + radius * 0.5 + Math.abs(Math.sin(lean)) * len * 0.5
     logs.push({ radius, len, m: new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q.clone(), new THREE.Vector3(1, 1, 1)) })
   }
 
-  const geometries = TIERS.map((t, k) => {
-    const parts = [k === 0 ? plate0 : plateOf(t.plate)]
-    stones.forEach((st, i) => {
-      const tier = i < ringN ? t.ring : t.pebble
-      if (tier >= 0) parts.push(placedRock(boulderTiers[tier], st.m, st.grain))
-    })
-    if (t.logSides) for (const l of logs) parts.push(logGeometry(l.radius, l.len, t.logSides).applyMatrix4(l.m))
+  const top = new Float32Array(GRID_N * GRID_N).fill(-Infinity)
+  const bottom = new Float32Array(GRID_N * GRID_N).fill(Infinity)
+  const geometries = LOG_SIDES.map((sides, tier) => {
+    const parts = []
+    for (const st of stones) {
+      const bt = BANDS[st.band].tiers[tier]
+      if (bt < 0) continue
+      const g = placedRock(shape.tiers[bt], st.m, Math.sqrt(st.across / w), st.color)
+      if (tier === 0 && st.across >= SOLID_ACROSS) rasterise(g, top, bottom, BANDS[st.band].wall ? groundAt : null)
+      parts.push(g)
+    }
+    if (sides) for (const l of logs) parts.push(logGeometry(l.radius, l.len, sides).applyMatrix4(l.m))
     return mergeParts(parts)
   })
+  return { geometries, tris: geometries.map((g) => g.index.count / 3), grid: { top, bottom }, stones }
+}
 
-  // The plate's top along its radius, the lowest of eight bearings so she never stands on air.
-  const profile = new Float32Array(RIM_BINS + 1)
-  const g0 = geometries[0]
-  for (let k = 0; k <= RIM_BINS; k++) {
-    const r = (k / RIM_BINS) * PLATE_WALK_R
-    let top = 0
-    for (let j = 0; j < 8; j++) {
-      const a = (j / 8) * Math.PI * 2
-      const sp = spanOf(plate0, Math.cos(a) * r, Math.sin(a) * r)
-      top = Math.min(top, sp ? sp[1] : -floorAt)
+/** The stone of `g` into the walk grid, a cell at a time under its box; with `groundAt`, a wall stone, cliffed to its crest past CLIFF. */
+function rasterise(g, top, bottom, groundAt) {
+  g.computeBoundingBox()
+  const bb = g.boundingBox
+  const i0 = Math.max(0, Math.ceil((bb.min.x + GRID_HALF) / CELL - 0.5)), i1 = Math.min(GRID_N - 1, Math.floor((bb.max.x + GRID_HALF) / CELL - 0.5))
+  const j0 = Math.max(0, Math.ceil((bb.min.z + GRID_HALF) / CELL - 0.5)), j1 = Math.min(GRID_N - 1, Math.floor((bb.max.z + GRID_HALF) / CELL - 0.5))
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      const u = (i + 0.5) * CELL - GRID_HALF, v = (j + 0.5) * CELL - GRID_HALF
+      const sp = spanOf(g, u, v)
+      if (!sp) continue
+      const c = j * GRID_N + i
+      const up = groundAt && sp[1] - groundAt(u, v) > CLIFF ? bb.max.y : sp[1]
+      if (sp[0] < bottom[c]) bottom[c] = sp[0]
+      if (up > top[c]) top[c] = up
     }
-    profile[k] = top
   }
-  const tris = geometries.map((g) => g.index.count / 3)
-  let bytes = 0
-  for (const g of geometries) bytes += g.index.array.byteLength + Object.values(g.attributes).reduce((n, a) => n + a.array.byteLength, 0)
-  return { geometries, tris, bytes, columns, profile, base: -floorAt, bounds: g0.boundingBox }
+}
+
+/** The walk grid's cell under (u, v) metres off the fortress's centre, or -1 off it. */
+export function gridCell(u, v) {
+  const i = Math.floor((u + GRID_HALF) / CELL), j = Math.floor((v + GRID_HALF) / CELL)
+  return i < 0 || j < 0 || i >= GRID_N || j >= GRID_N ? -1 : j * GRID_N + i
 }
 
 /**
@@ -328,16 +352,20 @@ export class Roosts {
    * @param field   V2Height: heightAt, snowLineAt
    * @param water   WaterSurfaces: isSubmerged
    * @param layers  Layers: paths
-   * @param opts.rocks  Rocks: boulder() and tintAt(), whose stone the fortress is
-   * @param opts.egg    the bank from loadEggBank, or null for a world with no eggs in its nests
+   * @param opts.rocks     Rocks: boulder() and tintAt(), whose stone the fortress is
+   * @param opts.egg       the bank from loadEggBank, or null for a world with no eggs in its nests
+   * @param opts.textures  the prop atlas
+   * @param opts.patch     (material, cacheKey) => material, the lighting patch
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = null, rocks, egg = null } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, rocks, egg = null, textures, patch } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.snowLineAt !== 'function') {
       throw new Error('Roosts: needs a V2Height with heightAt and snowLineAt')
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Roosts: needs WaterSurfaces with isSubmerged')
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') throw new Error('Roosts: needs Layers with a PathSet')
     if (!rocks || typeof rocks.boulder !== 'function' || typeof rocks.tintAt !== 'function') throw new Error('Roosts: needs the Rocks, for boulder() and tintAt()')
+    if (!textures || !textures.image) throw new Error('Roosts: needs the prop atlas')
+    if (typeof patch !== 'function') throw new Error('Roosts: needs the lighting patch')
 
     this.field = field
     this.water = water
@@ -349,45 +377,39 @@ export class Roosts {
     // One site a territory, so the territories the eviction disc touches bound the residents.
     const across = Math.ceil((2 * (this.radius + EVICT_PAD)) / TILE) + 1
     this.egg = egg
-    this.maxInstances = across * across * (egg ? 2 : 1) + FADE_MAX_INFLIGHT
+    this.maxInstances = egg ? across * across : 0
 
     const t0 = performance.now()
-    const shape = rocks.boulder()
-    this.bank = fortressBank(shape.tiers, this.seed)
-    this.eggTier = egg ? LODS : -1
-    this.material = shape.material
-    this.eggMaterial = egg ? createGenPropMaterial({ gloss: EGG_ROUGHNESS }) : null
+    this.shape = rocks.boulder()
+    this.material = patch(createPropMaterial(textures, { side: THREE.FrontSide, bump: true, vertexColors: true }), 'v2-roost-stone')
+    this.eggMaterial = egg ? patch(createGenPropMaterial({ gloss: EGG_ROUGHNESS }), 'v2-gen-prop') : null
     if (egg) this.eggMaterial.map = egg.map
-    // What main.js offers the lighting: the stone is the rocks', already lit.
-    this.materials = egg ? [this.eggMaterial] : []
 
-    const tiers = this.bank.geometries.map((g) => ({ geometries: [g] }))
-    if (egg) tiers.push({ geometries: [egg.geometry] })
-    this.batch = new PropArena(this.maxInstances, tiers, new Array(tiers.length).fill(this.maxInstances), (t) => (t === this.eggTier ? this.eggMaterial : this.material), 'v2-roosts')
-
-    this.free = new Int32Array(this.maxInstances)
-    this.freeCount = this.maxInstances
-    for (let i = 0; i < this.maxInstances; i++) {
-      const id = this.batch.addInstance(0)
-      this.batch.setVisibleAt(id, false)
-      this.free[this.maxInstances - 1 - i] = id
+    // Every roost's fortress and the eggs' arena, so the dragons' toggle is one switch.
+    this.group = new THREE.Group()
+    this.group.name = 'v2-roosts'
+    this.batch = null
+    this.rim = null
+    this.freeCount = 0
+    if (egg) {
+      this.batch = new PropArena(this.maxInstances, [{ geometries: [egg.geometry] }], [this.maxInstances], () => this.eggMaterial, 'v2-roost-eggs')
+      this.free = new Int32Array(this.maxInstances)
+      this.freeCount = this.maxInstances
+      for (let i = 0; i < this.maxInstances; i++) {
+        const id = this.batch.addInstance(0)
+        this.batch.setVisibleAt(id, false)
+        this.free[this.maxInstances - 1 - i] = id
+      }
+      this.instX = new Float32Array(this.maxInstances)
+      this.instY = new Float32Array(this.maxInstances)
+      this.instZ = new Float32Array(this.maxInstances)
+      // The egg's height, which is what it is picked and culled by.
+      this.instR = new Float32Array(this.maxInstances)
+      this.rim = new RimFade(this.batch, this.maxInstances)
+      this.group.add(this.batch)
     }
 
-    this.tierAt = new Int8Array(this.maxInstances).fill(-1)
-    this.instX = new Float32Array(this.maxInstances)
-    this.instY = new Float32Array(this.maxInstances)
-    this.instZ = new Float32Array(this.maxInstances)
-    // The egg's height, which is what it is picked and culled by.
-    this.instR = new Float32Array(this.maxInstances)
-    this.rim = new RimFade(this.batch, this.maxInstances, (id) => {
-      const running = this.fadeAt[id]
-      if (running >= 0) this._endFade(running)
-    })
-    this.fades = []
-    this.fadeAt = new Int32Array(this.maxInstances).fill(-1)
-    this.fadeTris = 0
-
-    // tileKey -> { tx, tz, ids, n, site, cols }: ids[0] the fortress and ids[1] its egg, `n` how many stand, `cols` its stones as the walker reads them.
+    // tileKey -> { tx, tz, site, mesh, geometries, tris, tier, grid, ids, n }: `ids[0]` its egg while `n` is 1.
     this.tiles = new Map()
     // tileKey -> the territory's summit or null, and its roll, for the ones asked of past the radius.
     this.summits = new Map()
@@ -406,14 +428,13 @@ export class Roosts {
     this._c = new THREE.Color()
     this._up = new THREE.Vector3(0, 1, 0)
 
-    this.placed = 0
     this.eggs = 0
     this.tris = 0
     this.rejected = { water: 0, path: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
 
-    scene.add(this.batch)
+    scene.add(this.group)
   }
 
   /** Seat every roost inside the radius afresh. For boot and for a relief edit. */
@@ -429,49 +450,42 @@ export class Roosts {
     this.camX = null
     this._reseat(cx, cz)
     this.placeMs = performance.now() - t0
-    return this.placed
+    return this.tiles.size
   }
 
   /**
    * Every roost resident, for dragons.js: `{ key, tx, tz, x, y, z, r, gx, gz }`,
-   * `y` the floor at the fortress's centre, `r` the floor's clear radius and
+   * `y` the ground at the fortress's centre, `r` the floor's clear radius and
    * (gx, gz) its plane's slope, metres of rise per metre along +X and +Z, so
-   * the floor at (x + u, z + v) is `y + gx * u + gz * v`. Resident is not
-   * drawn: a roost past the rim is still a site.
+   * the floor at (x + u, z + v) is `y + gx * u + gz * v`.
    */
   sites(into = []) {
-    for (const tile of this.tiles.values()) if (tile.n) into.push(tile.site)
+    for (const tile of this.tiles.values()) into.push(tile.site)
     return into
   }
 
-  /** Follow the camera, sweep the rim and re-rung every fortress on the rocks' ladder. */
+  /** Follow the camera, sweep the eggs' rim and re-rung every fortress on the rocks' ladder. */
   update(camX, camY, camZ) {
     this._reseat(camX, camZ)
-    const now = getPropClock()
-    this._sweepFades(now)
     let tris = 0
-    this.rim.beginFrame(camX, camY, camZ)
+    if (this.rim) this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
-      this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
-      const i = tile.ids[0]
-      if (!this.rim.isHidden(i)) {
-        const dx = this.instX[i] - camX, dy = this.instY[i] - camY, dz = this.instZ[i] - camZ
-        const d2 = dx * dx + dy * dy + dz * dz
-        const cur = this.tierAt[i]
-        let tier = LOD_SQ.length
-        for (let k = 0; k < LOD_SQ.length; k++) {
-          if (d2 < (cur >= 0 && cur <= k ? LOD_SQ_OUT[k] : LOD_SQ[k])) { tier = k; break }
-        }
-        if (tier !== cur) {
-          this.tierAt[i] = tier
-          this.batch.setGeometryIdAt(i, tier)
-          if (cur >= 0) this._crossFade(i, cur, now)
-        }
-        tris += this.bank.tris[tier]
+      if (this.rim) this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
+      const { site } = tile
+      const d2 = (site.x - camX) ** 2 + (site.y - camY) ** 2 + (site.z - camZ) ** 2
+      const cur = tile.tier
+      let tier = LODS - 1
+      for (let k = 0; k < LOD_SQ.length; k++) {
+        if (d2 < (cur <= k ? LOD_SQ_OUT[k] : LOD_SQ[k])) { tier = k; break }
       }
-      if (tile.n === 2 && !this.rim.isHidden(tile.ids[1])) tris += this.egg.tris
+      if (tier !== cur) {
+        tile.tier = tier
+        tile.mesh.geometry = tile.geometries[tier]
+      }
+      tris += tile.tris[tier]
+      if (tile.n && !this.rim.isHidden(tile.ids[0])) tris += this.egg.tris
     }
-    this.tris = tris + this.fadeTris
+    this.tris = tris
   }
 
   _reseat(cx, cz) {
@@ -549,12 +563,12 @@ export class Roosts {
     return out
   }
 
-  /** The territory's roll: its summit if no neighbour's within SPACING outranks it, seated, with the egg's whole description drawn whether or not it stands. */
+  /** The territory's roll: its summit if no neighbour's within SPACING outranks it, seated, with the fortress's seed and the egg's whole description drawn whether or not it stands. */
   _roll(key, tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
-    const yaw = rand() * Math.PI * 2
+    const fortress = (rand() * 0x100000000) >>> 0
     const egg = { keep: rand(), tint: EGG_TINTS[(rand() * EGG_TINTS.length) | 0][1], height: between(rand, EGG_HEIGHT), yaw: rand() * Math.PI * 2, lie: between(rand, EGG_LIE), bearing: rand() * Math.PI * 2 }
-    const out = { site: null, yaw, egg }
+    const out = { site: null, fortress, egg }
     const top = this._summit(tx, tz)
     if (!top) return out
     for (let dz = -1; dz <= 1; dz++) {
@@ -585,74 +599,52 @@ export class Roosts {
       const near = this.paths.nearest(x, z, kind)
       if (near && near.dist < near.halfWidth + WIDTH / 2 + PATH_CLEARANCE) { this.rejected.path++; return out }
     }
-    // Tilted to the plane through four rim samples, no steeper than MAX_TILT, and lifted clear of the ground under the floor.
-    let gx = (f.heightAt(x + SEAT_R, z) - f.heightAt(x - SEAT_R, z)) / (2 * SEAT_R)
-    let gz = (f.heightAt(x, z + SEAT_R) - f.heightAt(x, z - SEAT_R)) / (2 * SEAT_R)
+    // The floor's plane: through the ground at the centre, tilted to the ground across the floor, no steeper than MAX_TILT.
+    let gx = (f.heightAt(x + FLOOR_R, z) - f.heightAt(x - FLOOR_R, z)) / (2 * FLOOR_R)
+    let gz = (f.heightAt(x, z + FLOOR_R) - f.heightAt(x, z - FLOOR_R)) / (2 * FLOOR_R)
     const g = Math.hypot(gx, gz)
     if (g > MAX_TILT) { gx *= MAX_TILT / g; gz *= MAX_TILT / g }
-    let poke = 0
-    for (const rr of LIFT_R) {
-      for (let k = 0; k < 16; k++) {
-        const a = (k / 16) * Math.PI * 2
-        const u = rr * Math.cos(a), v = rr * Math.sin(a)
-        poke = Math.max(poke, f.heightAt(x + u, z + v) - (yc + gx * u + gz * v))
-      }
-    }
-    const lift = Math.min(LIFT[1], Math.max(LIFT[0], poke + 0.25))
-    out.site = { key, tx, tz, x, y: yc + lift, z, r: FLOOR_R, gx, gz }
+    out.site = { key, tx, tz, x, y: yc, z, r: FLOOR_R, gx, gz }
     return out
   }
 
-  /** Grow the territory's roost: the fortress yawed and tilted to its floor, tinted the peak's stone, with its egg or none. */
+  /** Grow the territory's roost: its fortress built on its own ground, tinted the peak's stone, with its egg or none. */
   _growTile(key, tx, tz) {
     const roll = this._rollOf(key, tx, tz)
     this.rolled.delete(key)
     const site = roll.site
-    if (this.freeCount === 0) throw new Error(`Roosts: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} roosts resident)`)
-    const tile = { tx, tz, ids: new Int32Array(2), n: 1, site, cols: null }
-    this.tiles.set(key, tile)
     const { x, y, z, gx, gz } = site
-    const { yaw, egg } = roll
-
-    const id = this.free[--this.freeCount]
-    tile.ids[0] = id
-    this.placed++
-    this.instX[id] = x
-    this.instY[id] = y
-    this.instZ[id] = z
-    this._p.set(x, y, z)
-    this._q.setFromAxisAngle(this._up, yaw)
-    this._q.premultiply(this._tilt.setFromUnitVectors(this._up, this._n.set(-gx, 1, -gz).normalize()))
-    this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s.setScalar(1)))
-    this.batch.setColorAt(id, this.rocks.tintAt(x, z, 'peak', this._c))
-    this.tierAt[id] = -1
-    this.batch.setGeometryIdAt(id, LODS - 1)
-    this.rim.place(id, this.radius)
-    // The stones as world columns, each at its centre's floor height.
-    const cols = this.bank.columns
-    tile.cols = new Float32Array(cols.length * 5)
-    const c = Math.cos(yaw), s = Math.sin(yaw)
-    cols.forEach((col, k) => {
-      const u = c * col.x + s * col.z, v = -s * col.x + c * col.z
-      const lift = y + gx * u + gz * v
-      tile.cols.set([x + u, z + v, col.r, lift + col.bottom, lift + col.top], k * 5)
-    })
+    const f = this.field
+    this.rocks.tintAt(x, z, 'peak', this._c)
+    const built = buildFortress(this.shape, roll.fortress, (u, v) => f.heightAt(x + u, z + v) - y, [this._c.r, this._c.g, this._c.b])
+    const mesh = new THREE.Mesh(built.geometries[LODS - 1], this.material)
+    mesh.name = 'v2-roost'
+    mesh.position.set(x, y, z)
+    mesh.updateMatrixWorld()
+    mesh.matrixAutoUpdate = false
+    this.group.add(mesh)
+    const tile = { tx, tz, site, mesh, geometries: built.geometries, tris: built.tris, tier: LODS - 1, grid: built.grid, ids: new Int32Array(1), n: 0 }
+    this.tiles.set(key, tile)
     // A nest whose egg was taken from it (hands.js) lays no other.
-    if (this.egg && egg.keep < EGG_ODDS && !taken.has('egg', x, z)) this._layEgg(tile, x, y, z, egg.tint, egg.height, egg.yaw, egg.lie, egg.bearing)
-    this.rim.markDue(tile)
+    const { egg } = roll
+    if (this.egg && egg.keep < EGG_ODDS && !taken.has('egg', x, z)) {
+      this._tilt.setFromUnitVectors(this._up, this._n.set(-gx, 1, -gz).normalize())
+      this._layEgg(tile, x, y, z, egg.tint, egg.height, egg.yaw, egg.lie, egg.bearing)
+    }
+    if (this.rim) this.rim.markDue(tile)
   }
 
   /**
    * The egg at the floor's centre: `height` metres tall, spun about its own
    * axis, laid over by `lie` about `bearing` in the floor's plane, with
    * EGG_SINK of its width bedded in. Reads the floor's normal and tilt (`_n`,
-   * `_tilt`) as the fortress just seated left them.
+   * `_tilt`) as _growTile left them.
    */
   _layEgg(tile, x, y, z, tint, height, yaw, lie, bearing) {
-    if (this.freeCount === 0) throw new Error(`Roosts: instance pool exhausted at ${this.maxInstances} laying an egg (${this.tiles.size} roosts resident)`)
+    if (this.freeCount === 0) throw new Error(`Roosts: egg pool exhausted at ${this.maxInstances} (${this.tiles.size} roosts resident)`)
     const id = this.free[--this.freeCount]
-    tile.ids[1] = id
-    tile.n = 2
+    tile.ids[0] = id
+    tile.n = 1
     this.eggs++
     const b = this.egg.bounds
     const scale = height / b.height
@@ -671,60 +663,32 @@ export class Roosts {
     this._s.setScalar(scale)
     this.batch.setMatrixAt(id, this._m.compose(this._p, this._q, this._s))
     this.batch.setColorAt(id, this._c.setHex(tint))
-    this.tierAt[id] = this.eggTier
-    this.batch.setGeometryIdAt(id, this.eggTier)
+    this.batch.setGeometryIdAt(id, 0)
     this.rim.place(id, Math.min(this.radius, propCull(height)))
   }
 
   // -- stone to the walker (walk.js addStone) ---------------------------------
 
-  /** The plate's top at (x, z) under a resident roost's floor, or -Infinity off every plate; `base` its underside. */
-  _plateAt(tile, x, z, base = false) {
-    const { site } = tile
-    const u = x - site.x, v = z - site.z
-    const r = Math.hypot(u, v)
-    if (r > PLATE_WALK_R) return -Infinity
-    const floor = site.y + site.gx * u + site.gz * v
-    if (base) return floor + this.bank.base
-    const p = this.bank.profile
-    const k = (r / PLATE_WALK_R) * RIM_BINS
-    const i = Math.min(RIM_BINS - 1, Math.floor(k))
-    return floor + p[i] + (p[i + 1] - p[i]) * (k - i)
+  _cellAt(x, z) {
+    for (const tile of this.tiles.values()) {
+      const c = gridCell(x - tile.site.x, z - tile.site.z)
+      if (c >= 0 && tile.grid.top[c] > -Infinity) return { tile, c }
+    }
+    return null
   }
 
   columnAt(x, z, _minSize, out) {
-    const cap = out.length >> 1
-    let n = 0
-    for (const tile of this.tiles.values()) {
-      if ((x - tile.site.x) ** 2 + (z - tile.site.z) ** 2 > (WIDTH / 2 + 1) ** 2) continue
-      const top = this._plateAt(tile, x, z)
-      if (top > -Infinity && n < cap) {
-        out[n * 2] = this._plateAt(tile, x, z, true)
-        out[n * 2 + 1] = top
-        n++
-      }
-      const c = tile.cols
-      for (let k = 0; k < c.length && n < cap; k += 5) {
-        if ((x - c[k]) ** 2 + (z - c[k + 1]) ** 2 > c[k + 2] * c[k + 2]) continue
-        out[n * 2] = c[k + 3]
-        out[n * 2 + 1] = c[k + 4]
-        n++
-      }
-    }
-    return n
+    const hit = this._cellAt(x, z)
+    if (!hit) return 0
+    const { tile, c } = hit
+    out[0] = tile.site.y + tile.grid.bottom[c]
+    out[1] = tile.site.y + tile.grid.top[c]
+    return 1
   }
 
   blockTopAt(x, z) {
-    let top = -Infinity
-    for (const tile of this.tiles.values()) {
-      if ((x - tile.site.x) ** 2 + (z - tile.site.z) ** 2 > (WIDTH / 2 + 1) ** 2) continue
-      top = Math.max(top, this._plateAt(tile, x, z))
-      const c = tile.cols
-      for (let k = 0; k < c.length; k += 5) {
-        if ((x - c[k]) ** 2 + (z - c[k + 1]) ** 2 <= c[k + 2] * c[k + 2] && c[k + 4] > top) top = c[k + 4]
-      }
-    }
-    return top
+    const hit = this._cellAt(x, z)
+    return hit ? hit.tile.site.y + hit.tile.grid.top[hit.c] : -Infinity
   }
 
   // -- the egg in her hand (hands.js) ------------------------------------------
@@ -738,8 +702,8 @@ export class Roosts {
     let best = null
     let bestD = reach
     for (const tile of this.tiles.values()) {
-      if (tile.n < 2) continue
-      const id = tile.ids[1]
+      if (!tile.n) continue
+      const id = tile.ids[0]
       if (this.rim.isHidden(id)) continue
       const height = this.instR[id]
       if (height >= maxSize) continue
@@ -761,19 +725,13 @@ export class Roosts {
    */
   take(hit, stowMax) {
     const { tile, id } = hit
-    if (tile.n < 2 || tile.ids[1] !== id) throw new Error(`Roosts.take: instance ${id} is not the egg of its nest`)
+    if (!tile.n || tile.ids[0] !== id) throw new Error(`Roosts.take: instance ${id} is not the egg of its nest`)
     const height = this.instR[id]
     const scale = height / this.egg.bounds.height
     this.batch.getColorAt(id, this._c)
     const color = [this._c.r, this._c.g, this._c.b]
     taken.add('egg', tile.site.x, tile.site.z)
-    if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
-    this.batch.setVisibleAt(id, false)
-    this.rim.drop(id)
-    this.tierAt[id] = -1
-    this.free[this.freeCount++] = id
-    this.eggs--
-    tile.n = 1
+    this._dropEgg(tile)
     return {
       kind: 'egg',
       name: 'dragon egg',
@@ -794,8 +752,8 @@ export class Roosts {
   evict(key, x, z) {
     if (key !== 'egg') return false
     for (const tile of this.tiles.values()) {
-      if (tile.n < 2 || Math.abs(tile.site.x - x) >= TOLERANCE_M || Math.abs(tile.site.z - z) >= TOLERANCE_M) continue
-      this.take({ dist: 0, tile, id: tile.ids[1], size: this.instR[tile.ids[1]] }, Infinity)
+      if (!tile.n || Math.abs(tile.site.x - x) >= TOLERANCE_M || Math.abs(tile.site.z - z) >= TOLERANCE_M) continue
+      this.take({ dist: 0, tile, id: tile.ids[0], size: this.instR[tile.ids[0]] }, Infinity)
       return true
     }
     return false
@@ -808,76 +766,31 @@ export class Roosts {
     return { geometry: this.egg.geometry, material: this.eggMaterial }
   }
 
-  _release(tile) {
-    for (let k = 0; k < tile.n; k++) {
-      const id = tile.ids[k]
-      if (this.fadeAt[id] >= 0) this._endFade(this.fadeAt[id])
-      this.batch.setVisibleAt(id, false)
-      this.rim.drop(id)
-      this.tierAt[id] = -1
-      this.free[this.freeCount++] = id
-      if (k === 0) this.placed--
-      else this.eggs--
-    }
+  _dropEgg(tile) {
+    const id = tile.ids[0]
+    this.batch.setVisibleAt(id, false)
+    this.rim.drop(id)
+    this.free[this.freeCount++] = id
+    this.eggs--
     tile.n = 0
-    this.rim.releaseTile(tile)
   }
 
-  /** bones.js's `_crossFade`: a ghost off the pool takes the tier `i` left and the two dither past each other. */
-  _crossFade(i, oldTier, now) {
-    const running = this.fadeAt[i]
-    if (running >= 0) this._endFade(running)
-    if (this.rim.isBusy(i) || !dissolvesOn()) return
-    if (this.fades.length >= FADE_MAX_INFLIGHT) return
-    const dup = this.free[--this.freeCount]
-    this.batch.getMatrixAt(i, this._m)
-    this.batch.setMatrixAt(dup, this._m)
-    this.batch.setColorAt(dup, this.batch.getColorAt(i, this._c))
-    this.batch.setGeometryIdAt(dup, oldTier)
-    this.batch.setVisibleAt(dup, true)
-    setPropFadeTimerAt(this.batch, dup, now, false)
-    setPropFadeTimerAt(this.batch, i, now, true)
-    const tris = this.bank.tris[oldTier]
-    this.fadeTris += tris
-    this.fadeAt[i] = this.fades.length
-    this.fades.push({ orig: i, dup, start: now, tris })
-  }
-
-  _endFade(k) {
-    const f = this.fades[k]
-    this.batch.setVisibleAt(f.dup, false)
-    this.free[this.freeCount++] = f.dup
-    this.fadeTris -= f.tris
-    setPropSolidAt(this.batch, f.orig)
-    this.fadeAt[f.orig] = -1
-    const last = this.fades.pop()
-    if (k < this.fades.length) {
-      this.fades[k] = last
-      this.fadeAt[last.orig] = k
-    }
-  }
-
-  _sweepFades(now) {
-    let k = 0
-    while (k < this.fades.length) {
-      const age = now - this.fades[k].start
-      if (age >= PROP_FADE_SECONDS || age < 0) this._endFade(k)
-      else k++
-    }
+  _release(tile) {
+    if (tile.n) this._dropEgg(tile)
+    if (this.rim) this.rim.releaseTile(tile)
+    this.group.remove(tile.mesh)
+    for (const g of tile.geometries) g.dispose()
   }
 
   get stats() {
     return {
-      placed: this.placed,
+      placed: this.tiles.size,
       eggs: this.eggs,
-      rimHidden: this.rim.hiddenCount,
-      fading: this.fades.length,
+      rimHidden: this.rim ? this.rim.hiddenCount : 0,
       tris: this.tris,
-      tiles: this.tiles.size,
       pool: this.maxInstances,
       used: this.maxInstances - this.freeCount,
       radius: this.radius,
-      bankKB: Math.round(this.bank.bytes / 1024),
       buildMs: this.buildMs,
       placeMs: this.placeMs,
       rejected: this.rejected,
@@ -885,12 +798,15 @@ export class Roosts {
   }
 
   dispose() {
-    this.batch.dispose()
+    for (const tile of this.tiles.values()) this._release(tile)
+    this.tiles.clear()
+    this.group.removeFromParent()
+    this.material.dispose()
+    if (this.batch) this.batch.dispose()
     if (this.eggMaterial) {
       if (this.eggMaterial.map) this.eggMaterial.map.dispose()
       this.eggMaterial.dispose()
     }
-    for (const g of this.bank.geometries) g.dispose()
     if (this.egg) this.egg.geometry.dispose()
   }
 }

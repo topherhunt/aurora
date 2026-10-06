@@ -81,7 +81,7 @@ import { LAMP, Lamps, loadLampBank } from './render/lamps.js'
 import { Hearth } from './render/hearth.js'
 import { Stools } from './render/stools.js'
 import { Shell } from './render/shell.js'
-import { rollVillage, buildVillage, gardenSpots, plotsOccupy, roofFerns, weedGardens, WOOD, HER_SCALE } from './rooms/village.js'
+import { rollVillage, buildVillage, gardenSpots, plotsOccupy, roofFerns, weedGardens, WOOD } from './rooms/village.js'
 import { keyHash } from '../sim/score.js'
 import { loadCritterGlb, setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
@@ -128,7 +128,7 @@ import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
-import { Bites, EAT, Effects, buzzBuffer, edible, reversedBuffer } from './eating.js'
+import { Bites, EAT, Effects, atMost, buzzBuffer, edible, reversedBuffer } from './eating.js'
 import { siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
 import { CaveWalk } from './caves/walk.js'
@@ -964,9 +964,9 @@ async function menuNewGame() {
 // The start as a first boot has it: SPAWN at CLOCK.startHour, facing the way
 // the world opens, the sky clear of flares, hands empty and a fresh flare gun
 // the only thing in the backpack -- what she held is let go where she stood,
-// but a gun in hand is gone with the old one. The saved game is kept; Load
-// still returns her to it.
+// but a gun in hand is gone with the old one. The saved game is wiped.
 function newGame() {
+  localStorage.removeItem(SAVE_KEY)
   restoreHour(CLOCK.startHour)
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
@@ -1102,8 +1102,17 @@ function harm(n, why) {
   if (ambience) sound.play('thud', { bus: 'near', rate: THREE.MathUtils.randFloat(0.9, 1.1), gain: 0.9 })
   if (!died) return
   freeMouse()
-  const xr = renderer.xr.isPresenting
-  vitalsHud.showDeath(!xr ? [] : hasSave() ? ['A  load your saved game', 'B  start a new game'] : ['A or B  start a new game'])
+  vitalsHud.showDeath(hasSave())
+}
+
+/** Eaten whole (a fish four times her height): one gulp, and the view is black at once, no porcini to soften it. */
+function swallowed(why) {
+  if (health.dead) return
+  health.harm(health.hp)
+  console.log(`[vitals] swallowed by ${why}`)
+  if (ambience) sound.play('eat', { bus: 'near', gain: 1 })
+  freeMouse()
+  vitalsHud.showDeath(hasSave(), true)
 }
 
 /** Back from death under the black: into the saved game's room and place, or a new game's. */
@@ -1132,7 +1141,7 @@ async function revive(doc) {
   reviving = false
 }
 
-/** The death card's choice, from a page button or a controller's. */
+/** The death card's choice, from a page button or the headset's pointer. */
 function reviveFrom(load) {
   if (!vitalsHud.deathShown || reviving) return
   revive(load && hasSave() ? readSave() : null).catch(reportRuntimeError)
@@ -1179,7 +1188,10 @@ function stepEating(dt) {
       : food && xr && hands.pointOf(key, biteHand).distanceTo(mouthAt) < EAT.mouth * herScale()
     if (bites.step(key, atMouth, dt)) eatFrom(key)
   }
-  if (wildlife) wildlife.madden(effects.maddened, effects.dread)
+  if (wildlife) { wildlife.madden(effects.maddened, effects.dread); wildlife.sized(effects.size) }
+  if (crabs) crabs.sized(effects.size)
+  if (spiders) spiders.sized(effects.size)
+  if (fish) fish.sized(effects.size)
   if (wildStriders) wildStriders.madden(effects.maddened, effects.dread)
   if (townsfolk) townsfolk.madden(effects.maddened, effects.dread)
   if (buzz) buzz.gain.setTargetAtTime(BUZZ_GAIN * effects.seeing, sound.ctx.currentTime, 0.1)
@@ -1235,7 +1247,9 @@ function stepSize() {
 function stepHud(dt) {
   vitalsHud.place(renderer.xr.isPresenting, camera.fov, camera.aspect)
   const card = health.dead && !reviving
-  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card, tint: effects.tint })
+  const hit = questPointer === null ? null : questPointer.hit
+  const hot = hit === null ? null : hit.object.userData.death
+  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card, buttons: renderer.xr.isPresenting, hot, tint: effects.tint })
   if (beat && ambience) sound.play('heartbeat', { bus: 'near', gain: 0.25 + 0.35 * health.hurt })
   const buttons = card && vitalsHud.deathShown && !renderer.xr.isPresenting
   if (buttons !== (deathButtons.style.display === 'flex')) {
@@ -2429,6 +2443,13 @@ function buildQuestPanel() {
     // whatever THAT hand's ray is on -- re-cast now, so a pull on the hand that
     // was not pointing does not act on the other hand's hit.
     el.addEventListener('triggerdown', () => {
+      if (health.dead) {
+        questPointerHand = el
+        updateQuestPointer()
+        const choice = questPointer.hit === null ? undefined : questPointer.hit.object.userData.death
+        if (choice !== undefined) reviveFrom(choice === 'load')
+        return
+      }
       if (vitalsHold()) return
       // With the menu open the trigger presses what the pointer is on; off the menu, and with it closed, the trigger is her hand: it takes, drops and stows (see hands.js), except that a flare gun held anywhere but the backpack fires.
       if (questPanelGroup.visible) {
@@ -2555,7 +2576,9 @@ function questPointerEl() {
 }
 
 function updateQuestPointer() {
-  const open = questPanelGroup.visible
+  // Dead in the headset, the pointer is for the death card's buttons alone, and drawn over its black.
+  const dying = vitalsHud !== null && vitalsHud.deathTargets.length > 0
+  const open = questPanelGroup.visible || dying
   for (const el of [leftHandEl, rightHandEl]) {
     // The controller model is never drawn: it loads only to set the pointer's origin and direction.
     const model = el.getObject3D('mesh')
@@ -2575,8 +2598,9 @@ function updateQuestPointer() {
   // disabled and casts nothing.
   const rc = el.components.raycaster
   rc.updateOriginDirection()
-  const hit = rc.raycaster.intersectObjects(questHitMeshes)[0] || null
+  const hit = rc.raycaster.intersectObjects(dying ? vitalsHud.deathTargets : questHitMeshes)[0] || null
   p.hit = hit
+  p.line.renderOrder = p.dot.renderOrder = dying ? vitalsHud.pointerOrder : QUEST_POINTER_ORDER
   if (p.line.parent !== el.object3D) el.object3D.add(p.line)
   p.line.visible = true
   p.line.position.copy(rc.data.origin)
@@ -3325,7 +3349,7 @@ function applyAnimalVisibility() {
   if (hobs) hobs.batch.visible = animalOn('leafkin')
   // The roosts go with their dragons: a nest is where a dragon lives, not litter. Neither in a village.
   if (dragons) dragons.batch.visible = animalOn('dragons')
-  if (roosts) roosts.batch.visible = animalOn('dragons')
+  if (roosts) roosts.group.visible = animalOn('dragons')
 }
 
 /** Every animal layer put down around (cx, cz), skipping any the panel has frozen. */
@@ -3445,16 +3469,16 @@ function buildGrass(style, cx, cz, opts = {}) {
 
 // The rooms she can be in (DESIGN.md §30): the overworld, a set of world files
 // under `dir`, and the village inside a hollow boulder, built in memory at boot
-// (rooms/village.js) from the boulder's own inside. `scale` is her size
-// against the room (HER_SCALE in a glade), and every metre that is hers --
-// her pace, her reach, her lob, her menu -- follows it.
+// (rooms/village.js) from the boulder's own inside. Every room is in the
+// world's metres; her size is what the mushrooms made her, the same in each,
+// and a glade is entered only small enough (entrances.js MOUTH).
 const ROOMS = {
-  overworld: { id: 'overworld', dir: 'world', height: HEIGHTMAP_URL, meta: HEIGHTMAP_META_URL, spawn: SPAWN, hollows: true, leafkin: true, village: false, scale: 1 },
-  leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true, scale: HER_SCALE },
+  overworld: { id: 'overworld', dir: 'world', height: HEIGHTMAP_URL, meta: HEIGHTMAP_META_URL, spawn: SPAWN, hollows: true, leafkin: true, village: false },
+  leafkin: { id: 'leafkin', hollows: false, leafkin: false, village: true },
 }
 let currentRoom = ROOMS.overworld
-/** Her size against the world: the room's, times what the mushrooms have made her (effects.size). Carried to the rig, walk, hands and wire by stepSize. */
-const herScale = () => currentRoom.scale * effects.size
+/** Her size against the world (effects.size): every metre that is hers -- her pace, her reach, her lob, her menu -- follows it. Carried to the rig, walk, hands and wire by stepSize. */
+const herScale = () => effects.size
 // What buildVillage answered for the room she is in: its layers document, its spawn, its exit mouth, its clearing and its huts; null in the overworld.
 let roomSpec = null
 let roomHeightmap = null
@@ -4878,7 +4902,7 @@ async function buildRoom(room, at) {
   // before the mesh and cutouts arrive -- the pool stays empty until they do.
   // A village seeds them on the seed its build found a school for in its lake.
   await bootStep('fish')
-  fish = new Fish(scene, height, waterSurfaces, { seed: room.village ? roomSpec.fishSeed : seed })
+  fish = new Fish(scene, height, waterSurfaces, { seed: room.village ? roomSpec.fishSeed : seed, harm, swallow: swallowed })
   water.uniforms.uClarity.value.set(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180))
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
@@ -4898,7 +4922,7 @@ async function buildRoom(room, at) {
   window.v2frogs = frogs
   await bootStep('crabs')
   // The crab's cross card is photographed off its GLB, so the bake waits on the load.
-  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks })
+  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks, harm })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
   lighting.patch(crabs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-crabs-card' })
   crabs.place(spawn.x, spawn.z, clock.seconds)
@@ -4936,7 +4960,7 @@ async function buildRoom(room, at) {
   // a scatter that climbs the trees and the rocks, so after both. One material
   // for the mesh, its legs in the vertex shader, and one for the card.
   await bootStep('spiders')
-  spiders = new Spiders(scene, height, waterSurfaces, { seed, trees, rocks, cards: litterCards })
+  spiders = new Spiders(scene, height, waterSurfaces, { seed, trees, rocks, cards: litterCards, harm })
   lighting.patch(spiders.material, { mode: 'vertex', cacheKey: 'v2-spiders' })
   spiders.place(spawn.x, spawn.z)
   spiders.ready.then(() => { if (build === roomBuild) spiders.bakeCard(renderer) })
@@ -5047,19 +5071,18 @@ async function buildRoom(room, at) {
   window.v2handsNet = handsNet
 
   // The dragons' roosts (render/roosts.js), fortresses of the rocks' own
-  // boulder on the peaks with the shipped egg in half of them, and the pairs
+  // boulder set into the peaks with the shipped egg in half of them, and the pairs
   // of dragons that live in them (render/dragons.js), hunting the wildlife's
   // stags. The roosts stand at once; the dragons wait for their GLB like the rest.
   await bootStep('dragons')
   if (!room.village) {
-    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank() })
-    for (const m of roosts.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
+    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank(), textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
     roosts.place(spawn.x, spawn.z)
     walk.addStone(roosts)
-    console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs over ${roosts.stats.tiles} tiles in ${roosts.placeMs.toFixed(1)} ms`)
+    console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs in ${roosts.placeMs.toFixed(1)} ms`)
     window.v2roosts = roosts
     hands.addSource(roosts, 'egg')
-    dragons = new Dragons(scene, height, { seed, roosts, wildlife, water: waterSurfaces, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
+    dragons = new Dragons(scene, height, { seed, ground: walk, roosts, wildlife, water: waterSurfaces, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
     for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
     dragons.ready.then(() => {
       if (build !== roomBuild) return
@@ -6911,7 +6934,8 @@ function portalTest() {
   let door = null
   for (const site of portalSites) {
     const d = Math.hypot(feet.x - site.holeX, feet.z - site.holeZ)
-    if (d > PORTAL.reach) continue
+    // A hollow's mouth too small for her is only stone; a room's own way out (fits Infinity) always lets her out.
+    if (d > PORTAL.reach || !atMost(effects.size, site.fits)) continue
     const walked = d <= PORTAL.walk && step > 0 && -(sx * site.nx + sz * site.nz) / step >= PORTAL.into
     if (walked || (blink && d <= PORTAL.blink)) { door = site; break }
   }
@@ -6936,6 +6960,7 @@ function teleportDoors(feet, dir) {
   }
   // An arch's black hole, out of its record (entrances.js sites).
   const arch = (s, depth) => {
+    if (!atMost(effects.size, s.fits)) return
     const [u0, u1, v0, v1] = holeBox()
     add({ x: s.holeX, y: s.ay + v0 * s.scale, z: s.holeZ, nx: s.nx, nz: s.nz }, 2 * Math.max(-u0, u1) * s.scale, (v1 - v0) * s.scale, 1, depth)
   }
@@ -7275,10 +7300,7 @@ function readInput(dt) {
   if (st.connected > 0) {
     if (vitalsHold()) {
       const pressed = (name) => st.left.buttons[name]?.justPressed || st.right.buttons[name]?.justPressed
-      if (health.dead) {
-        if (pressed('PRIMARY')) reviveFrom(true)
-        else if (pressed('SECONDARY')) reviveFrom(false)
-      } else if (['left', 'right'].some((hand) => Object.values(st[hand].buttons).some((b) => b.justPressed))) vitalsPress = true
+      if (!health.dead && ['left', 'right'].some((hand) => Object.values(st[hand].buttons).some((b) => b.justPressed))) vitalsPress = true
       Object.assign(moveInput, { move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false, flyDirection: null, ride: { push: 0, steer: 0 } })
       return
     }

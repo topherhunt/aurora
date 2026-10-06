@@ -33,7 +33,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS, HUNT } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT, setTierTint } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
@@ -565,6 +565,28 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   let frames = 0
   while (k.loose.length > 0 && frames++ < 120 * 72) k.update(head.x, head.y, head.z, (T += DT), false)
   check(k.loose.length === 0 && !loose.loose, `and it is forgotten past RADIUS ${RADIUS}`, `${(frames / 72).toFixed(1)} s`)
+  k.dispose()
+}
+
+// --- at an eighth of her size a crab near her comes for her and bites; grown, it goes home ---
+{
+  const hits = []
+  const k = new Crabs(scene, height, water, { seed: 11, rocks, assets: asset, harm: (n) => hits.push(n) })
+  k.update(15, HEAD_Y(), 0, (T += DT))
+  const c = alive(k)[0]
+  const her = { x: c.x + 2, y: c.y + 0.2, z: c.z }
+  const run = (s) => { for (let i = 0; i < s / DT; i++) k.update(her.x, her.y, her.z, (T += DT)) }
+  const off = () => Math.hypot(c.x - her.x, c.z - her.z)
+  run(2)
+  check(c.hunt === null && hits.length === 0, 'her at full size 2 m off, it keeps to its spell')
+  k.sized(0.125)
+  run(5)
+  check(c.hunt !== null && !c.hunt.back && off() <= c.size + 0.01 && hits.length >= 3 && hits.every((n) => n === HUNT.harm), `at an eighth of her size it scuttles to her and bites, ${HUNT.harm} a bite`, `${off().toFixed(2)} m off, bites ${hits.join(' ')}`)
+  k.sized(1)
+  run(10)
+  const home = { x: c.x, z: c.z }
+  k._play(c, T)
+  check(c.hunt === null && Math.hypot(c.x - home.x, c.z - home.z) < 1e-6, 'grown, it walks back onto its spell', `${c.hunt && 'still out'}`)
   k.dispose()
 }
 

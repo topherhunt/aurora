@@ -382,11 +382,13 @@ export function measureFly(asset) {
 export class Dragons {
   /**
    * @param field     V2Height: heightAt, the ground the flight keeps clear of
+   * @param ground    what they stand and land on, stone included (walk.js's WalkSurface): heightAt; the field when omitted
    * @param roosts    Roosts: sites(), siteAt(tx, tz)
    * @param wildlife  Wildlife: roster, spawnAt, poseAt, kill, carry, drop; its `hunter` is set here (strikeOn)
    */
-  constructor(scene, field, { seed = 1, roosts, wildlife, water, harm, fright, asset = null } = {}) {
+  constructor(scene, field, { seed = 1, ground = field, roosts, wildlife, water, harm, fright, asset = null } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') throw new Error('Dragons needs a height field with heightAt and heightAndSlopeAt')
+    if (!ground || typeof ground.heightAt !== 'function') throw new Error('Dragons needs a ground with heightAt')
     if (!roosts || typeof roosts.sites !== 'function' || typeof roosts.siteAt !== 'function') throw new Error('Dragons needs the Roosts, for sites and siteAt')
     if (!wildlife || ['roster', 'spawnAt', 'poseAt', 'kill', 'carry', 'drop'].some((f) => typeof wildlife[f] !== 'function')) {
       throw new Error('Dragons needs the Wildlife, for roster, spawnAt, poseAt, kill, carry and drop')
@@ -399,6 +401,7 @@ export class Dragons {
     this.random = Math.random
     this.quarry = NO_QUARRY
     this.field = field
+    this.ground = ground
     this.roosts = roosts
     this.wildlife = wildlife
     this.water = water
@@ -638,7 +641,7 @@ export class Dragons {
 
   /** The floor's height at (dest.x + u, dest.z + v): a nest's is the plane the roost is laid on (roosts.js sites), a spot's is the ground itself. */
   _floorAt(dest, u, v) {
-    return dest.turf ? this.field.heightAt(dest.x + u, dest.z + v) : dest.y + dest.gx * u + dest.gz * v
+    return dest.turf ? this.ground.heightAt(dest.x + u, dest.z + v) : dest.y + dest.gx * u + dest.gz * v
   }
 
   /** A dragon whose roost is gone: its cargo let go and its body left to dissolve where it is. */
@@ -731,7 +734,7 @@ export class Dragons {
 
   /** A rest on `at` from pose `from` for `dur`, ending at the floor's centre facing a rolled way; with a `kill` (`{ prey, struck }`, the stag and the world time it was taken) it is the meal. */
   _restPhrase(at, from, dur, rand, kill = null) {
-    return { kind: 'rest', dur, from, to: { x: at.x, y: at.y, z: at.z, heading: rand() * Math.PI * 2, speed: 0 }, at, meal: kill !== null, kill }
+    return { kind: 'rest', dur, from, to: { x: at.x, y: this._floorAt(at, 0, 0), z: at.z, heading: rand() * Math.PI * 2, speed: 0 }, at, meal: kill !== null, kill }
   }
 
   /** A leg from `from` to `to` at `mps` in `mode`, its clock sized by the distance; `dest` is the floor it lands on, if it does. A leg ends at its point at LOITER_PACE of its cruise, the ghost's pace, so the ease has no speed to make up there. */
@@ -956,7 +959,7 @@ export class Dragons {
     d.phraseIndex = at.index
     d.chapter = at.chapter
     d.rand = at.rejoin ? mulberry32(hash32(keyHash(d.key), at.chapter, at.index)) : phraseRand(d.key, at.chapter, at.index)
-    d.ground = d.ahead = this.field.heightAt(d.x, d.z)
+    d.ground = d.ahead = this.ground.heightAt(d.x, d.z)
     if (ph.kill && !d.cargo && now < chapterOf(ph.kill.struck, ph.kill.prey).start + CHAPTER_S) d.cargo = this.wildlife.kill(ph.kill.prey, ph.kill.struck)
     switch (ph.kind) {
       case 'rest': this._settle(d, ph); break
@@ -1180,8 +1183,8 @@ export class Dragons {
   /** The ground under the body and ahead of it, on a probe tick, and the body kept a metre out of it whatever the flight asked -- lifted no faster than it could climb, since a body teleported out of a slope is a pop. */
   _probe(d, k) {
     if (k % PROBE_EVERY === 0) {
-      d.ground = this.field.heightAt(d.x, d.z)
-      d.ahead = this.field.heightAt(d.x + Math.cos(d.heading) * LOOK_AHEAD_M, d.z - Math.sin(d.heading) * LOOK_AHEAD_M)
+      d.ground = this.ground.heightAt(d.x, d.z)
+      d.ahead = this.ground.heightAt(d.x + Math.cos(d.heading) * LOOK_AHEAD_M, d.z - Math.sin(d.heading) * LOOK_AHEAD_M)
     }
     if (d.y < d.ground + 1) d.y = Math.min(d.ground + 1, d.y + DIVE_MPS * TICK_S)
   }
@@ -1296,7 +1299,7 @@ export class Dragons {
     d.x += Math.cos(d.heading) * d.speed * dt
     d.z -= Math.sin(d.heading) * d.speed * dt
     const dest = d.dest
-    let floor = this.field.heightAt(d.x, d.z)
+    let floor = this.ground.heightAt(d.x, d.z)
     if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z))
     d.y += clamp(floor - d.y, -LAND_MPS * dt, LAND_MPS * dt)
     d.pitch -= clamp(d.pitch, -PITCH_RATE * dt, PITCH_RATE * dt)
@@ -1431,7 +1434,7 @@ export class Dragons {
         const r = Math.max(Math.hypot(d.x - q.x, d.z - q.z), 1e-6)
         live.tx = q.x + ((d.x - q.x) / r) * LAND_SHORT
         live.tz = q.z + ((d.z - q.z) / r) * LAND_SHORT
-        live.ty = this.field.heightAt(live.tx, live.tz)
+        live.ty = this.ground.heightAt(live.tx, live.tz)
         this._phase(d, 'land', now)
       }
     } else if (live.phase === 'land') {

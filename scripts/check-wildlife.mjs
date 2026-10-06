@@ -35,7 +35,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
-  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR,
 } from '../src/v2/render/wildlife.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, POSE_EVERY, REPLANT } from '../src/v2/render/puppet.js'
@@ -744,10 +744,10 @@ const differ = (p, q) => {
   check(hare.away <= TETHER_M + 0.01, `and the hare ${above} metres under her has not bolted either`, `${hare.away.toFixed(2)} m from home in 15 s`)
 }
 
-// --- inside FLEE_M a wary one looks up, faces her and runs -------------------------
+// --- inside FLEE_M at her full size, one with a flee gait looks up, faces her and runs ---
 {
   const dt = 1 / 60
-  for (const key of ['stag', 'hare']) {
+  for (const key of ['stag', 'hare', 'fox']) {
     const k = make(7, { walk: plain, water: noWater })
     k.place(0, 0)
     const c = beside(k, key)
@@ -770,15 +770,54 @@ const differ = (p, q) => {
     check(c.sp.cry === undefined ? cried.length === 0 : cried.length === 1 && cried[0].sound === c.sp.cry.sound && cried[0].rule === c.sp.cry.rule, `${key}: ${c.sp.cry === undefined ? 'silent as it goes' : `one ${c.sp.cry.sound} as it bolts`}`, JSON.stringify(cried))
     const off = Math.hypot(c.x - her.x, c.z - her.z)
     check(seen.has(`flee/${c.sp.flee}`) && off > FLEE_M + 2, `${key}: then it ${c.sp.flee}s from her`, `${[...seen].join(' ')}; ${off.toFixed(1)} m off`)
-    const owed = k.pending()
-    check(owed.length >= 2 && owed.every((a) => a[0] === c.key && a[7] === 'flee' && a[8] === null), `${key}: owing the room flee anchors as it goes`, `${owed.map((a) => a[7]).join(' ')}`)
+    // Its own: a fox's neighbours may run from her too.
+    const owed = k.pending().filter((a) => a[0] === c.key)
+    check(owed.length >= 2 && owed.every((a) => a[7] === 'flee' && a[8] === null), `${key}: owing the room flee anchors as it goes`, `${owed.map((a) => a[7]).join(' ')}`)
     const ran = c.stepStart
     for (let f = 0; f < 10 * 60 && c.live; f++) step(k, her.x, c.y + 1.6, her.z, dt)
-    const last = k.pending()
+    const last = k.pending().filter((a) => a[0] === c.key)
     const clear = Math.hypot(c.x - her.x, c.z - her.z)
     check(!c.live && c.rejoin !== null && (clear > FLEE_CLEAR_M - 1 || c.rejoin.start - ran >= FLEE_S - TICK_S) && last.at(-1)[7] === 'rejoin' && last.slice(0, -1).every((a) => a[7] === 'flee'), `${key}: ${FLEE_CLEAR_M} m clear of her or ${FLEE_S} s run, it takes the rejoin and says so`, `${c.act}/${c.clip}, ${clear.toFixed(1)} m off after ${(c.rejoin?.start - ran).toFixed(1)} s, ${last.map((a) => a[7]).join(' ')}`)
     k.dispose()
   }
+}
+
+// --- at half her size they look at her and go on; at a quarter a fox hunts her -------
+{
+  const dt = 1 / 60
+  for (const key of ['stag', 'hare', 'fox']) {
+    const k = make(7, { walk: plain, water: noWater })
+    k.place(0, 0)
+    const c = beside(k, key)
+    still(k, c, 'graze', 'eat-loop')
+    const [x0, z0] = [c.x, c.z]
+    k.sized(0.5)
+    const run = (s, seen = new Set()) => { for (let f = 0; f < s * 60; f++) { step(k, x0 + FLEE_M - 1, c.y + 0.8, z0, dt); seen.add(c.live ? c.live.mode : 'score') } return seen }
+    run(3 / 60)
+    check(c.live?.mode === 'look' && c.clip === 'alert', `${key}: her half size inside ${FLEE_M} m, it looks up at her`, `${c.live?.mode} ${c.act}/${c.clip}`)
+    const seen = run(FEAR.lookS + 5)
+    check(!c.live && !seen.has('flee') && [...seen].join(' ') === 'look score', `${key}: then goes back to its score, not running, and does not look again within ${FEAR.againS} s`, [...seen].join(' '))
+    k.dispose()
+  }
+  const hits = []
+  const k = make(7, { walk: plain, water: noWater })
+  k.harm = (n) => hits.push(n)
+  k.place(0, 0)
+  const c = beside(k, 'fox')
+  still(k, c, 'graze', 'eat-loop')
+  const her = { x: c.x + FEAR.hunt.m - 1, z: c.z }
+  const run = (s) => { for (let f = 0; f < s * 60; f++) step(k, her.x, c.y + 0.4, her.z, dt) }
+  k.sized(0.25)
+  run(10)
+  check(c.live?.mode === 'hunt' && Math.hypot(c.x - her.x, c.z - her.z) < c.size && hits.length >= 2 && hits.every((n) => n === FEAR.hunt.harm), `a fox ${FEAR.hunt.m - 1} m off her at a quarter size runs her down and bites, ${FEAR.hunt.harm} a bite`, `${c.live?.mode}, ${Math.hypot(c.x - her.x, c.z - her.z).toFixed(2)} m off, bites ${hits.join(' ')}`)
+  hits.length = 0
+  k.sized(0.125)
+  run(4)
+  check(hits.length >= 1 && hits.every((n) => n === FEAR.hunt.small), `at an eighth, ${FEAR.hunt.small} a bite`, hits.join(' '))
+  k.sized(1)
+  run(1)
+  check(c.live?.mode === 'flee', 'grown to her full size, it gives up the hunt and runs from her', `${c.live?.mode}`)
+  k.dispose()
 }
 
 // --- unless she holds a carrot ------------------------------------------------------

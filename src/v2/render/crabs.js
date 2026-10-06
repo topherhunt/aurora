@@ -66,6 +66,7 @@ import {
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { atMost } from '../eating.js'
 
 export const TILE = 16
 export const RADIUS = 40
@@ -112,6 +113,8 @@ const LEG_CYCLES = 1.5
 export const LOOSE_SPEED = 1.5
 const LOOSE_LEGS = 32
 const LOOSE_WOBBLE = 1.2
+// At `fits` of her full size or under (sized), a rock's crab with her within `m` m comes for her at `speed` body lengths a second, bites for `harm` every `biteS` from its own length off her, and walks back to its spell past twice `m`. Hers alone: the room does not hear it.
+export const HUNT = { fits: 0.125, m: 3, speed: 3, harm: 10, biteS: 1 }
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -146,8 +149,9 @@ export class Crabs {
    * @param water   WaterSurfaces: lakeLevelAt, lakeShoreDistAt
    * @param opts.rocks   Rocks: perchesInto and blockTopAt(x, z, min, false)
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
+   * @param opts.harm    (n, why) => her hurt by a crab's bite (HUNT)
    */
-  constructor(scene, height, water, { seed = 1, rocks, assets = null } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, assets = null, harm = null } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function') {
       throw new Error('Crabs needs a height field with heightAt and heightAndSlopeAt')
     }
@@ -157,6 +161,10 @@ export class Crabs {
     if (!rocks || typeof rocks.perchesInto !== 'function' || typeof rocks.blockTopAt !== 'function') {
       throw new Error('Crabs needs Rocks, for perchesInto and blockTopAt')
     }
+    if (harm !== null && typeof harm !== 'function') throw new Error('Crabs: harm must be a function of (n, why)')
+    this.harm = harm
+    // Her size, a multiple of her full height (sized).
+    this.size = 1
     this.height = height
     this.water = water
     this.rocks = rocks
@@ -220,6 +228,8 @@ export class Crabs {
         m: new Float32Array(16), stale: true,
         // Which of its perch's rolled crabs it is, for the taken registry; and, for one she let go of, the drop it runs from -- off any perch, on no rock.
         member: 0, loose: false, drop: null,
+        // Off its spell after her (HUNT): { back, bitT } -- `back` once it is walking home -- or null.
+        hunt: null,
       })
     }
     this.free = this.slots.slice()
@@ -355,6 +365,7 @@ export class Crabs {
         if (taken.has(`crab${k}`, px, pz)) { this.free.push(c); continue }
         c.perch = perch
         c.member = k
+        c.hunt = null
         c.loose = false
         c.drop = null
         c.key = keyOf(px, pz, k)
@@ -826,6 +837,7 @@ export class Crabs {
    */
   update(hx, hy, hz, now, under = true) {
     if (!Number.isFinite(now)) throw new Error(`Crabs.update: bad world time ${now}`)
+    const dt = Math.min(0.1, Math.max(0, now - this.now))
     this.now = now
     this.head.x = hx
     this.head.z = hz
@@ -896,6 +908,7 @@ export class Crabs {
       for (const p of t.perches.values()) {
         for (const c of p.crabs) {
           if (!under && c.y < p.level) continue
+          if (this._hunting(c, hx, hy, hz, now, dt)) { write(c); continue }
           this._play(c, now)
           // A re-ground is a vertical shift of the whole rock, so the normal holds; a seat whose stone is gone is kept. A sitting crab reads it back: its stone's drawn top moves with the client's own LOD, which the spell knows nothing of.
           if ((this.frame + c.id) % RESEAT_EVERY === 0) {
@@ -918,6 +931,57 @@ export class Crabs {
       this.cardHue.needsUpdate = true
     }
     this.card.count = m
+  }
+
+  /** Her size, a multiple of her full height: whether the crabs come for her (HUNT). */
+  sized(size) {
+    if (!(size > 0)) throw new Error(`Crabs.sized: ${size}`)
+    this.size = size
+  }
+
+  /** One frame of crab `c` after her or on its way home (HUNT); false while it is on its spell. */
+  _hunting(c, hx, hy, hz, now, dt) {
+    const near = (m) => Math.hypot(hx - c.x, hz - c.z) <= m && Math.abs(hy - c.y) <= m
+    const small = atMost(this.size, HUNT.fits)
+    if (c.hunt === null || c.hunt.back) {
+      if (small && near(HUNT.m)) c.hunt = { back: false, bitT: -Infinity }
+    } else if (!small || !near(2 * HUNT.m)) c.hunt.back = true
+    if (c.hunt === null) return false
+    if (!c.hunt.back) {
+      if (this._scuttle(c, hx, hz, c.size, dt)) return true
+      if (now - c.hunt.bitT >= HUNT.biteS) {
+        if (this.harm === null) throw new Error('Crabs: a crab bites her, and no harm() to hurt her with')
+        c.hunt.bitT = now
+        this.harm(HUNT.harm, 'a crab')
+      }
+      return true
+    }
+    // Home is where its spell has it now: posed there to read it, then put back where it is.
+    const { x, y, z, yaw } = c
+    this._play(c, now)
+    const tx = c.x, tz = c.z
+    if (Math.hypot(tx - x, tz - z) <= HUNT.speed * c.size * dt) { c.hunt = null; return false }
+    this._seat(c, x, y, z, yaw, this.stoneAt(x, z) > -Infinity)
+    this._scuttle(c, tx, tz, 0, dt)
+    return true
+  }
+
+  /** A frame's scuttle of `c` toward (tx, tz), stopping `stop` m short over whatever ground is there; false, and still, once it is there. */
+  _scuttle(c, tx, tz, stop, dt) {
+    const dx = tx - c.x, dz = tz - c.z
+    const d = Math.hypot(dx, dz)
+    const yaw = d > 1e-9 ? Math.atan2(dx, dz) : c.yaw
+    if (d <= stop) {
+      c.state = 'pause'; c.speed = 0; c.amp = 0
+      if (c.yaw !== yaw) this._seat(c, c.x, c.y, c.z, yaw, this.stoneAt(c.x, c.z) > -Infinity)
+      return false
+    }
+    const step = Math.min(d - stop, HUNT.speed * c.size * dt)
+    const s = this._looseSpot(c, c.x + (dx / d) * step, c.z + (dz / d) * step, yaw)
+    c.state = 'go'; c.speed = HUNT.speed; c.amp = LEG_AMP
+    c.phase += (Math.PI * 2 * LEG_CYCLES * step) / c.size
+    this._seat(c, s.x, s.y, s.z, yaw, s.stone)
+    return true
   }
 
   dispose() {

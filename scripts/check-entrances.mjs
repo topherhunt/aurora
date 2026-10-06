@@ -16,7 +16,7 @@ import * as THREE from 'three'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { OPEN, STONE, LeafkinGround } from '../src/v2/render/leafkin-ground.js'
 import {
-  CARD_OUT_M, ENTRANCE_REACH_M, Entrances, HOLE, SCREEN, SCREEN_POOL, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
+  CARD_OUT_M, ENTRANCE_REACH_M, Entrances, HOLE, SCREEN, SCREEN_POOL, MOUTH, MOUTH_HEIGHT_M, MOUTH_SINK_M, MOUTH_STEP_M, PORTAL, PROBE, RADIUS_M, RUNGS, holeBox, mouthBankFrom, wallReach,
 } from '../src/v2/render/entrances.js'
 import { Trees } from '../src/v2/render/trees.js'
 import { Ferns } from '../src/v2/render/ferns.js'
@@ -172,7 +172,7 @@ console.log('\nthe face')
     m.decompose(p, q, s)
     const across = new THREE.Vector3(0, 0, 1).applyQuaternion(q)
     const up = new THREE.Vector3(0, 1, 0)
-    const [u0, u1, v0, v1] = holeBox()
+    const [u0, u1, v0, v1] = holeBox().map((w) => w * site.scale)
     const um = (u0 + u1) / 2, vm = (v0 + v1) / 2
     let ok = 0
     for (const [u, v] of [[um, vm], [u0, v0], [u1, v0], [u0, v1], [u1, v1]]) {
@@ -190,13 +190,14 @@ console.log('\nthe face')
     const ax = new THREE.Vector3(1, 0, 0).applyQuaternion(q)
     const ay = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
     const aligned = Math.abs(ax.x * nx + ax.z * nz - 1) < 1e-4 && ay.y > 0.9999
-    const seated = Math.abs(p.y - (GROUND - 0.05)) < 1e-4 && Math.abs(s.y * (MOUTH_HEIGHT_M / e.bank.scale) - MOUTH_HEIGHT_M) < 1e-6
+    const seated = Math.abs(p.y - (GROUND - 0.05)) < 1e-4 && Math.abs(s.y * (MOUTH_HEIGHT_M / e.bank.scale) - MOUTH_HEIGHT_M * site.scale) < 1e-6
     arched += aligned && seated ? 1 : 0
   }
   check(faced === rows.length, 'every mouth point looks at a face within 20 deg of vertical, within reach', `${faced}/${rows.length}`)
   check(walled === rows.length, `and at ${PROBE.wall} m of wall above it`, `${walled}/${rows.length}`)
   check(holed === rows.length, 'the hole stands proud of the stone at its centre and its corners', `${holed}/${rows.length}`)
-  check(arched === rows.length, 'the arch stands upright on the floor, MOUTH_HEIGHT_M tall, its passage on the normal', `${arched}/${rows.length}`)
+  check(arched === rows.length, 'the arch stands upright on the floor, its scale times MOUTH_HEIGHT_M tall, its passage on the normal', `${arched}/${rows.length}`)
+  check(rows.every((site) => [MOUTH, MOUTH.small].some((k) => k.scale === site.scale && k.fits === site.fits)), 'every mouth is a standard or a small one, taking her at the size its scale says', rows.map((site) => site.fits).join(' '))
   const stepped = rows.every((site) => Math.hypot(site.x - site.ax, site.z - site.az) > MOUTH_STEP_M)
   check(stepped, 'the mouth point is outside the arch\'s centre', '')
   // The screen: SCREEN.count pieces of SCREEN.kinds, every stone stone to the
@@ -429,7 +430,7 @@ console.log('\nthe ladder')
   const [r0, r1, r2] = ENTRANCE_REACH_M
   const tiersAt = [at(r0 * 0.5), at(r0 * 1.5), at(r1 * 1.5), at(r2 * 1.5)]
   check(tiersAt.join(' ') === '0 1 2 3', 'an arch steps down T0, T2, the card, then out', `tiers ${tiersAt.join(' ')} at ${ENTRANCE_REACH_M.join('/')} m`)
-  check([r0 - 0.5, r0 + 0.5, r1 - 0.5, r1 + 0.5, r2 - 0.5, r2 + 0.5].map(fresh).join(' ') === '0 1 1 2 2 3', 'a 1x arch swaps at 8, 20 and 100 m', '')
+  check([r0, r0, r1, r1, r2, r2].map((r, i) => fresh(r * site.scale + (i % 2 ? 0.25 : -0.25))).join(' ') === '0 1 1 2 2 3', 'an arch swaps at 8, 20 and 100 m times its scale', `scale ${site.scale}`)
   check(RUNGS === ENTRANCE_REACH_M.length, 'one reach per rung', '')
   at(r1 * 1.5)
   const cardM = e.batch.getMatrixAt(site.id, new THREE.Matrix4())

@@ -33,11 +33,12 @@ import {
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
-  Roosts, TILE, SPACING, SEAT_REACH, LIFT, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, fortressBank,
+  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, BANDS, WALL_RISE, CELL, GRID_N, buildFortress, gridCell,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
-import { LAYER } from '../src/textures.js'
+import { LAYER, buildTextureArray } from '../src/textures.js'
+import { LOCOMOTION } from '../src/player.js'
 import { WALK } from '../src/v2/walk.js'
 import { propCull } from '../src/v2/render/gen-props.js'
 import { CARD_RUNGS, CRITTER_GLB, GLINT, LOD_RUNGS, lodReach } from '../src/v2/render/critters.js'
@@ -124,32 +125,87 @@ if (!wyvern) {
   process.exit(1)
 }
 
-// --- the roost's bank ----------------------------------------------------------------
-// The rocks' own boulder, for the fortress to be cut from, and a stand-in Rocks round it: one stone material and a peak tint, recording the ground it is asked for.
+// --- the roost's fortress ------------------------------------------------------------
+// The rocks' own boulder, for the fortress to be built of, and a stand-in Rocks round it with a peak tint, recording the ground it is asked for.
 const BOULDER = buildRockBank().shapes.boulder
-const STONE = new THREE.MeshLambertMaterial()
 const TINT = [0.55, 0.6, 0.7]
 const tintedFor = new Set()
-const ROCKS = { boulder: () => ({ tiers: BOULDER.tiers, measured: BOULDER.measured, material: STONE }), tintAt: (x, z, env, out) => { tintedFor.add(env); return out.setRGB(...TINT) } }
-console.log('\nroost bank')
+const ROCKS = { boulder: () => ({ tiers: BOULDER.tiers, measured: BOULDER.measured, material: null }), tintAt: (x, z, env, out) => { tintedFor.add(env); return out.setRGB(...TINT) } }
+const TEXTURES = buildTextureArray()
+const patched = []
+const PATCH = (m, key) => { patched.push(key); return m }
+// Her climb, as the gate floods it: a cell she may step up to within her reach, unless the ground 1.5 m on rises steeper than the slope limiter allows.
+const STRIDE_CELLS = Math.round(LOCOMOTION.stride / CELL)
+const STRIDE_RISE = Math.tan((LOCOMOTION.maxSlopeDeg * Math.PI) / 180) * LOCOMOTION.stride
+/** The cells she can walk to from outside the grid, over the walk grid laid on `groundAt`. */
+function floodIn(grid, groundAt) {
+  const at = (k) => (k + 0.5) * CELL - (GRID_N * CELL) / 2
+  const surf = new Float64Array(GRID_N * GRID_N)
+  for (let j = 0; j < GRID_N; j++) for (let i = 0; i < GRID_N; i++) surf[j * GRID_N + i] = Math.max(grid.top[j * GRID_N + i], groundAt(at(i), at(j)))
+  const seen = new Uint8Array(GRID_N * GRID_N)
+  const queue = []
+  for (let k = 0; k < GRID_N; k++) for (const c of [k, (GRID_N - 1) * GRID_N + k, k * GRID_N, k * GRID_N + GRID_N - 1]) if (!seen[c]) { seen[c] = 1; queue.push(c) }
+  while (queue.length) {
+    const c = queue.pop()
+    const i = c % GRID_N, j = (c - i) / GRID_N
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ni = i + di, nj = j + dj
+      if (ni < 0 || nj < 0 || ni >= GRID_N || nj >= GRID_N) continue
+      const n = nj * GRID_N + ni
+      if (seen[n] || surf[n] - surf[c] > WALK.reach) continue
+      const fi = i + di * STRIDE_CELLS, fj = j + dj * STRIDE_CELLS
+      if (fi >= 0 && fj >= 0 && fi < GRID_N && fj < GRID_N && surf[fj * GRID_N + fi] - surf[c] > STRIDE_RISE) continue
+      seen[n] = 1
+      queue.push(n)
+    }
+  }
+  return seen
+}
+console.log('\nroost fortress')
 {
-  const bank = fortressBank(BOULDER.tiers, 7)
-  const again = fortressBank(BOULDER.tiers, 7)
-  const other = fortressBank(BOULDER.tiers, 8)
-  check(bank.geometries.length === LODS && bank.tris.every((t, k) => k === 0 || t < bank.tris[k - 1]), `${LODS} tiers, each fewer triangles than the one above`, bank.tris.join('/'))
-  check(bank.geometries.every((g) => g.index && g.groups.length === 0 && ['position', 'normal', 'uvProj', 'texLayer'].every((a) => g.getAttribute(a))), 'every tier is one indexed geometry on the rock material\'s four attributes, so a roost is one draw')
+  // Ground falling 0.15 per metre along +X under a ripple, for every stone to be set into.
+  const rough = (x, z) => -0.15 * x + 0.4 * Math.sin(x * 0.7) * Math.cos(z * 0.5)
+  const f = buildFortress(BOULDER, 7, rough, TINT)
+  const again = buildFortress(BOULDER, 7, rough, TINT)
+  const other = buildFortress(BOULDER, 8, rough, TINT)
+  check(f.geometries.length === LODS && f.tris.every((t, k) => k === 0 || t < f.tris[k - 1]), `${LODS} tiers, each fewer triangles than the one above`, f.tris.join('/'))
+  check(f.geometries.every((g) => g.index && g.groups.length === 0 && ['position', 'normal', 'uvProj', 'texLayer', 'color'].every((a) => g.getAttribute(a))), 'every tier is one indexed geometry on the prop material\'s attributes and a vertex colour, so a roost is one draw')
   const layersOf = (g) => new Set(g.getAttribute('texLayer').array)
-  check(bank.geometries.every((g, k) => layersOf(g).has(LAYER.BARK) === (k < LODS - 1) && [...layersOf(g)].some((l) => l !== LAYER.BARK)), 'stone on every tier and logs in bark on all but the last', bank.geometries.map((g) => [...layersOf(g)].join(',')).join(' / '))
-  const b = bank.bounds
-  check(b.max.x - b.min.x > WIDTH * 0.95 && b.max.x - b.min.x < WIDTH * 1.15 && b.max.z - b.min.z > WIDTH * 0.95 && b.max.z - b.min.z < WIDTH * 1.15, `about ${WIDTH} m across`, `${fmt(b.max.x - b.min.x)} x ${fmt(b.max.z - b.min.z)} m`)
-  check(Math.abs(b.min.y - bank.base) < 1e-4 && bank.base < -3 && b.max.y > WALK.height, 'the plate reaches its base well under the floor and the ring stands over her head above it', `${fmt(b.min.y)}..${fmt(b.max.y)} m`)
-  const flat = Array.from(bank.profile).filter((_, k) => (k / (bank.profile.length - 1)) * (WIDTH / 2 - 0.5) <= FLOOR_R)
-  check(bank.profile[0] === 0 && flat.every((t) => t > -0.05) && bank.profile[bank.profile.length - 1] < -1, `the walker's plate is the flat floor out past FLOOR_R ${FLOOR_R} m, falling away at the rim`, Array.from(bank.profile, fmt).join(' '))
-  const ring = bank.columns.slice(0, 7)
-  check(bank.columns.length === 7 + 9 && ring.every((c) => c.top > WALK.reach && c.bottom < 0 && Math.hypot(c.x, c.z) > FLOOR_R + 2), 'sixteen stones as columns, the seven of the ring walls she cannot step onto, bedded in the plate, outside the floor', ring.map((c) => `${fmt(Math.hypot(c.x, c.z))}:${fmt(c.bottom)}..${fmt(c.top)}`).join(' '))
-  const same = (p, q) => p.geometries.every((g, k) => { const u = g.getAttribute('position').array, v = q.geometries[k].getAttribute('position').array; return u.length === v.length && u.every((x, i) => x === v[i]) })
-  check(same(bank, again) && !same(bank, other), 'the bank is a function of its seed: the same twice, another with another seed')
-  check(bank.bytes < 1024 * 1024, 'the whole bank is under a megabyte', `${Math.round(bank.bytes / 1024)} KB`)
+  check(f.geometries.every((g, k) => layersOf(g).has(LAYER.BARK) === (k < LODS - 1) && [...layersOf(g)].some((l) => l !== LAYER.BARK)), 'stone on every tier and logs in bark on all but the last', f.geometries.map((g) => [...layersOf(g)].join(',')).join(' / '))
+  const b = f.geometries[0].boundingBox
+  check(b.max.x - b.min.x > WIDTH * 0.85 && b.max.x - b.min.x < WIDTH * 1.1 && b.max.z - b.min.z > WIDTH * 0.85 && b.max.z - b.min.z < WIDTH * 1.1, `about ${WIDTH} m across`, `${fmt(b.max.x - b.min.x)} x ${fmt(b.max.z - b.min.z)} m`)
+  const pos = (g) => g.getAttribute('position').array
+  check(pos(f.geometries[0]).every((x, i) => x === pos(again.geometries[0])[i]) && pos(f.geometries[0]).some((x, i) => x !== pos(other.geometries[0])[i]), 'the fortress is a function of its seed: the same twice, another with another seed')
+
+  const wall = f.stones.filter((s) => s.band === 0)
+  check(wall.every((s) => s.bottom < s.ground[0] && s.top - s.ground[1] >= WALL_RISE - 1e-6), `every wall stone bedded under its lowest ground and standing WALL_RISE ${WALL_RISE} m over its highest`, `lowest rise ${fmt(Math.min(...wall.map((s) => s.top - s.ground[1])))} m`)
+  check(f.stones.every((s) => s.bottom < s.ground[0]), 'and every other stone set into the ground, none sitting on it')
+  const byBand = BANDS.map((_, k) => f.stones.filter((s) => s.band === k))
+  const meanAcross = byBand.map((ss) => ss.reduce((n, s) => n + s.across, 0) / ss.length)
+  check(meanAcross.every((m, k) => k === 0 || m < meanAcross[k - 1]) && byBand.slice(1).every((ss) => ss.length > wall.length), 'the stones grade from the wall in: each ring smaller than the one outside it, and each inner ring more of them than the wall', byBand.map((ss, k) => `${ss.length}x${fmt(meanAcross[k])}`).join(' '))
+  const spread = (v) => Math.max(...v) / Math.min(...v)
+  check(spread(wall.map((s) => s.across)) > 1.25 && spread(wall.map((s) => s.tall / s.across)) > 1.2 && spread(wall.map((s) => s.depth / s.across)) > 1.2, 'the wall\'s stones vary in size, height and squash', `across x${fmt(spread(wall.map((s) => s.across)))}, tall x${fmt(spread(wall.map((s) => s.tall / s.across)))}, deep x${fmt(spread(wall.map((s) => s.depth / s.across)))}`)
+  const warmth = f.stones.map((s) => s.color[0] / s.color[2])
+  check(spread(f.stones.map((s) => s.color[1])) > 1.2 && spread(warmth) > 1.2 && f.stones.every((s) => s.color[1] > TINT[1] * 0.8 && s.color[1] < TINT[1] * 1.15), 'each stone its own shade and warmth of the peak\'s stone, none far from it', `light x${fmt(spread(f.stones.map((s) => s.color[1])))}, warmth x${fmt(spread(warmth))}`)
+  check(f.stones.every((s) => Math.hypot(s.x, s.z) - s.across / 2 > FLOOR_R) && [gridCell(0, 0), gridCell(FLOOR_R - CELL, 0), gridCell(0, -(FLOOR_R - CELL))].every((c) => f.grid.top[c] === -Infinity), `the floor is clear of stone out to FLOOR_R ${FLOOR_R} m`)
+
+  // Watertight: walked at from every side, on rough ground and flat, nothing reaches the floor.
+  const flat = () => 0
+  for (const [name, ground, seeds] of [['rough', rough, [7, 8, 9, 10]], ['flat', flat, [11, 12, 13, 14]]]) {
+    let leaks = 0, outside = 0
+    for (const seed of seeds) {
+      const g = buildFortress(BOULDER, seed, ground, TINT)
+      const seen = floodIn(g.grid, ground)
+      outside += seen.reduce((n, v) => n + v, 0)
+      for (let c = 0; c < seen.length; c++) {
+        const i = c % GRID_N, j = (c - i) / GRID_N
+        if (seen[c] && Math.hypot((i + 0.5) * CELL - (GRID_N * CELL) / 2, (j + 0.5) * CELL - (GRID_N * CELL) / 2) < FLOOR_R) leaks++
+      }
+      for (const geo of g.geometries) geo.dispose()
+    }
+    check(leaks === 0 && outside > 4 * (GRID_N * GRID_N) * 0.3, `the wall is closed on ${name} ground: walked at from outside, she reaches no cell of the floor over four seeds`, `${leaks} floor cells reached`)
+  }
+  for (const g of [f, again, other]) for (const geo of g.geometries) geo.dispose()
 }
 
 // --- the roost's placement ------------------------------------------------------------
@@ -177,12 +233,12 @@ const peakField = (snow = SNOW) => {
 const MID = [1350, 1350]
 const ROOST_R = 1600
 const roostsOn = ({ field = peakField(), water = DRY, layers = LAYERS, seed = 5, egg = null, radius = ROOST_R, at = MID, Kind = Roosts } = {}) => {
-  const r = new Kind(new THREE.Scene(), field, water, layers, { seed, rocks: ROCKS, egg, radius })
+  const r = new Kind(new THREE.Scene(), field, water, layers, { seed, rocks: ROCKS, egg, radius, textures: TEXTURES, patch: PATCH })
   r.place(...at)
   return r
 }
 const peakOf = (s) => Object.keys(PEAKS).reduce((a, n) => (Math.hypot(s.x - PEAKS[n][0], s.z - PEAKS[n][1]) < Math.hypot(s.x - PEAKS[a][0], s.z - PEAKS[a][1]) ? n : a))
-// The same land with every floor tilted to (0.1, -0.12): what the fortress and the egg are laid on is the site's plane, whatever made it.
+// The same land with every floor tilted to (0.1, -0.12): what the egg is laid on is the site's plane, whatever made it.
 class Tilted extends Roosts {
   _roll(key, tx, tz) {
     const out = super._roll(key, tx, tz)
@@ -192,30 +248,32 @@ class Tilted extends Roosts {
 }
 {
   const field = peakField()
+  patched.length = 0
   const r = roostsOn({ field })
   const sites = r.sites()
   check(sites.map(peakOf).sort().join('') === 'ACE', 'a roost on every summit within BELOW_SNOW of the snow line and highest within SPACING: A, C and E, not B beside the higher A, nor D low under the snow', sites.map(peakOf).join(''))
   const off = sites.map((s) => Math.hypot(s.x - PEAKS[peakOf(s)][0], s.z - PEAKS[peakOf(s)][1]))
   check(off.every((d) => d <= SEAT_REACH), `each seated within SEAT_REACH ${SEAT_REACH} m of its summit`, off.map(fmt).join(' '))
-  const lifts = sites.map((s) => s.y - field.heightAt(s.x, s.z))
-  check(lifts.every((l) => l >= LIFT[0] - 1e-9 && l <= LIFT[1] + 1e-9) && sites.every((s) => Math.hypot(s.gx, s.gz) <= MAX_TILT + 1e-12), `its floor ${LIFT[0]}..${LIFT[1]} m over the ground at its centre, tilted no more than MAX_TILT`, lifts.map(fmt).join(' '))
-  check(sites.every((s) => Number.isFinite(s.key) && s.r === FLOOR_R && r.tiles.get(s.key)?.site === s) && new Set(sites.map((s) => s.key)).size === sites.length, `every site keyed by its territory, one to a territory, its floor's clear radius FLOOR_R`)
+  check(sites.every((s) => s.y === field.heightAt(s.x, s.z) && Math.hypot(s.gx, s.gz) <= MAX_TILT + 1e-12), 'its floor on the ground at its centre, tilted no more than MAX_TILT')
+  check(sites.every((s) => Number.isFinite(s.key) && s.r === FLOOR_R && r.tiles.has(s.key) && r.tiles.get(s.key).site === s) && new Set(sites.map((s) => s.key)).size === sites.length, `every site keyed by its territory, one to a territory, its floor's clear radius FLOOR_R`)
   const pose = (q) => q.sites().map(({ x, y, z, gx, gz }) => [x, y, z, gx, gz].join())
   check(JSON.stringify(sites) === JSON.stringify(roostsOn({ field }).sites()) && JSON.stringify(pose(r)) === JSON.stringify(pose(roostsOn({ field, seed: 9 }))), 'the same seed lays the same roosts twice, and another seed lays them on the same seats: the summits are the land\'s')
   check(r.place(...MID) === sites.length && pose(r).join() === sites.map(({ x, y, z, gx, gz }) => [x, y, z, gx, gz].join()).join(), 'a relief edit under the same camera lays the same set again')
-  check(r.materials.length === 0 && r.material === STONE && r.batch.name === 'v2-roosts' && r.batch.meshes.length === LODS && r.batch._max === r.stats.pool && r.stats.pool > r.stats.tiles, 'the fortress is drawn in the rocks\' own stone, one arena a tier, nothing new offered to the lighting', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
-  const c = new THREE.Color()
-  check(sites.every((s) => r.batch.getColorAt(r.tiles.get(s.key).ids[0], c).r === Math.fround(TINT[0]) && c.b === Math.fround(TINT[2])) && [...tintedFor].join() === 'peak', 'each tinted as the rocks tint stone on a peak')
+  const meshes = sites.map((s) => r.tiles.get(s.key).mesh)
+  check(r.group.name === 'v2-roosts' && r.batch === null && r.group.children.length === sites.length && meshes.every((m, k) => r.group.children.includes(m) && m.material === r.material && m.position.x === sites[k].x && m.position.y === sites[k].y && m.position.z === sites[k].z), 'with no egg bank the group holds one mesh a roost at its floor\'s centre, all on the one stone material, and no egg arena')
+  check(r.material.vertexColors && patched.includes('v2-roost-stone'), 'the stone takes its tint from the vertex colour, and goes to the lighting', patched.join(' '))
+  const greens = meshes.flatMap((m) => Array.from(m.geometry.getAttribute('color').array.filter((_, i) => i % 3 === 1)))
+  check(greens.every((g) => g > TINT[1] * 0.8 && g < TINT[1] * 1.15) && [...tintedFor].join() === 'peak', 'each tinted round the rocks\' stone on a peak')
   check(r.radius === ROOST_R && RADIUS_M >= SPACING, `the radius is the one asked for; the world's ${RADIUS_M} m is past SPACING, so a neighbour's roost is always resident`)
 
   // The LOD on the rocks' ladder at the fortress's size: on top at its floor, lower further off.
   const a = sites.find((s) => peakOf(s) === 'A')
-  const ida = r.tiles.get(a.key).ids[0]
-  const tierFrom = (d) => { r.update(a.x + d, a.y + 1.7, a.z); return r.tierAt[ida] }
+  const ta = r.tiles.get(a.key)
+  const tierFrom = (d) => { r.update(a.x + d, a.y + 1.7, a.z); return ta.tier }
   const tiers = [0, 100, 400, 0].map(tierFrom)
-  check(tiers.join() === `0,2,${LODS - 1},0` && r.stats.tris > 0, 'standing on it, the top tier; 100 m off the third; 400 m off the last; back on it, the top again', tiers.join(' '))
+  check(tiers.join() === `0,2,${LODS - 1},0` && ta.mesh.geometry === ta.geometries[0] && r.stats.tris > 0, 'standing in it, the top tier; 100 m off the third; 400 m off the last; back in it, the top again', tiers.join(' '))
   r.update(a.x + 4000, a.y, a.z)
-  check(r.sites().length === 0 && r.stats.used === 0, 'walked 4 km off, every roost is released and the pool is empty')
+  check(r.sites().length === 0 && r.group.children.length === 0 && !r.tiles.has(a.key), 'walked 4 km off, every roost is released and its mesh gone')
   r.dispose()
 
   // Past the radius: siteAt answers what the wide world laid, and null where it laid none.
@@ -225,32 +283,18 @@ class Tilted extends Roosts {
   check(narrow.sites().length === 1 && JSON.stringify(narrow.siteAt(far.tx, far.tz)) === JSON.stringify(far) && narrow.siteAt(...tileOf(PEAKS.B)) === null && narrow.siteAt(...tileOf(PEAKS.D)) === null, 'siteAt past the radius is the site the wide world laid, and null for B and D')
   narrow.dispose()
 
-  // To the walker the floor is the plate's top, the ring stones are columns over it, and past the plate there is nothing.
-  const w = roostsOn({ field, Kind: Tilted })
+  // To the walker the stones are the walk grid's spans over the fortress, the floor is the field's, and past the grid there is nothing.
+  const w = roostsOn({ field })
   const t = w.tiles.get(w.sites().find((s) => peakOf(s) === 'A').key)
   const s = t.site
   const spans = new Float64Array(16)
-  const n = w.columnAt(s.x + 1, s.z + 1, 0, spans)
-  check(Math.abs(w.blockTopAt(s.x, s.z) - s.y) < 1e-6 && Math.abs(w.blockTopAt(s.x + 1, s.z - 1) - (s.y + s.gx - s.gz)) < 1e-4 && n === 1 && spans[0] < s.y - 3, 'the floor is the walk surface on the site\'s tilted plane, a span reaching down through the plate', `top ${fmt(w.blockTopAt(s.x, s.z) - s.y)} off, base ${fmt(spans[0] - s.y)}`)
-  const cols = t.cols
-  let ringOff = 0, ringLow = Infinity
-  for (let k = 0; k < 7 * 5; k += 5) {
-    const u = cols[k] - s.x, v = cols[k + 1] - s.z
-    ringLow = Math.min(ringLow, cols[k + 4] - (s.y + s.gx * u + s.gz * v))
-    ringOff = Math.max(ringOff, Math.abs(w.blockTopAt(cols[k], cols[k + 1]) - Math.max(cols[k + 4], w.blockTopAt(cols[k], cols[k + 1]))))
-  }
-  check(cols.length === 16 * 5 && ringLow > WALK.reach && ringOff === 0, 'every ring stone a column standing higher over the floor than she can step', `lowest ${fmt(ringLow)} m over it`)
+  let hi = 0
+  for (let c = 1; c < t.grid.top.length; c++) if (t.grid.top[c] > t.grid.top[hi]) hi = c
+  const hx = s.x + ((hi % GRID_N) + 0.5) * CELL - (GRID_N * CELL) / 2, hz = s.z + (Math.floor(hi / GRID_N) + 0.5) * CELL - (GRID_N * CELL) / 2
+  const n = w.columnAt(hx, hz, 0, spans)
+  check(n === 1 && spans[1] === s.y + t.grid.top[hi] && w.blockTopAt(hx, hz) === spans[1] && spans[0] < field.heightAt(hx, hz) && spans[1] - field.heightAt(hx, hz) > WALK.height, 'over the tallest stone, one span from under the ground to over her head', `${fmt(spans[0] - s.y)}..${fmt(spans[1] - s.y)} m`)
+  check(w.blockTopAt(s.x, s.z) === -Infinity && w.columnAt(s.x, s.z, 0, spans) === 0, 'on the floor, no stone: she stands on the field')
   check(w.blockTopAt(s.x + WIDTH, s.z) === -Infinity && w.columnAt(s.x + WIDTH, s.z, 0, spans) === 0, 'and a fortress-width off it, no stone at all')
-
-  // Laid on the tilted floor: its Y the plane's normal, its origin the floor's centre.
-  const m = new THREE.Matrix4(), p = new THREE.Vector3()
-  let tiltOff = 0, atOff = 0
-  for (const site of w.sites()) {
-    w.batch.getMatrixAt(w.tiles.get(site.key).ids[0], m)
-    tiltOff = Math.max(tiltOff, p.set(0, 1, 0).transformDirection(m).distanceTo(new THREE.Vector3(-site.gx, 1, -site.gz).normalize()))
-    atOff = Math.max(atOff, p.setFromMatrixPosition(m).distanceTo(new THREE.Vector3(site.x, site.y, site.z)))
-  }
-  check(tiltOff < 1e-6 && atOff < 1e-3, 'each fortress stands on its floor\'s plane, its Y that plane\'s normal and its origin the floor\'s centre', `tilt off ${tiltOff.toExponential(1)}, centre off ${atOff.toExponential(1)} m`)
   w.dispose()
 
   const snowless = roostsOn({ field: peakField(2000) })
@@ -282,7 +326,7 @@ const pickOf = (w, h, d) => {
 
   const r = roostsOn({ egg })
   const bare = roostsOn()
-  check(r.materials.length === 1 && r.materials[0] === r.eggMaterial && r.eggMaterial.customProgramCacheKey() === 'gen-prop-gloss' && r.batch.meshes.length === LODS + 1 && r.eggTier === LODS, 'with a bank the arena grows a tier past the fortress, the egg on its own gloss gen-prop material, the one material offered to the lighting', r.materials.map((m) => m.customProgramCacheKey()).join(' '))
+  check(r.batch.name === 'v2-roost-eggs' && r.group.children.includes(r.batch) && r.batch.meshes.length === 1 && r.eggMaterial.customProgramCacheKey() === 'gen-prop-gloss', 'with a bank the eggs are an arena of their own in the roosts\' group, one tier, on the gloss gen-prop material', r.eggMaterial.customProgramCacheKey())
   // The shine: a Standard at EGG_ROUGHNESS with no metalness, the whole lobe left on it, and the rim fade still spliced in.
   check(r.eggMaterial.isMeshStandardMaterial && r.eggMaterial.roughness === EGG_ROUGHNESS && EGG_ROUGHNESS > 0 && EGG_ROUGHNESS <= 0.3 && r.eggMaterial.metalness === 0, 'the egg is a Standard material at EGG_ROUGHNESS, no rougher than the wet creatures, with no metalness', `${r.eggMaterial.type} roughness ${r.eggMaterial.roughness}`)
   {
@@ -292,7 +336,7 @@ const pickOf = (w, h, d) => {
     check(!shader.fragmentShader.includes('reflectedLight.directSpecular *='), 'with the sun\'s whole lobe on the shell, not the creatures\' halved glint')
   }
   check(JSON.stringify(r.sites()) === JSON.stringify(bare.sites()) && r.stats.placed === bare.stats.placed, 'the eggs move no roost: the same seed lays the same sites with them or without', `${r.stats.placed} sites`)
-  check(r.stats.pool === r.batch._max && r.stats.pool > 2 * r.stats.tiles && bare.stats.pool < r.stats.pool, 'and the pool holds a roost and an egg for every resident tile, plus the fades', `pool ${r.stats.pool} over ${r.stats.tiles} tiles`)
+  check(r.stats.pool === r.batch._max && r.stats.pool > r.stats.placed && bare.stats.pool === 0, 'and the pool holds an egg for every resident roost, plus the fades; with no bank there is none', `pool ${r.stats.pool} over ${r.stats.placed} roosts`)
   bare.dispose()
   r.dispose()
 
@@ -300,14 +344,14 @@ const pickOf = (w, h, d) => {
   const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), up = new THREE.Vector3(), v = new THREE.Vector3(), n = new THREE.Vector3(), lift = new THREE.Vector3()
   const pos = egg.geometry.getAttribute('position')
   const tints = new Set()
-  let placed = 0, eggCount = 0, alongOff = 0, restOff = 0, lieLo = Infinity, lieHi = -Infinity, hLo = Infinity, hHi = -Infinity, badScale = 0, badTier = 0, badCull = 0
+  let placed = 0, eggCount = 0, alongOff = 0, restOff = 0, lieLo = Infinity, lieHi = -Infinity, hLo = Infinity, hHi = -Infinity, badScale = 0, badCull = 0
   for (let seed = 1; seed <= 60; seed++) {
     const w = roostsOn({ egg, seed, Kind: Tilted })
     placed += w.stats.placed
     for (const t of w.tiles.values()) {
-      if (t.n !== 2) continue
+      if (t.n !== 1) continue
       eggCount++
-      const id = t.ids[1]
+      const id = t.ids[0]
       w.batch.getMatrixAt(id, m)
       m.decompose(p, q, s)
       n.set(-t.site.gx, 1, -t.site.gz).normalize()
@@ -323,7 +367,6 @@ const pickOf = (w, h, d) => {
       for (let i = 0; i < pos.count; i++) low = Math.min(low, v.fromBufferAttribute(pos, i).applyMatrix4(m).sub(p).dot(n))
       restOff = Math.max(restOff, Math.abs(lift.dot(n) + low + EGG_SINK * s.x * egg.bounds.width))
       tints.add(w.batch.getColorAt(id, c).getHex())
-      if (w.tierAt[id] !== w.eggTier) badTier++
       if (Math.abs(w.rim.gone[id] - Math.min(w.radius, propCull(height))) > 1e-3) badCull++
     }
     w.dispose()
@@ -334,7 +377,7 @@ const pickOf = (w, h, d) => {
   check(hLo >= EGG_HEIGHT[0] - 1e-6 && hHi <= EGG_HEIGHT[1] + 1e-6 && hHi - hLo > 0.05 && badScale === 0, `${EGG_HEIGHT[0]}..${EGG_HEIGHT[1]} m tall, scaled evenly, its height its rim size`, `${fmt(hLo)}..${fmt(hHi)} m, ${badScale} scaled unevenly`)
   check(restOff < 0.01, `its lowest point ${EGG_SINK} of its width into the floor, on a stand-in ellipsoid's own vertices`, `rest off ${restOff.toExponential(1)} m`)
   check([...tints].every((hex) => EGG_TINTS.some(([, h]) => h === hex)) && tints.size === EGG_TINTS.length, 'every egg tinted one of the clutch colours and every colour showing, so none white', [...tints].map((h) => EGG_TINTS.find(([, x]) => x === h)?.[0]).join(' '))
-  check(badTier === 0 && badCull === 0, 'each on the egg tier for good, culled where a prop of its height is', `${badTier} off tier, ${badCull} off cull`)
+  check(badCull === 0, 'each culled where a prop of its height is', `${badCull} off cull`)
 }
 
 // A seed whose three roosts hold two eggs or more, for the sweeps and the hand.
@@ -350,12 +393,12 @@ const EGG_SEED = (() => {
 {
   const egg = eggBankFrom(pickOf(0.6, 1, 0.6))
   const r = roostsOn({ egg, seed: EGG_SEED })
-  const eggTiles = [...r.tiles.values()].filter((t) => t.n === 2)
+  const eggTiles = [...r.tiles.values()].filter((t) => t.n === 1)
   const at = eggTiles[0].site
   r.update(at.x, at.y + 1.7, at.z)
   const bareAgain = roostsOn({ seed: EGG_SEED })
   bareAgain.update(at.x, at.y + 1.7, at.z)
-  const shown = eggTiles.filter((t) => !r.rim.isHidden(t.ids[1])).length
+  const shown = eggTiles.filter((t) => !r.rim.isHidden(t.ids[0])).length
   check(shown > 0 && r.stats.tris === bareAgain.stats.tris + shown * egg.tris, 'a frame later the eggs in sight are counted whole, over the roosts\' own count', `${shown} eggs shown, ${r.stats.tris} tris against ${bareAgain.stats.tris}`)
   bareAgain.dispose()
   r.update(at.x + 4000, at.y, at.z)
@@ -371,26 +414,25 @@ console.log('\nroost egg taken')
   // Grown and swept from over one nest with an egg -- the first, or the one at (x, z) -- so the eggs in sight are shown.
   const grow = (x = null, z = null) => {
     const r = roostsOn({ egg, seed: EGG_SEED })
-    const t = x === null ? [...r.tiles.values()].find((t) => t.n === 2).site : { x, z }
+    const t = x === null ? [...r.tiles.values()].find((t) => t.n === 1).site : { x, z }
     r.update(t.x, PEAKS.A[2], t.z)
     return r
   }
   const r = grow()
-  const tile = [...r.tiles.values()].find((t) => t.n === 2 && !r.rim.isHidden(t.ids[1]))
-  const first = [...r.tiles.values()].find((t) => t.n === 2).site
+  const tile = [...r.tiles.values()].find((t) => t.n === 1 && !r.rim.isHidden(t.ids[0]))
+  const first = [...r.tiles.values()].find((t) => t.n === 1).site
   const at = { x: first.x, z: first.z }
-  const id = tile.ids[1]
+  const id = tile.ids[0]
   const eggsWere = r.stats.eggs, placedWere = r.stats.placed, usedWere = r.stats.used
   const hit = r.pickAt(r.instX[id], r.instY[id], r.instZ[id], 0.1, 2)
   check(hit !== null && hit.tile === tile && hit.id === id && hit.dist === 0 && hit.size === r.instR[id], 'pickAt at an egg\'s centre hits it, its size its height', hit ? `${fmt(hit.size)} m` : 'null')
   check(r.pickAt(r.instX[id], r.instY[id] + 5, r.instZ[id], 0.1, 2) === null, 'and nothing five metres above it')
   check(r.pickAt(r.instX[id], r.instY[id], r.instZ[id], 0.1, r.instR[id]) === null, 'nor one at or over maxSize')
-  check(r.pickAt(tile.site.x, tile.site.y, tile.site.z, 0.1, 100)?.id !== tile.ids[0], 'the roost itself is never offered')
   const c = r.batch.getColorAt(id, new THREE.Color()).getHex()
   const rec = r.take(hit, 1)
   check(rec.kind === 'egg' && rec.name === 'dragon egg' && rec.size === hit.size && rec.geometry === egg.geometry && rec.material === r.eggMaterial && rec.stowable === true, 'take: a stowable dragon egg on the pick\'s geometry and the shell\'s material')
   check(Math.abs(rec.scale[0] - rec.size / egg.bounds.height) < 1e-6 && rec.scale[1] === rec.scale[0] && rec.scale[2] === rec.scale[0] && new THREE.Color().setRGB(...rec.color).getHex() === c, 'scaled by its height over the pick, in its clutch tint', JSON.stringify(rec.scale))
-  check(tile.n === 1 && r.stats.eggs === eggsWere - 1 && r.stats.placed === placedWere && r.stats.used === usedWere - 1 && !r.batch.getVisibleAt(id) && r.tierAt[id] === -1, 'the nest stands with no egg, the instance back in the pool', `${r.stats.eggs} eggs, ${r.stats.used} used`)
+  check(tile.n === 0 && r.stats.eggs === eggsWere - 1 && r.stats.placed === placedWere && r.stats.used === usedWere - 1 && !r.batch.getVisibleAt(id), 'the nest stands with no egg, the instance back in the pool', `${r.stats.eggs} eggs, ${r.stats.used} used`)
   check(taken.has('egg', tile.site.x, tile.site.z), 'the nest is recorded')
   check(r.pickAt(r.instX[id], r.instY[id], r.instZ[id], 0.1, 2)?.id !== id, 'and the egg cannot be taken twice')
   const d = r.dress({ kind: 'egg' })
@@ -403,25 +445,25 @@ console.log('\nroost egg taken')
   bare.dispose()
   const again = grow(at.x, at.z)
   const same = [...again.tiles.values()].find((t) => t.tx === tile.tx && t.tz === tile.tz)
-  check(same.n === 1 && again.stats.eggs === eggsWere - 1 && again.stats.placed === placedWere, 'grown again the nest lays no other egg and the rest are as they were', `${again.stats.eggs} eggs`)
+  check(same.n === 0 && again.stats.eggs === eggsWere - 1 && again.stats.placed === placedWere, 'grown again the nest lays no other egg and the rest are as they were', `${again.stats.eggs} eggs`)
   again.dispose()
   taken.clear()
   const whole = grow(at.x, at.z)
   check(whole.stats.eggs === eggsWere, 'and with the registry cleared the egg is back')
   // A peer's take: the egg evicted by its nest's site, hidden or shown; a nest without one, a foreign key and an empty spot are false.
-  const te = [...whole.tiles.values()].find((t) => t.n === 2 && whole.rim.isHidden(t.ids[1])) ?? [...whole.tiles.values()].find((t) => t.n === 2)
+  const te = [...whole.tiles.values()].find((t) => t.n === 1 && whole.rim.isHidden(t.ids[0])) ?? [...whole.tiles.values()].find((t) => t.n === 1)
   check(whole.evict('skull', te.site.x, te.site.z) === false && whole.evict('egg', te.site.x + 5, te.site.z) === false && whole.stats.eggs === eggsWere, 'evict is false for a foreign key or an empty spot')
-  check(whole.evict('egg', te.site.x + 0.03, te.site.z - 0.03) === true && te.n === 1 && whole.stats.eggs === eggsWere - 1 && taken.has('egg', te.site.x, te.site.z), `evict lifts the egg a peer took, ${whole.rim.isHidden(te.ids[0]) ? 'rim-hidden' : 'shown'}, and records the nest`)
+  check(whole.evict('egg', te.site.x + 0.03, te.site.z - 0.03) === true && te.n === 0 && whole.stats.eggs === eggsWere - 1 && taken.has('egg', te.site.x, te.site.z), `evict lifts the egg a peer took, ${whole.rim.isHidden(te.ids[0]) ? 'rim-hidden' : 'shown'}, and records the nest`)
   check(whole.evict('egg', te.site.x, te.site.z) === false, 'and is false for the nest once emptied')
   whole.dispose()
   r.update(tile.site.x + 4000, GROUND + 1.7, tile.site.z)
-  check(r.stats.used === r.stats.placed + r.stats.eggs, 'walked off, the nest releases cleanly without its egg')
+  check(r.stats.used === r.stats.eggs, 'walked off, the nest releases cleanly without its egg')
   r.dispose()
   // A second world: an egg taken with stowMax at its height comes up in the hand but will not go in the backpack.
   taken.clear()
   const w = grow()
-  const t2 = [...w.tiles.values()].find((t) => t.n === 2 && !w.rim.isHidden(t.ids[1]))
-  const h2 = w.pickAt(w.instX[t2.ids[1]], w.instY[t2.ids[1]], w.instZ[t2.ids[1]], 0.1, 2)
+  const t2 = [...w.tiles.values()].find((t) => t.n === 1 && !w.rim.isHidden(t.ids[0]))
+  const h2 = w.pickAt(w.instX[t2.ids[0]], w.instY[t2.ids[0]], w.instZ[t2.ids[0]], 0.1, 2)
   check(h2 && w.take(h2, h2.size).stowable === false, 'one at or over stowMax is not stowable')
   w.dispose()
   taken.clear()
@@ -504,9 +546,9 @@ const dry = { isSubmerged: () => false }
 // Its bites are logged on it: `hurt` her [n, why], `frights` a strider's [key, x, z].
 /** Dragons whose guards are never born: the gates of one dragon's own score, flight, meal and bite fly the male alone, and the pair is gated on its own. */
 class Solo extends Dragons { _spawn(site, guard, now) { return guard ? null : super._spawn(site, guard, now) } }
-const dragonsOn = (field, sites, herd, seed = 3, water = dry, Kind = Solo) => {
+const dragonsOn = (field, sites, herd, seed = 3, water = dry, Kind = Solo, ground = field) => {
   const hurt = [], frights = []
-  const d = new Kind(new THREE.Scene(), field, { seed, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), asset: makeAsset() })
+  const d = new Kind(new THREE.Scene(), field, { seed, ground, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), asset: makeAsset() })
   return Object.assign(d, { hurt, frights })
 }
 const DT = 1 / 60
@@ -951,6 +993,25 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   check(perch.clips.size >= 2 && perch.walked > 2 && perch.offGround === 0 && perch.off < site.r, 'perched, it potters as at home -- walking about, standing on the ground itself -- and stays about the spot', `${[...perch.clips].join(' ')}, walked ${fmt(perch.walked)} s, ${fmt(perch.off)} m out at most`)
   check(['explore', 'return'].includes(dr.state) && dr.clip === 'fly', 'and after the perch it flies on, or home if the flight has no more legs', dr.state)
   d.dispose()
+
+  // The same landing with a boulder under the spot: the walker's ground stands STONE over the field's there, and the dragon perches and potters on its top.
+  const STONE = 1.5
+  const boulder = { heightAt: (x, z) => GROUND + (Math.hypot(x - spot.x, z - spot.z) < 40 ? STONE : 0) }
+  const o = dragonsOn(flat, [site], makeHerd([]), 8, dry, Solo, boulder)
+  now = visit.start
+  o.update(HER.x, HER.y, HER.z, now)
+  const on = { frames: 0, walked: 0, offStone: 0 }
+  for (let i = 0; i < 60 * (visit.phrase.dur + visit.perch.dur + 1); i++) {
+    now += DT
+    o.update(HER.x, HER.y, HER.z, now)
+    const ob = o.byKey.get(keyOf(site))
+    if (ob.state !== 'perch' || now - visit.start <= visit.phrase.dur + 3) continue
+    on.frames++
+    if (ob.rest === 'walk') on.walked += DT
+    if (Math.abs(ob.y - (GROUND + STONE)) > 1e-6) on.offStone++
+  }
+  check(on.frames > 60 && on.walked > 2 && on.offStone === 0, 'perched on a boulder it stands and walks on the stone\'s top, never through it to the field under', `${on.frames} frames, walked ${fmt(on.walked)} s, ${on.offStone} off the stone`)
+  o.dispose()
 
   const never = (label, field, water = dry) => {
     const dd = dragonsOn(field, [site], makeHerd([]), 8, water)

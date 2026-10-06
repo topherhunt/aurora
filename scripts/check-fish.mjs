@@ -23,7 +23,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S, PREY } from '../src/v2/render/fish.js'
 import { CHAPTER_S, GRID_S, chapterOf, tickOf } from '../src/sim/score.js'
 import { taken } from '../src/v2/taken.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
@@ -695,6 +695,46 @@ const agree = (a, b) => {
   fish.place(200, 0)
   check(!fish.luredIn.has(bed), 'leaving the bed forgets the peer\'s set')
   fish.place(0, 0)
+}
+
+// --- her as prey: a fish twice her height bites her, one four times it swallows her ---
+{
+  const bites = []
+  const gulps = []
+  const prey = new Fish(new THREE.Scene(), height, water, { seed: 23, assets, harm: (n, why) => bites.push([n, why]), swallow: (why) => gulps.push(why) })
+  const at = { seconds: clock.seconds }
+  const go = (head, s) => { for (let i = 0; i < s * 72; i++) { at.seconds += DT; prey.update(head.x, head.y, head.z, at.seconds) } }
+  prey.place(0, 0)
+  go({ x: 0, y: LEVEL - 1, z: 0 }, 1)
+  const sp = (id) => prey.species.find((g) => g.id === id)
+  const mid = (g) => g.alive && !g.loose && Math.hypot(g.x, g.z) < 14 && g.x < BAR.x0 - 8
+  const big = sp('rime-fangpike').slots.filter(mid).sort((a, b) => b.size - a.size)[0]
+  check(big !== undefined, 'a pike swims in the middle', big ? `${big.size.toFixed(2)} m` : 'none')
+  const near = (f, k) => ({ x: f.x + k * f.size, y: f.y, z: f.z })
+  // Full size: nothing in the lake is twice her height.
+  const head = near(big, 1.5)
+  go(head, 3)
+  check(big.lure === null && bites.length === 0 && gulps.length === 0, 'at full size the biggest pike leaves her be', `${big.size.toFixed(2)} m long, she is ${PREY.heightM} m`)
+  // A bass, with her sized so it is three times her height: a nibbler, not a gulper.
+  const bass = sp('ironscale-bass').slots.filter(mid).sort((a, b) => b.size - a.size)[0]
+  prey.sized(bass.size / (3 * PREY.heightM))
+  const far = near(bass, PREY.notice + 0.3)
+  go(far, 1 / 72)
+  check(bass.lure === null, `sized so a bass is 3x her height, it does not notice her ${PREY.notice + 0.3} lengths off`)
+  const by = near(bass, PREY.notice - 0.3)
+  go(by, 1 / 72)
+  check(bass.lure === prey.her && bass.lured, `but does at ${PREY.notice - 0.3} lengths, and swims at her`)
+  check(prey.pendingLured([]).length === 0, 'and the room is owed nothing for it')
+  go(by, 10)
+  const bassBites = bites.filter(([, why]) => why === 'a ironscale-bass')
+  check(bassBites.length >= 2 && bassBites.length <= 10 / PREY.biteS + 1 && bassBites.every(([n]) => n === PREY.harm) && gulps.length === 0, `it closes and nibbles her for ${PREY.harm} a bite, at most one a ${PREY.biteS} s, and does not swallow her`, `${bassBites.length} bites in 10 s, ${gulps.length} gulps`)
+  prey.sized(1)
+  go(by, 1 / 72)
+  check(bass.lure !== prey.her, 'grown back to full size, the bass lets her go')
+  // Sized so the pike is five times her height: one gulp.
+  prey.sized(big.size / (5 * PREY.heightM))
+  go(near(big, 1.5), 8)
+  check(gulps.length >= 1 && gulps[0] === 'a rime-fangpike', 'sized so the pike is 5x her height, it swims at her and swallows her', `${gulps.length} gulps, first by ${gulps[0]}`)
 }
 
 // --- a clock skip: +5 h is 300 s on the room's clock, caught up in one silent frame ---

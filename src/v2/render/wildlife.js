@@ -142,7 +142,7 @@ import {
 } from './critters.js'
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
-import { EAT } from '../eating.js'
+import { EAT, atMost } from '../eating.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -248,9 +248,12 @@ export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
 // The modes an anchor may carry besides 'rejoin', each a live animal.
-const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad'])
+const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt'])
 // Under her chanterelle (eating.js), an animal within `m` m of her comes for her and strikes from `reach` body lengths: `harm` every strike, a strike `strikeS` then `idleS` before the next.
 export const MAD = { m: EAT.chanterelle.m, reach: 0.7, harm: 5, strikeS: 0.8, idleS: 1.2 }
+// Her size (sized) against an animal with a `flee` gait, within FLEE_M: above `look` of her full size it runs; at `look` or under it stops and looks at her for `lookS`, not again for `againS`.
+// A species that `hunts` comes for her from `hunt.m` at `hunt.fits` or under and strikes as MAD does, `harm` a strike (`small` at `smallFits` or under), until she is past LURE_FORGET_M or grows.
+export const FEAR = { look: 0.5, lookS: 2.5, againS: 30, hunt: { fits: 0.25, m: 12, harm: 10, smallFits: 0.125, small: 20 } }
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
 export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up', 'dead']
@@ -279,7 +282,8 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * courts, `standoff` how near it follows one to, `follow` the gait it follows
  * at by how many metres behind it is (the first whose figure it is under), and
  * `court` what it does once it is there and the lure is not at its face.
- * A `wary` one flees her at its `flee` gait, holds still at a lure, eats a
+ * One with a `flee` gait runs from her at her full size and looks at her at
+ * half (FEAR). A `wary` one holds still at a lure, eats a
  * carrot of hers and is then tame, following her to its `heel` and voicing
  * its `call` (an ambience SOUNDS key, at a rate rolled in `rate`) as it eats;
  * one with a `cry` voices it, under that ambience rule, as it starts to run.
@@ -299,6 +303,7 @@ export const SPECIES = [
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
     lures: ['fish', 'crab'], standoff: 1.2, follow: [['trot', 8], ['run', Infinity]], court: 'gaze',
+    flee: 'run', hunts: true,
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.12, 0.85, 0.8]]),
   },
   {
@@ -393,6 +398,8 @@ export class Wildlife {
     this.harm = harm
     // Whether the animals near her come for her (madden).
     this.maddened = false
+    // Her size, a multiple of her full height (sized).
+    this.size = 1
     // (x, z) -> true where no animal may stand or walk (the towns' buildings). Must be pure in position, like seat.
     this.avoid = avoid
     this.height = height
@@ -446,7 +453,7 @@ export class Wildlife {
           // The activity, the steps it has left, the clip playing, when that step began and the tick it ends on; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is, and `cycle` the clip's own length, for the ear's footfall clock. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
           act: 'stand', queue: [], clip: 'idle', stepStart: 0, stepEndTick: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
           // Live: `{ mode, by, anchor, sendTick, rand }` while after a lure (hands.js lures: kind, x, y, z, by), the lure itself, and the ticks of detour left before it is re-aimed at it.
-          live: null, lure: null, detour: 0,
+          live: null, lure: null, detour: 0, lookedT: -Infinity,
           // What a live body faces and follows -- the lure, her head, or a peer's anchor (`mark`) -- and how near it stops.
           goal: null, near: 0, mark: { x: 0, z: 0 },
           // The ladder rung it is on, CARD_RUNGS being past the last rung and so neither drawn nor simulated.
@@ -511,7 +518,7 @@ export class Wildlife {
       const asset = assets[sp.key]
       if (!asset) throw new Error(`Wildlife.setAssets: nothing for ${sp.key}`)
       if (!(asset.span > 0) || !(asset.width > 0) || !(asset.height > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no body extents -- re-ship it`)
-      for (const gait of [...sp.gaits, ...sp.follow].map(([g]) => g).concat(sp.wary ? [sp.flee] : [])) if (!(asset.gait[gait] > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no ground speed for its ${gait}`)
+      for (const gait of [...sp.gaits, ...sp.follow].map(([g]) => g).concat(sp.flee === undefined ? [] : [sp.flee])) if (!(asset.gait[gait] > 0)) throw new Error(`Wildlife.setAssets: ${sp.key} has no ground speed for its ${gait}`)
       sp.asset = asset
       // The ladder's rungs are a ratio of the body's LARGEST extent (critters.js), and `size` is its length: for a four-legged animal those are the same thing, and `bulk` says so rather than assuming it.
       sp.bulk = Math.max(asset.span, asset.width, asset.height) / asset.span
@@ -966,6 +973,7 @@ export class Wildlife {
       case 'startle': return [['alert', onGrid(STARTLE_S)]]
       case 'strike': return [['alert', onGrid(MAD.strikeS)], ['idle', onGrid(MAD.idleS)]]
       case 'flee': return [[sp.flee, onGrid(FLEE_S)]]
+      case 'look': return [['alert', onGrid(FEAR.lookS)]]
       case 'gaze': return [['idle', onGrid(between(rand, GAZE_S))], ['alert', onGrid(d.alert)]]
       default: throw new Error(`Wildlife: no activity named ${act}`)
     }
@@ -1255,8 +1263,10 @@ export class Wildlife {
         } else act = 'beg'
       }
       if (act === 'strike' && c.live.by === null) {
-        if (this.harm === null) throw new Error('Wildlife: a maddened animal strikes, and no harm() to hurt her with')
-        this.harm(MAD.harm, `a maddened ${c.sp.key}`)
+        if (this.harm === null) throw new Error('Wildlife: an animal strikes, and no harm() to hurt her with')
+        const H = FEAR.hunt
+        if (c.live.mode === 'hunt') this.harm(atMost(this.size, H.smallFits) ? H.small : H.harm, `a hunting ${c.sp.key}`)
+        else this.harm(MAD.harm, `a maddened ${c.sp.key}`)
       }
       // The room hears the run the tick it begins, its heading the way it runs.
       if (act === 'flee' && c.live.by === null) c.live.sendTick = tickOf(now)
@@ -1340,7 +1350,21 @@ export class Wildlife {
     c.lure = lure
     c.goal = null
     c.detour = 0
-    this._begin(c, mode === 'lure' ? 'notice' : mode === 'tame' ? 'gaze' : 'startle', now)
+    if (mode === 'look') c.lookedT = now
+    this._begin(c, mode === 'lure' ? 'notice' : mode === 'tame' ? 'gaze' : mode === 'look' ? 'look' : 'startle', now)
+  }
+
+  /** What her size and nearness set this animal on its score to (FEAR): 'flee', 'look', 'hunt', or null. */
+  _fear(c, now) {
+    const sp = c.sp
+    const H = FEAR.hunt
+    if (sp.hunts && atMost(this.size, H.fits)) {
+      const h = this.head
+      if (Math.hypot(h.x - c.sx, h.z - c.sz) <= H.m && Math.abs(h.y - c.y) <= H.m) return 'hunt'
+    }
+    if (sp.flee === undefined || !this._startled(c)) return null
+    if (!atMost(this.size, FEAR.look)) return 'flee'
+    return now - c.lookedT < FEAR.againS ? null : 'look'
   }
 
   /**
@@ -1391,7 +1415,7 @@ export class Wildlife {
     const l = c.lure
     if (l !== null && this._atFace(c)) { this._begin(c, c.sp.wary && l.by === null ? 'eat' : 'beg', now); return }
     const dist = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
-    if (c.live.mode === 'mad') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
+    if (c.live.mode === 'mad' || c.live.mode === 'hunt') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
     if (this._roams(c) && dist > c.near + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
     this._begin(c, c.sp.court, now)
   }
@@ -1399,7 +1423,8 @@ export class Wildlife {
   /** One tick live, by mode; then, on a peer's animal, the nudge onto its anchor, and on this client's, the anchor owed every ANCHOR_S. */
   _stepLive(c, k, now) {
     const live = c.live
-    const on = live.mode === 'lure' ? this._lureTick(c, k, now) : live.by !== null ? this._anchorTick(c, k, now) : live.mode === 'flee' ? this._fleeTick(c, k, now) : live.mode === 'mad' ? this._madTick(c, k, now) : this._tameTick(c, k, now)
+    const on = live.mode === 'lure' ? this._lureTick(c, k, now) : live.mode === 'look' ? this._lookTick(c, k, now) : live.by !== null ? this._anchorTick(c, k, now)
+      : live.mode === 'flee' ? this._fleeTick(c, k, now) : live.mode === 'mad' ? this._madTick(c, k, now) : live.mode === 'hunt' ? this._huntTick(c, k, now) : this._tameTick(c, k, now)
     if (!on) return
     if (live.anchor !== null && live.by !== null) {
       const [, T, ax, , az, ah] = live.anchor
@@ -1451,6 +1476,26 @@ export class Wildlife {
     if (c.act === 'startle') c.aim = bearing({ x: c.sx, z: c.sz }, h)
     else if (c.detour > 0) c.detour--
     else c.aim = bearing(h, { x: c.sx, z: c.sz })
+    this._move(c, k)
+    return true
+  }
+
+  /** Standing alert, turned to her (on a peer's copy, to its anchor's heading), until the look is over. False once it is off. */
+  _lookTick(c, k, now) {
+    if (k >= c.stepEndTick) { this._unlive(c, now); return false }
+    c.aim = c.live.by === null ? bearing({ x: c.sx, z: c.sz }, this.head) : c.live.anchor === null ? c.sh : c.live.anchor[5]
+    this._turn(c)
+    return true
+  }
+
+  /** Hunting her: after her and striking as _madTick, until she is past LURE_FORGET_M or has grown past FEAR.hunt.fits. False once it is off. */
+  _huntTick(c, k, now) {
+    const h = this.head
+    if (!atMost(this.size, FEAR.hunt.fits) || Math.hypot(h.x - c.sx, h.z - c.sz) > LURE_FORGET_M) { this._unlive(c, now); return false }
+    c.goal = h
+    c.near = c.size * MAD.reach
+    this._heed(c, k)
+    if (k >= c.stepEndTick) this._next(c, now)
     this._move(c, k)
     return true
   }
@@ -1596,6 +1641,12 @@ export class Wildlife {
     for (const m of this.materials) m.color.setScalar(1 - dark)
   }
 
+  /** Her size, a multiple of her full height: what the animals make of her (FEAR). */
+  sized(size) {
+    if (!(size > 0)) throw new Error(`Wildlife.sized: ${size}`)
+    this.size = size
+  }
+
   /** The anchors this client owes the room since the last call, moved into `into`. */
   pending(into = []) {
     for (const a of this.outbox) into.push(a)
@@ -1622,7 +1673,8 @@ export class Wildlife {
     if (this._maddens(c)) { this._golive(c, 'mad', null, null, now); return }
     const lure = this._lure(c)
     if (lure !== null) { this._golive(c, 'lure', lure, lure.by ?? null, now); return }
-    if (c.sp.wary && this._startled(c)) { this._golive(c, 'flee', null, null, now); return }
+    const fear = this._fear(c, now)
+    if (fear !== null) { this._golive(c, fear, null, null, now); return }
     if (k >= c.stepEndTick) this._next(c, now)
     this._posed(c, k - c.phraseTick0)
   }

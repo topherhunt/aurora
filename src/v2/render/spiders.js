@@ -122,6 +122,7 @@ import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { atMost } from '../eating.js'
 import { keyHash, phraseRand, stepTo, tickOf, TICK_S } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 
@@ -213,6 +214,8 @@ export const FLEE_HASTE = 4
 export const STALL_S = 1
 const STALL_FRAC = 0.25
 const ARRIVE_M = 0.1
+// At `fits` of her full size or under (sized), a spider within `m` m of her body runs at her at `haste` times the run instead of fleeing her, as far as its host lets it, and bites for `harm` every `biteS` from its own length off her; past twice `m`, or her grown, it calms where it is. Hers alone: the room does not hear it.
+export const HUNT = { fits: 0.125, m: 2, haste: FLEE_HASTE, harm: 10, biteS: 1 }
 // Ticks between a fleeing spider's re-aims, and how many of its ticks one call may catch up (a flight is seconds long, so a joiner never has far to come).
 const STEER_TICKS = 2
 const FLEE_CATCH_UP = 200
@@ -334,13 +337,18 @@ export class Spiders {
    * @param opts.rocks  Rocks: perchesInto and rayAt
    * @param opts.cards  the shared LitterCards: the far spiders are its instances, one per slot
    * @param opts.assets a loaded asset (loadSpiderGlb's shape) for a gate; the world fetches the GLB
+   * @param opts.harm   (n, why) => her hurt by a spider's bite (HUNT)
    */
-  constructor(scene, height, water, { seed = 1, trees, rocks, assets = null, cards = null } = {}) {
+  constructor(scene, height, water, { seed = 1, trees, rocks, assets = null, cards = null, harm = null } = {}) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Spiders needs the LitterCards its far card is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.snowLineAt !== 'function') throw new Error('Spiders needs a height field with heightAt and snowLineAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.isSubmerged !== 'function') throw new Error('Spiders needs WaterSurfaces, for levelAt and isSubmerged')
     if (!trees || typeof trees.trunksInto !== 'function' || !Array.isArray(trees.trunkProfile)) throw new Error('Spiders needs Trees, for trunksInto and trunkProfile')
     if (!rocks || typeof rocks.perchesInto !== 'function' || typeof rocks.rayAt !== 'function') throw new Error('Spiders needs Rocks, for perchesInto and rayAt')
+    if (harm !== null && typeof harm !== 'function') throw new Error('Spiders: harm must be a function of (n, why)')
+    this.harm = harm
+    // Her size, a multiple of her full height (sized).
+    this.size = 1
     this.height = height
     this.water = water
     this.trees = trees
@@ -420,8 +428,8 @@ export class Spiders {
         key: '', offset: 0, epoch: 0, u0: 0, v0: 0, su: 0, sv: 0,
         // The spell it is playing, the phrase within it and the seconds into that phrase; null before its first frame.
         spell: null, phrase: null, elapsed: 0,
-        // 'go' crosses to the phrase's waypoint at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from a body, on the world's ticks rather than the score's phrases and ended by distance or by stalling.
-        state: 'pause', clip: 'idle', speed: 0,
+        // 'go' crosses to the phrase's waypoint at `speed` metres a second playing `clip`; 'pause' holds at speed 0, playing `clip`; 'flee' is a 'go' at the run, away from a body, on the world's ticks rather than the score's phrases and ended by distance or by stalling; 'hunt' is the same at her (HUNT).
+        state: 'pause', clip: 'idle', speed: 0, bitT: -Infinity,
         // Fleeing: where it is making for, how far off it was last tick, and the seconds it has gone without closing on it. `near` is whether a body was within FLEE_M last frame. The flight steps at TICK_HZ on absolute world ticks: `tick` is the last one taken and `alpha` how far the frame is past it, for the draw to lead by. `bolt` is the column a released spider runs from -- fixed at the release, so every client runs the one flight -- and null for a flight a body startled, which re-aims at that body as it moves.
         ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false, tick: 0, alpha: 0, bolt: null,
         // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase, the phase it rolled to start from and their swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
@@ -1478,6 +1486,64 @@ export class Spiders {
     c.amp += (STRIDE.run / 2 - c.amp) * Math.min(1, GAIT_EASE * TICK_S)
   }
 
+  /** Off at the run toward her (HUNT), from world second `now`. */
+  _hunt(c, now) {
+    c.state = 'hunt'
+    c.clip = 'run'
+    c.tick = tickOf(now)
+    c.alpha = 0
+    c.bitT = -Infinity
+  }
+
+  /**
+   * One tick of a hunt at absolute tick `tick`, after her body `b`: within its
+   * own length of her it stands reared and bites every HUNT.biteS; short of
+   * that it runs along its host straight at her, as near as the host lets it.
+   */
+  _huntTick(c, tick, b) {
+    if (c.state !== 'hunt') return
+    const off = Math.sqrt(this._bodyD2(c, b))
+    if (!atMost(this.size, HUNT.fits) || off > 2 * HUNT.m) { this._calm(c, tick * TICK_S); return }
+    if (off <= c.size) {
+      c.clip = 'alert'
+      c.speed = 0
+      c.amp += (0 - c.amp) * Math.min(1, GAIT_EASE * TICK_S)
+      if (tick * TICK_S - c.bitT >= HUNT.biteS) {
+        if (this.harm === null) throw new Error('Spiders: a spider bites her, and no harm() to hurt her with')
+        c.bitT = tick * TICK_S
+        this.harm(HUNT.harm, 'a spider')
+      }
+      return
+    }
+    c.clip = 'run'
+    c.speed = (HUNT.haste * GAIT.run * c.size) / this.span
+    if (tick % STEER_TICKS === 0) this._aimAt(c, b.x, Math.min(b.hi, Math.max(b.lo, c.y)), b.z)
+    const d = c.speed * TICK_S
+    c.gait = (c.gait + (TAU * d * this.span) / (c.size * STRIDE.run)) % TAU
+    const host = c.host
+    if (host.kind === 'tree') this._stepTree(c, d)
+    else if (host.kind === 'rock') this._stepRock(c, d, tick)
+    else this._stepGround(c, d, tick)
+    c.amp += (STRIDE.run / 2 - c.amp) * Math.min(1, GAIT_EASE * TICK_S)
+  }
+
+  /** Head straight at the point (x, y, z) over its host's surface. */
+  _aimAt(c, x, y, z) {
+    if (c.host.kind === 'ground') { this._headGround(c, Math.atan2(x - c.x, z - c.z)); return }
+    const wx = x - c.x, wy = y - c.y, wz = z - c.z
+    this._face(c, 0)
+    const a = c.tx * wx + c.ty * wy + c.tz * wz
+    this._face(c, TAU / 4)
+    const b = c.tx * wx + c.ty * wy + c.tz * wz
+    this._face(c, Math.atan2(b, a))
+  }
+
+  /** Her size, a multiple of her full height: whether the spiders come for her (HUNT). */
+  sized(size) {
+    if (!(size > 0)) throw new Error(`Spiders.sized: ${size}`)
+    this.size = size
+  }
+
   /** Make for the point of its host furthest from her body, the column at (x, z) from y0 up to y1: the far side of it from there, at the end of the climb further from the column. On the ground, the point GROUND_FLEE_M off her surface straight away from the column -- a fixed point while she stands, so it arrives; a 10 cm spider at the hastened run would take twenty seconds over FLEE_TO_M. */
   _aim(c, x, y0, y1, z, tick) {
     const host = c.host
@@ -1592,6 +1658,8 @@ export class Spiders {
     const cards = this.cardReady
     const meshes = this.loaded
     const flee2 = (FLEE_M + WALK.radius) * (FLEE_M + WALK.radius)
+    const small = atMost(this.size, HUNT.fits)
+    const hunt2 = HUNT.m * HUNT.m
     const counts = this.counts
     counts.fill(0)
     for (const t of this.tiles.values()) {
@@ -1611,13 +1679,18 @@ export class Spiders {
           // The nearest body, hers or a peer's: the nearest point of its capsule's axis to the spider, and whether the spider is within FLEE_M of its surface. Squared, so the root is only taken by a spider already fleeing.
           let bd2 = Infinity
           let near = players[0]
-          for (const b of players) {
-            const d2b = this._bodyD2(c, b)
-            if (d2b < bd2) { bd2 = d2b; near = b }
+          for (let i = small ? 1 : 0; i < players.length; i++) {
+            const d2b = this._bodyD2(c, players[i])
+            if (d2b < bd2) { bd2 = d2b; near = players[i] }
           }
           const close = bd2 < flee2
           if (close && !c.near && c.state !== 'flee') this._flee(c, near.x, near.lo, near.hi, near.z, now)
           c.near = close
+          if (small && c.state !== 'flee' && c.state !== 'hunt' && this._bodyD2(c, players[0]) < hunt2) this._hunt(c, now)
+          if (c.state === 'hunt') {
+            stepTo(c, now, (tick) => this._huntTick(c, tick, players[0]), FLEE_CATCH_UP)
+            if (c.state !== 'hunt') c.alpha = 0
+          }
           if (c.state === 'flee') {
             // A flight steps on the world's own ticks, so two clients take the same steps in the same order whatever their frame rates, and one that heard of it late catches its ticks up. A released spider runs from the column the release fixed rather than a body this client may see elsewhere.
             const from = c.bolt ?? near
@@ -1625,7 +1698,7 @@ export class Spiders {
             // The part-tick lead dies with the flight: stepTo leaves it standing at whatever this frame fell on, which is the one thing about a calmed spider that would differ from client to client.
             if (c.state !== 'flee') c.alpha = 0
           }
-          if (c.state === 'flee') {
+          if (c.state === 'flee' || c.state === 'hunt') {
             // The draw leads the last tick along the heading by however much of a tick the frame is past it, so the flight reads as smoothly as the frame rate allows.
             c.dirty = true
           } else {
@@ -1654,7 +1727,7 @@ export class Spiders {
           const lod = meshes && c.rung < LOD_RUNGS ? 0 : LOD_TIERS
           c.lod = lod
           // Mid-tick of a flight, the drawn pose runs on along the heading: the tick's own step is that line, so the lead meets the next tick where it lands.
-          const lead = c.state === 'flee' ? c.speed * TICK_S * c.alpha : 0
+          const lead = c.state === 'flee' || c.state === 'hunt' ? c.speed * TICK_S * c.alpha : 0
           const gait = lead > 0 ? (c.gait + (TAU * lead * this.span) / (c.size * STRIDE.run)) % TAU : c.gait
           const rebuilt = c.dirty
           if (rebuilt) {

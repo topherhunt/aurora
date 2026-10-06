@@ -52,6 +52,8 @@ export const CARD_OUT_M = 1
 // The arch, metres tall over its floor, and how far its centre is set into the face.
 export const MOUTH_HEIGHT_M = 1.5
 export const MOUTH_SINK_M = 0.1
+// A hollow's mouth is drawn at `scale` of MOUTH_HEIGHT_M and takes her only at `fits` of her full size or less (main.js portalTest); `small` of them, rolled off the key, are half that again.
+export const MOUTH = { scale: 0.75, fits: 0.5, small: { scale: 0.375, fits: 0.25, chance: 0.3 } }
 // The hole: its outline in the arch's frame, metres across the passage (the
 // pick's Z) and above the arch's base, every edge inside the ring's solid at
 // its plane, MOUTH_SINK_M + proud into the arch (check-entrances samples the
@@ -290,7 +292,7 @@ export class Entrances {
 
   /**
    * Every resident mouth, for the portal (main.js) and the leafkin: `{ key,
-   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, scale, state, flank, flankReach, screened }`
+   * x, y, z, nx, nz, r, ax, ay, az, holeX, holeZ, scale, fits, state, flank, flankReach, screened }`
    * -- the point on the ground MOUTH_STEP_M + MOUTH_SINK_M out from the arch's
    * centre, the face's outward normal in the plane, the boulder's hull radius
    * about its centre, the arch's own position, the hole's plane on the ground
@@ -406,6 +408,7 @@ export class Entrances {
   _seat(key, cx, cy, cz, r) {
     const rand = mulberry32(keyHash(key) ^ this.seed)
     const a0 = rand() * Math.PI * 2
+    const { scale, fits } = rand() < MOUTH.small.chance ? MOUTH.small : MOUTH
     const hit = this._hit
     const field = this.field
     const rocks = this.rocks
@@ -437,8 +440,8 @@ export class Entrances {
       const box = holeBox()
       let proud = -Infinity, deep = Infinity
       for (let c = 0; c <= HOLE.outline.length; c++) {
-        const u = c < HOLE.outline.length ? HOLE.outline[c][0] : (box[0] + box[1]) / 2
-        const v = floor + (c < HOLE.outline.length ? HOLE.outline[c][1] : (box[2] + box[3]) / 2)
+        const u = scale * (c < HOLE.outline.length ? HOLE.outline[c][0] : (box[0] + box[1]) / 2)
+        const v = floor + scale * (c < HOLE.outline.length ? HOLE.outline[c][1] : (box[2] + box[3]) / 2)
         const tc = rocks.hollowRayAt(hx + ax * u + nx, v, hz + az * u + nz, -nx, 0, -nz, 2, hit)
         if (tc === Infinity) { proud = Infinity; break }
         const p = 1 - tc
@@ -457,7 +460,7 @@ export class Entrances {
       if (this.water.isSubmerged(mx, mz, my)) { this.rejected.water++; continue }
       // Sealed: no way out over the leafkin's ground as far as its leafkin is placed out (leafkin.js _emerge), so none could come home.
       if (!this._pathable(mx, mz, NO_STONES, OUT_FAR_M)) { this.rejected.sealed++; continue }
-      this._place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge)
+      this._place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale, fits)
       return
     }
     this.rejected.none++
@@ -523,8 +526,8 @@ export class Entrances {
     this.shadows.push(mesh)
   }
 
-  /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. `scale` sizes the arch and its hole together. */
-  _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale = 1) {
+  /** `bulge` is how far the stone stands out of the face point's plane across the hole: the arch and the hole come forward by it together, so the hole keeps its one plane in the ring. `scale` sizes the arch and its hole together; `fits` is the largest she may be to go in. */
+  _place(key, hx, hz, nx, nz, floor, my, mx, mz, r, bulge, scale = 1, fits = Infinity) {
     if (this.freeCount === 0) throw new Error(`Entrances: instance pool exhausted at ${this.maxInstances}`)
     const id = this.free[--this.freeCount]
     const bank = this.bank
@@ -555,7 +558,7 @@ export class Entrances {
       state = {}
       this.memory.set(key, state)
     }
-    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, scale, state, flank: [], flankReach: 0, shadow: null }
+    const site = { key, id, blind: false, x: mx, y: my, z: mz, nx, nz, r, ax, ay, az, holeX, holeZ, scale, fits, state, flank: [], flankReach: 0, shadow: null }
     if (r > 0) this._screen(site, hx, hz)
     this.resident.set(key, site)
     this._restone(site)
@@ -614,7 +617,7 @@ export class Entrances {
       f.yaw = f.kind === 'boulder' ? Math.atan2(-nx, -nz) + (rand() - 0.5) * SCREEN.boulder.twist : rand() * Math.PI * 2
     }
     const beside = (f, side) => {
-      at(f, side * (this.bank.width * 0.5 + SCREEN.gap + f.hull), 0)
+      at(f, side * (this.bank.width * site.scale * 0.5 + SCREEN.gap + f.hull), 0)
       // The boulder's face there, from three metres out at knee height, or the mouth's own line without one.
       const t = this.rocks.hollowRayAt(f.x + nx * 3, this.field.heightAt(site.x, site.z) + 0.3, f.z + nz * 3, -nx, 0, -nz, 6, this._hit)
       if (t !== Infinity) { f.x = this._hit.x; f.z = this._hit.z }

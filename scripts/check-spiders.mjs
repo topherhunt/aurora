@@ -43,7 +43,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Spiders, SHIPPED_TIERS, MESH_TIER, LOD_TIERS, SIZE_M, GROUND_SCALE, CLIMB_M, GROUP, GROUND_ROAM_M, GROUND_FLEE_M, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, MAX, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S, STRIDE, AMP_EASE_S, REAR_RAD, TINT_DARK, TINT_BROWN, TILE,
+  Spiders, SHIPPED_TIERS, MESH_TIER, LOD_TIERS, SIZE_M, GROUND_SCALE, CLIMB_M, GROUP, GROUND_ROAM_M, GROUND_FLEE_M, ROCK_MIN_SIZE, TRUNK_MIN_R, FLAT_NY, MAX, SINK, RESEAT_EVERY, WALL_M, FLEE_M, FLEE_TO_M, FLEE_HASTE, STALL_S, STRIDE, AMP_EASE_S, REAR_RAD, TINT_DARK, TINT_BROWN, TILE, HUNT,
 } from '../src/v2/render/spiders.js'
 import { TICK_S } from '../src/sim/score.js'
 import { WALK } from '../src/v2/walk.js'
@@ -916,6 +916,27 @@ spiders.place(0, 0)
   still.m = new Proxy(still.m, { set(m, k, v) { writes++; m[k] = v; return true }, get(m, k) { const v = m[k]; return typeof v === 'function' ? v.bind(m) : v } })
   for (let f = 0; f < RESEAT_EVERY - 1; f++) tick(spiders, ...nearTo(still), 1 / 60)
   check(writes === 0 && !still.dirty && kept.every((v, i) => v === still.m[i]), 'a sitting spider keeps its matrix from frame to frame rather than composing it again', `${writes} writes over ${RESEAT_EVERY - 1} frames`)
+}
+
+// --- at an eighth of her size a spider near her runs at her and bites -------------
+{
+  const hits = []
+  const k = new Spiders(scene, height, water, { seed: 34, trees, rocks, cards: new LitterCards(4096), assets: makeAsset(), harm: (n) => hits.push(n) })
+  k.place(0, 0)
+  tick(k, 0, GROUND + 3, 0, 1 / 60)
+  const c = alive(k).find((s) => s.host.kind === 'ground')
+  const her = [c.x + 1.5, GROUND + EYE, c.z]
+  const run = (s) => { for (let f = 0; f < s * 60; f++) tick(k, ...her, 1 / 60) }
+  run(1)
+  check(c.state !== 'hunt' && hits.length === 0, 'her full size 1.5 m off, it pays her no mind', c.state)
+  k.sized(0.125)
+  run(12)
+  const off = Math.hypot(c.x - her[0], c.z - her[2])
+  check(c.state === 'hunt' && off <= c.size + 0.01 && hits.length >= 2 && hits.every((n) => n === HUNT.harm), `at an eighth of her size it runs to her and bites, ${HUNT.harm} a bite`, `${c.state} ${off.toFixed(2)} m off, bites ${hits.join(' ')}`)
+  k.sized(1)
+  run(1)
+  check(c.state !== 'hunt', 'grown, it gives up the hunt', c.state)
+  k.dispose()
 }
 
 // --- two clients see the one wood -----------------------------------------------

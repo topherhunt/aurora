@@ -4,6 +4,7 @@ import { CHAPTER_S, GRID_S, TICK_S, CATCH_UP_TICKS, SILENT_TICKS, hash32, keyHas
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { hueVary, makeHueAttribute, tierTintSplice, tileSeed, walkTiles } from './critters.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { atMost } from '../eating.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
@@ -131,6 +132,8 @@ export const LURE_TURN = 3
 // A bed's lured set goes to the room at most this often while it changes; an emptied set goes at once.
 export const LURED_EVERY_S = 1
 const NO_LURES = []
+// HER AS PREY. Her height is `heightM` times her size (sized). A fish over `nibble` times that long with her head within `notice` of its own lengths swims at her as at a lure, kept to twice that, and from half its length off bites for `harm` every `biteS`; one over `gulp` times her height swallows her whole. Hers alone: the room does not hear it.
+export const PREY = { heightM: 1.8, nibble: 2, gulp: 4, notice: 2, harm: 10, biteS: 1 }
 
 export const bedKey = (tx, tz) => `fs:${tx},${tz}`
 export const keyOf = (tx, tz, s) => `${bedKey(tx, tz)}:${s}`
@@ -202,10 +205,19 @@ export class Fish {
    * @param water   WaterSurfaces: levelAt(x, z) -> level or null
    * @param opts.seed    the world seed, for the beds and the loose fish
    * @param opts.assets  parsed fish.json for a gate; the world fetches it
+   * @param opts.harm    (n, why) => her bitten by a fish (PREY)
+   * @param opts.swallow (why) => her swallowed whole by one (PREY)
    */
-  constructor(scene, height, water, { seed = 1, assets = null } = {}) {
+  constructor(scene, height, water, { seed = 1, assets = null, harm = null, swallow = null } = {}) {
     if (!height || typeof height.heightAt !== 'function') throw new Error('Fish needs a height field with heightAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Fish needs WaterSurfaces, for levelAt')
+    if (harm !== null && typeof harm !== 'function') throw new Error('Fish: harm must be a function of (n, why)')
+    if (swallow !== null && typeof swallow !== 'function') throw new Error('Fish: swallow must be a function of (why)')
+    this.harm = harm
+    this.swallow = swallow
+    // Her size, a multiple of her full height (sized), and her head as the lure a fish hunting her swims at.
+    this.size = 1
+    this.her = { kind: 'her', x: 0, y: 0, z: 0, by: null }
     this.height = height
     this.water = water
     this.seed = seed
@@ -286,7 +298,7 @@ export class Fish {
         // Let go of by her hand: no school, stunned for `stun` seconds, then darting from her head (stepLoose).
         stun: 0,
         // The hands.js lure it is swimming at, or null; `lured` while it is off its station for one.
-        lure: null, lured: false,
+        lure: null, lured: false, bitT: -Infinity,
         // The frame it was last listed for the ear.
         listedAt: -1,
       })
@@ -965,6 +977,16 @@ export class Fish {
 
   /** The lure fish `f` is on this frame: the nearest of `lures` it wants, noticed within LURE_M of the hand and kept to LURE_FORGET_M -- from LURE_M on when a peer's set says that hand already has it. Taken up at a dart the ear hears, let go of at a cruise. */
   _notice(f, lures) {
+    const tall = PREY.heightM * this.size
+    if (f.size > PREY.nibble * tall) {
+      const her = this.her
+      const d = Math.hypot(her.x - f.x, her.y - f.y, her.z - f.z)
+      if (d <= PREY.notice * f.size * (f.lure === her ? 2 : 1)) {
+        if (f.lure !== her) { f.lure = her; f.lured = true; f.speed = f.school.sp.cfg.cruise * LURE_HASTE; this.setOff(f) }
+        return
+      }
+    }
+    if (f.lure === this.her) f.lure = null
     let lure = null
     let best = Infinity
     for (const l of lures) {
@@ -987,6 +1009,33 @@ export class Fish {
     f.speed = f.school.sp.cfg.cruise
   }
 
+  /** Her size, a multiple of her full height: which fish take her for prey (PREY). */
+  sized(size) {
+    if (!(size > 0)) throw new Error(`Fish.sized: ${size}`)
+    this.size = size
+  }
+
+  /** Every fish on her within half its length of her head bites her, or, over PREY.gulp times her height, swallows her and no other fish gets a bite. */
+  _prey(now) {
+    const her = this.her
+    const tall = PREY.heightM * this.size
+    for (const t of this.tiles.values()) {
+      for (const f of t.fish) {
+        if (f.lure !== her || Math.hypot(her.x - f.x, her.y - f.y, her.z - f.z) > f.size * 0.5) continue
+        const why = `a ${f.school.sp.id}`
+        if (f.size > PREY.gulp * tall) {
+          if (this.swallow === null) throw new Error('Fish: a fish swallows her, and no swallow() to end her with')
+          this.swallow(why)
+          return
+        }
+        if (now - f.bitT < PREY.biteS) continue
+        if (this.harm === null) throw new Error('Fish: a fish bites her, and no harm() to hurt her with')
+        f.bitT = now
+        this.harm(PREY.harm, why)
+      }
+    }
+  }
+
   /** The lured sets owed since the last call, pushed onto `into` (creature-net.js): `[bedKey, 'fs', null, indices]`, one a bed. */
   pendingLured(into = []) {
     for (const set of this.owed) into.push(set)
@@ -1004,7 +1053,7 @@ export class Fish {
   /** Bed `t`'s lured set owed when the fish her own hand has changed since the last sent and LURED_EVERY_S has passed, or when they are none now and were not. */
   _owe(t, now) {
     let mine = ''
-    for (const f of t.fish) if (f.lured && f.lure.by === null) mine += `${f.index},`
+    for (const f of t.fish) if (f.lured && f.lure.by === null && f.lure !== this.her) mine += `${f.index},`
     if (mine === t.luredSent) return
     if (mine !== '' && now - t.luredAt < LURED_EVERY_S) return
     t.luredSent = mine
@@ -1275,6 +1324,9 @@ export class Fish {
     const dt = this.now === null ? 0 : Math.min(0.1, Math.max(0, now - this.now))
     this.now = now
     this.startles.length = 0
+    this.her.x = x
+    this.her.y = y
+    this.her.z = z
     for (const t of this.tiles.values()) {
       for (const f of t.fish) this._notice(f, lures)
       this._owe(t, now)
@@ -1363,6 +1415,7 @@ export class Fish {
       sp.swim.needsUpdate = true
       sp.hue.needsUpdate = true
     }
+    this._prey(now)
     // A catch-up frame (a join, a clock skip) darts nobody in the ear: she was not there for it.
     if (stepped > SILENT_TICKS) this.startles.length = 0
   }

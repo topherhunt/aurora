@@ -337,6 +337,25 @@ export const PROPS = [
     styleNote:
       'One chunky readable silhouette: the steel loop and the flint lump clearly separate, the flint edge pointing right.',
   },
+  {
+    id: 'roost-dragon',
+    label: 'Craggy Dragon Roost',
+    category: 'other',
+    // A summit fortress for the 9 m dragon pair (roosts.js), which draws a procedural one until a pick ships. Its walk grid stays roosts.js's, so the pick must keep the wall closed and the centre clear.
+    sizeM: 18,
+    aspectRatio: '16:9',
+    description:
+      'a huge craggy stone stronghold about eighteen metres across and four metres tall, set down into rocky ' +
+      'mountain ground: one closed circular wall of massive house-sized granite boulders packed tight against ' +
+      'each other, each boulder a different size and shape, some tall and some low and squat, the seams between ' +
+      'them wedged shut with smaller stones, grey with faint ochre, rust and blue-grey tones, frost-cracked, with ' +
+      'lichen, moss and old snow in the crevices; inside, the stones step down in size toward the middle, big ' +
+      'boulders against the wall, then knee-high rocks, then cobbles and gravel, with broken weathered ' +
+      'silver-grey logs and snapped branches wedged among them, the centre a shallow open hollow of packed gravel ' +
+      'and flat stone about five metres across',
+    styleNote:
+      'The wall is one closed unbroken ring of stone all the way round, its outline craggy and jagged along the top.',
+  },
 ]
 
 export const propById = (id) => PROPS.find((p) => p.id === id) ?? null

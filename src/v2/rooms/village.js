@@ -49,7 +49,7 @@ import { TILE as FISH_TILE, SPECIES as FISH_SPECIES } from '../render/fish.js'
 // The shell (render/shell.js): the bank's boulder stood as the hollow bed stands it, at this scale (96 m along its long axis), sunk as the bed sinks it; its yaw is rolled.
 export const SHELL = { x: 0, z: 0, floor: 60, scale: 66, sink: 0.4 }
 export const FLOOR = SHELL.floor
-// Her size in the glade, against the world's metres (DESIGN.md §30): near a leafkin's own, and every metre that is hers goes by it (player.js, walk.js, hands.js and main.js).
+// The size the glade is built for (DESIGN.md §30): near a leafkin's own, and the largest a hollow's mouth lets her in at (entrances.js MOUTH.fits). Her size is her own and the same in every room; the gates walk the glade at this one.
 export const HER_SCALE = 0.5
 
 // The ground. Metres; the floor stays over every scatter's elevation floor (trees 25 m).
@@ -139,7 +139,7 @@ export const WANDER = { wavelength: 12, amp: 1.2 }
 // The trunk: legs from the exit down to the loop, each sweeping up to `sweep` degrees round the lake and back, as many as hold the drop at CHORD_GRADE with `slack` to spare and no more than `legs`, its hairpins turned on `hairpin` metres, the last `approach` metres straight in on the exit's bearing so it meets the loop square. The top of the approach stands `room` metres nearer the lake than the arrival, or there is no trunk: a leg returning to the exit's bearing ends there, and with the lake near the exit it ended at the arrival's feet, five metres under the mouth.
 export const TRUNK = { legs: 4, sweep: 110, slack: 1.1, hairpin: 2.5, approach: 8, room: 6 }
 // The exit mouth: the overworld's arch at `scale` times its size (entrances.js MOUTH_HEIGHT_M, HOLE), `band` metres tall, on the bearing where the shell's wall stands most nearly plumb across it, its face point on the wall at the arch's mid height so the arch's back half stands in the stone, its normal into the room. The shell's stone gives way within `door` metres of the face point (Shell.setDoor), the arch and a shoulder, so she walks up to the hole. The ground before it is a pad (a road at the arrival's height, `pad.width` metres wide from `pad.into` metres inside the face to `pad.narrow` short of the arrival, narrowing to the trunk's width there: the ground takes the nearest road's height, and the trunk falling away from the arrival would tilt a full-width pad's corners), so the arch stands on level ground. No house's wall stands within `houses` metres of it: she comes down through the wood before the village shows.
-export const EXIT = { scale: 2, band: 3, plumb: 0.5, sweep: 4, foot: 0.4, door: 1.8, houses: 20, step: 0.05, pad: { width: 5, into: 1, narrow: 1 } }
+export const EXIT = { scale: 1, band: 1.5, plumb: 0.5, sweep: 4, foot: 0.4, door: 0.9, houses: 20, step: 0.05, pad: { width: 5, into: 1, narrow: 1 } }
 export const ARRIVE_M = 2
 const ROLL_TRIES = 128
 // Which attempt of a seed built, once one has. A refused roll still costs its
