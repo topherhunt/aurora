@@ -78,6 +78,10 @@ const CLIFF = 1
 const LIGHT = [0.82, 1.12]
 const WARM = [-0.08, 0.14]
 // Logs: their ends between the floor and `reach` metres out, tilted to what they rest on by at most `tilt` radians.
+// The ferns bedded through the nest: `tries` spots rolled between the egg's `clear` and `out`, kept where the heap stands no more than `lift` over the ground and `offLog` off any log, at the ferns' own scale.
+export const NEST_FERNS = { tries: 640, clear: 1.1, out: 6.6, lift: 0.3, offLog: 0.1, scale: [0.6, 1.4] }
+// A trunk this near a roost's centre stands in its wall.
+export const REACH = WALL.at + WALL.wander / 2 + (WALL.across[1] * WALL.depth[1]) / 2
 const LOGS = { n: 7, r: [0.14, 0.26], len: [1.4, 3.2], at: [3.4, 5.2], reach: 6.4, tilt: 0.4, barkM: 1.2 }
 const LOG_SIDES = [10, 6, 4, 0]
 export const LODS = LOG_SIDES.length
@@ -214,7 +218,8 @@ function mergeParts(parts) {
  * geometries and their triangles, the walk grid (`top`/`bottom` per cell,
  * -Infinity/Infinity where it is clear) and every stone and log as laid.
  */
-export function buildFortress(shape, seed, groundAt, tint) {
+/** Where every stone, log and fern of the fortress lies, without its geometry: `{ stones, logs, ferns }`. */
+export function layFortress(shape, seed, groundAt, tint) {
   const rand = mulberry32(seed ^ 0x51ed)
   const t0 = shape.tiers[0]
   const b = t0.boundingBox ?? (t0.computeBoundingBox(), t0.boundingBox)
@@ -321,6 +326,27 @@ export function buildFortress(shape, seed, groundAt, tint) {
     logs.push({ x, z, yaw, radius, len, m: new THREE.Matrix4().compose(new THREE.Vector3(x, (y0 + y1) / 2 + radius * 0.6, z), q.clone(), new THREE.Vector3(1, 1, 1)) })
   }
 
+  // The ferns: rolled by area off the egg, kept where they stand on the ground or a stone's foot and off every log.
+  const ferns = []
+  for (let i = 0; i < NEST_FERNS.tries; i++) {
+    const r = Math.sqrt(NEST_FERNS.clear ** 2 + rand() * (NEST_FERNS.out ** 2 - NEST_FERNS.clear ** 2)), at = rand() * Math.PI * 2
+    const u = Math.cos(at) * r, v = Math.sin(at) * r
+    const scale = between(rand, NEST_FERNS.scale)
+    const y = restAt(u, v)
+    if (y - groundAt(u, v) > NEST_FERNS.lift) continue
+    if (logs.some((l) => {
+      const ux = Math.cos(l.yaw), uz = -Math.sin(l.yaw), dx = u - l.x, dz = v - l.z
+      return Math.abs(dx * ux + dz * uz) < l.len / 2 && Math.abs(dx * uz - dz * ux) < l.radius + NEST_FERNS.offLog
+    })) continue
+    ferns.push({ u, v, y, scale })
+  }
+  return { stones, logs, ferns }
+}
+
+export function buildFortress(shape, seed, groundAt, tint) {
+  const { stones, logs, ferns } = layFortress(shape, seed, groundAt, tint)
+  const w = shape.tiers[0].boundingBox.max.x - shape.tiers[0].boundingBox.min.x
+
   const top = new Float32Array(GRID_N * GRID_N).fill(-Infinity)
   const bottom = new Float32Array(GRID_N * GRID_N).fill(Infinity)
   const geometries = LOG_SIDES.map((sides, tier) => {
@@ -335,7 +361,7 @@ export function buildFortress(shape, seed, groundAt, tint) {
     if (sides) for (const l of logs) parts.push(logGeometry(l.radius, l.len, sides).applyMatrix4(l.m))
     return mergeParts(parts)
   })
-  return { geometries, tris: geometries.map((g) => g.index.count / 3), grid: { top, bottom }, stones, logs }
+  return { geometries, tris: geometries.map((g) => g.index.count / 3), grid: { top, bottom }, stones, logs, ferns }
 }
 
 /** The stone of `g` into the walk grid, a cell at a time under its box; with `groundAt`, a wall stone, cliffed to its crest past CLIFF. */
@@ -661,7 +687,7 @@ export class Roosts {
     mesh.updateMatrixWorld()
     mesh.matrixAutoUpdate = false
     this.group.add(mesh)
-    const tile = { tx, tz, site, mesh, geometries: built.geometries, tris: built.tris, tier: LODS - 1, grid: built.grid, ids: new Int32Array(1), n: 0 }
+    const tile = { tx, tz, site, mesh, geometries: built.geometries, tris: built.tris, tier: LODS - 1, grid: built.grid, ferns: built.ferns, ids: new Int32Array(1), n: 0 }
     this.tiles.set(key, tile)
     // A nest whose egg was taken from it (hands.js) lays no other.
     const { egg } = roll
@@ -703,6 +729,48 @@ export class Roosts {
     this.batch.setColorAt(id, this._c.setHex(tint))
     this.batch.setGeometryIdAt(id, 0)
     this.rim.place(id, Math.min(this.radius, propCull(height)))
+  }
+
+  // -- what the trees and ferns ask of a nest, resident or not ----------------
+
+  /** Whether a trunk at (x, z) wider than `pad` stands in a roost. */
+  occupiesAt(x, z, pad) {
+    const r = REACH + pad
+    for (let tz = Math.floor((z - r) / TILE); tz <= Math.floor((z + r) / TILE); tz++) {
+      for (let tx = Math.floor((x - r) / TILE); tx <= Math.floor((x + r) / TILE); tx++) {
+        const site = this.siteAt(tx, tz)
+        if (site && (x - site.x) ** 2 + (z - site.z) ** 2 < r * r) return true
+      }
+    }
+    return false
+  }
+
+  /** Appends `{ x, y, z, scale }` for every nest fern in [x0, x1) x [z0, z1), off a non-resident roost's own layout. */
+  fernsIn(x0, z0, x1, z1, out) {
+    const r = NEST_FERNS.out
+    for (let tz = Math.floor((z0 - r) / TILE); tz <= Math.floor((z1 + r) / TILE); tz++) {
+      for (let tx = Math.floor((x0 - r) / TILE); tx <= Math.floor((x1 + r) / TILE); tx++) {
+        const site = this.siteAt(tx, tz)
+        if (!site || site.x + r < x0 || site.x - r >= x1 || site.z + r < z0 || site.z - r >= z1) continue
+        const tile = this.tiles.get(site.key)
+        let spots = tile ? tile.ferns : null
+        if (!spots) {
+          const roll = this._rollOf(site.key, tx, tz)
+          if (!roll.ferns) roll.ferns = layFortress(this.shape, roll.fortress, (u, v) => this.field.heightAt(site.x + u, site.z + v) - site.y, [1, 1, 1]).ferns
+          spots = roll.ferns
+        }
+        for (const f of spots) {
+          const x = site.x + f.u, z = site.z + f.v
+          if (x >= x0 && x < x1 && z >= z0 && z < z1) out.push({ x, y: site.y + f.y, z, scale: f.scale })
+        }
+      }
+    }
+    return out
+  }
+
+  /** The most nest ferns a disc of `radius` can hold: sites stand at least SPACING less two seats' reach apart. */
+  fernsBound(radius) {
+    return (Math.floor((2 * radius) / (SPACING - 2 * SEAT_REACH)) + 1) ** 2 * NEST_FERNS.tries
   }
 
   // -- stone to the walker (walk.js addStone) ---------------------------------

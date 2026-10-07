@@ -57,7 +57,7 @@ import THREE from '../three-instance.js'
 // A click's ray is probed a ball of this radius at a time, so nothing thinner than it is stepped over.
 export const RAY_STEP = 0.15
 export const REACH_M = 0.25
-// Metres a thing may be along its longest side and still be lifted, and still be stowed: one cap, so whatever a hand lifts fits the backpack (a fern spans 1.3 m at unit scale).
+// Metres a thing may be along its longest side and still be lifted, and still be stowed: one cap, so whatever a hand lifts fits the backpack.
 export const GRAB_MAX_M = 2
 export const STOW_MAX_M = GRAB_MAX_M
 // Loose things kept in the world; past this the oldest is forgotten. The relay keeps the same (server/src/main.js ROOM_LOOSE_CAP), so a room's list and this one forget the same thing.

@@ -410,7 +410,7 @@ export class V2Height {
 
   _syncAuthored() {
     this._epoch = this.layers.epoch
-    this._authored = this.layers.lakes.count > 0 || this.layers.paths.count > 0 || this.layers.clefts.count > 0
+    this._authored = this.layers.lakes.count > 0 || this.layers.paths.count > 0 || this.layers.clefts.count > 0 || this.layers.fields.count > 0
   }
 
   /**

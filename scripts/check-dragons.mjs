@@ -33,7 +33,7 @@ import {
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
-  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, buildFortress, gridCell,
+  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, NEST_FERNS, REACH, buildFortress, layFortress, gridCell,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
@@ -203,6 +203,9 @@ console.log('\nroost fortress')
   const warmth = f.stones.map((s) => s.color[0] / s.color[2])
   check(spread(f.stones.map((s) => s.color[1])) > 1.2 && spread(warmth) > 1.2 && f.stones.every((s) => s.color[1] > TINT[1] * 0.8 && s.color[1] < TINT[1] * 1.15), 'each stone its own shade and warmth of the peak\'s stone, none far from it', `light x${fmt(spread(f.stones.map((s) => s.color[1])))}, warmth x${fmt(spread(warmth))}`)
   check(f.stones.every((s) => Math.hypot(s.x, s.z) - s.across / 2 > FLOOR_R) && [gridCell(0, 0), gridCell(FLOOR_R - CELL, 0), gridCell(0, -(FLOOR_R - CELL))].every((c) => f.grid.top[c] === -Infinity), `the floor is clear of stone out to FLOOR_R ${FLOOR_R} m`)
+  const fd = f.ferns.length / (Math.PI * (NEST_FERNS.out ** 2 - NEST_FERNS.clear ** 2))
+  check(fd > 0.6 && f.ferns.every((p) => Math.hypot(p.u, p.v) >= NEST_FERNS.clear && Math.hypot(p.u, p.v) <= NEST_FERNS.out && p.y - rough(p.u, p.v) <= NEST_FERNS.lift + 1e-9), 'ferns thick through the nest, off the egg, inside the wall and none up on a stone', `${f.ferns.length} at ${fmt(fd)}/m^2`)
+  check(JSON.stringify(layFortress(BOULDER, 7, rough, TINT).ferns) === JSON.stringify(f.ferns), 'and laid out without the geometry, the same ferns')
 
   // Watertight: walked at from every side, on rough ground and flat, nothing reaches the floor.
   const flat = () => 0
@@ -296,6 +299,13 @@ class Tilted extends Roosts {
   const tileOf = (p) => [Math.floor(p[0] / TILE), Math.floor(p[1] / TILE)]
   const far = sites.find((s) => peakOf(s) === 'C')
   check(narrow.sites().length === 1 && JSON.stringify(narrow.siteAt(far.tx, far.tz)) === JSON.stringify(far) && narrow.siteAt(...tileOf(PEAKS.B)) === null && narrow.siteAt(...tileOf(PEAKS.D)) === null, 'siteAt past the radius is the site the wide world laid, and null for B and D')
+  const wide = roostsOn({ field })
+  const box = [far.x - 4, far.z - 9, far.x + 9, far.z + 2]
+  const nested = narrow.fernsIn(...box, [])
+  check(nested.length > 20 && JSON.stringify(nested) === JSON.stringify(wide.fernsIn(...box, [])) && nested.every((p) => p.x >= box[0] && p.x < box[2] && p.z >= box[1] && p.z < box[3]), 'fernsIn past the radius are the ferns the resident roost holds, cut to the box', `${nested.length}`)
+  check(narrow.fernsBound(83) === NEST_FERNS.tries && narrow.fernsBound(SPACING) > NEST_FERNS.tries, 'a fern bed\'s disc holds one nest\'s ferns at most')
+  check(narrow.occupiesAt(far.x, far.z, 0) && narrow.occupiesAt(far.x + REACH - 0.5, far.z, 0) && narrow.occupiesAt(far.x + REACH + 0.5, far.z, 1) && !narrow.occupiesAt(far.x + REACH + 1.5, far.z, 1), 'a trunk keeps out of the roost past the radius, out to its wall\'s reach and pad')
+  wide.dispose()
   narrow.dispose()
 
   // To the walker the stones are the walk grid's spans over the fortress, the floor is the field's, and past the grid there is nothing.

@@ -1102,8 +1102,8 @@ export class Grass {
     if (!paths || typeof paths.nearest !== 'function') {
       throw new Error('Grass: needs a PathSet with nearest')
     }
-    if (!layers || typeof layers.shoreAt !== 'function') {
-      throw new Error('Grass: needs a Layers with shoreAt, to keep off the sand')
+    if (!layers || typeof layers.shoreAt !== 'function' || !layers.fields) {
+      throw new Error('Grass: needs a Layers with shoreAt and fields, to keep off the sand and the farm fields')
     }
 
     this.field = field
@@ -1432,7 +1432,7 @@ export class Grass {
     // chunk set -- see update.
     this._sweep = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, sand: 0, path: 0, rock: 0, sparse: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, snow: 0, sand: 0, field: 0, path: 0, rock: 0, sparse: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -2031,6 +2031,7 @@ export class Grass {
       // covers the point and a river index lookup that misses; the sand noise is
       // only asked once a band is found.
       if (this.layers.shoreAt(x, z, h) >= PLACEMENT.sandMax) { rej.sand++; continue }
+      if (this.layers.fields.occupiesAt(x, z, 0)) { rej.field++; continue }
       // THE SHORE CUT, before the path pair: a candidate past plainCount stands
       // only in a lush cell within SHORE.reach of water, and on plain ground that
       // is every one of them. Cell hash first, because it is cheaper than the

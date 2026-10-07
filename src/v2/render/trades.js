@@ -3,6 +3,7 @@ import THREE from '../../three-instance.js'
 import { LAYER } from '../../textures.js'
 import { addGeometry, propArrays } from './signposts.js'
 import { TRADES, smithyLayout, fenceRuns } from '../layers/trades.js'
+import { mulberry32 } from '../../sim/mathx.js'
 
 const WHITE = [1, 1, 1]
 const DARK = [0.06, 0.05, 0.05]
@@ -10,8 +11,6 @@ const SOOT = [0.28, 0.27, 0.27]
 const EMBER = [2.6, 0.9, 0.2]
 const IRONISH = [0.22, 0.22, 0.24]
 const BURLAP = [0.72, 0.6, 0.42]
-const LEAF = [0.3, 0.7, 0.22]
-const CARROT = [1.5, 0.55, 0.12]
 const EMBLEM = { anvil: [[0.2, 0.2, 0.22]], flask: [[0.45, 1.2, 0.55], [0.9, 0.85, 0.75]], tankard: [[0.75, 0.55, 0.32], [1.2, 1.2, 1.15]] }
 
 // Shared unit primitives, scaled per use.
@@ -134,8 +133,33 @@ function sign(out, m, emblem, detail) {
   }
 }
 
-// A fenced field of carrots: posts and two rails following the ground, a dirt mound down each row, and the carrots on it (their orange shoulders only up close).
-function field(out, town, w, ground, detail) {
+// A hand-split post standing on `p`: 4 to 6 sides of uneven width, every vertex jittered, the top a ragged cap. Off its own spot, so a post keeps its shape.
+function fencePost(out, p) {
+  const rand = mulberry32(Math.round(p.x * 97) * 7919 + Math.round(p.z * 89))
+  const n = 4 + ((rand() * 3) | 0)
+  const step = (Math.PI * 2) / n
+  const ring = (y, k) => {
+    const a = (k + (rand() - 0.5) * 0.5) * step
+    const r = 0.065 * (0.7 + rand() * 0.6)
+    return new THREE.Vector3(p.x + Math.cos(a) * r + (rand() - 0.5) * 0.02, y + (rand() - 0.5) * 0.06, p.z + Math.sin(a) * r + (rand() - 0.5) * 0.02)
+  }
+  const lean = [(rand() - 0.5) * 0.08, (rand() - 0.5) * 0.08]
+  const lo = Array.from({ length: n }, (_, k) => ring(p.y - 0.1, k))
+  const hi = Array.from({ length: n }, (_, k) => ring(p.y + 1.05 + rand() * 0.1, k).add(_v.set(lean[0], 0, lean[1])))
+  const cap = new THREE.Vector3(p.x + lean[0], p.y + 1.12 + rand() * 0.06, p.z + lean[1])
+  const tri = []
+  const push = (...vs) => { for (const v of vs) tri.push(v.x, v.y, v.z) }
+  for (let k = 0; k < n; k++) {
+    const k1 = (k + 1) % n
+    push(lo[k], hi[k1], lo[k1], lo[k], hi[k], hi[k1], hi[k], cap, hi[k1])
+  }
+  const g = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(tri, 3))
+  g.computeVertexNormals()
+  addGeometry(out, g, new THREE.Matrix4(), LAYER.BARK, WHITE)
+}
+
+// A field's fence: posts and two rails following the ground. Its tilled earth and furrows are the terrain's (layers/fields.js), its carrots render/carrots.js's.
+function field(out, town, w, ground) {
   const F = TRADES.field
   const c = Math.cos(w.yaw)
   const s = Math.sin(w.yaw)
@@ -147,22 +171,11 @@ function field(out, town, w, ground, detail) {
   const id = new THREE.Matrix4()
   for (const run of fenceRuns(w.outline, w.gate)) {
     run.forEach(([lx, lz], i) => {
-      const p = at(lx, lz)
-      put(out, id, UNIT.cyl6, p.x, p.y + 0.5, p.z, 0.13, 1.2, 0.13, LAYER.BARK, WHITE)
+      fencePost(out, at(lx, lz))
       if (i === 0) return
       const [qx, qz] = run[i - 1]
       for (const y of F.rails) beam(out, id, at(qx, qz, y), at(lx, lz, y), 0.05, 0.09, LAYER.TIMBER_PLANK, WHITE)
     })
-  }
-  const step = detail === 2 ? F.step : F.step * 2
-  for (const r of w.rows) {
-    const n = Math.max(1, Math.ceil(r.x1 - r.x0))
-    for (let k = 0; k < n; k++) beam(out, id, at(r.x0 + ((r.x1 - r.x0) * k) / n - 0.05, r.z), at(r.x0 + ((r.x1 - r.x0) * (k + 1)) / n + 0.05, r.z), 0.6, 0.2, LAYER.DIRT, WHITE, UNIT.log)
-    for (let x = r.x0 + step / 2; x < r.x1; x += step) {
-      const p = at(x, r.z, 0.09)
-      put(out, id, UNIT.cone, p.x, p.y + 0.12, p.z, 0.2, 0.26, 0.2, LAYER.PLASTER, LEAF, x * 7.3)
-      if (detail === 2) put(out, id, UNIT.cyl6, p.x, p.y, p.z, 0.07, 0.05, 0.07, LAYER.PLASTER, CARROT)
-    }
   }
 }
 
@@ -218,7 +231,7 @@ export function tradeArrays(town, detail, ground) {
   const out = propArrays()
   for (const w of town.works) {
     if (w.kind === 'smithy') smithy(out, town, w, detail)
-    else if (w.kind === 'field') field(out, town, w, ground, detail)
+    else if (w.kind === 'field') field(out, town, w, ground)
     else if (w.kind === 'shed') shed(out, town, w, detail)
     else if (w.kind === 'woodpile') woodpile(out, town, w)
     else throw new Error(`unknown work ${w.kind}`)

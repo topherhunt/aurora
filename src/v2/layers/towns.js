@@ -7,6 +7,7 @@ import { hash32 } from '../../sim/score.js'
 import { WORLD_HALF } from '../config.js'
 import { TRADES, fieldOutline, fieldRows, castFolk } from './trades.js'
 import { DEFAULT_ROAD_FEATHER } from './paths.js'
+import { townBearings } from './town-links.js'
 
 export const TOWN = {
   // About one town per `tile`, the best-scoring site in each, then the best remaining below the snow up to `target`. A site above the snow is kept with chance `snowKeep`. Score: water within `water` metres (times `waterWeight`: flat sites by water are rare on this map), a cliff (ground ramping through the `cliff.slope` range) within `cliff.r`, a sunk valley, less unevenness.
@@ -307,17 +308,10 @@ function layoutTown(site, index, all, ctx) {
     return river !== null && river.dist < river.halfWidth * 3 + 4
   }
 
-  // Main roads: toward the nearest other towns, bearings at least road.apart degrees apart, a random bearing when there is no neighbour to aim at.
+  // Main roads: one along each bearing the town's links leave on (town-links.js townBearings), else one toward the nearest other town, else a random one.
   const R = TOWN.road
-  const others = all.filter((o) => o !== site).sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz))
-  const nRoads = rand() < 0.45 ? 2 : 1
-  const bearings = []
-  for (const o of others) {
-    if (bearings.length === nRoads) break
-    const a = Math.atan2(o.z - cz, o.x - cx)
-    if (bearings.every((b) => angleApart(a, b) >= (R.apart * Math.PI) / 180)) bearings.push(a)
-  }
-  while (bearings.length < nRoads) bearings.push(bearings.length ? bearings[0] + Math.PI * (0.6 + rand() * 0.8) : rand() * Math.PI * 2)
+  const nearest = all.filter((o) => o !== site).sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz))[0]
+  const bearings = site.bearings.length > 0 ? site.bearings : [nearest ? Math.atan2(nearest.z - cz, nearest.x - cx) : rand() * Math.PI * 2]
   // A road runs out until the ground turns wet, steep or meets an authored road; the bearing swings up to 60 degrees either way to find one that gets clear of the town.
   const growRoad = (bearing) => {
     const wave = meander(rand, R.waves)
@@ -726,11 +720,6 @@ export function townsOccupyAt(towns, x, z, pad) {
   return false
 }
 
-function angleApart(a, b) {
-  const d = Math.abs(((a - b) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
-  return Math.min(d, 2 * Math.PI - d)
-}
-
 // `ground` is the raw heightmap (Heightmap.sample), which the siting reads; `surface` is the live field before the towns' own roads (V2Height.heightAt with the authored layers), which the layout seats buildings and ways on. Both are the same on every client. `keepClear` is [{x, z, r}] the towns stay TOWN.site.keepClear metres further from (the spawn). Returns { towns, records }, the records ready for Layers.addGenerated.
 export function planTowns({ ground, surface, layers, seed, keepClear = [] }) {
   const S = TOWN.site
@@ -751,6 +740,8 @@ export function planTowns({ ground, surface, layers, seed, keepClear = [] }) {
     if (sites.length >= S.target) break
     if (!c.snow && spaced(c)) sites.push(c)
   }
+  const bearings = townBearings({ sites, ground, surface, layers, zMax: TOWN.realZ - 60, apart: (TOWN.road.apart * Math.PI) / 180 })
+  sites.forEach((s, i) => (s.bearings = bearings[i]))
   const towns = []
   for (let i = 0; i < sites.length; i++) {
     const t = layoutTown(sites[i], towns.length, sites, { surface, layers, seed })

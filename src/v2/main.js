@@ -7,6 +7,7 @@ import { V2Height } from './height/field.js'
 import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { townsOccupyAt } from './layers/towns.js'
+import { fieldRecord, fieldSpots } from './layers/trades.js'
 import { loadWorldPlan, planWorld, unpackWorldPlan, worldPlanKey } from './layers/world-plan.js'
 import { Towns, WINDOW_GLOW } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
@@ -871,9 +872,11 @@ function applySave(doc) {
   rig.rotation.set(0, doc.rigYaw, 0)
   // In XR the headset owns the camera's rotation and overwrites it every frame.
   if (!sceneEl.is('vr-mode')) camera.rotation.set(doc.camPitch, doc.camYaw, 0)
-  backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack)
+  // A save from when ferns could be picked may hold one, which no source dresses now.
+  const fernless = (slot) => slot === null || slot.kind !== 'fern'
+  backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack.map((slot) => (fernless(slot) ? slot : null)))
   // A save from before the hands were written has no `held`.
-  restoreHeld(doc.held ?? {})
+  restoreHeld(Object.fromEntries(Object.entries(doc.held ?? {}).filter(([, slot]) => fernless(slot))))
   // A save from before the hour was written has no `hour`.
   if (doc.hour !== undefined) restoreHour(doc.hour)
   // A save from before the flare gun has no `flares`, and no gun: she is given one.
@@ -3132,7 +3135,7 @@ function reinHand(out, key) {
   const left = hands.holding('left') === null || hands.holding('right') !== null
   return (left ? leftGrip : rightGrip).getWorldPosition(out)
 }
-// Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size: a fern is shown a third its size, like a thing carried near the face.
+// Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size, like a thing carried near the face.
 const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
 const DESK_CLICK_PX = 5
@@ -4422,6 +4425,7 @@ async function buildRoom(room, at) {
         `[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ` +
           `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
       )
+      layers.setFields(townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map(fieldRecord)))
       // After the towns, which keep them out, and on the faces before their clefts cut them.
       caveSites = siteCaves(mouths, layers, townPlan)
     }
@@ -4533,6 +4537,15 @@ async function buildRoom(room, at) {
   window.v2rocks = rocks
   // The shell wears the tint a boulder placed in a wood would (render/shell.js).
   if (shell) shell.setTint(rocks.tintAt(0, 0, 'forest'))
+  // The dragons' roosts (render/roosts.js), fortresses of the rocks' own boulder
+  // set into the peaks with the shipped egg in half of them. Ahead of the trees,
+  // which keep out of them, and the ferns, which grow thick in them.
+  if (!room.village) {
+    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank(), textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    roosts.place(spawn.x, spawn.z)
+    console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs in ${roosts.placeMs.toFixed(1)} ms`)
+    window.v2roosts = roosts
+  }
 
   // Fallen logs and rotten stumps. BEFORE THE TREES, on purpose: a piece is
   // metres long and claims its ground first, and the forest keeps off it
@@ -4544,7 +4557,9 @@ async function buildRoom(room, at) {
   // A village is wood to its walls, thickest along its roads (village.js WOOD), meadow in the clearing.
   const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
   // The village's garden plots, wanted here before the trees: nothing grows on a planted plot but its rows (render/carrots.js).
-  let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) })) : []
+  let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) }))
+    : townPlan ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ x: w.x, z: w.z, r: Math.max(...w.outline.map(([lx, lz]) => Math.hypot(lx, lz))), spots: fieldSpots(w) })))
+    : []
   // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); 2048 is the most it draws at once (the beds' worst cases run near 550 deadwood and 500 mushrooms); a full mesh warns and shows nothing more.
   litterCards = new LitterCards(8192)
   scene.add(litterCards.group)
@@ -4643,7 +4658,7 @@ async function buildRoom(room, at) {
     biome,
     // Placed above; a trunk that would stand through a piece of it is refused,
     // in a village one in the clearing, through a hut, on a lamp, in the gathering place, on a stool or over a garden, and in the overworld one in a town or a cave mouth's notch.
-    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : towns ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || towns.occupiesAt(x, z, pad) || layers.clefts.occupiesAt(x, z, pad) } : deadwood,
+    deadwood: roomProps ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || roomProps.occupiesAt(x, z, pad) || lamps.occupiesAt(x, z, pad) || hearth.occupiesAt(x, z, pad) || stools.occupiesAt(x, z, pad) || plotsOccupy(plots, x, z, pad) } : towns ? { occupiesAt: (x, z, pad) => deadwood.occupiesAt(x, z, pad) || towns.occupiesAt(x, z, pad) || layers.clefts.occupiesAt(x, z, pad) || roosts.occupiesAt(x, z, pad) } : deadwood,
     // No trunk on a road, and the wood crowds the verge.
     paths: layers.paths,
     bounds,
@@ -4735,7 +4750,7 @@ async function buildRoom(room, at) {
   // flattening as well as the path exclusions.
   await bootStep('ferns')
   // The village's own ferns come in as plants: the ones leaning on a wall, and the ones seated on a roof, which carry their own y.
-  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds, cards: litterCards, plants: room.village ? [...roomSpec.decor.ferns, ...roofPlants] : [] })
+  ferns = new Ferns(scene, height, waterSurfaces, layers, propTextures, { seed, rocks, bounds, cards: litterCards, plants: room.village ? [...roomSpec.decor.ferns, ...roofPlants] : [], nests: roosts })
   lighting.patch(ferns.material, { mode: 'vertex', cacheKey: 'v2-prop-bb' })
   ferns.syncSnowLine(layers)
   ferns.place(spawn.x, spawn.z)
@@ -5052,7 +5067,6 @@ async function buildRoom(room, at) {
   hands.addSource(butterflies, 'butterfly')
   hands.addSource(fish, 'fish')
   hands.addSource(crabs, 'crab')
-  hands.addSource(ferns, 'fern')
   hands.addSource(litter, 'pebble')
   hands.addSource(grasshoppers, 'grasshopper')
   hands.addSource(bones, bones.kinds)
@@ -5072,17 +5086,11 @@ async function buildRoom(room, at) {
   handsNet = new HandsNet(hands, netplay, peerAvatars, taken)
   window.v2handsNet = handsNet
 
-  // The dragons' roosts (render/roosts.js), fortresses of the rocks' own
-  // boulder set into the peaks with the shipped egg in half of them, and the pairs
-  // of dragons that live in them (render/dragons.js), hunting the wildlife's
-  // stags. The roosts stand at once; the dragons wait for their GLB like the rest.
+  // The pairs of dragons that live in the roosts (render/dragons.js), hunting
+  // the wildlife's stags. They wait for their GLB like the rest.
   await bootStep('dragons')
   if (!room.village) {
-    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank(), textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
-    roosts.place(spawn.x, spawn.z)
     walk.addStone(roosts)
-    console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs in ${roosts.placeMs.toFixed(1)} ms`)
-    window.v2roosts = roosts
     hands.addSource(roosts, 'egg')
     dragons = new Dragons(scene, height, { seed, ground: walk, roosts, wildlife, water: waterSurfaces, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
     for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
@@ -5398,8 +5406,9 @@ function onRelief(next) {
  * available.
  */
 function replacePropsOnMovedGround(cx, cz) {
-  // First: the trees keep off it, and the plans it answers them from were
-  // tested on the old ground.
+  // First: the trees keep off them, and the plans they answer them from were
+  // tested on the old ground; the ferns take the nests' spots off the roosts.
+  if (roosts) roosts.place(cx, cz)
   if (deadwood) deadwood.place(cx, cz)
   if (sticks) sticks.reground()
   if (trees) {
@@ -5431,7 +5440,6 @@ function replacePropsOnMovedGround(cx, cz) {
   if (bones) bones.place(cx, cz)
   if (carrots) carrots.place(cx, cz)
   if (rowboats) rowboats.place(cx, cz)
-  if (roosts) roosts.place(cx, cz)
   placeAnimals(cx, cz)
 
   // Re-seat her at the same x/z on the new surface. spawnAt is the only method
@@ -5730,7 +5738,7 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
-      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
+      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'hold click', what: `with a carrot, fish or mushroom in the hand, hold for ${EAT.holdS} s to eat it; in the headset, hold it to your mouth` },
       { keys: 'drag', what: `with chalk in the hand in a cave, draw on the rock under the cursor within ${DESK_CLICK_M} m; in the headset, hold the chalk to the rock` },

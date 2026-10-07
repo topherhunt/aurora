@@ -5,7 +5,8 @@ import { WORLD_HALF, WORLD_SIZE } from '../config.js'
 import { BANK, drawnHalfWidth } from './paths.js'
 import { Heap } from './route.js'
 import { TOWN } from './towns.js'
-import { footprint, lakeBox } from './water-bodies.js'
+import { LINK, neighbourPairs } from './town-links.js'
+import { lakeLevelOf } from './water-bodies.js'
 
 export const ROAD = {
   width: 2,
@@ -26,7 +27,7 @@ export const ROAD = {
   // Each town tries a road to its `near.k` nearest within `near.r` m. A pair already joined within `detour` times their distance apart (through towns' streets too) gets none, nor one that saves under `gain` of the way round.
   detour: 1.6,
   gain: 0.25,
-  near: { k: 4, r: 2000 },
+  near: LINK.near,
   // A pair's route winding past `over` times their distance apart, or back along the way round, is raced by one that climbs costed at `grade`, feels no valley pull and takes road already laid at `reuse`; the shorter is laid.
   direct: { over: 2, grade: 0.14, reuse: 0.8 },
   // Every `step` cells along the roads, a link of at most `reach` m is tried to web `min` m or more away that is `detour` times further round by road and `save` m further, the biggest saving first. A way still longer than `every` gets waymark posts evenly along it.
@@ -35,7 +36,7 @@ export const ROAD = {
   prune: 1.3,
   // Metres of dry ground kept between a road's cells and a river's bank band, or any other water.
   riverPad: 6,
-  // Crossings are tried every `every` metres of river, where the shipped bridge (design/34-bridges.md §The shipped mesh) spans the drawn water at an x scale no more than scale[1]. The road runs `approach` metres straight out from each of its tips, and the river must turn less than `turn` radians over 20 m either side. A tip must stand `bank` metres over the water. `penalty` is the metres of travel a new bridge costs; one already built costs only its length.
+  // Crossings are tried every `every` metres of river, where the shipped bridge (design/34-bridges.md §The shipped mesh) spans the drawn water at an x scale no more than scale[1]. The road runs `approach` metres straight out from each of its tips, and the river must turn less than `turn` radians over 20 m either side. A tip must stand `bank` metres over the water. `penalty` is the metres of travel each span of a new bridge costs, so a long lake chain is laid only where going round is far worse; one already built costs only its length.
   cross: { every: 12, scale: [0.7, 1.3], approach: 10, turn: 0.2, bank: 0.4, grade: 0.3, penalty: 150 },
   // A lake is crossed on a straight chain of shipped bridges end to end, at most `max` m of water, tried along `dirs` headings from one shore cell in every `step` cells square.
   lake: { max: 160, dirs: 16, step: 3 },
@@ -76,16 +77,6 @@ const cellOf = (x, z) => {
 }
 // The grid and its cells for the cave trails (trails.js), which route on the same costs.
 export { buildGrid, N as GRID_N, cx as cellX, cz as cellZ, cellOf }
-
-// The highest lake plane whose footprint covers (x, z), or null: the water WaterSurfaces draws. Not LakeSet.levelAt, which answers the lake the point is deepest inside, and inside a small lake that is the ocean under the whole map.
-function lakeLevelOf(layers) {
-  const boxes = [...layers.lakes.lakes.values()].map((lake) => ({ lake, ...lakeBox(lake) }))
-  return (x, z) => {
-    let best = null
-    for (const b of boxes) if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && footprint(b.lake, x, z) > 0 && (best === null || b.lake.y > best)) best = b.lake.y
-    return best
-  }
-}
 
 // Heights, blocked cells and cost multipliers over the whole grid.
 function buildGrid(ground, surface, layers, towns) {
@@ -322,27 +313,6 @@ function findLakeCrossings(layers, surface, blocked) {
     }
   }
   return out
-}
-
-// The pairs a road is tried between, shortest first: each town's `near.k` nearest within `near.r` m, and the relative-neighbourhood pairs (no third town nearer to both) that hold the web together.
-function neighbourPairs(towns) {
-  const d = (a, b) => Math.hypot(a.x - b.x, a.z - b.z)
-  const keys = new Set()
-  const pairs = []
-  const add = (a, b) => {
-    const key = Math.min(a, b) * towns.length + Math.max(a, b)
-    if (keys.has(key)) return
-    keys.add(key)
-    pairs.push({ a, b, len: d(towns[a], towns[b]) })
-  }
-  for (let a = 0; a < towns.length; a++) {
-    towns.map((t, b) => [b, d(towns[a], t)]).filter(([b, ab]) => b !== a && ab < ROAD.near.r).sort((p, q) => p[1] - q[1]).slice(0, ROAD.near.k).forEach(([b]) => add(a, b))
-    for (let b = a + 1; b < towns.length; b++) {
-      const ab = d(towns[a], towns[b])
-      if (!towns.some((t, c) => c !== a && c !== b && Math.max(d(towns[a], t), d(towns[b], t)) < ab)) add(a, b)
-    }
-  }
-  return pairs.sort((p, q) => p.len - q.len)
 }
 
 /**
@@ -592,7 +562,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
           const X = crossings[xi]
           const n = X.cells[0] === c ? X.cells[1] : X.cells[0]
           if (done[n] === sid) continue
-          relax(c, n, 2 * X.endD + (X.way >= 0 ? 0 : ROAD.cross.penalty), xi, K, -1)
+          relax(c, n, 2 * X.endD + (X.way >= 0 ? 0 : ROAD.cross.penalty * X.spans), xi, K, -1)
         }
       }
     }
@@ -953,6 +923,19 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
         nodeYs[id] = Math.max(nodeYs[id], w.top[k] - ROAD.cut - ROAD.climb * d)
         d += Math.hypot(w.laid[k][0] - w.laid[k - dir][0], w.laid[k][1] - w.laid[k - dir][1])
       }
+    }
+  }
+  // Each fork was lifted alone, so the lower of two joined forks then rises to within ROAD.climb of the higher: a way of only its two pinned ends has no point between to ease the step.
+  for (let it = 0, moved = true; moved && it < 500; it++) {
+    moved = false
+    for (const w of live) {
+      if (w.crossing >= 0 || !free(nodes[w.a]) || !free(nodes[w.b])) continue
+      let len = 0
+      for (let k = 1; k < w.laid.length; k++) len += Math.hypot(w.laid[k][0] - w.laid[k - 1][0], w.laid[k][1] - w.laid[k - 1][1])
+      const [lo, hi] = nodeYs[w.a] < nodeYs[w.b] ? [w.a, w.b] : [w.b, w.a]
+      if (nodeYs[hi] - nodeYs[lo] <= ROAD.climb * len + 1e-3) continue
+      nodeYs[lo] = nodeYs[hi] - ROAD.climb * len
+      moved = true
     }
   }
   for (const w of live) {

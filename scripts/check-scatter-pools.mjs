@@ -69,7 +69,7 @@ const field = {
   bands: { altLo: 0, altSpan: 900 },
 }
 const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: (x, z, reach) => reach }
-const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null, overlaps: () => false } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null, overlaps: () => false }, fields: { occupiesAt: () => false } }
 const textures = buildTextureArray()
 const noAnchors = { anchorsInto: () => 0 }
 const deadwoodBank = deadwoodBankFrom({

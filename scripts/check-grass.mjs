@@ -452,7 +452,7 @@ const flat = {
 const dry = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 const clear = { nearest: () => null }
 // No sandy shore anywhere: Layers.shoreAt as the dry world answers it.
-const noSand = { shoreAt: () => 0 }
+const noSand = { shoreAt: () => 0, fields: { occupiesAt: () => false } }
 
 // The camera has to stand ON the flat world, not at y = 1.6 in absolute terms:
 // the tier test is a 3D distance, so an eye 60 m under the ground puts every
@@ -1135,7 +1135,7 @@ console.log('\n-- placement --')
     for (const tile of g.tiles.values()) for (let k = 0; k < tile.n; k++) out.push(g.instX[tile.ids[k]])
     return out
   }
-  const beach = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 3 ? 1 : 0) }, seed: 7, style: 'tufts' })
+  const beach = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 3 ? 1 : 0), fields: { occupiesAt: () => false } }, seed: 7, style: 'tufts' })
   beach.place(0, 0)
   const xs = posOf(beach)
   const on = xs.filter((x) => x >= 0 && x < 3).length
@@ -1143,7 +1143,7 @@ console.log('\n-- placement --')
   const east = xs.filter((x) => x >= 3 && x < 6).length
   check(on === 0 && west > 100 && east > 100, 'a sandy beach is bare of grass, with the carpet on either side of it', `${on} tufts on the sand, ${west} west of it, ${east} east`)
   check(beach.stats.rejected.sand > 100, 'and the drops are counted as sand', `${beach.stats.rejected.sand}`)
-  const ramp = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 6 ? x / 6 : 0) }, seed: 7, style: 'tufts' })
+  const ramp = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 6 ? x / 6 : 0), fields: { occupiesAt: () => false } }, seed: 7, style: 'tufts' })
   ramp.place(0, 0)
   const rx = posOf(ramp)
   const edge = 6 * PLACEMENT.sandMax

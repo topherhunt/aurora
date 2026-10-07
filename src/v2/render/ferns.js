@@ -12,7 +12,6 @@ import { PropArena } from './prop-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
-import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // The fern undercarpet on the /v2 route.
@@ -423,6 +422,8 @@ export class Ferns {
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param rocks         Optional Rocks. Needs blockTopAt and anchorsInto; without
    *                      it no fern is raised onto a boulder or thickened beside one.
+   * @param opts.nests      the dragons' roosts (roosts.js), whose ferns are planted
+   *                      tile by tile: `fernsIn(x0, z0, x1, z1, out)` and `fernsBound(radius)`.
    */
   constructor(
     scene,
@@ -430,7 +431,7 @@ export class Ferns {
     water,
     layers,
     textureArray,
-    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null, plants = [], cards = null } = {}
+    { seed = 1, density = DENSITY, radius = DRAW_RADIUS, fullRadius = FULL_RADIUS, rocks = null, bounds = null, plants = [], nests = null, cards = null } = {}
   ) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Ferns: needs the LitterCards its far card is drawn by')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
@@ -445,8 +446,8 @@ export class Ferns {
     if (!layers || !layers.paths || typeof layers.paths.nearest !== 'function') {
       throw new Error('Ferns: needs Layers with a PathSet')
     }
-    if (typeof layers.dirtAt !== 'function' || !layers.snow) {
-      throw new Error('Ferns: needs Layers with dirtAt and a snow field')
+    if (typeof layers.dirtAt !== 'function' || !layers.snow || !layers.fields) {
+      throw new Error('Ferns: needs Layers with dirtAt, a snow field and the farm fields')
     }
     // Optional, so the probes under tmp/ can run the scatter with no rock bed
     // built. Without it a fern that lands inside a boulder is placed inside it
@@ -531,7 +532,11 @@ export class Ferns {
       if (at) at.push(p)
       else this.plants.set(key, [p])
     }
-    this.maxInstances = this._poolBound() + plants.length
+    if (nests && (typeof nests.fernsIn !== 'function' || typeof nests.fernsBound !== 'function')) {
+      throw new Error('Ferns: `nests` needs fernsIn and fernsBound')
+    }
+    this.nests = nests
+    this.maxInstances = this._poolBound() + plants.length + (nests ? nests.fernsBound(this.evictR) : 0)
 
     this.scaleLo = SCALE_RANGE[0]
     this.scaleHi = SCALE_RANGE[1]
@@ -547,18 +552,12 @@ export class Ferns {
     const card = shipFernCard({ planes: 1, billboard: true })
     this.card = card
 
-    // All the mesh rings share ONE material, which is what keeps the rings at two draw calls. `instancedFade` declares `aPropFade`, which the rim's and the LOD cross-fade's dissolves write through, so it is on for every arena wearing this material. The whole bed is inside DRAW_RADIUS 65, inside the wind's 100 m reach, so every ring fern sways. `leafThrough`: a fern can be carried, dropped and rolled, and a frond turned toward the ground would otherwise light black -- see material.js's leafThroughApply.
+    // All the mesh rings share ONE material, which is what keeps the rings at two draw calls. `instancedFade` declares `aPropFade`, which the rim's and the LOD cross-fade's dissolves write through, so it is on for every arena wearing this material. The whole bed is inside DRAW_RADIUS 65, inside the wind's 100 m reach, so every ring fern sways. `leafThrough`: a frond whose normal faces the ground is lit as if it faced the sky -- see material.js's leafThroughApply.
     this.material = createPropMaterial(textureArray, {
       instancedFade: true,
       wind: 'fern',
       leafThrough: 0.6,
     })
-    // What hands.js draws a carried or rolling fern with: the LOD0 rosette, so
-    // no card to spin, and NO WIND. The wind's per-plant phase is a hash of the
-    // root's world position, so a root that moves every frame sways at a new
-    // random phase every frame -- a fern in a turning view or tumbling downhill
-    // shivers in place.
-    this.heldMaterial = createPropMaterial(textureArray, { leafThrough: 0.6 })
 
     this.ringCount = RING_TIERS.length
     // The card ring is the one past the last mesh ring, in tierAt and in the
@@ -595,12 +594,6 @@ export class Ferns {
     })
 
     this.meshes = this.rings.map((r) => r.mesh)
-    // The rosette's span at unit scale, the ball a hand reaches for and the size a held one is. Off the LOD0 ring's own geometry, since the bank's copy is disposed below.
-    const lod0Geo = this.rings[0].mesh.geometry
-    lod0Geo.computeBoundingBox()
-    const ext = lod0Geo.boundingBox.getSize(new THREE.Vector3())
-    this.unitSpan = Math.max(ext.x, ext.y, ext.z)
-
     // The LOD0 rosette's own triangles, kept on the CPU as what a butterfly lands
     // on -- see `landOn`. The arrays outlive the dispose below, which only frees
     // the GPU copies.
@@ -687,7 +680,7 @@ export class Ferns {
     this.tris = 0
     this.regrows = 0
     this.nearTiles = 0
-    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0, sparse: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, field: 0, snow: 0, sparse: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -1049,9 +1042,13 @@ export class Ferns {
 
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
-    // The room's own ferns, on a new tile alone: a tile that already stands has
-    // already planted them, and its `n` still counts them.
-    const planted = tile ? null : this.plants.get(key)
+    // The room's own ferns and the nests', on a new tile alone: a tile that
+    // already stands has already planted them, and its `n` still counts them.
+    let planted = tile ? null : this.plants.get(key)
+    if (!tile && this.nests) {
+      const nested = this.nests.fernsIn(tx * TILE, tz * TILE, (tx + 1) * TILE, (tz + 1) * TILE, [])
+      if (nested.length) planted = planted ? planted.concat(nested) : nested
+    }
     const nPlant = planted ? planted.length : 0
     const ids = tile ? tile.ids : new Int32Array(this.perTile + nPlant)
     const rank = tile ? tile.rank : new Float32Array(this.perTile + nPlant)
@@ -1134,6 +1131,7 @@ export class Ferns {
       // the river test because three quarters of the carpet leave here.
       const road = this.paths.nearest(x, z, 'road')
       if (!plant && road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      if (!plant && this.layers.fields.occupiesAt(x, z, 0)) { rej.field++; continue }
       if (k >= this.plainCount) {
         let lush = top > -Infinity || (road !== null && road.dist - road.halfWidth < LUSH.roadReach) || this.water.shoreDistAt(x, z, LUSH.shoreReach, h, tan) < LUSH.shoreReach
         for (let a = 0; !lush && a < nAnchors; a++) {
@@ -1145,8 +1143,6 @@ export class Ferns {
 
       const river = this.paths.nearest(x, z, 'river')
       if (!plant && river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
-      // Last, on the survivors only: a fern she pulled up does not grow back.
-      if (taken.has('fern', x, z)) continue
 
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
@@ -1255,92 +1251,6 @@ export class Ferns {
     } else {
       this.tiles.set(key, { tx, tz, ids, rank, n, q, u: uNew, near: false, queued: false })
     }
-  }
-
-  /**
-   * The drawn fern nearest a hand at (x, y, z) whose rosette -- a ball of its
-   * own span -- is within `reach` metres and under `maxSize` across, so the
-   * big ones stay rooted: `{ dist, id, tile, k, size }` for take(), or null.
-   * For hands.js.
-   */
-  pickAt(x, y, z, reach, maxSize) {
-    let best = null
-    let bestD = reach
-    const far = reach + TILE
-    for (const tile of this.tiles.values()) {
-      if (Math.abs((tile.tx + 0.5) * TILE - x) > far || Math.abs((tile.tz + 0.5) * TILE - z) > far) continue
-      for (let k = 0; k < tile.n; k++) {
-        const id = tile.ids[k]
-        if (this.rim.isHidden(id)) continue
-        const span = this.unitSpan * this.instScale[id]
-        if (span >= maxSize) continue
-        const d = Math.hypot(this.instX[id] - x, this.instY[id] + span * 0.5 - y, this.instZ[id] - z) - span * 0.5
-        if (d < bestD) {
-          bestD = d
-          best = { dist: Math.max(0, d), id, tile, k, size: span }
-        }
-      }
-    }
-    return best
-  }
-
-  /**
-   * Pull the fern of a pickAt() hit out of the ground: its id goes back to the
-   * pool with whatever ring slot it borrowed, its spot is recorded so the tile
-   * never regrows it, and what the hand holds is returned as a record for
-   * hands.js -- the LOD0 rosette, the windless material, the instance's tint and
-   * scale; one under `stowMax` metres may go in the backpack.
-   */
-  take(hit, stowMax) {
-    const { tile, k, id } = hit
-    if (tile.ids[k] !== id || this.tierAt[id] < 0) throw new Error(`Ferns.take: instance ${id} is not standing in its tile`)
-    const scale = this.instScale[id]
-    this.cards.getColorAt(id, this._c)
-    const color = [this._c.r, this._c.g, this._c.b]
-    taken.add('fern', this.instX[id], this.instZ[id])
-    // Compacted in place, ranks with ids, so _thin's rank runs stay consecutive.
-    for (let j = k; j < tile.n - 1; j++) {
-      tile.ids[j] = tile.ids[j + 1]
-      tile.rank[j] = tile.rank[j + 1]
-    }
-    tile.n--
-    this._retire(id)
-    this.free[this.freeCount++] = id
-    this.placed--
-    return {
-      kind: 'fern',
-      name: 'fern',
-      size: this.unitSpan * scale,
-      geometry: this.rings[0].mesh.geometry,
-      material: this.heldMaterial,
-      color,
-      scale: [scale, scale, scale],
-      stowable: this.unitSpan * scale < stowMax,
-    }
-  }
-
-  /**
-   * A peer took the fern at (x, z): pull it here too, hidden by the rim or
-   * not, and record its spot. True when a tile has it. For hands-net.js.
-   */
-  evict(key, x, z) {
-    if (key !== 'fern') return false
-    for (const tile of this.tiles.values()) {
-      if (Math.abs((tile.tx + 0.5) * TILE - x) > TILE || Math.abs((tile.tz + 0.5) * TILE - z) > TILE) continue
-      for (let k = 0; k < tile.n; k++) {
-        const id = tile.ids[k]
-        if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
-        this.take({ dist: 0, id, tile, k, size: this.unitSpan * this.instScale[id] }, Infinity)
-        return true
-      }
-    }
-    return false
-  }
-
-  /** The geometry and material a packed fern record is drawn with. For hands.js. */
-  dress(slot) {
-    if (slot.kind !== 'fern') throw new Error(`Ferns.dress: not a fern, ${slot.kind}`)
-    return { geometry: this.rings[0].mesh.geometry, material: this.heldMaterial }
   }
 
   /** Cut every fern in the tile whose rank has fallen above the keep-fraction. */
@@ -1630,6 +1540,5 @@ export class Ferns {
   dispose() {
     for (const mesh of this.meshes) mesh.dispose()
     this.material.dispose()
-    this.heldMaterial.dispose()
   }
 }

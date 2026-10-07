@@ -225,7 +225,7 @@ export class Carrots {
    * @param layers   Layers. Needs `paths`, `snow.band` and dirtAt.
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
    * @param bank     loadCarrotsBank's answer, with its map.
-   * @param plots    Garden plots `[{ x, z, r, spots: [[x, z]] }]` planted on top of the wild bed.
+   * @param plots    Garden plots `[{ x, z, r, spots: [[x, z, grow?]] }]` planted on top of the wild bed, `grow` the fraction of full size (default 1).
    */
   constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [], cards = null } = {}) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Carrots: needs the LitterCards its far card is drawn by')
@@ -263,11 +263,11 @@ export class Carrots {
     this.plots = plots
     this.plotSpots = new Map()
     for (const p of plots) {
-      for (const [x, z] of p.spots) {
-        const key = Math.floor(x / TILE) * 0x10000 + Math.floor(z / TILE)
+      for (const spot of p.spots) {
+        const key = Math.floor(spot[0] / TILE) * 0x10000 + Math.floor(spot[1] / TILE)
         const at = this.plotSpots.get(key)
-        if (at) at.push([x, z])
-        else this.plotSpots.set(key, [[x, z]])
+        if (at) at.push(spot)
+        else this.plotSpots.set(key, [spot])
       }
     }
 
@@ -281,7 +281,10 @@ export class Carrots {
         if (dcx * dcx + dcz * dcz <= this.evictSq) bound++
       }
     }
-    this.maxInstances = bound * CLUMP_MAX + plots.reduce((n, p) => n + p.spots.length, 0)
+    // Plus the most sown carrots resident at once: every plot near enough to any one plot that both fit inside the eviction disc.
+    const span = 2 * (this.evictR + TILE)
+    const sown = plots.reduce((most, p) => Math.max(most, plots.reduce((n, q) => (Math.hypot(p.x - q.x, p.z - q.z) <= span + p.r + q.r ? n + q.spots.length : n), 0)), 0)
+    this.maxInstances = bound * CLUMP_MAX + sown
 
     const t0 = performance.now()
     this.variantCount = bank.tiers[0].geometries.length
@@ -490,9 +493,9 @@ export class Carrots {
   /** The tile's share of a garden's rows (rooms/village.js gardenSpots): a carrot at every spot, standing plumb but for its own tilt. */
   _growPlots(tile, spots) {
     const env = { snowLine: this.field.snowLineAt(spots[0][0], spots[0][1]), road: null }
-    for (const [x, z] of spots) {
+    for (const [x, z, grow = 1] of spots) {
       // Off the spot rather than off the tile: a plot straddles tiles and a row must not change where it crosses one.
-      this._plant(tile, x, z, mulberry32(tileSeed(Math.round(x * 64), Math.round(z * 64), this.seed)), 0, 0, env)
+      this._plant(tile, x, z, mulberry32(tileSeed(Math.round(x * 64), Math.round(z * 64), this.seed)), 0, 0, env, grow)
     }
   }
 
@@ -504,12 +507,13 @@ export class Carrots {
    * `rand` supplies every roll and is drawn in a fixed order whatever the
    * answer, so a carrot is a pure function of its spot however its neighbours
    * fared. `env` carries what the caller measured once for the whole group.
+   * `grow` scales the carrot and its shoulder, a sown row's ripeness.
    */
-  _plant(tile, mx, mz, rand, lx, lz, env) {
+  _plant(tile, mx, mz, rand, lx, lz, env, grow = 1) {
     const variant = (rand() * this.variantCount) | 0
-    const scale = SIZE_JITTER[0] + rand() * (SIZE_JITTER[1] - SIZE_JITTER[0])
+    const scale = (SIZE_JITTER[0] + rand() * (SIZE_JITTER[1] - SIZE_JITTER[0])) * grow
     const yaw = rand() * Math.PI * 2
-    const poke = POKE[0] + rand() * (POKE[1] - POKE[0])
+    const poke = (POKE[0] + rand() * (POKE[1] - POKE[0])) * grow
     const tiltAz = rand() * Math.PI * 2
     const tilt = rand() * TILT_JITTER
     const tintV = rand()

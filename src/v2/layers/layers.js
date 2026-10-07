@@ -15,6 +15,7 @@ import { SnowField, TEXEL } from './snowline.js'
 import { LakeSet, sandPatchAt } from './water-bodies.js'
 import { PathSet } from './paths.js'
 import { CleftSet } from './clefts.js'
+import { FieldSet } from './fields.js'
 import { clamp01 } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
 
@@ -48,6 +49,7 @@ export class Layers {
       { lakes: this.lakes }
     )
     this.clefts = new CleftSet(doc.clefts === undefined ? [] : doc.clefts)
+    this.fields = new FieldSet(doc.fields === undefined ? [] : doc.fields)
     this.ids = new IdAllocator(doc)
     this.epoch = 0
     this._dirty = null
@@ -67,25 +69,26 @@ export class Layers {
     return this.snow.snowLineAt(x, z)
   }
 
-  // §18's evaluation order, steps 3 to 5, then the cave mouths' clefts, last so nothing refills them. The coarse field and the fractal detail are the caller's business; this is everything placed on top of it. `cell` is the caller's sampling spacing, for the river bed's band-limited relief.
+  // §18's evaluation order, steps 3 to 5, then the farm fields' furrows, then the cave mouths' clefts, last so nothing refills them. The coarse field and the fractal detail are the caller's business; this is everything placed on top of it. `cell` is the caller's sampling spacing, for the river bed's band-limited relief.
   carve(x, z, h, cell = 0) {
     let out = this.paths.carveRivers(x, z, h, cell)
     out = this.lakes.carve(x, z, out)
     out = this.paths.smoothRoads(x, z, out)
+    if (this.fields.count > 0) out = this.fields.carve(x, z, out, cell)
     return this.clefts.count > 0 ? this.clefts.carve(x, z, out) : out
   }
 
   // 0..1: how hard the detail layer should suppress its fractal octaves here. Lakes and paths both contribute and the strongest wins -- a road along a lake shore should not get half-flattened just because two masks are competing for it.
   flattenAt(x, z) {
     const a = this.lakes.flattenAt(x, z)
-    const b = this.paths.flattenAt(x, z)
+    const b = Math.max(this.paths.flattenAt(x, z), this.fields.count > 0 ? this.fields.tilledAt(x, z) : 0)
     return clamp01(a > b ? a : b)
   }
 
   // 0..1: how far toward packed earth the ground is painted here (chunk-mesh-v2's `shade`, and everything tinted off it). flattenAt but for a road's reach, which stops a metre past the kerb where the flatten runs the whole feather; the two answer the same on a lake bed and in a river channel.
   dirtAt(x, z) {
     const a = this.lakes.flattenAt(x, z)
-    const b = this.paths.dirtAt(x, z)
+    const b = Math.max(this.paths.dirtAt(x, z), this.fields.count > 0 ? this.fields.tilledAt(x, z) : 0)
     return clamp01(a > b ? a : b)
   }
 
@@ -99,7 +102,8 @@ export class Layers {
       this.paths.overlaps(minX, minZ, maxX, maxZ) ||
       this.lakes.overlaps(minX, minZ, maxX, maxZ) ||
       this.snow.overlaps(minX, minZ, maxX, maxZ) ||
-      this.clefts.overlaps(minX, minZ, maxX, maxZ)
+      this.clefts.overlaps(minX, minZ, maxX, maxZ) ||
+      this.fields.overlaps(minX, minZ, maxX, maxZ)
     )
   }
 
@@ -250,6 +254,15 @@ export class Layers {
     this.clefts = new CleftSet(list)
     if (list.length === 0 && was === null) return null
     const now = list.length > 0 ? this.clefts.rectOf(list) : null
+    return this._commit(unionRect(was, now))
+  }
+
+  // The towns' farm fields (fields.js), generated at boot: trades.js fieldRecord each. Replaces any already held.
+  setFields(list) {
+    const was = this.fields.rect()
+    this.fields = new FieldSet(list)
+    const now = this.fields.rect()
+    if (was === null && now === null) return null
     return this._commit(unionRect(was, now))
   }
 

@@ -135,17 +135,17 @@ for (const t of towns) {
 }
 check(pathBad === 0, 'every door stands just off the front of its box, with a path from it ending on the network', `${pathBad} bad`)
 
-// Roads: one or two per town, each leaving the clearing and stopping near the outskirts.
+// Roads: at least one per town, each leaving the clearing and stopping near the outskirts.
 let roadBad = []
 for (const t of towns) {
-  if (t.roads.length < 1 || t.roads.length > 2) roadBad.push(`${t.id} has ${t.roads.length}`)
+  if (t.roads.length < 1) roadBad.push(`${t.id} has ${t.roads.length}`)
   for (const pts of t.roads) {
     const end = Math.hypot(pts.at(-1)[0] - t.x, pts.at(-1)[2] - t.z)
     if (end > t.radius + TOWN.road.past + TOWN.road.step + 2) roadBad.push(`${t.id} road ends ${end.toFixed(0)} m out`)
     if (Math.hypot(pts[0][0] - t.x, pts[0][2] - t.z) > t.clearingR) roadBad.push(`${t.id} road starts outside the clearing`)
   }
 }
-check(roadBad.length === 0, 'every town has 1..2 roads from the clearing to the outskirts', roadBad.slice(0, 3).join(', '))
+check(roadBad.length === 0, 'every town has a road from the clearing to the outskirts', roadBad.slice(0, 3).join(', '))
 
 // --- determinism and persistence ---
 const again = (() => {

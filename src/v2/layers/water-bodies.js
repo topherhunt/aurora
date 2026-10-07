@@ -87,6 +87,16 @@ export function lakeBox(lake) {
   return { minX: lake.x - hx, minZ: lake.z - hz, maxX: lake.x + hx, maxZ: lake.z + hz }
 }
 
+// The highest lake plane whose footprint covers (x, z), or null: the water WaterSurfaces draws. Not LakeSet.levelAt, which answers the lake the point is deepest inside, and inside a small lake that is the ocean under the whole map.
+export function lakeLevelOf(layers) {
+  const boxes = [...layers.lakes.lakes.values()].map((lake) => ({ lake, ...lakeBox(lake) }))
+  return (x, z) => {
+    let best = null
+    for (const b of boxes) if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && footprint(b.lake, x, z) > 0 && (best === null || b.lake.y > best)) best = b.lake.y
+    return best
+  }
+}
+
 /**
  * A BAKED SHORE, VALIDATED ONCE ON THE WAY IN. `ring` is the outer shore followed by its islands, each a flat [x, z, ...] with no repeated last point, the outer wound counter-clockwise and every island the other way -- the water on the left, as v2's own tracer winds what it contours. A lake with a ring needs no shape and gets no feather: it is the region its rings enclose.
  */

@@ -42,7 +42,7 @@ const field = {
   bands: { altLo: 0, altSpan: 900 },
 }
 const water = { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
-const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 } }
+const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, fields: { occupiesAt: () => false } }
 const texArray = buildTextureArray()
 
 /** A world grown about (cx, cz): the rocks, the trees the screens' pines are planted in (never placed, so no wood of their own), and the entrances. */
