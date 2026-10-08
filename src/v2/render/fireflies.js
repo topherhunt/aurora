@@ -53,6 +53,9 @@ export const BODY_RGB = [0.02, 0.015, 0.01]
 // Frames between a firefly's ground reads (staggered by slot), and between one tile's leftover candidates being looked at again for trees.
 const GROUND_EVERY = 6
 const RESCAN_FRAMES = 15
+// A dark firefly farther than NEAR_M from her head is stepped only every FAR_EVERY frames (with the dt it missed).
+const NEAR_M = 5
+const FAR_EVERY = 4
 // Trunks a tile's scan may hold: the tile box plus TREE_M each side, stride 4.
 const TREE_BUF = 96
 
@@ -67,9 +70,11 @@ const VERT = /* glsl */ `
   void main() {
     // A sprite: the card is laid in view space, so each eye of a stereo pair faces it squarely.
     vec4 mv = modelViewMatrix * vec4( instanceMatrix[3].xyz, 1.0 );
-    mv.xy += position.xy * uHalo;
+    // A dark firefly shrinks its card to the body disc, and vP is scaled with it so every fragment computes what the full card would.
+    float s = aGlow > 0.0 ? 1.0 : uBody * 1.5;
+    mv.xy += position.xy * ( uHalo * s );
     gl_Position = projectionMatrix * mv;
-    vP = position.xy;
+    vP = position.xy * s;
     vGlow = aGlow;
   }
 `
@@ -151,7 +156,7 @@ export class Fireflies {
       this.slots.push({
         id: i, tile: null,
         homeX: 0, homeZ: 0, x: 0, y: 0, z: 0, ground: 0,
-        yaw: 0, turn: 0, weave: 0, jerk: 0, alt: 1, altLeft: 0, speed: 0.5, spd: 0.5, vy: 0,
+        yaw: 0, turn: 0, weave: 0, jerk: 0, owed: 0, alt: 1, altLeft: 0, speed: 0.5, spd: 0.5, vy: 0,
         // The flash: whether it is on, how long this on or off spell is, how much of it is left, and the glow now.
         on: false, dur: 1, left: 1, lit: 0,
       })
@@ -350,7 +355,12 @@ export class Fireflies {
     let n = 0
     for (const t of this.tiles.values()) {
       for (const b of t.swarm) {
-        this._step(b, dt)
+        const dx = b.x - hx, dy = b.y - hy, dz = b.z - hz
+        b.owed += dt
+        if (b.on || dx * dx + dy * dy + dz * dz < NEAR_M * NEAR_M || (this.frame + b.id) % FAR_EVERY === 0) {
+          this._step(b, b.owed)
+          b.owed = 0
+        }
         const o = n * 16
         mat[o] = 1; mat[o + 5] = 1; mat[o + 10] = 1; mat[o + 15] = 1
         mat[o + 12] = b.x; mat[o + 13] = b.y; mat[o + 14] = b.z

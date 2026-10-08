@@ -250,6 +250,7 @@ export class Butterflies {
     // The morph's tint, through three's own vColor; made here so the program is keyed with it from the first draw.
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
     this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+    this.written = []
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-butterflies'
@@ -1051,7 +1052,9 @@ export class Butterflies {
     const wing = this.wing.array
     const tint = this.mesh.instanceColor.array
     const wk = Math.min(1, WING_EASE * dt)
+    const written = this.written
     let n = 0
+    let dirty = false
     for (const t of this.tiles.values()) {
       for (const b of t.flock) {
         const s = now - b.epoch
@@ -1074,6 +1077,7 @@ export class Butterflies {
         const dx = x - hx, dy = y - hy, dz = z - hz
         const draw = b.size * DRAW_SPANS
         if (dx * dx + dy * dy + dz * dz > draw * draw) continue
+        const moved = b.stale
         if (b.stale) {
           const sc = b.size / this.span
           if (b.state === 'rest') {
@@ -1094,19 +1098,28 @@ export class Butterflies {
           _mat.compose(_pos, _quat, _scl).toArray(b.m)
           b.stale = false
         }
-        mat.set(b.m, n * 16)
+        // Matrix and tint are rewritten only for a body that moved or a different butterfly in the slot; the wing buffer beats every frame.
+        if (moved || written[n] !== b) {
+          mat.set(b.m, n * 16)
+          tint[n * 3] = b.r; tint[n * 3 + 1] = b.g; tint[n * 3 + 2] = b.b
+          written[n] = b
+          dirty = true
+        }
         wing[n * 3] = b.phase
         wing[n * 3 + 1] = b.amp
         wing[n * 3 + 2] = b.base
-        tint[n * 3] = b.r; tint[n * 3 + 1] = b.g; tint[n * 3 + 2] = b.b
         b.row = n
         n++
       }
     }
+    if (n !== this.mesh.count) dirty = true
     this.mesh.count = n
-    this.mesh.instanceMatrix.needsUpdate = true
+    written.length = n
+    if (dirty) {
+      this.mesh.instanceMatrix.needsUpdate = true
+      this.mesh.instanceColor.needsUpdate = true
+    }
     this.wing.needsUpdate = true
-    this.mesh.instanceColor.needsUpdate = true
   }
 
   dispose() {

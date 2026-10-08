@@ -104,13 +104,16 @@ export class PropMeshes {
    * @param layerShift    attach `aLayerShift` to every geometry, for a material
    *                      compiled with `layerShift: true`: the per-instance
    *                      offset added to the geometry's `texLayer`, 0 at rest.
+   * @param hue           attach `aHue` (radians round the colour wheel, 0 at
+   *                      rest) to every geometry, for a material that turns it.
    */
-  constructor(tiers, caps, material, name, { layerShift = false } = {}) {
+  constructor(tiers, caps, material, name, { layerShift = false, hue = false } = {}) {
     const materialFor = typeof material === 'function' ? material : () => material
     this.name = name
     const variantCount = tiers[0].geometries.length
     this.variantCount = variantCount
     this.layerShift = layerShift
+    this.hue = hue
     this.meshes = []
     this.owner = []
     this.ownerView = []
@@ -134,6 +137,7 @@ export class PropMeshes {
         if (layerShift) {
           geo.setAttribute('aLayerShift', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1))
         }
+        if (hue) geo.setAttribute('aHue', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1))
         const mesh = new THREE.InstancedMesh(geo, materialFor(t, v), cap)
         mesh.name = `${name}-t${t}-v${v}`
         // Nothing is drawn until an instance takes a slot; `count` is the live
@@ -165,6 +169,7 @@ export class PropMeshes {
     this._colRange = this.meshes.map(() => ({ start: 0, count: 0 }))
     this._fadeRange = this.meshes.map(() => ({ start: 0, count: 0 }))
     this._layerRange = layerShift ? this.meshes.map(() => ({ start: 0, count: 0 })) : null
+    this._hueRange = hue ? this.meshes.map(() => ({ start: 0, count: 0 })) : null
     /** Shows and tier moves a full mesh turned away, for the readouts. */
     this.refused = 0
     this._warned = new Uint8Array(this.meshes.length)
@@ -248,6 +253,11 @@ export class PropMeshes {
       shift.array[s] = view.layer[instanceId]
       this._dirty(shift, this._layerRange[g], s, 1)
     }
+    if (this.hue) {
+      const hue = mesh.geometry.getAttribute('aHue')
+      hue.array[s] = view.turn[instanceId]
+      this._dirty(hue, this._hueRange[g], s, 1)
+    }
   }
 
   /**
@@ -326,6 +336,8 @@ export class PropArena extends THREE.Group {
     this.col = new Float32Array(maxInstances * 3).fill(1)
     this.fade = new Float32Array(maxInstances).fill(1)
     this.layer = this.shared.layerShift || cards ? new Float32Array(maxInstances) : null
+    // The hue turn per instance (radians), kept for any mesh set that carries `aHue`.
+    this.turn = new Float32Array(maxInstances)
   }
 
   /** A view of `maxInstances` ids over a mesh set another view, or the owner, shows. */
@@ -473,6 +485,20 @@ export class PropArena extends THREE.Group {
     const attr = set.meshes[l].geometry.getAttribute('aLayerShift')
     attr.array[s] = value
     set._dirty(attr, set._layerRange[l], s, 1)
+  }
+
+  /** The instance's turn round the colour wheel in radians; a no-op while its mesh set carries no `aHue`. */
+  setHueAt(instanceId, radians) {
+    this.turn[instanceId] = radians
+    const s = this.slot[instanceId]
+    if (s < 0) return
+    const g = this.geoAt[instanceId]
+    const set = this._setFor(g)
+    if (!set.hue) return
+    const l = this._localOf(g)
+    const attr = set.meshes[l].geometry.getAttribute('aHue')
+    attr.array[s] = radians
+    set._dirty(attr, set._hueRange[l], s, 1)
   }
 
   /** See PropMeshes.roomAt. */

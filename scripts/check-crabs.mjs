@@ -39,6 +39,7 @@ import { CARD_M, CRITTER_GLB, GLINT, setTierTint } from '../src/v2/render/critte
 import { taken } from '../src/v2/taken.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -166,26 +167,23 @@ const asset = {
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const crabs = new Crabs(scene, height, water, { seed: 11, rocks, assets: asset })
+const crabs = new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset })
 check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${crabs.span}`)
 {
   const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n#include <dithering_fragment>\n' }
   crabs.material.onBeforeCompile(shader)
-  // The tint row (critters.js tierTintSplice): the one mesh wears tier 0, painted over the encoded output after dithering; the card below binds its own colour.
+  // The tint row (critters.js tierTintSplice): the one mesh wears tier 0, painted over the encoded output after dithering. The far card is the shared pool's and wears no tint.
   check(shader.fragmentShader.includes('uniform vec4 uTierTint;') && /<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(shader.fragmentShader), 'the tint row paints over the output after dithering')
-  const cardShader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n#include <dithering_fragment>\n' }
-  crabs.cardMaterial.onBeforeCompile(cardShader)
   setTierTint(true)
   const mt = shader.uniforms.uTierTint.value
-  const ct = cardShader.uniforms.uTierTint.value
-  check(mt.w === 1 && ct.w === 1 && /<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(cardShader.fragmentShader) && (mt.x !== ct.x || mt.y !== ct.y || mt.z !== ct.z), 'the row switches both on, and the card wears a colour of its own', `mesh ${mt.x.toFixed(2)},${mt.y.toFixed(2)},${mt.z.toFixed(2)} card ${ct.x.toFixed(2)},${ct.y.toFixed(2)},${ct.z.toFixed(2)}`)
+  check(mt.w === 1, 'the row switches the mesh on')
   setTierTint(false)
-  check(mt.w === 0 && ct.w === 0, 'and off again')
+  check(mt.w === 0, 'and off again')
   check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
   check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
-  // The hue turn: read per instance on the mesh and the card, carried across, and applied to the sampled map before it is lit.
-  check(crabs.mesh.geometry.getAttribute('aHue') === crabs.hue && crabs.hue.isInstancedBufferAttribute && crabs.card.geometry.getAttribute('aHue') === crabs.cardHue, 'hue rides in aHue on the mesh and the card')
-  check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\n\{\n[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
+  // The hue turn: read per instance on the mesh and on the pool's card, and applied to the sampled map before it is lit.
+  check(crabs.mesh.geometry.getAttribute('aHue') === crabs.hue && crabs.hue.isInstancedBufferAttribute && crabs.litterCards.meshes.meshes[0].geometry.getAttribute('aHue').isInstancedBufferAttribute, 'hue rides in aHue on the mesh and on the pool\'s card')
+  check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\s*\{[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
   // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
   check(crabs.material.isMeshStandardMaterial && crabs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && crabs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${crabs.material.type} roughness ${crabs.material.roughness}`)
   check(shader.fragmentShader.includes('<roughnessmap_fragment>') && !shader.fragmentShader.includes('sampledDiffuseColor.a'), 'the colour alpha is not read as roughness')
@@ -201,7 +199,7 @@ live = BOULDERS
 const SEEDS = 16
 const pool = []
 for (let seed = 1; seed <= SEEDS; seed++) {
-  const k = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+  const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
   k.place(15, 0)
   check(k.overflow === 0 && k.saturated === 0, `seed ${seed}: nothing was dropped for want of room`)
   for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, hue: c.hue, depth: c.depth })
@@ -247,7 +245,7 @@ check(alive().length === 0, 'nothing away from the lake')
 {
   // The first frame empties the buffers; after that a frame with no crab uploads nothing.
   for (let i = 0; i < 2; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
-  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.card.instanceMatrix.version, crabs.cardHue.version].join(',')
+  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.litterCards.meshes.meshes[0].instanceMatrix.version, crabs.litterCards.meshes.meshes[0].geometry.getAttribute('aHue').version].join(',')
   const v0 = versions()
   for (let i = 0; i < 72; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
   check(versions() === v0 && crabs.mesh.count === 0, 'and a second of frames there re-uploads no buffer', `versions ${v0}`)
@@ -293,7 +291,7 @@ check(tilted > 0, 'crabs ride the stone\'s slope', `${tilted} tilted frames`)
   check(slow > 0.25 && dash > 0.05 && dash < slow, 'the pace varies spell to spell, mostly a slow crawl with the odd dash', `${(slow * 100).toFixed(0)}% under ${(SPEED[0] * 3).toFixed(2)} spans/s, ${(dash * 100).toFixed(0)}% over ${(SPEED[1] * 0.6).toFixed(2)}, of ${paces.length} samples`)
 }
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame, ${(rocks.calls / (SECONDS / DT)).toFixed(1)} surface queries/frame`)
-check(crabs.mesh.count === alive().length && crabs.card.count === 0, 'the instance count is the live count, and before the bake all of it is the mesh', `${crabs.mesh.count}`)
+check(crabs.mesh.count === alive().length && crabs.cardCount === 0, 'the instance count is the live count, and before the bake all of it is the mesh', `${crabs.mesh.count}`)
 
 // --- the stone moving under a seated crab ----------------------------------------
 // A rock re-seated on a re-split chunk drops or rises by more than the drawn top a crab's spell was planned against; a crab follows within RESEAT_EVERY frames either way, sitting or scuttling.
@@ -368,41 +366,39 @@ const sinkOf = (c) => SINK * 0.3 * c.size
 
 // --- the top card: far crabs leave the mesh for the card, under the same matrix ----
 {
-  check(crabs.card.parent === crabs.batch && !crabs.card.visible && crabs.card.geometry.index.count === 6, 'the card mesh rides in the batch, hidden until its picture is baked, one quad')
-  // A crab is seen clinging to a rock from above, so its card is its TOP alone: a quad lying flat at the body's middle, the body's length by its breadth, reading the whole picture.
-  {
-    const pos = crabs.card.geometry.getAttribute('position'), uv = crabs.card.geometry.getAttribute('uv')
-    const topY = [0, 1, 2, 3].map((i) => pos.getY(i))
-    const topX = [0, 1, 2, 3].map((i) => pos.getX(i)), topZ = [0, 1, 2, 3].map((i) => pos.getZ(i))
-    const { halfX, halfZ, height } = crabs.bounds
-    check(pos.count === 4 && topY.every((y) => Math.abs(y - height / 2) < 1e-6) && Math.min(...topX) < -halfX && Math.max(...topX) > halfX && Math.min(...topZ) < -halfZ && Math.max(...topZ) > halfZ && new Set(topX).size === 2 && new Set(topZ).size === 2, 'the quad lies flat at the body\'s middle, the body\'s length by its breadth: the top', `y ${topY[0].toFixed(3)} of ${height.toFixed(3)}`)
-    check([0, 1, 2, 3].every((i) => uv.getX(i) === 0 || uv.getX(i) === 1), 'and reads the whole picture')
-  }
-  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <map_fragment>\n#include <normal_fragment_begin>' }
-  crabs.cardMaterial.onBeforeCompile(shader)
-  check(!/discard/.test(shader.fragmentShader) && crabs.cardMaterial.alphaTest === 0.5, 'the card is a cutout drawn whole, not dithered')
-  check(crabs.cardMaterial.customProgramCacheKey() !== crabs.material.customProgramCacheKey(), 'the card compiles its own program')
+  const lc = crabs.litterCards
+  const pic = crabs.cardPicture
+  const { halfX, halfZ } = crabs.bounds
+  check(pic >= 0 && lc.kind[pic] === 2 && lc.box[pic].z > halfX && lc.box[pic].w > halfZ && crabs.cards.layer.every((v) => v === pic) && lc.claimed === 96, 'every slot\'s card instance wears the one top picture, sized to the body\'s length by its breadth, and the pool was told the crowd it needs', `kind ${lc.kind[pic]}, claimed ${lc.claimed}`)
+  check(crabs.cardCount === 0 && !crabs.cardReady, 'no card is drawn until its picture is baked')
   // Pooled over seeds again, so both sides of the line are populated: the shelf is a few metres from her, the floor and the beach well past CARD_M.
   const HEAD = [15, LEVEL + 1.6, 0]
   const dist = (e, i) => Math.hypot(e[i * 16 + 12] - HEAD[0], e[i * 16 + 13] - HEAD[1], e[i * 16 + 14] - HEAD[2])
   let meshN = 0, cardN = 0, liveN = 0, matched = 0
   const near = [], far = []
   for (let seed = 1; seed <= SEEDS; seed++) {
-    const k = new Crabs(scene, height, water, { seed, rocks, assets: asset })
-    k.setCard(null)
+    const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+    k.setCard()
     k.place(15, 0)
     k.update(...HEAD, T)
-    const e = k.mesh.instanceMatrix.array, ce = k.card.instanceMatrix.array
+    const e = k.mesh.instanceMatrix.array
     for (let i = 0; i < k.mesh.count; i++) near.push(dist(e, i))
-    for (let i = 0; i < k.card.count; i++) {
-      far.push(dist(ce, i))
-      // The card stands where its crab stands, sunk the same way, on the crab's own normal.
-      const c = alive(k).find((c) => Math.abs(c.x - c.nx * sinkOf(c) - ce[i * 16 + 12]) < 1e-4 && Math.abs(c.z - c.nz * sinkOf(c) - ce[i * 16 + 14]) < 1e-4)
-      if (!c) continue
-      const up = new THREE.Vector3(ce[i * 16 + 4], ce[i * 16 + 5], ce[i * 16 + 6]).normalize()
-      if (Math.abs(up.x - c.nx) < 1e-5 && Math.abs(up.y - c.ny) < 1e-5 && Math.abs(up.z - c.nz) < 1e-5 && Math.abs(up.length() - 1) < 1e-5 && Math.abs(k.cardHue.array[i] - c.hue) < 1e-6) matched++
+    for (const c of alive(k)) {
+      if (!k.cards.vis[c.id]) continue
+      const ce = k.cards.mat
+      far.push(Math.hypot(c.x - HEAD[0], c.y - HEAD[1], c.z - HEAD[2]))
+      // The card is the body's matrix, lifted to the body's middle and laid flat: its up is the body's -Z, its right the body's X, centred on the crab's own normal.
+      const m = k.cards.getMatrixAt(c.id, new THREE.Matrix4())
+      const body = new THREE.Matrix4().fromArray(c.m)
+      const mid = new THREE.Vector3(0, k.cardLift, 0).applyMatrix4(body)
+      const e0 = m.elements, b0 = body.elements
+      const up = new THREE.Vector3(e0[4], e0[5], e0[6]).normalize()
+      const bz = new THREE.Vector3(-b0[8], -b0[9], -b0[10]).normalize()
+      const right = new THREE.Vector3(e0[0], e0[1], e0[2]).normalize()
+      const bx = new THREE.Vector3(b0[0], b0[1], b0[2]).normalize()
+      if (up.distanceTo(bz) < 1e-5 && right.distanceTo(bx) < 1e-5 && Math.abs(e0[12] - mid.x) < 1e-5 && Math.abs(e0[13] - mid.y) < 1e-5 && Math.abs(e0[14] - mid.z) < 1e-5 && Math.abs(k.litterCards.meshes.meshes[0].geometry.getAttribute('aHue').array[k.cards.slot[c.id]] - c.hue) < 1e-6) matched++
     }
-    meshN += k.mesh.count; cardN += k.card.count; liveN += alive(k).length
+    meshN += k.mesh.count; cardN += k.cardCount; liveN += alive(k).length
     k.dispose()
   }
   check(meshN + cardN === liveN && meshN > 0 && cardN > 0, 'the mesh and the card together hold every crab', `${meshN} mesh, ${cardN} card, ${liveN} alive over ${SEEDS} seeds`)
@@ -423,13 +419,13 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   // The first seed that puts a crab on the floor stone AND one on the beach.
   let k = null
   for (let seed = 1; seed <= 16 && !k; seed++) {
-    const t = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+    const t = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
     t.place(15, 0)
     if (alive(t).some((c) => c.y < c.perch.level) && alive(t).some((c) => !(c.y < c.perch.level))) k = t
     else t.dispose()
   }
   check(k !== null, 'some seed seats crabs both under the lake and on its beach')
-  const written = () => k.mesh.count + k.card.count
+  const written = () => k.mesh.count + k.cardCount
   const sunk = alive(k).filter((c) => c.y < c.perch.level)
   const dry = alive(k).filter((c) => !(c.y < c.perch.level))
   check(sunk.every((c) => c.y < LEVEL) && dry.every((c) => c.y >= LEVEL), 'every crab knows its lake level, and whether it is under it', `${sunk.length} sunk, ${dry.length} dry`)
@@ -449,7 +445,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
 // Before the hands below: `taken` is a module-global, and a crab caught there would be missing from every shore rolled after.
 {
   const pose = (of) => alive(of).map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.yaw.toFixed(9)}|${c.state}`).sort().join('\n')
-  const make = () => new Crabs(scene, height, water, { seed: 4, rocks, assets: asset })
+  const make = () => new Crabs(scene, height, water, { seed: 4, rocks, cards: new LitterCards(4096), assets: asset })
   const slow = make(); slow.place(15, 0, 4000)
   const fast = make(); fast.place(15, 0, 4000)
   // One at 24 fps from the shore's first second; one at 144 with a stutter every seventh frame, joining at the same second.
@@ -504,7 +500,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   let k = null
   let seed = 0
   while (!k && ++seed <= 16) {
-    const t = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+    const t = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
     t.place(15, 0)
     if (alive(t).some((c) => c.y >= LEVEL)) k = t
     else t.dispose()
@@ -533,7 +529,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   check(wrong, 'and throws for another kind')
   check(c.perch === null && !perch.crabs.includes(c) && alive(k).length === before - 1, 'and the crab is off its stone')
   // The same world again: every crab but that one.
-  const again = new Crabs(scene, height, water, { seed, rocks, assets: asset })
+  const again = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
   again.place(15, 0)
   const key = (of) => alive(of).map((g) => `${g.x.toFixed(3)},${g.z.toFixed(3)},${g.size.toFixed(3)}`).sort()
   check(JSON.stringify(key(again)) === JSON.stringify(key(k)) && alive(again).length === before - 1, 'the perch regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
@@ -571,7 +567,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
 // --- at an eighth of her size a crab near her comes for her and bites; grown, it goes home ---
 {
   const hits = []
-  const k = new Crabs(scene, height, water, { seed: 11, rocks, assets: asset, harm: (n) => hits.push(n) })
+  const k = new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, harm: (n) => hits.push(n) })
   k.update(15, HEAD_Y(), 0, (T += DT))
   const c = alive(k)[0]
   const her = { x: c.x + 2, y: c.y + 0.2, z: c.z }

@@ -179,7 +179,7 @@ check(swarm.material.fragmentShader.includes('gl_FragColor = vec4( uGlow * ( lit
   check(unwritten === 0 && glowOff === 0, 'every firefly written with its own glow every frame', `${unwritten} unwritten, ${glowOff} wrong glow`)
   // Each firefly's first dark spell was partial: it was rolled part way through it.
   const ons = [...flashes.values()].flatMap((r) => r.on), offs = [...flashes.values()].flatMap((r) => r.off.slice(1))
-  const within = (list, [lo, hi]) => list.every((s) => s >= lo - 2 * dt && s <= hi + 2 * dt)
+  const within = (list, [lo, hi]) => list.every((s) => s >= lo - 4 * dt && s <= hi + 4 * dt)
   check(ons.length > n * 5 && within(ons, ON_S), 'each flash lasts ON_S', `${ons.length} flashes, ${Math.min(...ons).toFixed(2)}..${Math.max(...ons).toFixed(2)} s`)
   check(offs.length > n * 5 && within(offs, OFF_S), 'each dark spell lasts OFF_S', `${Math.min(...offs).toFixed(2)}..${Math.max(...offs).toFixed(2)} s`)
   const distinct = new Set(ons.map((s) => s.toFixed(2))).size

@@ -28,7 +28,8 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 - [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
   - [x] Do several periodic traces at random intervals during each play session, to capture live perf data. 1-2 per environment, spaced at least a minute apart. Show no auditory or visual feedback when capturing a trace, the goal is not to distract the playtester. Include the tris & ms per layer as best you can from live data, making those stats in the dashboard obsolete, so we can remove those from the panel. Always capture a trace while flying fast, if not captured in the past 15 mins.
-  - [ ] Remove many of the debug panel toggles. Now that the same info can be gotten from the trace batteries, it's less useful to have these toggles. All the animal toggles, the tree falloff stuff, and recommend what else is worth removing.
+  - [x] Remove many of the debug panel toggles. Now that the same info can be gotten from the trace batteries, it's less useful to have these toggles. All the animal toggles, the tree falloff stuff, and recommend what else is worth removing.
+  - [ ] 
 - [ ] Figure out a better-looking fire/flame primitive. Get Claude to experiment w a few different looks, pick the one that looks best.
   - Individual flame tongues, each 4-5 segments, licking up and constantly animating sinuously?
   - With occasional 2-tri sparks that flame up and disappear?

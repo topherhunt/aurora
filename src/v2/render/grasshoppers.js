@@ -233,6 +233,7 @@ export class Grasshoppers {
     this.length = 1
     // The shown ones, for bodies(): rebuilt by update().
     this.shown = []
+    this.written = []
 
     if (assets) {
       this.setAsset(assets)
@@ -739,7 +740,9 @@ export class Grasshoppers {
     const plan2 = (SHOW_M + TETHER) * (SHOW_M + TETHER)
     const shown = this.shown
     shown.length = 0
+    const written = this.written
     let n = 0
+    let dirty = false
     for (const t of this.tiles.values()) {
       for (const g of t.flock) {
         const px = g.homeX - hx, pz = g.homeZ - hz
@@ -750,6 +753,7 @@ export class Grasshoppers {
         if (dx * dx + dy * dy + dz * dz > show2) continue
         shown.push(g)
         // A seated body's matrix holds; a crouching, flying or landing one moves every frame.
+        let moved = false
         if (g.stale || g.state !== 'sit') {
           _pos.set(g.x, g.y, g.z)
           this._orient(g)
@@ -757,15 +761,25 @@ export class Grasshoppers {
           _scl.set(k, k * g.squash, k)
           _mat.compose(_pos, _quat, _scl).toArray(g.m)
           g.stale = g.state !== 'sit'
+          moved = true
         }
-        mat.set(g.m, n * 16)
-        tint[n * 3] = g.r; tint[n * 3 + 1] = g.g; tint[n * 3 + 2] = g.b
+        // A slot rewritten only when its body moved or a different grasshopper took it; a flock sat still uploads nothing.
+        if (moved || written[n] !== g) {
+          mat.set(g.m, n * 16)
+          tint[n * 3] = g.r; tint[n * 3 + 1] = g.g; tint[n * 3 + 2] = g.b
+          written[n] = g
+          dirty = true
+        }
         n++
       }
     }
+    if (n !== this.mesh.count) dirty = true
     this.mesh.count = n
-    this.mesh.instanceMatrix.needsUpdate = true
-    this.mesh.instanceColor.needsUpdate = true
+    written.length = n
+    if (dirty) {
+      this.mesh.instanceMatrix.needsUpdate = true
+      this.mesh.instanceColor.needsUpdate = true
+    }
   }
 
   dispose() {

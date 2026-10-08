@@ -1,5 +1,5 @@
 // Ambient traces: while she plays in the headset, short captures of what the frames cost upload in the
-// background, with nothing shown or heard. record-trace.js's windows run all the time into a ring, and a
+// background, marked only by a brief pulse in one controller, picked at random. record-trace.js's windows run all the time into a ring, and a
 // capture is the ring's tail, cut when one of these fires (each at least GAP_MS after the last capture):
 //   'place'  -- an environment (where she is, day or night, dry or rain or snow) has held for STABLE_MS plus a
 //               random wait; each environment at most twice a session, PLACE_REPEAT_MS apart.
@@ -30,7 +30,7 @@ const ALOFT_M = 40 // metres over the ground
 export class AmbientTrace {
   /**
    * host: TraceWindows' host, plus {
-   *   active() -> bool (in XR, nothing open or running that skews a frame), context(),
+   *   active() -> bool (in XR, nothing open or running that skews a frame), context(), pulse(hand, intensity, ms),
    *   env() -> { room: 'overworld' | 'glade' | 'house' | 'hut' | 'cave', town: bool, trunks, agl, dayness, precip, snow }
    * }
    */
@@ -185,6 +185,7 @@ export class AmbientTrace {
       context: this.host.context(),
       samples: samples.map(({ at, ...s }) => ({ ...s, t: r2((at - t0) / 1000) })),
     }
+    this.host.pulse(Math.random() < 0.5 ? 'left' : 'right', 0.4, 30)
     const send = () => this.upload(trace)
     if (window.requestIdleCallback) requestIdleCallback(send, { timeout: 5000 })
     else setTimeout(send, 0)

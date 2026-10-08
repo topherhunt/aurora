@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
 import { TEX_SIZE } from '../../textures.js'
-import { AXIS_VIEWS, SPUN_VIEWS, bakeCritterCard, billboardVertex, critterCardExtents, spunBounds } from './critters.js'
+import { AXIS_VIEWS, HUE_FRAGMENT, SPUN_VIEWS, bakeCritterCard, billboardVertex, critterCardExtents, spunBounds } from './critters.js'
 import { CARD_NORMAL } from './gen-props.js'
 import { PropMeshes } from './prop-arena.js'
 
@@ -24,6 +24,8 @@ const VERTEX_COMMON = /* glsl */ `
   #define PROP_FADE_ATTRIBUTE
   attribute float aPropFade;
   attribute float aLayerShift;
+  attribute float aHue;
+  varying float vHue;
   uniform float uPropClock;
   uniform vec4 uCardBox[${MAX_PICTURES}];
   uniform float uCardKind[${MAX_PICTURES}];
@@ -40,6 +42,7 @@ const VERTEX_BODY = /* glsl */ `
     int ci = int( cardId );
     vec4 cb = uCardBox[ ci ];
     vCardLayer = cardId;
+    vHue = aHue;
     vCardUv = vec2( position.x + 0.5, 0.5 - position.y );
     if ( uCardKind[ ci ] > 1.5 ) {
       transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
@@ -61,6 +64,7 @@ const VERTEX_BODY = /* glsl */ `
 const FRAGMENT_COMMON = /* glsl */ `
   varying float vPropFade;
   varying vec2 vCardUv;
+  varying float vHue;
   flat varying float vCardLayer;
   uniform highp sampler2DArray uCardPics;
   ${IGN_GLSL}`
@@ -109,7 +113,7 @@ export class LitterCards {
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]), 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]), 3))
     geo.setIndex([0, 1, 2, 0, 2, 3])
-    this.meshes = new PropMeshes([{ geometries: [geo] }], [capacity], this.material, 'v2-litter-cards', { layerShift: true })
+    this.meshes = new PropMeshes([{ geometries: [geo] }], [capacity], this.material, 'v2-litter-cards', { layerShift: true, hue: true })
     this.group = new THREE.Group()
     this.group.name = 'v2-litter-cards'
     for (const mesh of this.meshes.meshes) this.group.add(mesh)
@@ -186,7 +190,7 @@ export class LitterCards {
         .replace('#include <begin_vertex>', `#include <begin_vertex>\n${VERTEX_BODY}`)
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>\n${FRAGMENT_COMMON}`)
-        .replace('#include <map_fragment>', `#include <map_fragment>\ndiffuseColor *= texture( uCardPics, vec3( vCardUv, vCardLayer ) );\n${FADE_FRAGMENT}`)
+        .replace('#include <map_fragment>', `#include <map_fragment>\ndiffuseColor *= texture( uCardPics, vec3( vCardUv, vCardLayer ) );\n${HUE_FRAGMENT}\n${FADE_FRAGMENT}`)
         .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${CARD_NORMAL}`)
     }
     material.customProgramCacheKey = () => 'litter-card'

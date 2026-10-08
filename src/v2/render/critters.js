@@ -127,6 +127,15 @@ export function glint(shader) {
 // card wears it too, so a creature keeps its colour when it goes far.
 // ---------------------------------------------------------------------------
 
+/** The turn of `diffuseColor` by `vHue` radians about the grey axis, shared by every program that wears `aHue`. */
+export const HUE_FRAGMENT = /* glsl */ `
+  {
+    const vec3 hueK = vec3( 0.57735027 );
+    float hueC = cos( vHue );
+    float hueS = sin( vHue );
+    diffuseColor.rgb = max( vec3( 0.0 ), diffuseColor.rgb * hueC + cross( hueK, diffuseColor.rgb ) * hueS + hueK * dot( hueK, diffuseColor.rgb ) * ( 1.0 - hueC ) );
+  }`
+
 /**
  * Splice the hue turn into a material's shaders, from its onBeforeCompile. The
  * turn is PER INSTANCE and the mesh must carry an `aHue` instanced attribute:
@@ -141,16 +150,7 @@ export function hueVary(shader) {
     .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHue = aHue;')
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', '#include <common>\nvarying float vHue;')
-    .replace(
-      '#include <map_fragment>',
-      '#include <map_fragment>\n' +
-        '{\n' +
-        '\tconst vec3 hueK = vec3( 0.57735027 );\n' +
-        '\tfloat hueC = cos( vHue );\n' +
-        '\tfloat hueS = sin( vHue );\n' +
-        '\tdiffuseColor.rgb = max( vec3( 0.0 ), diffuseColor.rgb * hueC + cross( hueK, diffuseColor.rgb ) * hueS + hueK * dot( hueK, diffuseColor.rgb ) * ( 1.0 - hueC ) );\n' +
-        '}'
-    )
+    .replace('#include <map_fragment>', `#include <map_fragment>\n${HUE_FRAGMENT}`)
 }
 
 /** The `aHue` attribute for `n` instances, set on the mesh's geometry and returned for the caller to write. */

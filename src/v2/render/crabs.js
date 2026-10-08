@@ -51,18 +51,19 @@
 // while it moves.
 //
 // Past CARD_M from her head a crab is its top card (critters.js CRAB_VIEWS), one
-// quad lying flat at the body's middle, written to the card mesh under the same
-// matrix and hue the body would have had, legs still; once the card's picture is
-// baked, the two meshes together hold every live crab.
+// quad lying flat at the body's middle, an instance of the shared litter-card
+// pool under the same matrix and hue the body would have had, legs still; once
+// the card's picture is baked, the mesh and the pool together hold every live crab.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { keyHash, phraseRand } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
+import { PropArena } from './prop-arena.js'
 import {
-  CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, createCritterCardMaterial, glint, hueVary, loadCritterGlb, makeHueAttribute,
-  setCritterAsset, setCritterCard, tierTintSplice, tileKey, walkTiles,
+  CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, critterCardExtents, glint, hueVary, loadCritterGlb, makeHueAttribute,
+  setCritterAsset, tierTintSplice, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -83,6 +84,8 @@ export const ROCK_FRACTION = 0.2
 export const PER_PERCH = 0.5
 const PERCH_CAP = 7
 export const MAX = 160
+// The pool instances claimed for the cards (litter-cards.js claim): bookkeeping for the worst crowd on the card rung at once, not a reservation.
+const CARD_CLAIM = 96
 // Wet shell: the one roughness the whole crab glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
 export const WET_ROUGHNESS = 0.7
 // A crab's hue: a turn of up to HUE radians either way round the colour wheel (critters.js hueVary), so a rock's crabs run from olive through the shipped brown to red.
@@ -124,6 +127,8 @@ const _yawQ = new THREE.Quaternion()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
+const _flat = new THREE.Matrix4()
+const _lay = new THREE.Matrix4().makeRotationX(-Math.PI / 2)
 
 // A perch's identity and its seed come from its quantised origin: the same rock, the same crabs.
 const perchKey = (x, z) => Math.round(x * 8) * 0x100000 + Math.round(z * 8)
@@ -149,9 +154,11 @@ export class Crabs {
    * @param water   WaterSurfaces: lakeLevelAt, lakeShoreDistAt
    * @param opts.rocks   Rocks: perchesInto and blockTopAt(x, z, min, false)
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
+   * @param opts.cards   the shared LitterCards: the far crabs are its instances, one per slot
    * @param opts.harm    (n, why) => her hurt by a crab's bite (HUNT)
    */
-  constructor(scene, height, water, { seed = 1, rocks, assets = null, harm = null } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, assets = null, cards = null, harm = null } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Crabs needs the LitterCards its far card is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function') {
       throw new Error('Crabs needs a height field with heightAt and heightAndSlopeAt')
     }
@@ -198,25 +205,27 @@ export class Crabs {
     this.legs.setUsage(THREE.DynamicDrawUsage)
     this.mesh.geometry.setAttribute('aLegs', this.legs)
     this.hue = makeHueAttribute(this.mesh, MAX)
-    // The far crabs, as cards; hidden until the picture is baked, and until then every crab is the mesh.
-    this.cardMaterial = createCritterCardMaterial('crabs')
-    this.card = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
-    this.card.name = 'v2-crabs-card'
-    this.card.count = 0
-    this.card.visible = false
-    this.card.frustumCulled = false
-    this.card.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    this.cardHue = makeHueAttribute(this.card, MAX)
+    // The far crabs, one litter-card instance per slot (a slot's id is its card's); drawn once the picture is baked, and until then every crab is the mesh.
+    cards.claim('crabs', CARD_CLAIM)
+    this.litterCards = cards
+    this.cardPicture = -1
+    this.cardReady = false
+    this.cardCount = 0
+    this.cards = PropArena.over(cards.meshes, MAX, 'v2-crabs-card')
+    for (let i = 0; i < MAX; i++) {
+      this.cards.addInstance(0)
+      this.cards.setVisibleAt(i, false)
+    }
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-crabs'
-    this.batch.add(this.mesh, this.card)
+    this.batch.add(this.mesh)
     scene.add(this.batch)
 
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push({
-        id: i, perch: null,
+        id: i, perch: null, cardOn: false, cardStamp: -1, cardDirty: true,
         // Its key in the room, its grid's offset into SPELL_S, and the world second its grid starts from -- zero for a rolled crab, the drop for a loose one, so a released crab's first spell opens where her hand let it go.
         key: '', offset: 0, epoch: 0,
         // The spot the rock's own roll gave it, which every spell falls back to, and the heading rolled with it.
@@ -275,22 +284,34 @@ export class Crabs {
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
     this.span = this.bounds.span
     this.bodyH = this.bounds.height
-    setCritterCard(this.card, this.bounds, CRAB_VIEWS)
+    // The card lies flat: the top view is the shared quad turned down about X, so the picture's up is -Z, centred at the body's middle height.
+    const ext = critterCardExtents(this.bounds)
+    this.cardLift = (ext.y0 + ext.y1) / 2
+    if (this.cardPicture < 0) {
+      this.cardPicture = this.litterCards.addPicture({ kind: 'fixed', cx: 0, cy: 0, hw: ext.hx, hh: ext.hz })
+      for (let i = 0; i < MAX; i++) this.cards.setLayerShiftAt(i, this.cardPicture)
+    }
     this.loaded = true
   }
 
   /** Photograph the loaded crab onto its card and start drawing the far crabs as cards. Once, after `ready`. */
   bakeCard(renderer) {
     if (!this.loaded) throw new Error('Crabs.bakeCard: the asset has not landed')
-    this.setCard(bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds, CRAB_VIEWS))
+    const texture = bakeCritterCard(renderer, this.mesh.geometry, this.material.map, this.bounds, CRAB_VIEWS)
+    this.litterCards.setCritterPixels(this.cardPicture, texture.image.data)
+    texture.dispose()
+    this.setCard()
   }
 
-  setCard(map) {
-    if (map) {
-      this.cardMaterial.map = map
-      this.cardMaterial.needsUpdate = true
-    }
-    this.card.visible = true
+  /** Start drawing the far crabs (the picture is in the pool). */
+  setCard() {
+    this.cardReady = true
+  }
+
+  /** Draw the whole layer or none of it; the far cards are shared instances, so the batch's `visible` alone would leave them. */
+  setShown(shown) {
+    this.batch.visible = shown
+    this.cards.setShown(shown)
   }
 
   /** The stone surface a crab may stand on at (x, z), or -Infinity: stone of perch size, proud of the terrain. */
@@ -856,11 +877,8 @@ export class Crabs {
     const mat = this.mesh.instanceMatrix.array
     const legs = this.legs.array
     const hue = this.hue.array
-    const cmat = this.card.instanceMatrix.array
-    const chue = this.cardHue.array
-    const card2 = this.card.visible ? CARD_M * CARD_M : Infinity
+    const card2 = this.cardReady ? CARD_M * CARD_M : Infinity
     let n = 0
-    let m = 0
     // A crab's matrix, rebuilt if it moved, into the mesh or the card by its distance.
     const write = (c) => {
       if (c.stale) {
@@ -873,14 +891,13 @@ export class Crabs {
         _scl.set(k, k * STRETCH_Y, k)
         _mat.compose(_pos, _quat, _scl).toArray(c.m)
         c.stale = false
+        c.cardDirty = true
       }
       const dx = c.x - hx
       const dy = c.y - hy
       const dz = c.z - hz
       if (dx * dx + dy * dy + dz * dz > card2) {
-        cmat.set(c.m, m * 16)
-        chue[m] = c.hue
-        m++
+        this._writeCard(c)
       } else {
         mat.set(c.m, n * 16)
         legs[n * 2] = c.phase
@@ -926,11 +943,29 @@ export class Crabs {
       this.hue.needsUpdate = true
     }
     this.mesh.count = n
-    if (m > 0 || this.card.count > 0) {
-      this.card.instanceMatrix.needsUpdate = true
-      this.cardHue.needsUpdate = true
+    let cards = 0
+    for (const c of this.slots) {
+      if (c.cardOn && c.cardStamp !== this.frame) {
+        this.cards.setVisibleAt(c.id, false)
+        c.cardOn = false
+      }
+      if (c.cardOn) cards++
     }
-    this.card.count = m
+    this.cardCount = cards
+  }
+
+  /** A far crab's card: rewritten when its matrix was rebuilt or it has just come out to the card rung, otherwise left standing. */
+  _writeCard(c) {
+    c.cardStamp = this.frame
+    if (c.cardOn && !c.cardDirty) return
+    _mat.fromArray(c.m).multiply(_flat.makeTranslation(0, this.cardLift, 0).multiply(_lay))
+    this.cards.setMatrixAt(c.id, _mat)
+    this.cards.setHueAt(c.id, c.hue)
+    c.cardDirty = false
+    if (!c.cardOn) {
+      this.cards.setVisibleAt(c.id, true)
+      c.cardOn = true
+    }
   }
 
   /** Her size, a multiple of her full height: whether the crabs come for her (HUNT). */
@@ -989,8 +1024,6 @@ export class Crabs {
     this.mesh.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
-    this.card.geometry.dispose()
-    this.cardMaterial.map?.dispose()
-    this.cardMaterial.dispose()
+    for (const c of this.slots) if (c.cardOn) this.cards.setVisibleAt(c.id, false)
   }
 }

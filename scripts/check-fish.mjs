@@ -117,7 +117,7 @@ for (const sp of fish.species) {
   // Underwater a fish does not glint -- the surface does. A specular term here would be a fish shining as if it were held up in the air.
   check(sp.material.isMeshLambertMaterial && !shader.fragmentShader.includes('directSpecular'), `${sp.id}: Lambert, no specular`, sp.material.type)
   // The hue turn (critters.js hueVary): read per instance, carried across, and applied to the sampled map before it is lit.
-  check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\n\{\n[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), `${sp.id}: the hue turns the sampled colour after map_fragment`)
+  check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\s*\{[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), `${sp.id}: the hue turns the sampled colour after map_fragment`)
   check(parseFloat(sp.material.defines.FISH_WAVE_K) > 0, `${sp.id}: wave number set from the length`, sp.material.defines.FISH_WAVE_K)
   // The tint row (critters.js tierTintSplice): a fish ships one mesh, so it wears tier 0, painted over the encoded output after dithering and switched by the row.
   check(shader.fragmentShader.includes('uniform vec4 uTierTint;') && /<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(shader.fragmentShader), `${sp.id}: the tint row paints over the output after dithering`)

@@ -1371,13 +1371,6 @@ const QUEST_TOGGLE_ROWS = [
   // drawn, stepped or followed -- see the tick -- and the same holds for
   // whatever animal is added next, provided it goes through animalOn.
   { key: 'animals', text: 'animals' },
-  // The two ABLATIONS on the tree layer, both starting where the world ships so
-  // that "off" is the measurement. `tree tiers` takes the mesh ladder away and
-  // leaves the card ring; `tree leaf cutout` takes every `discard` out of the
-  // tree program and with it the layer's transparency. See Trees.setCardsOnly
-  // and setCutout for what each number does and does not prove.
-  { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
-  { key: 'treeCutout', text: 'tree leaf cutout', on: 'masked', off: 'opaque' },
   // Flat-colours every creature but the butterflies by the tier it is drawing
   // -- green, yellow, orange, red, and blue for a card -- so the ladder in
   // critters.js can be confirmed by walking up to a stag and watching where it
@@ -1386,9 +1379,6 @@ const QUEST_TOGGLE_ROWS = [
   // Her own body as a peer sees it, stood 2 m ahead and facing her: see placeMirror.
   { key: 'mirror', text: 'body double', on: 'shown', off: 'hidden' },
   { key: 'wind', text: 'wind' },
-  // DEAD CODE (peaks): the `peaks` mesher knob, off in RELIEF_SHIPPED. See the
-  // tag in chunk-mesh-v2.js.
-  { key: 'peaks', text: 'far peaks', action: () => onRelief({ ...relief, peaks: relief.peaks > 0 ? 0 : 1 }), value: () => (relief.peaks > 0 ? 'max >' : 'sampled >') },
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
@@ -1419,8 +1409,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'fly', text: 'fly', action: () => setFlying(!player.flying), value: () => (player.flying ? 'on' : 'off') },
 ]
 
-// Toggles the perf-trace battery drives (perf-suite.js) that have no cell on the panel: one per animal species, under the `animals` row.
-const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons'].map((key) => ({ key, text: key }))
+// Toggles the perf-trace battery drives (perf-suite.js) that have no cell on the panel: one per animal species under the `animals` row, and the parts of `townsfolk`.
+const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons', 'townsPeople', 'townsStriders', 'townsFires'].map((key) => ({ key, text: key }))
 
 function questRowByKey(key) {
   const row = QUEST_SETTING_ROWS.find((r) => r.key === key) ?? QUEST_TOGGLE_ROWS.find((r) => r.key === key) ?? TRACE_ONLY_ROWS.find((r) => r.key === key)
@@ -1452,8 +1442,6 @@ function applyQuestToggle(key) {
     case 'trees': trees.batch.visible = enabled; break
     // Both rows read "the world as it ships" as ON, so the toggle is what gets
     // REMOVED -- the same polarity as `wind`.
-    case 'treeTiers': trees.setCardsOnly(!enabled); break
-    case 'treeCutout': trees.setCutout(enabled); break
     case 'boulders': applyRockVisibility(); break
     case 'grass': grass.batch.visible = enabled; break
     // Three meshes, not one: the fern bed is a ring per LOD, the way the rock
@@ -1468,7 +1456,7 @@ function applyQuestToggle(key) {
     case 'litter':
       applyLitterVisibility()
       break
-    case 'huts': case 'towns': case 'townsfolk': applyVillageVisibility(); break
+    case 'huts': case 'towns': case 'townsfolk': case 'townsPeople': case 'townsStriders': case 'townsFires': applyVillageVisibility(); break
     // Back on, every animal layer is put down fresh at her feet: the ground
     // may have moved under it while it was frozen, and a frozen layer is
     // skipped by replacePropsOnMovedGround. Expect a hitch on the frame you
@@ -1543,8 +1531,12 @@ function applyVillageVisibility() {
   }
   if (towns) towns.setShown(questToggles.towns)
   if (townsfolk) {
-    townsfolk.batch.visible = questToggles.townsfolk
-    if (townsfolk.striders) townsfolk.striders.batch.visible = questToggles.townsfolk
+    const on = questToggles.townsfolk
+    townsfolk.parts.people = on && questToggles.townsPeople
+    townsfolk.parts.striders = on && questToggles.townsStriders
+    townsfolk.parts.fires = on && questToggles.townsFires
+    townsfolk.batch.visible = townsfolk.parts.people
+    if (townsfolk.striders) townsfolk.striders.batch.visible = townsfolk.parts.striders
   }
 }
 
@@ -3156,7 +3148,9 @@ const questToggles = {
   // Off until the summit wreaths are redone; the menu row still turns them on.
   wreaths: false,
   critterTint: false, mirror: false, terrainWire: false, roadLines: false, obstacleWire: false,
-  wind: true, treeTiers: true, treeCutout: true,
+  wind: true,
+  // Trace-only splits of `townsfolk` (TRACE_ONLY_ROWS).
+  townsPeople: true, townsStriders: true, townsFires: true,
   // See QUEST_SETTING_ROWS.
   teleport: true, standHeight: true,
 }
@@ -3236,7 +3230,7 @@ function bankAnimalMs(dt) {
  */
 function applyAnimalVisibility() {
   frogs.batch.visible = animalOn('frogs')
-  crabs.batch.visible = animalOn('crabs')
+  crabs.setShown(animalOn('crabs'))
   butterflies.batch.visible = animalOn('butterflies')
   grasshoppers.batch.visible = animalOn('grasshoppers')
   fireflies.batch.visible = animalOn('fireflies')
@@ -4834,9 +4828,8 @@ async function buildRoom(room, at) {
   window.v2frogs = frogs
   await bootStep('crabs')
   // The crab's cross card is photographed off its GLB, so the bake waits on the load.
-  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks, harm })
+  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks, cards: litterCards, harm })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
-  lighting.patch(crabs.cardMaterial, { mode: 'vertex', cacheKey: 'v2-crabs-card' })
   crabs.place(spawn.x, spawn.z, clock.seconds)
   crabs.ready.then(() => { if (build === roomBuild) crabs.bakeCard(renderer) })
   console.log(`[v2] crabs ${crabs.stats.alive} on ${crabs.stats.perches} perches at boot`)
@@ -5101,8 +5094,6 @@ async function buildRoom(room, at) {
   terrain.batch.visible = questToggles.terrain
   terrainWire.visible = questToggles.terrainWire
   trees.batch.visible = questToggles.trees
-  trees.setCardsOnly(!questToggles.treeTiers)
-  trees.setCutout(questToggles.treeCutout)
   setTierTint(questToggles.critterTint)
   rocks.setHollowTint(questToggles.critterTint)
   applyRockVisibility()
@@ -5260,7 +5251,7 @@ function onDirty(rect) {
  * crag. That is deliberate rather than an oversight: relief is gated off
  * flat, concave ground precisely so that it cannot walk a river out of its bed.
  * The river meshes alone are rebuilt, because the lift they carry over the far
- * terrain is measured from the ground as the `peaks` knob draws it.
+ * terrain is measured from the ground as the relief mesher draws it.
  */
 function onRelief(next) {
   const want = normalizeRelief(next)
@@ -5270,7 +5261,6 @@ function onRelief(next) {
   // Two views of one value: the editor's relief zone and the world menu's
   // row. Whichever one was pressed, the other has to follow.
   if (panel) panel.setRelief(relief)
-  refreshQuestRow('peaks') // DEAD CODE (peaks)
 
   const t0 = performance.now()
   height.setRelief(relief)
@@ -6380,6 +6370,7 @@ const ambientTrace = new AmbientTrace({
   ...traceHost,
   active: () => ready && fatalError === null && renderer.xr.isPresenting && !questPanelGroup.visible && !perfTrace.running && !recordTrace.recording,
   context: () => ({ ...perfTrace.host.context(), peers: netplay.peers.size }),
+  pulse: questPulse,
   env: () => {
     const p = player.rig.position
     const out = !indoors && cave === null
