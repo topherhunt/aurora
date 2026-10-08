@@ -56,6 +56,8 @@ export class TownResidents {
     this.materials = [...this.plain]
     this.rand = mulberry32(hash32(seed, room.index, 0x7e5))
     this.taken = new Map()
+    // The door's one-shots since the last voices(): { sound, rule, x, y, z }.
+    this.calls = []
     this.all = []
     for (const w of who) this._add(w.id, w.body, w.size, w.pace, false)
     if (this.all.length >= 2 && this.rand() < 0.4 && room.spots.some((s) => s.kind === 'talk')) this._talk(this.all[0], this.all[1], true)
@@ -84,7 +86,7 @@ export class TownResidents {
       body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: b.durations.walk / pace },
     }
     this.all.push(r)
-    if (atDoor) this._choose(r, false)
+    if (atDoor) { this._door(); this._choose(r, false) }
     return r
   }
 
@@ -268,8 +270,17 @@ export class TownResidents {
     return into
   }
 
-  /** Nothing: the townsfolk have no voices yet. Here for main.js atHome, which drains whichever residents are in. */
-  voices(into) { return into }
+  /** The door as one comes in or goes out, drained; main.js atHome carries it out to the house's door outside. */
+  voices(into) {
+    for (const v of this.calls) into.push(v)
+    this.calls.length = 0
+    return into
+  }
+
+  _door() {
+    const g = this.group.position, d = this.room.door
+    this.calls.push({ sound: 'door', rule: 'door', x: g.x + d.x, y: g.y + 1, z: g.z + d.z })
+  }
 
   _step(r, dt) {
     if (r.state === 'walk' || r.state === 'leave') {
@@ -280,7 +291,7 @@ export class TownResidents {
         r.x = p.x; r.z = p.z; r.y = p.y
         r.route.shift()
         if (r.route.length === 0) {
-          if (r.state === 'leave') { r.puppet.show(-1, FADE_S); r.state = 'gone' }
+          if (r.state === 'leave') { r.puppet.show(-1, FADE_S); r.state = 'gone'; this._door() }
           else { r.heading = this._stand(r, r.spot).heading; this._begin(r, false) }
         }
       } else {

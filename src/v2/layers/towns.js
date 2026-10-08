@@ -46,8 +46,8 @@ const ROOFS_BY_PRESTIGE = ['thatch', 'shake', 'pantile', 'slate']
 const SWELL_MIN = 0.8
 // paths.js DEFAULT_ROAD_FEATHER, which the clearing's rings take.
 const RING_FEATHER = 8
-const TREAD = 0.3
-const RISER = 0.19
+export const TREAD = 0.3
+export const RISER = 0.19
 
 // Siting candidates, best first: dry, on ground flat across flatR, clear of rivers and roads across disc, scored as TOWN.site says. `snow` marks one above the snow line.
 function candidates(ground, layers, keepClear) {

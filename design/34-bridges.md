@@ -30,7 +30,7 @@ It holds nodes `lod0`..`lod2`, with `uvProj` and `texLayer` as the custom attrib
 - Set scale.y = road height above the water / 3.
 - Set scale.z = road width / 3.2.
 
-To walk it, divide a local point by the scale, call `stoneBridgeDeckAt(meta, x, z)`, and multiply the height by the y scale. Sockets and lights scale the same way. Non-uniform scale also stretches the stones and their texture, so keep each axis within about ±30% and sink the ends into the banks to meet unequal road heights.
+To walk it, divide a local point by the scale, call `stoneBridgeDeckAt(meta, x, z)`, and multiply the height by the y scale. Sockets and lights scale the same way. Non-uniform scale also stretches the stones and their texture, so keep y and z within about ±30% (the roads let x stretch to 1.8, design/35 Bridges) and sink the ends into the banks to meet unequal road heights.
 
 ## Frame and inputs
 

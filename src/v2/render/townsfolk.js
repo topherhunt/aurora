@@ -13,6 +13,7 @@ import { atFace, dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRID
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { EAT } from '../eating.js'
 import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
+import { RISER, TREAD } from '../layers/towns.js'
 import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
 import { DOOR_FADE_S, NIGHT, PLANTED, SEAT_M, SIT, SIT_CUT, TALKS, TURN_RATE, dijkstra, nightPull, pathTo } from './villagers.js'
 
@@ -117,6 +118,8 @@ export const TOWNSFOLK = {
   ring: { r: 4, nodes: 10 },
   lane: 0.2,
   node: 0.35,
+  // Metres out from a door's face that one stands to go in or come out, touching the leaf.
+  sill: 0.25,
   sitNear: 0.05,
   inside: [20, 90],
   stand: [4, 12],
@@ -183,10 +186,37 @@ function roll(c) {
 }
 
 /**
+ * Where one goes in and comes out of building `b`: TOWNSFOLK.sill out from its
+ * door's face (main.js townDoor) on the floor, the door's outward normal, and
+ * its stoop (stoopY): the floor out over the porch to `top` m from the face,
+ * then down its `n` treads (parts.js steps, the first at the floor) to `ground`, `hw` to
+ * either side of the door's middle.
+ */
+function doorSill(b) {
+  const { door: d, porch, steps, floorY } = b.plan
+  const c = Math.cos(b.yaw), s = Math.sin(b.yaw)
+  const fx = b.x + d.x * c + d.z * s, fz = b.z - d.x * s + d.z * c
+  const hw = Math.max(d.width, porch ? porch.width : 0, steps ? steps.width : 0) / 2
+  const top = steps ? steps.z - d.z : porch ? porch.depth : 0
+  const n = steps ? Math.max(1, Math.round((steps.topY - steps.groundY) / RISER)) : 0
+  const y = b.y + floorY
+  return { x: fx + s * TOWNSFOLK.sill, y, z: fz + c * TOWNSFOLK.sill, nx: s, nz: c, fx, fz, hw, top, n, ground: steps ? b.y + steps.groundY : y }
+}
+
+/** The height of `sill`'s stoop at (x, z), which the walker's stone leaves out (towns.js _span); -Infinity off it. */
+export function stoopY(sill, x, z) {
+  const { fx, fz, nx, nz, hw, top, n, y, ground } = sill
+  const u = (x - fx) * nx + (z - fz) * nz
+  if (u < 0 || u > top + TREAD * n || Math.abs((x - fx) * nz - (z - fz) * nx) > hw) return -Infinity
+  return u <= top ? y : y - Math.min(n - 1, Math.floor((u - top) / TREAD)) * (y - ground) / n
+}
+
+/**
  * A town's ways as a graph (villagers.js dijkstra): the ring round the
  * clearing, each road's points past it, and each door's path in the order
  * the plan laid them, every path's far end spliced into the nearest edge laid
- * before it. `doors` is each building's door node, in `town.buildings` order;
+ * before it. `doors` is each building's door node, at its path's foot with
+ * the `sill` (doorSill) up the steps past it, in `town.buildings` order;
  * `ports` each road's last node, at its port end; `posts` each hitching rail's
  * gate, spliced in after them; `works` each work's way in, -1 for those
  * reached from their keeper's door instead.
@@ -232,10 +262,11 @@ export function townGraph(town) {
     return prev
   })
   if (town.paths.length !== town.buildings.length) throw new Error(`townGraph: ${town.id} has ${town.paths.length} paths for ${town.buildings.length} buildings`)
-  const doors = town.paths.map(({ pts }) => {
+  const doors = town.paths.map(({ pts }, i) => {
     const last = pts[pts.length - 1]
     const onto = attach(last[0], last[2])
     const door = add(pts[0][0], pts[0][2], 'door')
+    nodes[door].sill = doorSill(town.buildings[i])
     let prev = door
     for (let i = 1; i < pts.length - 1; i++) {
       const n = add(pts[i][0], pts[i][2], 'path')
@@ -340,6 +371,9 @@ export class TownLife {
     // The departures whose travellers are still in town: the road draws them only once they have gone.
     this.holding = new Set()
     this.tick = null
+    // The doors' one-shots of the last advance, each `{ sound, x, y, z, house }`, `house` the building's index.
+    this.calls = []
+    this.voicing = false
     this.turnTick = 0
     this.homing = false
     this.grounded = true
@@ -354,6 +388,7 @@ export class TownLife {
     if (this.tick === null || tick - this.tick > CHAPTER_S * TICK_HZ) this._placeAll(seconds)
     const from = this.tick
     const end = Math.min(tick, from + budget)
+    this.calls.length = 0
     for (let t = from + 1; t <= end; t++) {
       if (t >= this.turnTick) { this._placeAll(t / TICK_HZ); continue }
       this.tick = t
@@ -361,6 +396,8 @@ export class TownLife {
       this.homing = t >= this.turnTick - TOWNSFOLK.homing * TICK_HZ
       // The ground is only for drawing, so a replay reads it on the last two ticks alone, the pair the frame lerps between.
       this.grounded = t >= tick - 1
+      // A replay's doors are not heard, only the last second's.
+      this.voicing = t > tick - TICK_HZ
       while (this.next < this.plan.length && this.plan[this.next].tick <= t) this._start(this.plan[this.next++])
       for (const c of this.all) this._tick(c, t)
       for (const m of this.mounts) if (m.active) this._tickMount(m)
@@ -574,6 +611,24 @@ export class TownLife {
     this._play(c, 'idle', STEP_S)
   }
 
+  /** Out of the door it is in by, on the sill facing away, heard. */
+  _out(c) {
+    const s = this.graph.nodes[c.at].sill
+    c.x = c.px = s.x
+    c.z = c.pz = s.z
+    c.y = c.py = s.y
+    c.heading = c.ph = c.aim = Math.atan2(-s.nz, s.nx)
+    c.hidden = false
+    this._door(c)
+  }
+
+  /** The door's one-shot at its sill, on a tick near enough the frame's to be heard (Townsfolk.voices). */
+  _door(c) {
+    if (!this.voicing) return
+    const s = this.graph.nodes[c.at].sill
+    this.calls.push({ sound: 'door', x: s.x, y: s.y + 1, z: s.z, house: this.graph.doors.indexOf(c.at) })
+  }
+
   _leaveSeat(c) {
     if (c.seat === null) return
     c.seat.by = null
@@ -601,6 +656,7 @@ export class TownLife {
     if ((path.length || from.length) && (from.length || Math.hypot(at.x - c.x, at.z - c.z) > TOWNSFOLK.node)) path.unshift(c.at)
     c.route = [...from.map(([x, z]) => ({ x, z, node: -1 })), ...this._keepRight(path)]
     for (const p of extra) c.route.push({ x: p.x, z: p.z, node: -1 })
+    if (then === 'enter') c.route.push({ x: this.graph.nodes[node].sill.x, z: this.graph.nodes[node].sill.z, node: -1 })
     c.wp = 0
     c.then = then
     c.dest = node
@@ -680,7 +736,7 @@ export class TownLife {
       case 'stand': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.stand); this._play(c, 'idle', STEP_S); break
       case 'gather': c.state = 'stand'; c.hold = between(c.rand, NIGHT.gather); c.aim = this._toward(c, this.town.x, this.town.z); this._play(c, 'idle', STEP_S); break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
-      case 'enter': this._inside(c, this._indoors(c)); break
+      case 'enter': this._door(c); this._inside(c, this._indoors(c)); break
       case 'errand': this._errand(c); break
       case 'job': this._jobStep(c); break
       default: throw new Error(`TownLife: a route ends in ${c.then}`)
@@ -723,6 +779,7 @@ export class TownLife {
   _start({ kind, c, j, k }) {
     if (c.state === 'talk') this._untalk(c)
     this._leaveSeat(c)
+    if (c.state === 'inside') this._out(c)
     c.hidden = false
     c.job = { kind, j, k, step: 0, mount: null, tether: null, dest: null, legs: 0 }
     if (kind === 'ridein' || kind === 'walkin') {
@@ -1055,7 +1112,7 @@ export class TownLife {
       const p = c.route[c.wp]
       const d = Math.hypot(p.x - c.x, p.z - c.z)
       const last = c.wp === c.route.length - 1
-      const onto = (c.then === 'sit' || c.then === 'job') && last
+      const onto = (c.then === 'sit' || c.then === 'job' || c.then === 'enter') && last
       if (d <= (onto ? TOWNSFOLK.sitNear : TOWNSFOLK.node)) {
         if (p.node >= 0) c.at = p.node
         c.wp++
@@ -1084,7 +1141,7 @@ export class TownLife {
         c.hold -= dt
         if (c.hold > 0 || this.homing) break
         if (c.at === c.home && this.pull.home > 0 && c.rand() < this.pull.home * NIGHT.stay) c.hold = this._indoors(c)
-        else { c.hidden = false; this._errand(c) }
+        else { this._out(c); this._errand(c) }
         break
       case 'walk':
         if (tick % TOWNSFOLK.talk.everyTicks === 0) {
@@ -1141,6 +1198,9 @@ export class TownLife {
     if (c.left <= 0) this._step(c)
     if (c.hidden || !this.grounded) return
     c.y = this.heightAt(c.x, c.z, c.y)
+    // Up and down its door's stoop: the door it is at is the only one it can be on.
+    const at = this.graph.nodes[c.at]
+    if (at.kind === 'door') c.y = Math.max(c.y, stoopY(at.sill, c.x, c.z))
     if (c.state === 'sit') {
       const on = c.phase === 'hold' ? 1 : c.phase === 'down' ? 1 - c.left / c.dur : c.phase === 'up' ? c.left / c.dur : 0
       c.y += Math.min(1, Math.max(0, on)) * (c.seat.top - this.bodies[c.body].sitY * c.k - c.y)
@@ -1319,8 +1379,9 @@ export class Townsfolk {
     return { alive: this.alive.size, people, shown, mounts, road: this.road.size, starved: this.starved + (this.striders ? this.striders.starved : 0), greets: this.greets, hearthScale: +this.hearthScale.toFixed(2) }
   }
 
-  _entity(c) {
-    return Object.assign(c, { pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
+  /** `graph` is its town's (townGraph), null for a traveller off the road. */
+  _entity(c, graph = null) {
+    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
   }
 
   _wake(i) {
@@ -1330,7 +1391,7 @@ export class Townsfolk {
     const seats = hearth.stools.map((st) => ({ x: hearth.x + st.x * s, z: hearth.z + st.z * s, top: hearth.y + st.top * s, r: st.r * s, lookX: hearth.x, lookZ: hearth.z }))
     const J = this.striders ? { journeys: this.journeys, strider: this.striders.sim } : {}
     const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), hourAt: this.hourAt, ...J })
-    for (const c of life.all) this._entity(c)
+    for (const c of life.all) this._entity(c, life.graph)
     for (const m of life.mounts) {
       const key = `town:${i}:${m.id}`
       Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null })
@@ -1379,13 +1440,11 @@ export class Townsfolk {
       if (!this.alive.has(i) && d < wake) this._wake(i)
       else if (this.alive.has(i) && d > sleep) this._sleep(i)
     })
+    this.settle(seconds)
     const drawn = [], mounts = []
-    let budget = TOWNSFOLK.replay
     for (const { life, hearth, forge } of this.alive.values()) {
       hearth.update(head.x, head.y, head.z, t)
       if (forge) forge.update(t, STEADY, head)
-      if (life.caught) life.advance(seconds)
-      else budget -= life.advance(seconds, budget)
       if (!life.caught) continue
       for (const c of life.all) {
         if (c.hidden && !c.puppet && !c.greet && !c.lag) continue
@@ -1419,6 +1478,25 @@ export class Townsfolk {
       for (const m of mounts) this._rein(m)
       this.striders.end()
     }
+  }
+
+  /** Each alive town stepped to the clock, those catching up sharing the replay budget; alone, as while she is in one of its houses, nothing drawn. */
+  settle(seconds) {
+    if (!this.loaded) return
+    let budget = TOWNSFOLK.replay
+    for (const { life } of this.alive.values()) {
+      if (life.caught) life.advance(seconds)
+      else budget -= life.advance(seconds, budget)
+    }
+  }
+
+  /** The doors heard since the last step, each `{ sound, x, y, z }`, but those of `quiet` ({ t, i }, the house she is in), whose own residents sound them. */
+  voices(into, quiet = null) {
+    for (const [t, { life }] of this.alive) {
+      for (const v of life.calls) if (!quiet || quiet.t !== t || quiet.i !== v.house) into.push(v)
+      life.calls.length = 0
+    }
+    return into
   }
 
   _poseMount(m, a) {
@@ -1603,7 +1681,15 @@ export class Townsfolk {
     if (Math.abs(s.x) + Math.abs(s.z) < 1e-4) return
     pose.x += s.x
     pose.z += s.z
-    pose.y = this.walk.heightAt(pose.x, pose.z, pose.y)
+    pose.y = this._ground(c, pose.x, pose.z, pose.y)
+  }
+
+  /** The walk's height at (x, z), or its door's stoop's (TownLife._tick) if it stands on that. */
+  _ground(c, x, z, y) {
+    const h = this.walk.heightAt(x, z, y)
+    if (c.graph === null) return h
+    const at = c.graph.nodes[c.at]
+    return at.kind === 'door' ? Math.max(h, stoopY(at.sill, x, z)) : h
   }
 
   /** Whether a drawn townsperson afoot stands within `pad` m more than TOWNSFOLK.girth of (x, z): what a running strider steers round (striders.js walled). */
@@ -1788,7 +1874,7 @@ export class Townsfolk {
         const m = speed * dt
         pose.x += (dx / d) * m
         pose.z += (dz / d) * m
-        pose.y = this.walk.heightAt(pose.x, pose.z, pose.y)
+        pose.y = this._ground(c, pose.x, pose.z, pose.y)
         const s = swing(pose.heading, Math.atan2(-dz, dx))
         pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
         pose.clip = 'walk'

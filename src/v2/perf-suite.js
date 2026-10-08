@@ -35,6 +35,7 @@ export const GROUPS = [
     drill: [
       { name: 'water critters', off: ['fish', 'frogs', 'crabs'] },
       { name: 'insects', off: ['butterflies', 'grasshoppers', 'fireflies', 'spiders'] },
+      { name: 'fireflies', off: ['fireflies'] },
       { name: 'wildlife', off: ['wildlife'] },
       { name: 'snowmen+leafkin', off: ['snowmen', 'leafkin'] },
       { name: 'dragons', off: ['dragons'] },
@@ -44,6 +45,7 @@ export const GROUPS = [
     name: 'sky+fire', off: ['aurora', 'clouds', 'precip', 'fire'],
     drill: [
       { name: 'aurora', off: ['aurora'] },
+      { name: 'sky probe', off: ['skyProbe'] },
       { name: 'clouds', off: ['clouds'] },
       { name: 'precip', off: ['precip'] },
       { name: 'fire', off: ['fire'] },

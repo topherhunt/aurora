@@ -13,6 +13,7 @@ import { RimFade, RIM_AT } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
 import { CARD_TILT } from './trees.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 
 // ---------------------------------------------------------------------------
 // The fern undercarpet on the /v2 route.
@@ -553,12 +554,18 @@ export class Ferns {
     const card = shipFernCard({ planes: 1, billboard: true })
     this.card = card
 
-    // All the mesh rings share ONE material, which is what keeps the rings at two draw calls. `instancedFade` declares `aPropFade`, which the rim's and the LOD cross-fade's dissolves write through, so it is on for every arena wearing this material. The whole bed is inside DRAW_RADIUS 65, inside the wind's 100 m reach, so every ring fern sways. `leafThrough`: a frond whose normal faces the ground is lit as if it faced the sky -- see material.js's leafThroughApply.
+    // All the mesh rings share ONE material, which is what keeps the rings at two draw calls. `instancedFade` declares `aPropFade`, which the rim's and the LOD cross-fade's dissolves write through, so it is on for every arena wearing this material. The whole bed is inside DRAW_RADIUS 65, inside the wind's 100 m reach, so every ring fern sways. `leafThrough`: a fern can be carried, dropped and rolled, and a frond turned toward the ground would otherwise light black -- see material.js's leafThroughApply.
     this.material = createPropMaterial(textureArray, {
       instancedFade: true,
       wind: 'fern',
       leafThrough: 0.6,
     })
+    // What hands.js draws a carried or rolling fern with: the LOD0 rosette, so
+    // no card to spin, and NO WIND. The wind's per-plant phase is a hash of the
+    // root's world position, so a root that moves every frame sways at a new
+    // random phase every frame -- a fern in a turning view or tumbling downhill
+    // shivers in place.
+    this.heldMaterial = createPropMaterial(textureArray, { leafThrough: 0.6 })
 
     this.ringCount = RING_TIERS.length
     // The card ring is the one past the last mesh ring, in tierAt and in the
@@ -596,6 +603,12 @@ export class Ferns {
     })
 
     this.meshes = this.rings.map((r) => r.mesh)
+    // The rosette's span at unit scale: the size held to the lift cap and the size a held one is. Off the LOD0 ring's own geometry, since the bank's copy is disposed below.
+    const lod0Geo = this.rings[0].mesh.geometry
+    lod0Geo.computeBoundingBox()
+    const ext = lod0Geo.boundingBox.getSize(new THREE.Vector3())
+    this.unitSpan = Math.max(ext.x, ext.y, ext.z)
+
     // The LOD0 rosette's own triangles, kept on the CPU as what a butterfly lands
     // on -- see `landOn`. The arrays outlive the dispose below, which only frees
     // the GPU copies.
@@ -630,6 +643,8 @@ export class Ferns {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // The surface each fern's root meets -- ground, stone or roof, over the sunk instance -- where a hand must reach to pull it.
+    this.instGround = new Float32Array(this.maxInstances)
     // The uniform scale each fern stands at, kept for `perchesInto`; the draw reads it off the matrix.
     this.instScale = new Float32Array(this.maxInstances)
     // LOD cross-dissolves in flight: { id, tier, slot, start, tris }, where
@@ -1145,6 +1160,8 @@ export class Ferns {
 
       const river = this.paths.nearest(x, z, 'river')
       if (!plant && river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      // Last, on the survivors only: a fern she pulled up does not grow back.
+      if (taken.has('fern', x, z)) continue
 
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
@@ -1179,6 +1196,7 @@ export class Ferns {
       // A plant given a `y` sits on that surface -- a roof (room-props.js
       // roofSpots) -- and sinks into it by the same margin as into the ground.
       this.instY[id] = plant?.y != null ? plant.y - PLACEMENT.sink * scale : Math.max(h - PLACEMENT.sink * scale, top)
+      this.instGround[id] = plant?.y != null ? plant.y : Math.max(h, top)
       this.instZ[id] = z
       this.instScale[id] = scale
 
@@ -1253,6 +1271,93 @@ export class Ferns {
     } else {
       this.tiles.set(key, { tx, tz, ids, rank, n, q, u: uNew, near: false, queued: false })
     }
+  }
+
+  /**
+   * The drawn fern nearest a hand at (x, y, z) whose root -- where it meets
+   * the surface it grows from -- is within `reach` metres, so a hand in its
+   * fronds reaching for a butterfly does not pull it, and under `maxSize`
+   * across, so the big ones stay rooted: `{ dist, id, tile, k, size }` for
+   * take(), or null. For hands.js.
+   */
+  pickAt(x, y, z, reach, maxSize) {
+    let best = null
+    let bestD = reach
+    const far = reach + TILE
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * TILE - x) > far || Math.abs((tile.tz + 0.5) * TILE - z) > far) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (this.rim.isHidden(id)) continue
+        const span = this.unitSpan * this.instScale[id]
+        if (span >= maxSize) continue
+        const d = Math.hypot(this.instX[id] - x, this.instGround[id] - y, this.instZ[id] - z)
+        if (d < bestD) {
+          bestD = d
+          best = { dist: d, id, tile, k, size: span }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * Pull the fern of a pickAt() hit out of the ground: its id goes back to the
+   * pool with whatever ring slot it borrowed, its spot is recorded so the tile
+   * never regrows it, and what the hand holds is returned as a record for
+   * hands.js -- the LOD0 rosette, the windless material, the instance's tint and
+   * scale; one under `stowMax` metres may go in the backpack.
+   */
+  take(hit, stowMax) {
+    const { tile, k, id } = hit
+    if (tile.ids[k] !== id || this.tierAt[id] < 0) throw new Error(`Ferns.take: instance ${id} is not standing in its tile`)
+    const scale = this.instScale[id]
+    this.cards.getColorAt(id, this._c)
+    const color = [this._c.r, this._c.g, this._c.b]
+    taken.add('fern', this.instX[id], this.instZ[id])
+    // Compacted in place, ranks with ids, so _thin's rank runs stay consecutive.
+    for (let j = k; j < tile.n - 1; j++) {
+      tile.ids[j] = tile.ids[j + 1]
+      tile.rank[j] = tile.rank[j + 1]
+    }
+    tile.n--
+    this._retire(id)
+    this.free[this.freeCount++] = id
+    this.placed--
+    return {
+      kind: 'fern',
+      name: 'fern',
+      size: this.unitSpan * scale,
+      geometry: this.rings[0].mesh.geometry,
+      material: this.heldMaterial,
+      color,
+      scale: [scale, scale, scale],
+      stowable: this.unitSpan * scale < stowMax,
+    }
+  }
+
+  /**
+   * A peer took the fern at (x, z): pull it here too, hidden by the rim or
+   * not, and record its spot. True when a tile has it. For hands-net.js.
+   */
+  evict(key, x, z) {
+    if (key !== 'fern') return false
+    for (const tile of this.tiles.values()) {
+      if (Math.abs((tile.tx + 0.5) * TILE - x) > TILE || Math.abs((tile.tz + 0.5) * TILE - z) > TILE) continue
+      for (let k = 0; k < tile.n; k++) {
+        const id = tile.ids[k]
+        if (Math.abs(this.instX[id] - x) >= TOLERANCE_M || Math.abs(this.instZ[id] - z) >= TOLERANCE_M) continue
+        this.take({ dist: 0, id, tile, k, size: this.unitSpan * this.instScale[id] }, Infinity)
+        return true
+      }
+    }
+    return false
+  }
+
+  /** The geometry and material a packed fern record is drawn with. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'fern') throw new Error(`Ferns.dress: not a fern, ${slot.kind}`)
+    return { geometry: this.rings[0].mesh.geometry, material: this.heldMaterial }
   }
 
   /** Cut every fern in the tile whose rank has fallen above the keep-fraction. */
@@ -1542,5 +1647,6 @@ export class Ferns {
   dispose() {
     for (const mesh of this.meshes) mesh.dispose()
     this.material.dispose()
+    this.heldMaterial.dispose()
   }
 }

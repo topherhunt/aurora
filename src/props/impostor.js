@@ -257,11 +257,12 @@ export function plateCardExtents({ width, depth }) {
  * a radial gradient with no bearing in it, which is what a plate lit from the
  * sky looks like from any side.
  *
- * `height` is the subject's, and only sets how far back to stand.
+ * `height` is the subject's, and only sets how far back to stand. A null `layer`
+ * leaves the atlas alone and the caller keeps the returned `pixels`.
  */
 export function bakeImpostorPlate(
   renderer, geometry, texArray, layer,
-  { width, depth, height, tint = null, vertexColors = false, bounce = BAKE_GROUND }
+  { width, depth, height, tint = null, vertexColors = false, bounce = BAKE_GROUND, unlit = false }
 ) {
   if (!(width > 0) || !(depth > 0) || !(height > 0)) {
     throw new Error(`bakeImpostorPlate: need positive extents, got ${width}x${height}x${depth}`)
@@ -286,12 +287,12 @@ export function bakeImpostorPlate(
 
   const pixels = captureLayer(
     renderer, geometry, texArray, layer, cam, new THREE.Vector3(0, camY, 0),
-    { tint, vertexColors, bounce })
-  return { width: cardW, depth: cardD, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+    { tint, vertexColors, bounce, unlit })
+  return { width: cardW, depth: cardD, meanLuma: coveredLuma(pixels), coverage: coverage(pixels), pixels }
 }
 
 /**
- * Render `geometry` through `cam` into `layer`, lit by a white key at `keyPos`
+ * Render `geometry` through `cam` into `layer` (or only into the returned bytes, when null), lit by a white key at `keyPos`
  * over a hemisphere whose ground is `bounce` -- or, `unlit`, as flat albedo
  * with no rig at all. Returns the bytes it stored.
  *
@@ -310,7 +311,7 @@ function captureLayer(
   { tint, vertexColors, hemFray = null, bounce, unlit = false, exposure = 1 }
 ) {
   if (!(exposure > 0)) throw new Error(`captureLayer: exposure must be positive, got ${exposure}`)
-  if (layer < 0 || layer >= texArray.image.depth) {
+  if (layer !== null && (layer < 0 || layer >= texArray.image.depth)) {
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
@@ -396,9 +397,10 @@ function captureLayer(
   flipY(pixels)
   dilate(pixels)
 
-  const stride = TEX_SIZE * TEX_SIZE * 4
-  texArray.image.data.set(pixels, layer * stride)
-  texArray.needsUpdate = true
+  if (layer !== null) {
+    texArray.image.data.set(pixels, layer * TEX_SIZE * TEX_SIZE * 4)
+    texArray.needsUpdate = true
+  }
 
   return pixels
 }

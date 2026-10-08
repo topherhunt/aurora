@@ -178,9 +178,11 @@ console.log('carrots: her hand')
   const plants = plantsOf(c)
   const pl = plants.find((p) => !c.rim.isHidden(p.id))
   const size = c.size * pl.scale
-  const hit = c.pickAt(pl.x, pl.y + size * 0.5, pl.z, 0.1)
-  check(hit !== null && hit.id === pl.id && hit.tile === pl.tile && hit.size === size && hit.dist === 0, 'pickAt finds the carrot about the hand', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
-  check(c.pickAt(pl.x, pl.y + size + 5, pl.z, 0.1) === null, 'and nothing five metres above it')
+  // The flat field stands at 100 m: a carrot is pulled where it meets the ground.
+  const hit = c.pickAt(pl.x, 100, pl.z, 0.25)
+  check(hit !== null && hit.id === pl.id && hit.tile === pl.tile && hit.size === size && hit.dist === 0, 'pickAt finds the carrot where it meets the ground', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
+  check(c.pickAt(pl.x, 100.3, pl.z, 0.25) === null, 'and pulls nothing for a hand 0.3 m up in its leaves')
+  check(c.pickAt(pl.x, pl.y + size + 5, pl.z, 0.25) === null, 'and nothing five metres above it')
   const before = c.placed
   const rec = c.take(hit)
   check(rec.kind === 'carrot' && rec.name === 'carrot' && Number.isInteger(rec.variant) && rec.size === size && rec.geometry === c.bank.tiers[0].geometries[rec.variant] && rec.material === c.materials[rec.variant] && rec.color.length === 3 && rec.scale[0] === pl.scale && rec.scale[1] === pl.scale && rec.stowable === true,

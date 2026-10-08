@@ -329,6 +329,8 @@ export class Carrots {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // The ground height at each carrot, where a hand must reach to pull it: off the instance's own origin, a crown that pokes a few cm out over a root mesh hanging under the ground.
+    this.instGround = new Float32Array(this.maxInstances)
     // The rim drives the card view; the mesh is the near rung, shown by `update`.
     this.rungAt = new Uint8Array(this.maxInstances).fill(RUNG_CARD)
     this.rim = new RimFade(this.cards, this.maxInstances, () => {})
@@ -537,6 +539,7 @@ export class Carrots {
     this.instX[id] = mx
     this.instY[id] = y
     this.instZ[id] = mz
+    this.instGround[id] = h
 
     // Spin about the root, then tip, the two leans summed as a vector so it is
     // one rotation about one horizontal axis.
@@ -579,9 +582,10 @@ export class Carrots {
   }
 
   /**
-   * The drawn carrot nearest a hand at (x, y, z) whose leaves -- a ball of the
-   * instance's own extent -- are within `reach` metres: `{ dist, id, tile, k,
-   * size }` for take(), or null. For hands.js.
+   * The drawn carrot nearest a hand at (x, y, z) whose root -- where it meets
+   * the ground -- is within `reach` metres, so a hand in its leaves or brushing
+   * past does not pull it: `{ dist, id, tile, k, size }` for take(), or null.
+   * For hands.js.
    */
   pickAt(x, y, z, reach) {
     let best = null
@@ -592,12 +596,11 @@ export class Carrots {
       for (let k = 0; k < tile.n; k++) {
         const id = tile.ids[k]
         if (this.rim.isHidden(id)) continue
-        this.batch.getMatrixAt(id, this._m)
-        const size = this.size * this._s.setFromMatrixColumn(this._m, 0).length()
-        const d = Math.hypot(this.instX[id] - x, this.instY[id] + size * 0.5 - y, this.instZ[id] - z) - size * 0.5
+        const d = Math.hypot(this.instX[id] - x, this.instGround[id] - y, this.instZ[id] - z)
         if (d < bestD) {
           bestD = d
-          best = { dist: Math.max(0, d), id, tile, k, size }
+          this.batch.getMatrixAt(id, this._m)
+          best = { dist: d, id, tile, k, size: this.size * this._s.setFromMatrixColumn(this._m, 0).length() }
         }
       }
     }

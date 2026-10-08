@@ -17,7 +17,7 @@ import { TOWN_BANDS, Towns } from '../src/v2/render/towns.js'
 import { buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { Hearth, hearthKit } from '../src/v2/render/hearth.js'
-import { CLIPS, TOWNSFOLK, TownLife, townGraph } from '../src/v2/render/townsfolk.js'
+import { CLIPS, TOWNSFOLK, TownLife, stoopY, townGraph } from '../src/v2/render/townsfolk.js'
 import { TRADES } from '../src/v2/layers/trades.js'
 import { Journeys } from '../src/v2/render/journeys.js'
 import { planRoads } from '../src/v2/layers/roads.js'
@@ -246,6 +246,18 @@ const b0 = t.buildings[0]
 const top = layer.blockTopAt(b0.x, b0.z)
 check(top > b0.y + 2, 'a building blocks her walk up to its roof', `top ${top.toFixed(1)} over its base ${b0.y.toFixed(1)}`)
 check(layer.blockTopAt(t.x, t.z) === -Infinity, 'the clearing does not block')
+{
+  // Where townsfolk go in and come out: the floor's height on the stoop (stoopY), which the walker's stone leaves out.
+  const off = []
+  for (const town of towns) {
+    const g = townGraph(town)
+    g.doors.forEach((d, i) => {
+      const s = g.nodes[d].sill
+      if (stoopY(s, s.x, s.z) !== s.y) off.push(`${town.buildings[i].id} ${(stoopY(s, s.x, s.z) - s.y).toFixed(2)}`)
+    })
+  }
+  check(off.length === 0, 'every door\'s sill stands at its floor', off.slice(0, 6).join(', '))
+}
 check(layer.occupiesAt(b0.x, b0.z, 0), 'trees keep off the buildings')
 const behind = t.buildings.map((b) => [b.box.x - b.box.s * (b.box.hz + 2), b.box.z - b.box.c * (b.box.hz + 2)])
 const openBehind = behind.filter(([x, z]) => !layer.occupiesAt(x, z, 0)).length
@@ -354,11 +366,35 @@ for (let s = 0; s < 590; s += 2) {
   a.advance(T0 + s)
   for (const c of a.all) {
     if (c.state in seen) seen[c.state]++
-    if (c.state === 'walk' && c.then !== 'sit' && c.job === null && c.then !== 'errand' && !(c.wp === 0 && c.route[0].node === c.at) && wayDist(c.x, c.z) > TOWNSFOLK.lane + 0.3) offWay++
+    if (c.state === 'walk' && c.then !== 'sit' && c.job === null && c.then !== 'errand' && !(c.wp === 0 && c.route[0].node === c.at) && !(c.then === 'enter' && c.wp === c.route.length - 1) && wayDist(c.x, c.z) > TOWNSFOLK.lane + 0.3) offWay++
   }
 }
 check(seen.walk > 0 && seen.sit > 0 && seen.talk > 0 && seen.stand > 0, 'townsfolk walk, stand, sit at the fire and stop to talk', JSON.stringify(seen))
 check(offWay === 0, 'a walker keeps to its lane on the town\'s ways', `${offWay} samples off`)
+// Through a door: in and out only on the sill, TOWNSFOLK.sill out from the face of a building's door (as main.js townDoor puts it), each time to the sound of the door.
+{
+  const faces = t.buildings.map((bd) => {
+    const d = bd.plan.door, c = Math.cos(bd.yaw), s = Math.sin(bd.yaw)
+    return { x: bd.x + d.x * c + d.z * s, z: bd.z - d.x * s + d.z * c, nx: s, nz: c }
+  })
+  // Out along the door's normal and across it, from the nearest face.
+  const offSill = (x, z) => Math.min(...faces.map((f) => Math.hypot((x - f.x) * f.nx + (z - f.z) * f.nz - TOWNSFOLK.sill, (x - f.x) * f.nz - (z - f.z) * f.nx)))
+  const L = life()
+  L.advance(T0)
+  let was = L.all.map((c) => c.state === 'inside'), ins = 0, outs = 0, offIn = 0, calls = 0, offCall = 0
+  for (let s = 1; s < 590; s++) {
+    L.advance(T0 + s)
+    for (const v of L.calls) { calls++; if (offSill(v.x, v.z) > 0.05) offCall++ }
+    L.all.forEach((c, i) => {
+      const now = c.state === 'inside'
+      if (now && !was[i]) { ins++; if (offSill(c.x, c.z) > 0.05) offIn++ }
+      if (!now && was[i]) outs++
+      was[i] = now
+    })
+  }
+  check(ins > 5 && outs > 5 && offIn === 0, 'townsfolk go in standing on a door\'s sill, touching it', `${ins} in, ${outs} out, ${offIn} in off the sill`)
+  check(calls === ins + outs && offCall === 0, 'every going in and coming out sounds the door, at its sill', `${calls} door sounds for ${ins + outs} in and out, ${offCall} off the sill`)
+}
 const b = life()
 b.advance(T0 + 588)
 check(a.all.every((c, i) => c.x === b.all[i].x && c.z === b.all[i].z && c.state === b.all[i].state), 'a town woken late replays to the same day as one watched throughout')

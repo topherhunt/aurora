@@ -17,7 +17,8 @@ import { nameTowns } from '../src/v2/layers/names.js'
 import { ROAD, STONE_BRIDGE, planRoads } from '../src/v2/layers/roads.js'
 import { Heap } from '../src/v2/layers/route.js'
 import { footprint } from '../src/v2/layers/water-bodies.js'
-import { Bridges } from '../src/v2/render/bridges.js'
+import { BRIDGE_BANDS, Bridges } from '../src/v2/render/bridges.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { parseStoneBridge, stoneBridgeDeckAt } from '../src/bridges/stone-bridge.js'
 import { buildTextureArray } from '../src/textures.js'
 
@@ -226,8 +227,8 @@ const stone = parseStoneBridge(await new GLTFLoader().parseAsync(glb.buffer.slic
 const { meta } = stone
 check(meta.params.span === STONE_BRIDGE.span && meta.xb === STONE_BRIDGE.xb && meta.bankA === STONE_BRIDGE.bank && Math.abs(meta.inner - STONE_BRIDGE.inner) < 1e-9, 'STONE_BRIDGE matches the shipped mesh', `span ${meta.params.span}, xb ${meta.xb}, bank ${meta.bankA}, inner ${meta.inner}`)
 check(bridges.length >= 1, 'the roads cross at least one river on a bridge', `${bridges.length} of ${plan.crossings.length} candidate crossings`)
-const scaleOk = bridges.every((b) => b.scale.every((s) => s >= 0.7 - 1e-9 && s <= 1.3 + 1e-9))
-check(scaleOk, 'every bridge keeps each axis within 30% of the shipped size', bridges.map((b) => b.scale.map((s) => s.toFixed(2)).join('/')).join(' '))
+const scaleOk = bridges.every((b) => b.scale.every((s, k) => s >= 0.7 - 1e-9 && s <= (k === 0 ? ROAD.cross.stretch : 1.3) + 1e-9))
+check(scaleOk, 'every bridge keeps its height and width within 30% of the shipped size, its length 0.7 to 1.8x', bridges.map((b) => b.scale.map((s) => s.toFixed(2)).join('/')).join(' '))
 let skew = 0
 for (const b of bridges.filter((b) => b.river !== null)) {
   const s = layers.paths.drawnSamples(b.river)
@@ -245,7 +246,8 @@ for (const b of bridges.filter((b) => b.river !== null)) {
 check(skew < 0.1, 'every bridge crosses its river square', `worst |cos| ${skew.toFixed(3)}`)
 
 // The mesh as placed: each span's ends meet a road tip or the next span's end, and the walker stands on its deck.
-const layer = new Bridges(new THREE.Scene(), { bridges, stone, textures: buildTextureArray(), patch: (m) => m })
+const litterCards = new LitterCards(64)
+const layer = new Bridges(new THREE.Scene(), { bridges, stone, textures: buildTextureArray(), patch: (m) => m, water: { riverLiftAt: () => 0 }, cards: litterCards })
 let gap = 0
 let deckOk = true
 let lakeSpans = 0
@@ -273,6 +275,18 @@ for (const b of bridges) {
 check(gap < 0.05, 'every bridge end meets its road tip in plan and height', `worst ${gap.toFixed(3)} m`)
 check(deckOk, 'the walker stands on the deck at every bridge crest')
 check(underDeck <= 0, 'no ground rises through a lake bridge deck', `${lakeSpans} lake spans; ground at most ${underDeck.toFixed(2)} m against the deck`)
+// The far band is the bridge's photograph on the shared litter cards, not a mesh of its own: nothing until the picture is in, then a card lying at the deck.
+const far = layer.items[0]
+const farEye = { x: far.x + (BRIDGE_BANDS.lod1 + BRIDGE_BANDS.far) / 2, z: far.z }
+layer.update(farEye)
+const blankBefore = !far.mesh.visible && !layer.cards.getVisibleAt(far.card)
+layer.setCard()
+layer.update(farEye)
+const cardY = layer.cards.getMatrixAt(far.card, new THREE.Matrix4()).elements[13]
+check(blankBefore && !far.mesh.visible && layer.cards.getVisibleAt(far.card) && layer.cards.layer[far.card] === layer.cardPicture && Math.abs(cardY - (far.y + stone.lods[2].boundingBox.max.y * far.scale[1])) < 1e-3,
+  'a far bridge draws as its card in the shared pool, and nothing before the card is baked', `card ${(cardY - far.y).toFixed(2)} m over the water`)
+layer.update({ x: far.x + (BRIDGE_BANDS.lod0 + BRIDGE_BANDS.lod1) / 2, z: far.z })
+check(far.mesh.visible && far.mesh.geometry === stone.lods[1] && !layer.cards.getVisibleAt(far.card), 'a bridge in the middle band is its LOD1 mesh and its card is hidden')
 layer.dispose()
 
 // --- signposts ---

@@ -38,6 +38,7 @@ import { buildShipFernTiers } from '../src/props/fern-bank.js'
 import { FERN_DEFAULTS } from '../src/props/fern.js'
 import { buildTextureArray } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
+import { taken } from '../src/v2/taken.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -315,6 +316,80 @@ console.log('\n5. what a butterfly lands on\n')
   check(spread > SAMPLES * 0.8, 'and out on the fronds, not stacked over the crown', `${spread}/${SAMPLES} past 5 cm of the axis`)
 }
 
+// --- her hands: a fern pulled up, and not grown back ----------------------------
+{
+  // Placed and then swept once by the rim, which is what shows a fresh fern.
+  const grow = () => { const f = build(); f.place(0, 0); f.update(0, GROUND + 1.6, 0); return f }
+  const standing = (f) => {
+    const rows = []
+    for (const tile of f.tiles.values()) for (let k = 0; k < tile.n; k++) { const id = tile.ids[k]; rows.push(`${f.instX[id].toFixed(3)},${f.instZ[id].toFixed(3)},${f.instScale[id].toFixed(4)}`) }
+    return rows.sort().join('|')
+  }
+  taken.clear()
+  const f = grow()
+  const before = f.placed
+  check(before > 0 && f.unitSpan > 0.1 && f.unitSpan < 3, 'a bed grows ferns, each a span at unit scale', `${before} ferns, ${f.unitSpan.toFixed(2)} m`)
+  let tile0 = null, id0 = -1
+  for (const tile of f.tiles.values()) {
+    for (let k = 0; k < tile.n && id0 < 0; k++) if (!f.rim.isHidden(tile.ids[k])) { tile0 = tile; id0 = tile.ids[k] }
+    if (id0 >= 0) break
+  }
+  const x = f.instX[id0], y = f.instY[id0], z = f.instZ[id0]
+  const size = f.unitSpan * f.instScale[id0]
+  // The root is where the stem meets the ground, not the sunk instance's own origin.
+  const hit = f.pickAt(x, GROUND, z, 0.25, 10)
+  check(y < GROUND && hit !== null && hit.id === id0 && hit.tile === tile0 && hit.size === size && hit.dist === 0, 'pickAt finds the fern by its root on the ground, over its sunk origin', hit ? `id ${hit.id} ${hit.dist.toFixed(3)} m` : 'null')
+  check(size > 0.6 && f.pickAt(x, GROUND + 0.3, z, 0.25, 10) === null, 'and pulls nothing for a hand 0.3 m up in its fronds', `${size.toFixed(2)} m across`)
+  check(f.pickAt(x, y + size + 5, z, 0.25, 10) === null, 'and nothing five metres above it')
+  check(f.pickAt(x, GROUND, z, 0.25, size)?.id !== id0, 'and not one at or over maxSize across: the big ones stay rooted')
+  const rec = f.take(hit, size + 0.01)
+  check(rec.kind === 'fern' && rec.name === 'fern' && rec.size === size && rec.geometry === f.rings[0].mesh.geometry && rec.geometry.getAttribute('aPropFade')?.isInstancedBufferAttribute && rec.material === f.heldMaterial && rec.material !== f.material && rec.color.length === 3 && rec.scale[0] === f.instScale[id0] && rec.scale[1] === rec.scale[0] && rec.stowable === true,
+    'take hands back the record: the LOD0 rosette, the windless held material, its tint and scale, stowable under stowMax', JSON.stringify({ size: rec.size.toFixed(3), scale: rec.scale[0].toFixed(3) }))
+  const dress = f.dress({ kind: 'fern' })
+  check(dress.geometry === rec.geometry && dress.material === rec.material, 'dress puts a packed record back on the rosette and the held material')
+  let wrong = false
+  try { f.dress({ kind: 'carrot' }) } catch { wrong = true }
+  check(wrong, 'and throws for another kind')
+  let stillListed = false
+  for (let k = 0; k < tile0.n; k++) if (tile0.ids[k] === id0) stillListed = true
+  check(f.placed === before - 1 && f.tierAt[id0] === -1 && f.slotAt[id0] === -1 && !f.cards.getVisibleAt(id0) && !stillListed && taken.has('fern', x, z), 'and the fern is out of the ground, its ring slot given back, and on the registry', `${f.placed} of ${before}`)
+  const again = grow()
+  check(again.placed === before - 1 && standing(again) === standing(f), 'a bed grown again from the seed comes up without it, nothing else moved', `${again.placed} ferns`)
+  let twice = false
+  try { f.take(hit) } catch { twice = true }
+  check(twice, 'taking it twice throws')
+  {
+    // A second fern taken with stowMax under its span is not stowable.
+    let t2 = null, i2 = -1
+    for (const tile of f.tiles.values()) {
+      for (let k = 0; k < tile.n && i2 < 0; k++) if (!f.rim.isHidden(tile.ids[k]) && tile.ids[k] !== id0) { t2 = tile; i2 = tile.ids[k] }
+      if (i2 >= 0) break
+    }
+    const s2 = f.unitSpan * f.instScale[i2]
+    const h2 = f.pickAt(f.instX[i2], GROUND, f.instZ[i2], 0.25, 10)
+    check(h2 && h2.id === i2 && f.take(h2, s2).stowable === false, 'one at or over stowMax comes up in the hand but will not go in the backpack', `${s2.toFixed(2)} m`)
+  }
+  taken.clear()
+  const whole = grow()
+  check(whole.placed === before && standing(whole) !== standing(f), 'and with the registry cleared it grows back', `${whole.placed} ferns`)
+  {
+    // A peer's take: evicted by key and spot within the registry's tolerance, a rim-hidden one as readily as a shown one; a foreign key, an empty spot and a spot already emptied are false.
+    let te = null, ie = -1
+    for (const tile of whole.tiles.values()) {
+      for (let k = 0; k < tile.n && ie < 0; k++) if (whole.rim.isHidden(tile.ids[k])) { te = tile; ie = tile.ids[k] }
+      if (ie >= 0) break
+    }
+    const hiddenOne = ie >= 0
+    if (ie < 0) for (const tile of whole.tiles.values()) { if (tile.n) { te = tile; ie = tile.ids[0]; break } }
+    const ex = whole.instX[ie], ez = whole.instZ[ie]
+    const n0 = whole.placed
+    check(whole.evict('mushroom', ex, ez) === false && whole.evict('fern', ex + 5, ez) === false && whole.placed === n0, 'evict is false for a foreign key or an empty spot')
+    check(whole.evict('fern', ex + 0.03, ez - 0.03) === true && whole.placed === n0 - 1 && !te.ids.subarray(0, te.n).includes(ie) && taken.has('fern', ex, ez), `evict pulls the fern a peer took, ${hiddenOne ? 'rim-hidden' : 'shown'}, and records its spot`)
+    check(whole.evict('fern', ex, ez) === false, 'and is false for the spot once emptied')
+  }
+  again.dispose(); whole.dispose(); f.dispose()
+}
+
 // ---------------------------------------------------------------------------
 console.log('\n6. the ferns a room plants\n')
 
@@ -324,6 +399,7 @@ console.log('\n6. the ferns a room plants\n')
   // the thinning and the butterflies own them like any other. Ground no wild
   // fern would take -- too steep, over the snow, under water -- is the test:
   // the plant stands on it anyway, because the room has already decided.
+  taken.clear()
   const steep = { heightAt: () => GROUND, heightAndSlopeAt: () => ({ h: GROUND, tan: 4 }), snowLineAt: () => GROUND - 50, bands: field.bands }
   const flood = { isSubmerged: () => true, levelAt: () => GROUND + 5, shoreDistAt: () => 0 }
   const plants = [{ x: 3.5, z: 4.25, scale: 1.1 }, { x: -6.5, z: 2.5, scale: 2, y: GROUND + 7 }, { x: 40.5, z: -18.5, scale: 0.9 }]
@@ -331,6 +407,7 @@ console.log('\n6. the ferns a room plants\n')
   const nothing = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, cards: new LitterCards(8192) })
   nothing.place(0, 0)
   check(nothing.placed === 0, 'no wild fern takes ground this steep, this high and this wet', `${nothing.placed} placed`)
+  taken.clear()
   const bed = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, cards: new LitterCards(8192), plants })
   bed.place(0, 0)
   const standing = plants.map((p) => {
@@ -347,6 +424,7 @@ console.log('\n6. the ferns a room plants\n')
   const seated = standing.filter((id, i) => id >= 0 && Math.abs(bed.instY[id] - ((plants[i].y ?? GROUND) - sink * plants[i].scale)) < 1e-5).length
   check(sized === plants.length && seated === plants.length, 'at the size it was given, seated on its own y where it has one and on the ground where it has not', `${sized} sized, ${seated} seated`)
   // A nest's ferns (roosts.js fernsIn) are the same plants, asked for a tile at a time.
+  taken.clear()
   const nests = { fernsIn: (x0, z0, x1, z1, out) => { out.push(...plants.filter((p) => p.x >= x0 && p.x < x1 && p.z >= z0 && p.z < z1)); return out }, fernsBound: () => 5 }
   const nested = new Ferns(new THREE.Scene(), steep, flood, layers, textures, { seed: 7, cards: new LitterCards(8192), nests })
   nested.place(0, 0)
@@ -354,8 +432,10 @@ console.log('\n6. the ferns a room plants\n')
   check(nested.placed === plants.length && at(nested) === at(bed) && nested.maxInstances === nothing.maxInstances + 5, 'a nest\'s ferns stand as the room\'s plants do, the pool grown by the nests\' bound', `${nested.placed} placed, pool ${nested.maxInstances}`)
   nested.dispose()
   // The wild bed does not move: a plant draws its look off its own point, never off the tile's stream.
+  taken.clear()
   const wild = build()
   wild.place(0, 0)
+  taken.clear()
   const both = new Ferns(new THREE.Scene(), field, water, layers, textures, { seed: 7, cards: new LitterCards(8192), plants })
   both.place(0, 0)
   let moved = 0, wildN = 0
@@ -384,7 +464,13 @@ console.log('\n6. the ferns a room plants\n')
   let stands = false
   for (let k = 0; k < home.n; k++) if (both.instX[home.ids[k]] === 3.5 && both.instZ[home.ids[k]] === 4.25) stands = true
   check(stands && home.n < before / 4, 'a plant survives the thinning that cuts the ferns rolled beside it', `${home.n} of ${before} left in its tile seventy-four metres off`)
+  // A roof fern's root is on the roof: a hand there pulls it, and one on the ground under it does not.
+  const roof = plants[1]
+  bed.update(roof.x, roof.y + 1.6, roof.z)
+  const onRoof = bed.pickAt(roof.x, roof.y, roof.z, 0.25, 10)
+  check(onRoof?.id === standing[1] && bed.pickAt(roof.x, GROUND, roof.z, 0.25, 10) === null, 'a roof fern is pulled at its roof, not at the ground under it', onRoof ? `id ${onRoof.id}` : 'null')
   nothing.dispose(); bed.dispose(); wild.dispose(); both.dispose()
+  taken.clear()
 }
 
 // ---------------------------------------------------------------------------

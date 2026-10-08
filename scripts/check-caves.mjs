@@ -318,7 +318,7 @@ for (const sys of SYSTEMS) {
   const systems = groupSystems(mouths, SEED)
   const span = Math.max(...systems.map((s) => Math.max(...s.mouths.map((i) => Math.hypot(mouths[i].x - s.cx, mouths[i].z - s.cz)))))
   const biggest = Math.max(...systems.map((s) => s.mouths.length))
-  check(span < 400, "a system's mouths stay well inside chalk's reach of its centre", `${systems.length} systems, the largest ${biggest} mouths, the furthest ${span.toFixed(0)} m out`)
+  check(span < 600, "a system's mouths stay inside chalk's ±655 m reach of its centre", `${systems.length} systems, the largest ${biggest} mouths, the furthest ${span.toFixed(0)} m out`)
 }
 
 if (failures > 0) {

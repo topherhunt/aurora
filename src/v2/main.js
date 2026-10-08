@@ -29,8 +29,9 @@ import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip, shipLog } from './log-ship.js'
-import { PerfTrace } from './perf-trace.js'
+import { PerfTrace, r2 } from './perf-trace.js'
 import { RecordTrace } from './record-trace.js'
+import { AmbientTrace } from './ambient-trace.js'
 import { GpuTimer } from './gpu-timer.js'
 import { Spikes } from './spikes.js'
 import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
@@ -872,11 +873,9 @@ function applySave(doc) {
   rig.rotation.set(0, doc.rigYaw, 0)
   // In XR the headset owns the camera's rotation and overwrites it every frame.
   if (!sceneEl.is('vr-mode')) camera.rotation.set(doc.camPitch, doc.camYaw, 0)
-  // A save from when ferns could be picked may hold one, which no source dresses now.
-  const fernless = (slot) => slot === null || slot.kind !== 'fern'
-  backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack.map((slot) => (fernless(slot) ? slot : null)))
+  backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack)
   // A save from before the hands were written has no `held`.
-  restoreHeld(Object.fromEntries(Object.entries(doc.held ?? {}).filter(([, slot]) => fernless(slot))))
+  restoreHeld(doc.held ?? {})
   // A save from before the hour was written has no `hour`.
   if (doc.hour !== undefined) restoreHour(doc.hour)
   // A save from before the flare gun has no `flares`, and no gun: she is given one.
@@ -1366,29 +1365,15 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'huts', text: 'village huts & lamps' },
   { key: 'towns', text: 'town buildings' },
   { key: 'townsfolk', text: 'townsfolk & striders' },
-  // ONE ROW OVER THE THREE BELOW, so a stutter can be blamed on the fauna as a
-  // whole in one press before it is chased into a species. Off, no animal is
+  // ONE ROW OVER EVERY SPECIES (the per-species switches are TRACE_ONLY_ROWS,
+  // driven by the perf trace), so a stutter can be blamed on the fauna as a
+  // whole in one press. Off, no animal is
   // drawn, stepped or followed -- see the tick -- and the same holds for
   // whatever animal is added next, provided it goes through animalOn.
   { key: 'animals', text: 'animals' },
-  { key: 'fish', text: 'fish' },
-  { key: 'frogs', text: 'frogs' },
-  { key: 'crabs', text: 'crabs' },
-  { key: 'butterflies', text: 'butterflies' },
-  { key: 'grasshoppers', text: 'grasshoppers' },
-  { key: 'fireflies', text: 'fireflies' },
-  { key: 'spiders', text: 'spiders' },
-  { key: 'wildlife', text: 'wildlife' },
-  { key: 'snowmen', text: 'snowmen' },
-  { key: 'leafkin', text: 'leafkin' },
-  { key: 'dragons', text: 'dragons & roosts' },
-  { key: 'treeRadius', text: 'tree reach', action: () => cycleTreeRadius(), value: () => `${trees ? trees.radius : '?'} m >` },
-  { key: 'treeFalloff', text: 'tree falloff', action: () => cycleTreeFalloff(), value: () => `${trees ? trees.falloff : '?'}^ >` },
-  { key: 'treeMesh', text: 'tree LOD1 band', action: () => cycleTreeMesh(), value: () => `${trees ? meshBandLabel(trees.lodBands[1]) : '?'} >` },
   // The two ABLATIONS on the tree layer, both starting where the world ships so
   // that "off" is the measurement. `tree tiers` takes the mesh ladder away and
-  // leaves the card ring, which is what makes the reach and falloff rows above
-  // readable on their own; `tree leaf cutout` takes every `discard` out of the
+  // leaves the card ring; `tree leaf cutout` takes every `discard` out of the
   // tree program and with it the layer's transparency. See Trees.setCardsOnly
   // and setCutout for what each number does and does not prove.
   { key: 'treeTiers', text: 'tree tiers', on: 'full ladder', off: 'cards only' },
@@ -1407,6 +1392,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'water', text: 'rivers & lakes' },
   { key: 'reflections', text: 'cubemap reflections' },
   { key: 'aurora', text: 'aurora' },
+  // The sky half of the reflection cube only: off, the sky probe stops capturing and the water reflects the last cube it drew. A measurement row for what the probe costs, not a state to leave on.
+  { key: 'skyProbe', text: 'sky probe capture' },
   // The sky's cloud layer (§10); off is the A/B against the frame-time readout.
   { key: 'clouds', text: 'sky clouds' },
   { key: 'wreaths', text: 'summit clouds' },
@@ -1432,8 +1419,11 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'fly', text: 'fly', action: () => setFlying(!player.flying), value: () => (player.flying ? 'on' : 'off') },
 ]
 
+// Toggles the perf-trace battery drives (perf-suite.js) that have no cell on the panel: one per animal species, under the `animals` row.
+const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons'].map((key) => ({ key, text: key }))
+
 function questRowByKey(key) {
-  const row = QUEST_SETTING_ROWS.find((r) => r.key === key) ?? QUEST_TOGGLE_ROWS.find((r) => r.key === key)
+  const row = QUEST_SETTING_ROWS.find((r) => r.key === key) ?? QUEST_TOGGLE_ROWS.find((r) => r.key === key) ?? TRACE_ONLY_ROWS.find((r) => r.key === key)
   if (!row) throw new Error(`the menu has no row ${key}`)
   return row
 }
@@ -1568,6 +1558,7 @@ function refreshQuestRow(key) {
   if (s >= 0) { questSettingsGrid.repaint(s); return }
   const d = QUEST_TOGGLE_ROWS.findIndex((r) => r.key === key)
   if (d >= 0) { questDebugGrid.repaint(d); return }
+  if (TRACE_ONLY_ROWS.some((r) => r.key === key)) return
   throw new Error(`the menu has no row ${key}`)
 }
 
@@ -2771,52 +2762,23 @@ function kilo(n) {
  *   2. geometries/textures/programs catch the other shape of the same bug: a
  *      count that climbs while nothing is being created is a per-frame
  *      allocation, and it is the reason the stats canvas above is reused.
- *   3. the terrain line separates RESIDENT chunks from DRAWN ones. The gap is
- *      the streaming margin, and `q` (queued) going non-zero and staying there
- *      is what a thrashing LOD looks like from inside.
- *   4. the per-layer lines are instances/triangles per scatter, so "which layer"
- *      is answerable without toggling each one off in turn. The forest gets its
- *      own, split by tier, because "which layer" stopped being a fine enough
- *      question once one of its four bands turned out to cost more than the
- *      other three together.
- *   5. the input line is a DIAGNOSTIC, not a stat. If locomotion is dead, the
+ *   3. per-layer instances, triangles and ms are not here: the ambient traces
+ *      record them while she plays (traceLayers, ambient-trace.js), and the
+ *      `ambient` line says whether those uploads are landing.
+ *   4. the input line is a DIAGNOSTIC, not a stat. If locomotion is dead, the
  *      first question is whether the gamepads are even being seen, and there is
  *      no other way to ask it on-device.
  */
-/**
- * One scatter layer's line item: `instances/triangles`, both counted after the
- * rim's hiding pass, so they are what the GPU was handed rather than what the
- * layer placed -- `placed` alone overstates by however much of the far rim is
- * currently hidden.
- *
- * `hidden` and not a count when the layer is not being drawn, because a count
- * there is a lie in two different ways at once. Rocks keep stepping while their
- * batches are invisible (a hidden boulder still displaces a tree), so their
- * numbers stay live and describe geometry nobody is rendering; trees, ferns and
- * grass skip update() entirely, so theirs freeze at whatever the world was when
- * the row was switched off and read as current.
- */
-function scatterCells(label, shown, s) {
-  return [
-    [label, '#7f95b4'],
-    shown
-      ? [`${kilo(s.placed - s.rimHidden)}/${kilo(s.tris)}`.padEnd(11), '#8fd48f']
-      : ['hidden'.padEnd(11), '#5c6b7d'],
-  ]
-}
-
 function updateQuestStats() {
   if (!questStatsTexture || !ready) return
   // Nothing to read unless the debug view is up, and this is not free: it
-  // measures and lays out nine rows of canvas text and then sets needsUpdate,
+  // measures and lays out rows of canvas text and then sets needsUpdate,
   // which re-uploads a 1536-wide texture. Measuring the frame is not worth
   // spending the frame on. It redraws on the frame the view opens, so the
   // numbers are current the instant they are visible.
   if (!questPanelGroup.visible || questView !== 'debug') return
   const info = renderer.info
-  const st = terrain.stats
-  const ts = trees.stats
-  const rs = rocks.stats
+  const amb = ambientTrace.status()
   const fps = avgMs > 0 ? 1000 / avgMs : 0
   const fps5 = avgMs5 > 0 ? 1000 / avgMs5 : 0
   const low5 = worstMs5 > 0 ? 1000 / worstMs5 : 0
@@ -2866,90 +2828,23 @@ function updateQuestStats() {
       ['REND ', '#7f95b4'], [cpuTime.renderMs.toFixed(1).padEnd(6), '#ffd27a'],
       ['FB ', '#7f95b4'], [String(FB_SCALE), FB_SCALE === 1 ? '#cfe3ff' : '#ffd27a'],
     ],
+    // Per-layer instances, triangles and ms go to the ambient traces (traceLayers), not here.
     [
-      ['terrain res ', '#7f95b4'], [String(st.slots).padEnd(6), '#cfe3ff'],
-      ['drawn ', '#7f95b4'], [String(st.rendered).padEnd(6), '#cfe3ff'],
-      ['tris ', '#7f95b4'], [kilo(st.drawnTris).padEnd(7), '#cfe3ff'],
-      ['q ', '#7f95b4'], [String(st.queued).padEnd(4), st.queued > 0 ? '#ffd27a' : '#cfe3ff'],
-      ['deg ', '#7f95b4'], [st.triDeg.toFixed(1).padEnd(5), '#cfe3ff'],
+      ['ambient ', '#7f95b4'], [`${amb.saved} saved`.padEnd(10), '#8fd48f'],
+      [`${amb.failed} failed`.padEnd(10), amb.failed > 0 ? '#ff6b6b' : '#5c6b7d'],
+      [amb.env.padEnd(22), '#cfe3ff'],
+      ...(amb.error ? [[amb.error.slice(0, 40), '#ff6b6b']] : []),
     ],
     [
-      ...scatterCells('tree ', questToggles.trees, ts),
-      ...(questToggles.trees
-        ? [
-            ['tiles ', '#7f95b4'], [`${ts.nearTiles}/${kilo(ts.tiles)}`.padEnd(11), '#cfe3ff'],
-            // Main-thread ms of Trees.update, and how many tiles have been
-            // re-seated on a re-split chunk since boot. Standing still, the
-            // second should hold; if it climbs, the head's yaw is re-splitting
-            // the terrain and every tick is a full re-upload of the card mesh's
-            // matrix buffer (prop-arena.js, setMatrixAt).
-            ['upd ', '#7f95b4'], [`${ts.updateMs.toFixed(1)}ms`.padEnd(7), ts.updateMs >= 1.5 ? '#ffd27a' : '#cfe3ff'],
-            ['rg ', '#7f95b4'], [String(ts.regrounds).padEnd(7), '#cfe3ff'],
-            // Present ONLY while an ablation is on. The row describes the shipped
-            // forest unless it says otherwise, and a flag that is always there stops
-            // being read -- so nothing is spent on the case that needs no warning.
-            ...(ts.cardsOnly ? [['CARDS ONLY ', '#ffd27a']] : []),
-            ...(ts.cutout ? [] : [['NO CUTOUT', '#ffd27a']]),
-          ]
-        : []),
-    ],
-    [
-      ...scatterCells('grass ', questToggles.grass, grass.stats),
-      ...scatterCells('rock ', questToggles.boulders, rs),
-      // Main-thread ms of Rocks.update, and the instances its per-rock LOD
-      // ladder walked this frame over the resident tile count. The draw cost
-      // is what is left of the rock row's toll once this is subtracted.
-      ...(questToggles.boulders
-        ? [
-            ['upd ', '#7f95b4'], [`${rs.updateMs.toFixed(1)}ms`.padEnd(7), rs.updateMs >= 1.5 ? '#ffd27a' : '#cfe3ff'],
-            ['walk ', '#7f95b4'], [`${kilo(rs.walked)}/${kilo(rs.tiles)}`.padEnd(11), '#cfe3ff'],
-          ]
-        : []),
-      ...scatterCells('fern ', questToggles.ferns, ferns.stats),
       ['flat ', '#7f95b4'], [(height.flatY === null ? 'off' : `${height.flatY.toFixed(0)}m`).padEnd(6), '#8fd48f'],
-      ['mode ', '#7f95b4'], [player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk', '#8fd48f'],
-    ],
-    // The rock row split by ladder rung, T320 to T6: drawn rocks on that rung
-    // over the triangles it costs, cross-fade ghosts included in the latter.
-    [
-      ['rock lod ', '#7f95b4'],
-      ...(questToggles.boulders
-        ? rs.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']])
-        : [['hidden'.padEnd(11), '#5c6b7d']]),
-    ],
-    // The same row for the wildlife, rung by rung: this is what says a stag
-    // twenty metres off is on rung 1 and not rung 0 (critters.js LOD_DEG).
-    // `card` is the rung under those four, where a body is a spun quad and has
-    // no triangle count worth printing. `wildlife` is null and then unloaded
-    // before its GLBs land, and this view runs from the first frame.
-    [
-      ['critter lod ', '#7f95b4'],
-      ...(animalOn('wildlife') && wildlife && wildlife.loaded
-        ? [
-            ...wildlife.stats.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']]),
-            ['card ', '#7f95b4'], [String(wildlife.stats.cards).padEnd(4), '#8fd48f'],
-          ]
-        : [['hidden'.padEnd(11), '#5c6b7d']]),
-    ],
-    // And for the dragons, with what each of them is doing: the states are the hunt's, and `carrying` how many have a stag.
-    [
-      ['dragon lod ', '#7f95b4'],
+      ['mode ', '#7f95b4'], [(player.flying ? 'fly' : questToggles.teleport ? 'teleport' : 'walk').padEnd(10), '#8fd48f'],
+      // What each dragon is doing (the hunt's states), and how many carry a stag.
       ...(animalOn('dragons') && dragons && dragons.loaded
         ? [
-            ...dragons.stats.lod.flatMap((l, t) => [[`${t} `, '#7f95b4'], [`${kilo(l.n)}/${kilo(l.tris)}`.padEnd(11), '#8fd48f']]),
-            ['card ', '#7f95b4'], [String(dragons.stats.cards).padEnd(3), '#8fd48f'],
-            [Object.entries(dragons.stats.states).map(([s, n]) => `${s} ${n}`).join(' ').padEnd(20), '#cfe3ff'],
+            ['dragons ', '#7f95b4'], [Object.entries(dragons.stats.states).map(([s, n]) => `${s} ${n}`).join(' ').padEnd(20), '#cfe3ff'],
             ['carrying ', '#7f95b4'], [String(dragons.stats.carrying).padEnd(2), '#8fd48f'],
           ]
-        : [['hidden'.padEnd(11), '#5c6b7d']]),
-    ],
-    // Main-thread ms in each animal layer's own step, a 5 s mean, and the nine added up.
-    // The `animals` row costs whatever it costs; this says how much of that a
-    // simulation could possibly account for, and the remainder is the draw.
-    [
-      ['animal ms ', '#7f95b4'],
-      ...ANIMAL_LAYERS.flatMap((k) => [[`${k.slice(0, 4)} `, '#7f95b4'], [animalMs[k].toFixed(2).padEnd(5), animalMs[k] >= 0.5 ? '#ffd27a' : '#cfe3ff']]),
-      ['sum ', '#7f95b4'], [animalMsSum().toFixed(2).padEnd(5), animalMsSum() >= 2 ? '#ff6b6b' : '#8fd48f'],
+        : []),
     ],
     [
       ['pads ', '#7f95b4'], [String(inp.connected).padEnd(3), inp.connected > 0 ? '#8fd48f' : '#ff6b6b'],
@@ -3135,7 +3030,7 @@ function reinHand(out, key) {
   const left = hands.holding('left') === null || hands.holding('right') !== null
   return (left ? leftGrip : rightGrip).getWorldPosition(out)
 }
-// Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size, like a thing carried near the face.
+// Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size: a fern is shown a third its size, like a thing carried near the face.
 const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
 const DESK_CLICK_PX = 5
@@ -3257,7 +3152,7 @@ let ready = false
 const questToggles = {
   terrain: true, huts: true, towns: true, townsfolk: true,
   trees: true, boulders: true, grass: true, ferns: true, litter: true, animals: true, fish: true, frogs: true, crabs: true, butterflies: true, grasshoppers: true, fireflies: true, spiders: true, wildlife: true, snowmen: true, leafkin: true, dragons: true,
-  water: true, reflections: true, aurora: true, clouds: true, precip: true, fire: true, sound: true,
+  water: true, reflections: true, skyProbe: true, aurora: true, clouds: true, precip: true, fire: true, sound: true,
   // Off until the summit wreaths are redone; the menu row still turns them on.
   wreaths: false,
   critterTint: false, mirror: false, terrainWire: false, roadLines: false, obstacleWire: false,
@@ -3314,7 +3209,6 @@ const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 const animalMsAcc = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
 let animalMsFrames = 0
 let animalMsSince = 0
-const animalMsSum = () => ANIMAL_LAYERS.reduce((sum, k) => sum + animalMs[k], 0)
 /** Run `fn` if its layer's rows are on, and bank what it cost. A frozen layer banks nothing, so its next reading is zero. */
 function stepAnimal(key, fn) {
   if (!animalOn(key)) return
@@ -3672,7 +3566,8 @@ function bakeImpostors() {
   // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
   const rockCards = once('rocks', () => bakeRockImpostor(renderer, propTextures))
   // NOT on that list: the hearth builds a card MESH of its own each time, so its
-  // bake is per-hearth and not per-atlas.
+  // bake is per-hearth and not per-atlas; the bridges' picture lives in this room's card pool.
+  if (bridges) bridges.bakeCard(renderer)
   if (hearth) {
     const h = hearth.bakeCard(renderer)
     console.log(`hearth impostor baked: luma ${h.meanLuma.toFixed(3)} cover ${h.coverage.toFixed(3)} ${h.width.toFixed(2)} x ${h.height.toFixed(2)} m`)
@@ -4630,7 +4525,7 @@ async function buildRoom(room, at) {
     const patch = (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey })
     signposts = new Signposts(scene, { signs: roadPlan.signs, names: townPlan.towns.map((t) => t.name), field: height, textures: propTextures, patch })
     signposts.update(spawn.x, spawn.z)
-    bridges = new Bridges(scene, { bridges: roadPlan.bridges, stone: await loadStoneBridge(), textures: propTextures, patch, water: waterSurfaces })
+    bridges = new Bridges(scene, { bridges: roadPlan.bridges, stone: await loadStoneBridge(), textures: propTextures, patch, water: waterSurfaces, cards: litterCards })
     bridges.update(spawn)
     roadLines = buildRoadLines(roadPlan, townPlan.towns)
     roadLines.visible = questToggles.roadLines
@@ -5067,6 +4962,7 @@ async function buildRoom(room, at) {
   hands.addSource(butterflies, 'butterfly')
   hands.addSource(fish, 'fish')
   hands.addSource(crabs, 'crab')
+  hands.addSource(ferns, 'fern')
   hands.addSource(litter, 'pebble')
   hands.addSource(grasshoppers, 'grasshopper')
   hands.addSource(bones, bones.kinds)
@@ -5152,12 +5048,15 @@ async function buildRoom(room, at) {
   await bootStep('sound')
   soundReady.then((ok) => {
     if (!ok || build !== roomBuild) return
+    // The towns' doors, but those of the house she is in, which its residents sound.
+    const folk = townsfolk
+    const townDoors = folk && { voices: (into) => folk.voices(into, indoors && indoors.town ? indoors.town : null) }
     ambience = new Ambience({
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -5738,7 +5637,7 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
-      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
+      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'hold click', what: `with a carrot, fish or mushroom in the hand, hold for ${EAT.holdS} s to eat it; in the headset, hold it to your mouth` },
       { keys: 'drag', what: `with chalk in the hand in a cave, draw on the rock under the cursor within ${DESK_CLICK_M} m; in the headset, hold the chalk to the rock` },
@@ -5886,93 +5785,6 @@ function cycleAurora() {
 
 function cycleAuroraInterval() {
   console.log(`[aurora] map every ${aurora.cycleInterval()}s`)
-}
-
-/**
- * Step a cycle from wherever the layer currently sits. A value that is not on
- * the list lands on the list's head, so the row always goes somewhere sensible
- * rather than nowhere.
- */
-function stepCycle(list, now) {
-  const i = list.findIndex((v) => Math.abs(v - now) < 1e-6)
-  return i < 0 ? list[0] : list[(i + 1) % list.length]
-}
-
-// --- the tree knobs, and WHY THERE ARE THREE OF THEM -------------------------
-//
-// The forest's per-frame bill has two halves that the shipped numbers move
-// together, and these rows exist to pull them apart on the headset:
-//
-//   REACH moves BOTH. Resident tiles go as the radius SQUARED -- 1500 m is
-//   ~11,300 of them, walked in eight phase buckets and only once the camera has
-//   moved since the bucket's last walk (trees.js, STILL_M) -- while INSTANCES
-//   go as the radius linearly, because of the graded thinning. Halving the
-//   reach quarters the tile walk and halves the billboards.
-//
-//   FALLOFF moves only the instances. The tile set is identical at every
-//   exponent; what changes is how many trees each far tile keeps. ^3 cuts the
-//   far field by roughly 94% and leaves the walk exactly where it was.
-//
-// So falloff pressed ALONE is the measurement: if the headset recovers at a
-// fixed 1500 m reach, the bill is instances, which is the GPU; if it barely
-// moves and only reach helps, the bill is the per-tile CPU walk.
-//
-// Both regrow the whole scatter and cost a hitch on the frame they are pressed,
-// but NEITHER rebuilds the bank, the impostor bake, the material or the arena --
-// so unlike the grass rows these keep the panel's cull and visibility flags,
-// because the meshes are the same objects afterwards. See Trees.setScatter.
-//
-//   MESH moves NEITHER, and it is the only row that trades quality for cost
-//   rather than lushness for cost. It moves where a tree stops being a MESH and
-//   becomes one flat spun card, which is the only remaining boundary in the
-//   ladder and the one place a Quest wearer can catch the forest being made of
-//   pictures -- stereo resolves about 1.3 m of depth at 24 m against a crown 3
-//   to 6 m deep. Outward costs ~380 triangles a tree over an area growing as the
-//   square; inward is nearly free and is how you find out whether 24 m was ever
-//   needed. `off` puts the band at LOD0's edge, which empties the arena's four
-//   LOD1 meshes -- and three.js skips an instanced draw of zero, so `off` is
-//   genuinely four fewer calls per eye.
-//
-// Only this row re-tiers in place; there is no regrow behind it. See
-// Trees.setMeshBand.
-const TREE_RADIUS_CYCLE = [1500, 1000, 750, 400]
-const TREE_FALLOFF_CYCLE = [1, 1.5, 2, 3]
-// Shipped, then out to the ceiling the meshes were sized for, then down to
-// LOD_BANDS[0], which is the tier's inner edge and therefore `off`.
-// Where LOD1 hands over to the billboard. The list runs INWARD from where the
-// forest ships, ending on the 8 m LOD0 edge -- a band with no width, which is
-// LOD1 switched off and four fewer draw calls per eye. See Trees.setMeshBand.
-// The outward rungs are gone: MESH_BAND_MAX still allows 45 m, but what this row
-// is being read for is what the middle tier COSTS, and that is measured by
-// taking it away.
-const TREE_MESH_CYCLE = [24, 16, 8]
-
-const meshBandLabel = (b) => (b <= TREE_MESH_CYCLE[TREE_MESH_CYCLE.length - 1] ? `${b} m off` : `${b} m`)
-
-function cycleTreeMesh() {
-  if (!trees) return
-  trees.setMeshBand(stepCycle(TREE_MESH_CYCLE, trees.lodBands[1]))
-  console.log(`[v2] tree LOD1 band: ${meshBandLabel(trees.lodBands[1])}`)
-}
-
-function cycleTreeRadius() {
-  setTreeScatter({ radius: stepCycle(TREE_RADIUS_CYCLE, trees ? trees.radius : NaN) })
-}
-
-function cycleTreeFalloff() {
-  setTreeScatter({ falloff: stepCycle(TREE_FALLOFF_CYCLE, trees ? trees.falloff : NaN) })
-}
-
-function setTreeScatter(patch) {
-  if (!trees) return
-  player.headPosition(headTmp)
-  trees.setScatter(headTmp.x, headTmp.z, patch)
-  const ts = trees.stats
-  console.log(
-    `[v2] trees regrown: ${ts.placed} over ${ts.tiles} tiles in ${ts.placeMs.toFixed(0)} ms ` +
-    `(${ts.density}/m^2 to ${ts.fullRadius} m, thinning ^${ts.falloff} to ${ts.radius.toFixed(0)} m, ` +
-    `pool ${ts.used}/${ts.pool})`
-  )
 }
 
 addEventListener('keydown', (e) => {
@@ -6522,12 +6334,40 @@ const airHook = {
 let last = performance.now()
 const spikes = new Spikes()
 window.v2spikes = spikes // console: `v2spikes.recent`
-const recordTrace = new RecordTrace({
-  camera,
+/** What each layer drew this frame, for the trace windows: instances (`n`, after the rim's hiding pass, so what the GPU was handed), triangles, and main-thread ms where the layer times its own update. A layer switched off is left out, as is everything indoors: rocks keep stepping while hidden and the other scatters freeze, so their numbers would describe nothing drawn. */
+function traceLayers() {
+  const out = {}
+  if (!ready || indoors || cave !== null) return out
+  const scatter = (key, on, s) => { if (on) out[key] = { n: s.placed - s.rimHidden, tris: s.tris } }
+  const rungs = (key, layer) => {
+    if (!animalOn(key) || layer === null || !layer.loaded) return
+    out[key] = { n: layer.stats.cards, tris: 0, cards: layer.stats.cards }
+    for (const l of layer.stats.lod) { out[key].n += l.n; out[key].tris += l.tris }
+  }
+  if (questToggles.terrain && terrain !== null) out.terrain = { n: terrain.stats.rendered, tris: terrain.stats.drawnTris, resident: terrain.stats.slots, queued: terrain.stats.queued }
+  if (trees !== null) scatter('trees', questToggles.trees, trees.stats)
+  if (trees !== null && questToggles.trees) Object.assign(out.trees, { ms: r2(trees.stats.updateMs), nearTiles: trees.stats.nearTiles })
+  if (rocks !== null) scatter('rocks', questToggles.boulders, rocks.stats)
+  if (rocks !== null && questToggles.boulders) Object.assign(out.rocks, { ms: r2(rocks.stats.updateMs), walked: rocks.stats.walked, lod: rocks.stats.lod.map((l) => l.n) })
+  if (grass !== null) scatter('grass', questToggles.grass, grass.stats)
+  if (ferns !== null) scatter('ferns', questToggles.ferns, ferns.stats)
+  rungs('wildlife', wildlife)
+  rungs('dragons', dragons)
+  const animals = {}
+  for (const k of ANIMAL_LAYERS) if (animalMs[k] >= 0.05) animals[k] = r2(animalMs[k])
+  out.animalMs = animals
+  return out
+}
+const traceHost = {
   spikes,
   gpuTake: () => gpuTimer.take(),
   position: () => player.rig.position,
   flying: () => player.flying,
+  layers: traceLayers,
+}
+const recordTrace = new RecordTrace({
+  ...traceHost,
+  camera,
   context: () => perfTrace.host.context(),
   hidePanel: () => perfTrace.host.hidePanel(),
   play: (clip, rate, gain) => perfTrace.host.play(clip, rate, gain),
@@ -6535,6 +6375,26 @@ const recordTrace = new RecordTrace({
   refresh: () => refreshQuestRow('perfRecord'),
 })
 window.v2record = recordTrace // console: `v2record.toggle()` starts and stops it on the desktop
+const ambientTrunks = new Float32Array(TRUNK_STRIDE * 256)
+const ambientTrace = new AmbientTrace({
+  ...traceHost,
+  active: () => ready && fatalError === null && renderer.xr.isPresenting && !questPanelGroup.visible && !perfTrace.running && !recordTrace.recording,
+  context: () => ({ ...perfTrace.host.context(), peers: netplay.peers.size }),
+  env: () => {
+    const p = player.rig.position
+    const out = !indoors && cave === null
+    return {
+      room: cave !== null ? 'cave' : indoors ? (indoors.town ? 'house' : 'hut') : currentRoom.village ? 'glade' : 'overworld',
+      town: out && towns !== null && towns.nearBuildingAt(p.x, p.z, 30),
+      trunks: out && trees !== null ? trees.trunksInto(p.x - 20, p.z - 20, p.x + 20, p.z + 20, ambientTrunks) : 0,
+      agl: out ? p.y - height.heightAt(p.x, p.z) : 0,
+      dayness,
+      precip: precip.mesh.visible ? precip.intensity : 0,
+      snow: precip.snow,
+    }
+  },
+})
+window.v2ambient = ambientTrace // console: `v2ambient.status()`
 let frames = 0
 let acc = 0
 let avgMs = 0
@@ -7809,6 +7669,8 @@ function tick() {
   if (cave === null && !indoors) stepOverworld(dt, now)
   // In a leafkin house the village goes on without her (~1 ms a second), so its own come home and go out (Residents.sync).
   else if (indoors && !indoors.town && villagers) stepAnimal('leafkin', () => villagers.settle(clock.seconds, dt))
+  // In a town's house the town goes on without her too, so its folk come home and go out (TownResidents.sync).
+  else if (indoors && indoors.town && townsfolk && questToggles.townsfolk) townsfolk.settle(clock.seconds)
   stepEating(dt)
   stepSize()
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
@@ -7892,7 +7754,7 @@ function tick() {
   // a render target and toggle renderer.xr off to get their own camera looked
   // through. See sky-probe.js.
   spikes.lap('editor+panel')
-  if (questToggles.reflections && cave === null && !indoors) probe.update(renderer, scene, headTmp, dt, aurora.mesh.visible)
+  if (questToggles.reflections && questToggles.skyProbe && cave === null && !indoors) probe.update(renderer, scene, headTmp, dt, aurora.mesh.visible)
   // `waterY` is the surface she is at or nearest to, written by applySubmersion
   // earlier this same frame. It is a FLOOR on how low the capture may sit, not
   // the answer -- see WORLD_PROBE.duck, which is what stops a lake shore
@@ -8101,6 +7963,7 @@ AFRAME.registerComponent('v2-quest-tick', {
     perfTraceFrame.tris = mainRender.triangles
     perfTrace.frame(perfTraceFrame)
     recordTrace.frame(perfTraceFrame)
+    ambientTrace.frame(perfTraceFrame)
     renderOverlay()
     spikes.end()
   },

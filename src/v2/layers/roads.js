@@ -36,8 +36,8 @@ export const ROAD = {
   prune: 1.3,
   // Metres of dry ground kept between a road's cells and a river's bank band, or any other water.
   riverPad: 6,
-  // Crossings are tried every `every` metres of river, where the shipped bridge (design/34-bridges.md §The shipped mesh) spans the drawn water at an x scale no more than scale[1]. The road runs `approach` metres straight out from each of its tips, and the river must turn less than `turn` radians over 20 m either side. A tip must stand `bank` metres over the water. `penalty` is the metres of travel each span of a new bridge costs, so a long lake chain is laid only where going round is far worse; one already built costs only its length.
-  cross: { every: 12, scale: [0.7, 1.3], approach: 10, turn: 0.2, bank: 0.4, grade: 0.3, penalty: 150 },
+  // Crossings are tried every `every` metres of river, where the shipped bridge (design/34-bridges.md §The shipped mesh) spans the drawn water at an x scale of scale[0] to `stretch`, chaining spans end to end where one would stretch further; y keeps within `scale`. The road runs `approach` metres straight out from each of its tips, and the river must turn less than `turn` radians over 20 m either side. A tip must stand `bank` metres over the water. `penalty` is the metres of travel each span of a new bridge costs, so a long lake chain is laid only where going round is far worse; one already built costs only its length.
+  cross: { every: 12, scale: [0.7, 1.3], stretch: 1.8, approach: 10, turn: 0.2, bank: 0.4, grade: 0.3, penalty: 150 },
   // A lake is crossed on a straight chain of shipped bridges end to end, at most `max` m of water, tried along `dirs` headings from one shore cell in every `step` cells square.
   lake: { max: 160, dirs: 16, step: 3 },
   // The laid road: control points every `spacing` m after `smooth` passes of neighbour averaging, then meandered like the town roads, the sway fading in over `envelope` m from each end.
@@ -183,9 +183,9 @@ function findCrossings(layers, surface, blocked) {
       const hw = s[k * 4 + 3]
       const dhw = drawnHalfWidth(hw)
       // A stream narrower than the least x scale spans takes that scale, its ends landing on dry bank.
-      const sx = Math.max(X.scale[0], (2 * dhw) / STONE_BRIDGE.span)
-      if (sx > X.scale[1]) continue
-      const tipD = STONE_BRIDGE.xb * sx
+      const spans = Math.max(1, Math.ceil((2 * dhw) / (STONE_BRIDGE.span * X.stretch)))
+      const sx = Math.max(X.scale[0], (2 * dhw) / (STONE_BRIDGE.span * spans))
+      const tipD = spans * STONE_BRIDGE.xb * sx
       const endD = Math.max(tipD + X.approach, hw * BANK + ROAD.riverPad + 4)
       let ok = true
       const side = []
@@ -220,7 +220,7 @@ function findCrossings(layers, surface, blocked) {
       const sy = Math.min(X.scale[1], Math.max(X.scale[0], (0.5 * (side[0].yTip + side[1].yTip) - level) / STONE_BRIDGE.bank))
       const yEnd = level + sy * STONE_BRIDGE.bank
       if (side.some((sd) => Math.abs(sd.yOut - yEnd) / (endD - tipD) > X.grade)) continue
-      out.push({ river: r.id, x, z, nx, nz, level, hw, sx, sy, yEnd, tipD, endD, spans: 1, side, cells: [side[0].cell, side[1].cell], way: -1 })
+      out.push({ river: r.id, x, z, nx, nz, level, hw, sx, sy, yEnd, tipD, endD, spans, side, cells: [side[0].cell, side[1].cell], way: -1 })
     }
   }
   return out
@@ -271,7 +271,7 @@ function findLakeCrossings(layers, surface, blocked) {
       const key = `${Math.round(x / 16)},${Math.round(z / 16)},${k % (dirs / 2)}`
       if (seen.has(key)) continue
       seen.add(key)
-      const spans = Math.max(1, Math.ceil(S / (2 * xb * X.scale[1])))
+      const spans = Math.max(1, Math.ceil(S / (2 * xb * X.stretch)))
       const sx = Math.max(X.scale[0], S / (2 * xb * spans))
       const tipD = spans * xb * sx
       const endD = tipD + X.approach
@@ -1015,7 +1015,7 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
       const { tip } = X.side[s]
       records.push({ id: roadId(), feather: 1, pts: [[node.x, nodeY(node), node.z, ROAD.width], [tip[0], yEnd, tip[1], ROAD.width + 1]] })
     }
-    // Each span's frame: origin on the centre line at the water, local +x from side 0's end to side 1's, rotation.y = yaw. A lake's spans run end to end from side 0's tip.
+    // Each span's frame: origin on the centre line at the water, local +x from side 0's end to side 1's, rotation.y = yaw. A chain's spans run end to end from side 0's tip.
     const half = STONE_BRIDGE.xb * X.sx
     for (let i = 0; i < X.spans; i++) {
       const o = (2 * i + 1) * half - X.tipD
