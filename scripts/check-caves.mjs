@@ -7,6 +7,7 @@
 import { planCave, EXIT_R } from '../src/v2/caves/build.js'
 import { DROP_MIN } from '../src/v2/caves/graph.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
+import { WalkSurface } from '../src/v2/walk.js'
 import { chunkList, meshChunk, CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../src/v2/caves/mesh.js'
 import { Chalk, ChalkPen, encode, decode, valid, onRock, rayRock, ribbons, QUANT_M, STEP_M, STROKE_MAX, BATCH } from '../src/v2/caves/chalk.js'
 import { groupSystems, caveEntries, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
@@ -121,6 +122,11 @@ for (const sys of SYSTEMS) {
     const ok = walk.fits(d.x, d.z, d.y) && walk.trueWaterAt(d.x, d.z, d.y + 1.6) === null && Math.hypot(d.x - d.mx, d.z - d.mz) > EXIT_R + 1
     check(ok, `${tag}: mouth ${doors.indexOf(d)} lands her standing and dry, clear of the exit`)
   }
+
+  // main.js asks the ground under her whichever it is: a query WalkSurface answers that CaveWalk lacks is a TypeError the first time she aims a teleport underground.
+  const walkQueries = (C) => Object.getOwnPropertyNames(C.prototype).filter((k) => !['constructor', 'setScale', 'setWater', 'addStone', 'addBody', 'removeBody'].includes(k))
+  const missing = walkQueries(WalkSurface).filter((k) => typeof walk[k] !== 'function')
+  check(missing.length === 0 && walk.stairAt(doors[0].x, doors[0].y, doors[0].z) === null, `${tag}: the cave walk answers every WalkSurface query, with no stairs`, missing.join(', '))
 
   // Sunk to the world depth main.js builds caves at, every answer moves by oy and nothing else.
   const OY = -2000

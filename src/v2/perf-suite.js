@@ -55,6 +55,8 @@ export const GROUPS = [
   // A Leafkin village's fixtures, a human town's buildings, and a town's people and striders. Drills for layers the
   // current room lacks are skipped (host.present).
   { name: 'village', off: VILLAGE, drill: [...['towns', 'townsfolk', 'huts'].map((k) => ({ name: k, off: [k] })), { name: 'people', off: ['townsPeople'] }, { name: 'striders', off: ['townsStriders'] }, { name: 'hearth+forge', off: ['townsFires'] }] },
+  // The ground alone, everything else on: its own saving, where `floor+terrain` only brackets it from the empty world.
+  { name: 'terrain', off: ['terrain'], drill: [], once: true },
   // The floor: what a frame costs with the world taken away. Its per-stage laps (samples[].stages) and
   // waitMs say where that cost is when no layer is drawing; `floor+terrain` puts only the ground back.
   { name: 'everything', off: EVERYTHING, drill: [], once: true },

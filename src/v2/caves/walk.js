@@ -124,6 +124,11 @@ export class CaveWalk {
     return Math.acos(Math.min(1, this.normalAt(x, z, eps, undefined, y).y))
   }
 
+  /** WalkSurface.stairAt: a cave has no stairs. */
+  stairAt() {
+    return null
+  }
+
   /** A stalagmite or column standing in her way at (x, z) about hintY, as {x, z, r}. */
   obstacleAt(x, z, out, skip = null) {
     const list = this._obins.get(Math.floor(x / OBIN) * 65536 + Math.floor(z / OBIN))

@@ -104,9 +104,6 @@ function boneIndex(asset, name) {
   return i
 }
 
-// Frames between a drawn body's steps by its distance from her (m): every frame under NEAR, every 2nd past it, every 4th past FAR.
-const STAGGER = { near: 10, far: 20 }
-const stagger = (dist) => (dist > STAGGER.far ? 4 : dist > STAGGER.near ? 2 : 1)
 
 export const TOWNSFOLK = {
   // The avatars (public/creatures/<id>.glb), one of each to a town (layers/trades.js castFolk), and puppets per avatar: the most drawn at once is their product.
@@ -1387,7 +1384,7 @@ export class Townsfolk {
 
   /** `graph` is its town's (townGraph), null for a traveller off the road. */
   _entity(c, graph = null) {
-    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0, shove: { x: 0, z: 0 }, owed: 0, skip: false })
+    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
   }
 
   _wake(i) {
@@ -1462,15 +1459,10 @@ export class Townsfolk {
         if (c.hidden && !c.puppet && !c.greet && !c.lag) continue
         // Past the ladder with no puppet there is nothing to pose or draw; the sim's own position is enough to know when she comes back into range.
         if (c.lod === LOD_TIERS && !c.puppet && c.greet === null && !c.lag) {
-          c.owed = 0
-          c.lod = critterTier(c.size, Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z), c.lod, LOD_TIERS)
+          c.lod =critterTier(c.size, Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z), c.lod, LOD_TIERS)
           if (c.lod === LOD_TIERS) continue
         }
-        // A drawn body far from her is posed and drawn only every STAGGER step, with the time it missed; a rider, a greeter or one catching up always.
-        c.owed = Math.min(c.owed + dt, 0.25)
-        const every = c.puppet && !c.mount && c.greet === null && !c.lag ? stagger(c.dist) : 1
-        c.skip = every > 1 && (this.frame + c.id) % every !== 0
-        if (!c.skip) this._pose(c, life.alpha, feet, seconds, c.owed)
+        this._pose(c, life.alpha, feet, seconds, dt)
         c.dist = Math.hypot(c.pose.x - head.x, c.pose.y - head.y, c.pose.z - head.z)
         drawn.push(c)
       }
@@ -1494,11 +1486,7 @@ export class Townsfolk {
     }
     drawn.sort((a, b) => a.dist - b.dist)
     this.ranks.fill(0)
-    for (const c of drawn) {
-      if (c.skip) { this.ranks[c.body]++; continue }
-      this._draw(c, c.owed)
-      c.owed = 0
-    }
+    for (const c of drawn) this._draw(c, dt)
     this.shown.length = 0
     for (const c of drawn) if (c.puppet) this.shown.push(c)
     this._tools()
@@ -1832,8 +1820,6 @@ export class Townsfolk {
       pose.heading = r.fresh ? at.heading : pose.heading + Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       r.fresh = false
       c.dist = Math.hypot(pose.x - head.x, pose.y - head.y, pose.z - head.z)
-      c.owed = dt
-      c.skip = false
       if (!c.hidden || c.puppet) drawn.push(c)
       if (!m) continue
       Object.assign(m.pose, { x: pose.x, y: pose.y, z: pose.z, heading: pose.heading })
