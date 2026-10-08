@@ -27,6 +27,7 @@ const VERTEX_COMMON = /* glsl */ `
   uniform float uPropClock;
   uniform vec4 uCardBox[${MAX_PICTURES}];
   uniform float uCardKind[${MAX_PICTURES}];
+  uniform float uCardTilt[${MAX_PICTURES}];
   varying float vPropFade;
   varying vec2 vCardUv;
   flat varying float vCardLayer;
@@ -52,7 +53,7 @@ const VERTEX_BODY = /* glsl */ `
       transformed = vec3( cb.xy + cu * ( 2.0 * position.y * cb.w ), -2.0 * position.x * cb.z );
     } else {
       transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
-      ${billboardVertex(false, 'vCardUv')}
+      ${billboardVertex(false, 'vCardUv', 'uCardTilt[ ci ]')}
     }
     ${FADE_VERTEX}
   }`
@@ -90,6 +91,7 @@ export class LitterCards {
     this.pictures = 0
     this.box = Array.from({ length: MAX_PICTURES }, () => new THREE.Vector4())
     this.kind = new Float32Array(MAX_PICTURES)
+    this.tilt = new Float32Array(MAX_PICTURES)
 
     const stride = TEX_SIZE * TEX_SIZE * 4
     this.stride = stride
@@ -124,14 +126,17 @@ export class LitterCards {
     this.owners.push(`${owner}:${n}`)
   }
 
-  /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. */
-  addPicture({ kind, cx, cy, hw, hh }) {
+  /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex). */
+  addPicture({ kind, cx, cy, hw, hh, tilt = 0 }) {
     if (kind !== 'spun' && kind !== 'axial' && kind !== 'fixed') throw new Error(`LitterCards: a picture is 'spun', 'axial' or 'fixed', not ${kind}`)
     if (this.pictures >= MAX_PICTURES) throw new Error(`LitterCards: ${MAX_PICTURES} pictures is the table's size`)
     if (!(hw > 0) || !(hh > 0)) throw new Error(`LitterCards: need a positive half width and height, got ${hw} x ${hh}`)
+    if (!(tilt >= 0 && tilt <= 1)) throw new Error(`LitterCards: tilt must be in [0, 1], got ${tilt}`)
+    if (tilt && kind !== 'spun') throw new Error(`LitterCards: only a spun picture tilts, not ${kind}`)
     const i = this.pictures++
     this.box[i].set(cx, cy, hw, hh)
     this.kind[i] = kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : SPUN
+    this.tilt[i] = tilt
     return i
   }
 
@@ -173,6 +178,7 @@ export class LitterCards {
       shader.uniforms.uPropClock = propClockUniform()
       shader.uniforms.uCardBox = { value: this.box }
       shader.uniforms.uCardKind = { value: this.kind }
+      shader.uniforms.uCardTilt = { value: this.tilt }
       shader.uniforms.uCardPics = { value: this.texture }
       bindHeadEye(shader.uniforms)
       shader.vertexShader = shader.vertexShader

@@ -11,6 +11,7 @@ import { InstancedArena } from './instanced-arena.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
+import { CARD_TILT } from './trees.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 
 // ---------------------------------------------------------------------------
@@ -571,7 +572,8 @@ export class Ferns {
     cards.claim('ferns', this.maxInstances)
     card.geometry.computeBoundingBox()
     const box = card.geometry.boundingBox
-    this.cardPicture = cards.addPicture({ kind: 'spun', cx: 0, cy: (box.min.y + box.max.y) / 2, hw: (box.max.x - box.min.x) / 2, hh: (box.max.y - box.min.y) / 2 })
+    // Pitched toward an eye above it the way the tree cards are, so a fern bed seen from a ridge is fronds and not edges.
+    this.cardPicture = cards.addPicture({ kind: 'spun', cx: 0, cy: (box.min.y + box.max.y) / 2, hw: (box.max.x - box.min.x) / 2, hh: (box.max.y - box.min.y) / 2, tilt: CARD_TILT })
     this.litterCards = cards
     this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-ferns-card')
 

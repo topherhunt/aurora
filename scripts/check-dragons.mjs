@@ -1249,6 +1249,10 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   run(2)
   check(dr.state === 'roost' && dr.live === null && dr.roarCue === 0, `her ${SPOT_M + 5} m off the resting dragon, it does not spot her`)
   her.x = spot.x + SPOT_M - 1
+  her.y = GROUND + 300
+  run(2)
+  check(dr.state === 'roost' && dr.live === null && dr.roarCue === 0, `nor ${SPOT_M - 1} m off across the ground but 300 m over it: SPOT_M is a sphere`)
+  her.y = GROUND
   until(() => dr.live !== null, 1)
   check(dr.state === 'aggro' && dr.live.phase === 'spot' && dr.live.prey === HER_ID && dr.live.by === null && dr.clip === 'alert' && dr.roarCue === 1, `her ${SPOT_M - 1} m off, it spots her: live, aggro, alert, one roar, this client steering`, `state ${dr.state}, phase ${dr.live?.phase}, roars ${dr.roarCue}`)
   until(() => dr.live.phase !== 'spot', SPOT_S + 0.1)
@@ -1285,6 +1289,26 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d.quarry = quarry
   const spurnedFor = dr.spurned - now
   check(Math.abs(spurnedFor - SPURN_S) < TICK_S && d._spot(dr, now) === null && d._eye(dr, now) === null, `and for SPURN_S ${SPURN_S} s it spots nobody, her 5 m off in the open notwithstanding`, `spurned ${fmt(spurnedFor)} s`)
+  d.dispose()
+}
+
+// --- aggro given up overhead: spotted, she rises straight up out of GIVE_UP_M, and it neither bites nor follows ----
+{
+  const site = homeSite(79)
+  const d = dragonsOn(flatField(GROUND), [site], makeHerd([]), 5)
+  d.plan = restPlan(d)
+  let now = chapterOf(1000, keyOf(site)).start
+  const spot = d._born(site, false).site
+  const her = { x: spot.x + SPOT_M - 1, y: GROUND, z: spot.z, open: false, dead: false }
+  const quarry = { her, striders: [] }
+  const until = (ok, s) => { for (let i = 0; i < s * 60 && !ok(); i++) { now += DT; d.update(her.x, her.y + 1.6, her.z, now, [], quarry) } return ok() }
+  d.update(her.x, her.y + 1.6, her.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  until(() => dr.live !== null, 1)
+  const x = dr.x
+  her.y = GROUND + GIVE_UP_M + 5
+  until(() => dr.live === null, 1)
+  check(dr.live === null && dr.state === 'rejoin' && d.hurt.length === 0 && Math.abs(dr.x - x) < 0.5, `spotted, she rises GIVE_UP_M ${GIVE_UP_M} m straight up and it gives her up where it stands, unbitten`, `state ${dr.state}`)
   d.dispose()
 }
 
@@ -1342,6 +1366,13 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d.random = () => { rolls++; return 0 }
   until(() => dr.x > her.x + EYE_M, 120)
   check(dr.live === null && rolls === 0, `flying over her under the trees, it never so much as rolls to eye her`, `${rolls} rolls`)
+  // In the open but 300 m over the ground it flies above: out of its sight.
+  her.open = true
+  her.y = GROUND + 300
+  her.x = dr.x + 200
+  until(() => dr.x > her.x + EYE_M, 60)
+  check(dr.live === null && rolls === 0, `in the open but 300 m over the ground, it never rolls to eye her: EYE_M is a sphere about the ground under it`, `${rolls} rolls`)
+  her.y = GROUND
   // Around again, in the open, the dice against her: one roll the whole pass.
   her.open = true
   her.x = dr.x + 200

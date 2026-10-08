@@ -97,5 +97,18 @@ console.log("a town's tied strider")
   check(S.live.get('k').state === 'calm', 'and the one she led before let go')
 }
 
+console.log('a wild strider and her overhead')
+{
+  const { S, m } = layer(false)
+  S.tamed.clear()
+  // A charge marks it struck, which makes the next one a flee.
+  const at = (y) => { m.state = 'calm'; S.struck.clear(); S._step(m, 1 / 72, { x: 2, y: y + 1.6, z: 0 }, { x: 2, y, z: 0 }, []); return m.state }
+  check(at(300) === 'calm', `${WILD.strike - 2} m off across the ground but 300 m over it, it never notices her`)
+  S.maddened = true
+  check(at(300) === 'calm', 'nor charges her there when her chanterelle maddens it')
+  S.maddened = false
+  check(at(0) === 'charge', 'standing that near on the ground, it charges her')
+}
+
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }
 console.log('\nall ok')

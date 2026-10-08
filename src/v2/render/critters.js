@@ -357,8 +357,11 @@ const CARD_MARGIN = 0.06
 // `mixed` gates the spin per VERTEX on an `aSpin` attribute (1 spun, 0 left
 // where the instance matrix put it), for a card that is one spun quad and one
 // fixed quad in the same geometry (setSpunTopCard). `uv` names the varying whose x
-// the yaw mirrors.
-export const billboardVertex = (mixed, uv = 'vMapUv') => /* glsl */ `
+// the yaw mirrors. `tilt`, a GLSL float expression, pitches the quad about its
+// base toward an eye above it by that fraction of the eye's elevation, as
+// material.js's billboardVertex does for the tree cards: a plant card wants it,
+// a standing animal does not.
+export const billboardVertex = (mixed, uv = 'vMapUv', tilt = null) => /* glsl */ `
   {
     vec4 bbOrigin = instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
     vec4 bbAxis = instanceMatrix * vec4( 1.0, 0.0, 0.0, 0.0 );
@@ -368,7 +371,11 @@ export const billboardVertex = (mixed, uv = 'vMapUv') => /* glsl */ `
     // Degenerate only with her exactly on the axis, where any facing is right.
     vec2 bbTo = ${HEAD_EYE_GLSL}.xz - bbOrigin.xz;
     float bbLen = length( bbTo );
-    vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
+    vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );${tilt ? `
+    // Local +Z is what the spin turns to face her, so a negative pitch leans the top away.
+    float bbPitch = atan( bbOrigin.y - ${HEAD_EYE_GLSL}.y, bbLen ) * ( ${tilt} );
+    vec2 bbPC = vec2( cos( bbPitch ), sin( bbPitch ) );
+    transformed.yz = vec2( transformed.y * bbPC.x - transformed.z * bbPC.y, transformed.y * bbPC.y + transformed.z * bbPC.x );` : ''}
     // Screen-right in world XZ, then the rotation taking the instance's yaw onto it: bbR * conj(bbA).
     vec2 bbR = vec2( bbF.y, -bbF.x );
     vec2 bbC = vec2( bbR.x * bbA.x + bbR.y * bbA.y, bbR.y * bbA.x - bbR.x * bbA.y );

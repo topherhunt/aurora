@@ -527,7 +527,8 @@ export class WildStriders {
   _step(m, dt, head, feet, lures) {
     const p = m.pose, W = WILD, mine = m.by === null
     m.t += dt
-    const near = Math.hypot(p.x - head.x, p.z - head.z)
+    // A sphere, its feet to hers (at her head across the ground), so one ignores her flying overhead.
+    const near = Math.hypot(p.x - head.x, p.y - feet.y, p.z - head.z)
     const face = Math.atan2(-(head.z - p.z), head.x - p.x)
     const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this.isTamed(m.key)
     if (mine && this.maddened && near < EAT.chanterelle.m && MADDENS.has(m.state)) { this._enter(m, 'charge'); return }

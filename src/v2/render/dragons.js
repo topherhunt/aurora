@@ -242,7 +242,7 @@ export const CORRECT_S = 1
 const NO_LURES = []
 const PAIR = [true, false]
 
-// Aggression, in metres and seconds, every distance across the ground: a grounded dragon spots her within SPOT_M; a flying one eyes her in the open, or a strider, within EYE_M at EYE_P or STRIDER_P an encounter, circles CIRCLE_M round where it saw the quarry CIRCLE_AGL over it (one turn, at most CIRCLE_S), and lands LAND_SHORT short of it (at most AGGRO_LAND_S). Down, it stands SPOT_S facing the quarry, charges at CHARGE_MPS, chomps with its snout (EAT_REACH ahead) within BITE_M, the bite BITE_AT_S into the CHOMP_S chomp hurting BITE_HP within HURT_M, growls GROWL_S, and gives up past GIVE_UP_M, eyeing nobody for SPURN_S. A chase after her turns on any strider within SPOT_M.
+// Aggression, in metres and seconds, every distance a sphere -- a flying dragon's about the ground under it: a grounded dragon spots her within SPOT_M; a flying one eyes her in the open, or a strider, within EYE_M at EYE_P or STRIDER_P an encounter, circles CIRCLE_M round where it saw the quarry CIRCLE_AGL over it (one turn, at most CIRCLE_S), and lands LAND_SHORT short of it (at most AGGRO_LAND_S). Down, it stands SPOT_S facing the quarry, charges at CHARGE_MPS, chomps with its snout (EAT_REACH ahead) within BITE_M, the bite BITE_AT_S into the CHOMP_S chomp hurting BITE_HP within HURT_M, growls GROWL_S, and gives up past GIVE_UP_M, eyeing nobody for SPURN_S. A chase after her turns on any strider within SPOT_M.
 export const SPOT_M = 20
 export const EYE_M = 50
 export const EYE_P = 0.5
@@ -1346,12 +1346,12 @@ export class Dragons {
   /** HER if this grounded dragon spots her, else null. */
   _spot(d, now) {
     const her = this.quarry.her
-    return her !== null && !her.dead && now >= d.spurned && Math.hypot(her.x - d.x, her.z - d.z) <= SPOT_M ? HER : null
+    return her !== null && !her.dead && now >= d.spurned && Math.hypot(her.x - d.x, her.y - d.y, her.z - d.z) <= SPOT_M ? HER : null
   }
 
   /** Whether quarry `s` within EYE_M is eyed at odds `p`: rolled the first tick of an encounter only. */
   _sighted(d, id, s, p, now) {
-    if (Math.hypot(s.x - d.x, s.z - d.z) > EYE_M) return false
+    if (Math.hypot(s.x - d.x, s.y - d.ground, s.z - d.z) > EYE_M) return false
     const fresh = !d.eyed.has(id)
     d.eyed.set(id, now)
     return fresh && this.random() < p
@@ -1417,7 +1417,7 @@ export class Dragons {
     if (live.by !== null) { this._trail(d, now); return }
     const q = this._quarryAt(live.prey)
     const air = live.phase === 'swoop' || live.phase === 'land'
-    if (q === null || Math.hypot(q.x - (air ? live.cx : d.x), q.z - (air ? live.cz : d.z)) > GIVE_UP_M) {
+    if (q === null || Math.hypot(q.x - (air ? live.cx : d.x), q.y - (air ? d.ground : d.y), q.z - (air ? live.cz : d.z)) > GIVE_UP_M) {
       d.spurned = now + SPURN_S
       d.eyed.clear()
       this._unlive(d, now)
@@ -1444,7 +1444,7 @@ export class Dragons {
       const feeding = live.prey === HER && q.dead
       if (live.prey === HER && !feeding) {
         for (const s of this.quarry.striders) {
-          if (Math.hypot(s.x - d.x, s.z - d.z) > SPOT_M) continue
+          if (Math.hypot(s.x - d.x, s.y - d.y, s.z - d.z) > SPOT_M) continue
           live.prey = s.key
           this.fright(s.key, d.x, d.z)
           this._phase(d, 'spot', now)
@@ -1454,7 +1454,7 @@ export class Dragons {
       const sw = swing(d.heading, bearing(d, q))
       d.heading += clamp(sw, -WALK_TURN_RATE * TICK_S, WALK_TURN_RATE * TICK_S)
       const reach = EAT_REACH * d.k
-      const snout = Math.hypot(q.x - d.x - Math.cos(d.heading) * reach, q.z - d.z + Math.sin(d.heading) * reach)
+      const snout = Math.hypot(q.x - d.x - Math.cos(d.heading) * reach, q.y - d.y, q.z - d.z + Math.sin(d.heading) * reach)
       const facing = Math.abs(sw) < 0.5
       let want = 0
       if (live.phase === 'spot') {

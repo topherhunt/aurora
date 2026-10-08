@@ -548,8 +548,8 @@ const CLUMP_MIN_KEEP = 0.5
 
 // How far a card pitches toward an eye above it, as a fraction of the eye's
 // elevation (material.js billboardTilt): 1 is a spherical billboard, 0 a
-// cylindrical one.
-const CARD_TILT = 0.5
+// cylindrical one. The fern cards share it.
+export const CARD_TILT = 0.5
 
 // How much of the snow slider one CANOPY may take, rolled per tree. See
 // syncSnowLine for why it is neither 0 nor 1 at either end.
