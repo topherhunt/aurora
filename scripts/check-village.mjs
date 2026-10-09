@@ -634,7 +634,7 @@ const water = {
       return road !== null && road.dist - road.halfWidth < WOOD.verge ? 1 : WOOD.cover
     },
   }
-  const trees = new Trees(new THREE.Scene(), field, water, texArray, { seed: SEED, radius: 200, density: TREE_DENSITY * WOOD.density, biome, deadwood: roomProps, paths: layers.paths })
+  const trees = new Trees(new THREE.Scene(), field, water, texArray, { cards: new LitterCards(12288), seed: SEED, radius: 200, density: TREE_DENSITY * WOOD.density, biome, deadwood: roomProps, paths: layers.paths })
   trees.place(0, 0)
   // The way from the exit to the nearest hut runs through the wood: trees stand within EXIT_WOOD_M of the line between them.
   const e = room.exit
@@ -956,7 +956,7 @@ console.log('\nthe boot')
   check(rocks.hollowsInto(-400, -400, 400, 400, hollows) === 0, 'a room grows no hollow bed')
   const tint = rocks.tintAt(0, 0, 'forest')
   check([tint.r, tint.g, tint.b].every((v) => v > 0 && Number.isFinite(v)), 'the shell takes a placed boulder\'s tint', `${tint.r.toFixed(2)} ${tint.g.toFixed(2)} ${tint.b.toFixed(2)}`)
-  const trees = new Trees(scene, field, water, texArray, { seed: SEED, radius: 200, deadwood: roomProps })
+  const trees = new Trees(scene, field, water, texArray, { cards: new LitterCards(12288), seed: SEED, radius: 200, deadwood: roomProps })
   trees.place(0, 0)
   // The stones set against the houses (render/boulders.js): every one of them placed, bedded into the ground, rung by distance and stone to the walker.
   const boulders = new Boulders(scene, field, rocks, { boulders: room.decor.boulders, seed: room.spec.seed })

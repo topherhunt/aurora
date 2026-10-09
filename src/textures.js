@@ -398,16 +398,7 @@ export const LAYER = {
   // the rock cards, in the first of the run's free layers.
   IMPOSTOR_HEARTH: 80,
 
-  // Forest clump cards, baked at boot beside the tree impostors (see
-  // props/tree-clump.js): a photograph of several trees of one species at
-  // scattered sizes and footings, which the far forest draws one card per cell
-  // in place of one card per tree. TWO consecutive layers per species -- the
-  // second variant is the base plus one -- and the billboard's free yaw-keyed
-  // mirror doubles those to four looks.
-  CLUMP_PINE: 72,
-  CLUMP_OAK: 74,
-  CLUMP_BIRCH: 76,
-  CLUMP_ASPEN: 78,
+  // 72..79 ARE FREE: the forest clump cards that stood here are pictures in the litter card pool now (props/tree-clump.js).
 
   // Crab sheet, same reasoning as the mushroom's: a crab's shape is geometry
   // (props/crab.js) and its texture is a mottled shell colour, cheap
@@ -503,12 +494,9 @@ export const LAYER_COUNT = 111
 // nothing at ankle height can. An impostor always moves with the art it
 // replaces, which is why IMPOSTOR_FERN_* follow FROND_0 out and IMPOSTOR_GRASS
 // follows GRASS_TUFT: a mesh plant and a card plant either side of an LOD
-// boundary would otherwise be green and white. The clump cards follow the tree
-// impostors for the same reason: a clumped far forest and the single cards it
-// dissolves into must whiten together.
+// boundary would otherwise be green and white.
+/** Photographs of a clump per planted species (props/tree-clump.js). */
 export const CLUMP_VARIANTS = 2
-const CLUMP_LAYERS = () => [LAYER.CLUMP_PINE, LAYER.CLUMP_OAK, LAYER.CLUMP_BIRCH, LAYER.CLUMP_ASPEN]
-  .flatMap((base) => Array.from({ length: CLUMP_VARIANTS }, (_, i) => base + i))
 export const SNOW_LAYERS = [
   LAYER.NEEDLES,
   LAYER.LEAVES,
@@ -529,7 +517,6 @@ export const SNOW_LAYERS = [
   LAYER.IMPOSTOR_OAK,
   LAYER.IMPOSTOR_BIRCH,
   LAYER.IMPOSTOR_ASPEN,
-  ...CLUMP_LAYERS(),
   // The two dead-wood cards, and they are here rather than with the wood they
   // replace because of what a card IS, not what it is a picture of. Wood snows
   // through the HARD-SURFACE recipe, which leans hard on which way the surface
@@ -579,7 +566,6 @@ export const SNOW_CARD_LAYERS = [
   LAYER.IMPOSTOR_OAK,
   LAYER.IMPOSTOR_BIRCH,
   LAYER.IMPOSTOR_ASPEN,
-  ...CLUMP_LAYERS(),
   LAYER.IMPOSTOR_DEADWOOD_SNAG,
   LAYER.IMPOSTOR_DEADWOOD_LOG,
 ]

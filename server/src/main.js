@@ -92,13 +92,14 @@ function saveLog(req, res) {
   })
   req.on('end', () => {
     try {
-      const { message } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const { message, level = 'warn' } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       if (typeof message !== 'string') return reply(400, { error: 'a log entry has a message string' })
+      if (level !== 'warn' && level !== 'log') return reply(400, { error: `a log entry's level is warn or log, not ${level}` })
       mkdirSync(TRACE_DIR, { recursive: true })
       if (existsSync(LOG_FILE) && statSync(LOG_FILE).size >= LOG_MAX_BYTES) return reply(507, { error: 'log store full' })
       const peer = req.headers['x-forwarded-for'] || req.socket.remoteAddress
       const commit = buildInfo().commit
-      appendFileSync(LOG_FILE, `${new Date().toISOString()}  ${peer}  ${commit}  warn  ${message.replace(/\n/g, ' ')}\n`)
+      appendFileSync(LOG_FILE, `${new Date().toISOString()}  ${peer}  ${commit}  ${level.padEnd(4)}  ${message.replace(/\n/g, ' ')}\n`)
       reply(200, { ok: true })
     } catch (err) {
       console.error('[log] rejected', err)

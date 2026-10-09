@@ -104,5 +104,16 @@ export function reportWarning(message) {
   console.warn(message)
   if (typeof window === 'undefined' || import.meta.env.DEV || reported.has(message) || reported.size >= REPORT_CAP) return
   reported.add(message)
-  fetch('/log', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }), keepalive: true }).catch(() => {})
+  postLog(message, 'warn')
+}
+
+/** reportWarning for a line that is not a warning (the boot timing): console.log, /__log in dev, the relay's /log as level 'log' when deployed. Not deduped or capped; call it once per event. */
+export function reportLog(message) {
+  console.log(message)
+  if (import.meta.env.DEV) shipLog(message)
+  else postLog(message, 'log')
+}
+
+function postLog(message, level) {
+  fetch('/log', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, level }), keepalive: true }).catch(() => {})
 }

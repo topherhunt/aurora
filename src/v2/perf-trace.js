@@ -167,7 +167,7 @@ export class PerfTrace {
     this.applyState(this.step.off)
     this.stepAt = now
     this.n = 0
-    this.js = this.render = this.calls = this.tris = 0
+    this.js = this.render = this.calls = this.tris = this.uploadCalls = this.uploadBytes = 0
     this.stages = {}
     this.worstMs = 0
     this.worstStages = {}
@@ -229,6 +229,8 @@ export class PerfTrace {
       this.render += f.renderMs
       this.calls += f.calls
       this.tris += f.tris
+      this.uploadCalls += f.uploadCalls
+      this.uploadBytes += f.uploadBytes
       const { names, ms: lapMs, n: laps } = this.host.spikes()
       for (let i = 0; i < laps; i++) this.stages[names[i]] = (this.stages[names[i]] ?? 0) + lapMs[i]
       if (ms > this.worstMs) {
@@ -268,6 +270,8 @@ export class PerfTrace {
       // The slowest frame of the sample and where its laps went: what a stall was, without a record trace.
       worst: { ms: r2(this.worstMs), stages: Object.fromEntries(Object.entries(this.worstStages).filter(([, v]) => v >= SPIKES.floor).map(([k, v]) => [k, r2(v)])) },
       calls: Math.round(this.calls / n), tris: Math.round(this.tris / n),
+      // Buffer and texture uploads per frame: how many GL calls, and kilobytes sent.
+      upCalls: r2(this.uploadCalls / n), upKb: r2(this.uploadBytes / n / 1024),
       moveCm: Math.round(this.moveM * 100), turnDeg: Math.round(THREE.MathUtils.radToDeg(this.turnRad)),
     })
   }
@@ -288,6 +292,8 @@ export class PerfTrace {
       savedRenderMs: r2(baselineAt(bases, s.t, 'renderMs') - s.renderMs),
       savedCalls: Math.round(baselineAt(bases, s.t, 'calls') - s.calls),
       savedTris: Math.round(baselineAt(bases, s.t, 'tris') - s.tris),
+      savedUpCalls: r2(baselineAt(bases, s.t, 'upCalls') - s.upCalls),
+      savedUpKb: r2(baselineAt(bases, s.t, 'upKb') - s.upKb),
     }))
   }
 

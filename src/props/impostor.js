@@ -1,6 +1,7 @@
 import THREE from '../three-instance.js'
 import { TEX_SIZE } from '../textures.js'
 import { createImpostorBakeMaterial, CARD_UP_MARK } from '../material.js'
+import { CardHash, bakedCard, cardsOn, keepCard } from './card-cache.js'
 
 // ---------------------------------------------------------------------------
 // Prop impostors: a photograph of the LOD0 mesh, stood up as crossed planes.
@@ -218,7 +219,7 @@ export function bakeImpostor(
 
   const pixels = captureLayer(
     renderer, geometry, texArray, layer, cam, key, { tint, vertexColors, hemFray, bounce, unlit, exposure })
-  return { width: cardW, height: cardH, sink, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
+  return { width: cardW, height: cardH, sink, pixels, meanLuma: coveredLuma(pixels), coverage: coverage(pixels) }
 }
 
 /**
@@ -304,7 +305,8 @@ export function bakeImpostorPlate(
  * rock-bank's bakeRockImpostor is the one caller.
  *
  * The half both bakes share; what a bake chooses is its camera and where the key
- * stands. Restores the render target and clear state it found.
+ * stands. A production build serves the photograph from card-cache.js when it
+ * was baked at deploy.
  */
 function captureLayer(
   renderer, geometry, texArray, layer, cam, keyPos,
@@ -315,6 +317,22 @@ function captureLayer(
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
+  const opts = { tint, vertexColors, hemFray, bounce, unlit, exposure }
+  const cardKey = cardsOn() && new CardHash().geometry(geometry)
+    .nums([...cam.projectionMatrix.elements, ...cam.matrixWorld.elements, ...keyPos.toArray()])
+    .text(JSON.stringify(opts)).key
+  const pixels = (cardKey && bakedCard(cardKey)) || renderLayer(renderer, geometry, texArray, cam, keyPos, opts)
+  if (cardKey) keepCard(cardKey, pixels)
+
+  if (layer !== null) {
+    texArray.image.data.set(pixels, layer * TEX_SIZE * TEX_SIZE * 4)
+    texArray.needsUpdate = true
+  }
+  return pixels
+}
+
+/** captureLayer's live photograph. Restores the render target and clear state it found. */
+function renderLayer(renderer, geometry, texArray, cam, keyPos, { tint, vertexColors, hemFray, bounce, unlit, exposure }) {
   // `vertexColors` is the building kit's and `hemFray` the trees' -- see
   // createImpostorBakeMaterial. A prop leaves both off and carries neither
   // attribute.
@@ -396,12 +414,6 @@ function captureLayer(
   const pixels = downsample(raw, big)
   flipY(pixels)
   dilate(pixels)
-
-  if (layer !== null) {
-    texArray.image.data.set(pixels, layer * TEX_SIZE * TEX_SIZE * 4)
-    texArray.needsUpdate = true
-  }
-
   return pixels
 }
 

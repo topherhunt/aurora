@@ -2,9 +2,9 @@
 //
 //   node scripts/check-wildfire.mjs
 //
-// What can go wrong without throwing: a spark in open air that lights nothing versus one on a tree that does not; a flame that never dies; a third flame that does not char the tree, or chars it again on the fourth; flames that spread from a peer's copy and double on every machine; a torch that burns past the slot cap.
+// What can go wrong without throwing: a spark in open air that lights nothing versus one on a tree that does not; a flame that never dies; an object whose own flames keep relighting it, so it burns forever; a third flame that does not char the tree, or chars it again on the fourth; flames that spread from a peer's copy and double on every machine; a torch that burns past the slot cap.
 
-import { Wildfire, IGNITE_S, LIFE_S, BIG_LIFE_S, BIG_GROW, FADE_S, SPREAD_STEP_S, levelAt } from '../src/v2/render/wildfire.js'
+import { Wildfire, IGNITE_S, LIFE_S, BURN_S, BIG_GROW, FADE_S, SPREAD_STEP_S, levelAt } from '../src/v2/render/wildfire.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -53,13 +53,25 @@ console.log('the third flame')
   const small = (w.update(0.016, 1, []), flames.placed[0].height)
   w.spark(0.35, 1.6, 0, 1)
   check(charred.length === 1, 'three flames char the tree')
-  check(w.list.every((f) => f.big && f.die >= 1 + BIG_LIFE_S - 1e-9), 'all three turn big and last twenty seconds from then')
+  const end = w.burns.get('tree:0,0')
+  check(end === 15 && w.list.every((f) => f.big && f.die === end), 'all three turn big and burn to the tree\'s end, BURN_S from its first flame', String(end))
   w.update(0.016, 3, [])
   check(flames.placed[0].height > small * (BIG_GROW - 0.2), 'a big flame is drawn bigger', `${small.toFixed(3)} -> ${flames.placed[0].height.toFixed(3)}`)
   w.spark(0.35, 2, 0, 3)
   check(charred.length === 1, 'a fourth flame does not char it again')
-  w.update(0.016, 3 + BIG_LIFE_S + 1, [])
-  check(w.count === 0, 'the big flames dim out after twenty seconds')
+  w.update(0.016, end + 0.1, [])
+  check(w.count === 0, 'the big flames are out at the tree\'s end')
+  check(w.spark(0.35, 1, 0, end + 1) === null && w.count === 0, 'a burnt-out tree never lights again')
+}
+
+console.log('a fire goes out')
+{
+  // Three trees in reach of each other, every spread roll a hit: each burns once and the fire is out by the last one's end.
+  const { w } = make([tree(0, 0), tree(0.8, 0), tree(0, 0.8)], () => 0.0)
+  w.spark(0.35, 1, 0, 0)
+  let t = 0, most = 0
+  while (t < 3 * BURN_S[1] + 5) { t += 0.1; w.update(0.1, t, []); most = Math.max(most, w.count) }
+  check(most >= 3 && w.count === 0, 'flames that keep spreading among a few trees still all die out', `peak ${most}`)
 }
 
 console.log('spread')

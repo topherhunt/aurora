@@ -1,3 +1,4 @@
+import { halveDraw } from './ab-switch.js'
 import THREE from '../../three-instance.js'
 import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
@@ -103,9 +104,10 @@ export class LitterCards {
     this.texture.format = THREE.RGBAFormat
     this.texture.type = THREE.UnsignedByteType
     this.texture.colorSpace = THREE.SRGBColorSpace
-    this.texture.minFilter = THREE.LinearFilter
+    // Mipmapped: the tree clumps are drawn out to 1500 m, where an unfiltered 128 px picture shimmers.
+    this.texture.minFilter = THREE.LinearMipmapLinearFilter
     this.texture.magFilter = THREE.LinearFilter
-    this.texture.generateMipmaps = false
+    this.texture.generateMipmaps = true
     this.texture.needsUpdate = true
 
     this.material = this._material()
@@ -117,6 +119,11 @@ export class LitterCards {
     this.group = new THREE.Group()
     this.group.name = 'v2-litter-cards'
     for (const mesh of this.meshes.meshes) this.group.add(mesh)
+  }
+
+  /** Trace-only A/B: draw half of each mesh's instances, so a saving that tracks the count is per-instance work and one that does not is fill. */
+  setHalf(on) {
+    for (const mesh of this.meshes.meshes) halveDraw(mesh, on)
   }
 
   /** Triangles in one card, for the layers' bills. */

@@ -80,6 +80,15 @@ export class InstancedArena extends THREE.InstancedMesh {
       new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3).fill(1), 3)
     this.instanceColor.setUsage(THREE.DynamicDrawUsage)
     this.frustumCulled = false
+    this._dirty = new Map()
+    this.onBeforeRender = () => {
+      for (const [attr, d] of this._dirty) {
+        attr.clearUpdateRanges()
+        attr.addUpdateRange(d.lo * attr.itemSize, (d.hi - d.lo + 1) * attr.itemSize)
+        attr.needsUpdate = true
+      }
+      this._dirty.clear()
+    }
   }
 
   /**
@@ -136,7 +145,7 @@ export class InstancedArena extends THREE.InstancedMesh {
     const s = this._slot[instanceId]
     if (s >= 0) {
       extra.attr.array[s] = value
-      extra.attr.needsUpdate = true
+      this._touch(extra.attr, s)
     }
   }
 
@@ -176,7 +185,7 @@ export class InstancedArena extends THREE.InstancedMesh {
     const s = this._slot[instanceId]
     if (s >= 0) {
       matrix.toArray(this.instanceMatrix.array, s * 16)
-      this.instanceMatrix.needsUpdate = true
+      this._touch(this.instanceMatrix, s)
     }
   }
 
@@ -189,7 +198,7 @@ export class InstancedArena extends THREE.InstancedMesh {
     const s = this._slot[instanceId]
     if (s >= 0) {
       color.toArray(this.instanceColor.array, s * 3)
-      this.instanceColor.needsUpdate = true
+      this._touch(this.instanceColor, s)
     }
   }
 
@@ -207,7 +216,7 @@ export class InstancedArena extends THREE.InstancedMesh {
     const s = this._slot[instanceId]
     if (s >= 0) {
       this._fadeAttr.array[s] = value
-      this._fadeAttr.needsUpdate = true
+      this._touch(this._fadeAttr, s)
     }
   }
 
@@ -253,15 +262,25 @@ export class InstancedArena extends THREE.InstancedMesh {
     const s = this._slot[instanceId]
     this.instanceMatrix.array.set(
       this._shadow.subarray(instanceId * 16, instanceId * 16 + 16), s * 16)
-    this.instanceMatrix.needsUpdate = true
+    this._touch(this.instanceMatrix, s)
     this.instanceColor.array.set(
       this._tint.subarray(instanceId * 3, instanceId * 3 + 3), s * 3)
-    this.instanceColor.needsUpdate = true
+    this._touch(this.instanceColor, s)
     this._fadeAttr.array[s] = this._fade[instanceId]
-    this._fadeAttr.needsUpdate = true
+    this._touch(this._fadeAttr, s)
     for (const e of this._extra) {
       e.attr.array[s] = e.shadow[instanceId]
-      e.attr.needsUpdate = true
+      this._touch(e.attr, s)
+    }
+  }
+
+  /** Note slot `s` of `attr` as written; `onBeforeRender` turns the span written since the last draw into the one range three uploads. */
+  _touch(attr, s) {
+    const d = this._dirty.get(attr)
+    if (d === undefined) this._dirty.set(attr, { lo: s, hi: s })
+    else {
+      if (s < d.lo) d.lo = s
+      if (s > d.hi) d.hi = s
     }
   }
 

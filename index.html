@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aurora v2</title>
+    <!-- The boot report counts every fetch; the browser's default buffer keeps 250 and a dev boot makes ~570. -->
+    <script>performance.setResourceTimingBufferSize(4000)</script>
     <!-- Loaded before main.js (like quest.html), which injects the live
          <a-scene> that owns the renderer and the XR session. -->
     <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>

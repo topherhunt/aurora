@@ -100,6 +100,7 @@ import {
   CARD_UP_MARK, PROP_FADE_SECONDS, setPropClock, getPropClock, setPropFadeTimerAt, setPropSolidAt, setDissolves,
 } from '../src/material.js'
 import { Trees, TREE_TUNING } from '../src/v2/render/trees.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { ROCK_STAND_MIN } from '../src/v2/render/rocks.js'
 import { RIM_AT } from '../src/v2/render/rim.js'
 import { GRASS_TUNING } from '../src/v2/render/grass.js'
@@ -1016,7 +1017,7 @@ const flat = {
 const dry = { isSubmerged: () => false }
 const EYE = 60 + 1.6
 
-const trees = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
+const trees = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: DRAW_RADIUS })
 trees.place(0, 0)
 
 {
@@ -1274,6 +1275,7 @@ trees.place(0, 0)
     const arena = trees.batch
     let live = 0
     for (const mesh of arena.meshes) live += mesh.count
+    for (const mesh of trees.litterCards.meshes.meshes) live += mesh.count
     let shown = 0
     let misplaced = 0
     for (const tile of trees.tiles.values()) {
@@ -1387,15 +1389,13 @@ trees.place(0, 0)
   check(assemble().includes('abs( vPropFade ) <= fadeT ) discard') && trees.material.customProgramCacheKey() !== offKey,
     'and the dissolve discard comes back under a different program key, so the two programs are never conflated',
     `key ${trees.material.customProgramCacheKey()}`)
-  // The pitch is compiled over one range of layers; the single card's layer
-  // and every clump layer have to fall inside it or one kind of card stands
-  // straight while the other leans.
-  const cardLayers = [...trees.tierIds[trees.cardTier], ...trees.tierIds[trees.clumpTier]]
-    .map((g) => trees.batch.meshes[g].geometry.attributes.texLayer.array[0])
+  // The pitch is compiled over one range of layers; the single card's layer has to fall inside it, and the clump pictures in the card pool carry the same tilt.
+  const cardLayers = trees.tierIds[trees.cardTier].map((g) => trees.batch.meshes[g].geometry.attributes.texLayer.array[0])
   const tilt = trees.material.customProgramCacheKey().match(/-tilt([\d.]+)\.(\d+)\.(\d+)/)
-  check(tilt && Number(tilt[1]) === CARD_TILT && cardLayers.every((l) => l >= Number(tilt[2]) && l <= Number(tilt[3])),
+  const pictures = trees.clumpPicture.flat()
+  check(tilt && Number(tilt[1]) === CARD_TILT && cardLayers.every((l) => l >= Number(tilt[2]) && l <= Number(tilt[3])) && pictures.every((i) => trees.litterCards.tilt[i] === CARD_TILT),
     `every card, single and clump, pitches ${CARD_TILT} of the way to face an eye above it`,
-    `key ${trees.material.customProgramCacheKey()}, card layers ${cardLayers.join(' ')}`)
+    `key ${trees.material.customProgramCacheKey()}, card layers ${cardLayers.join(' ')}, clump pictures ${pictures.join(' ')}`)
 }
 
 // --- 9b2. a dissolve never retracts -----------------------------------------
@@ -1435,7 +1435,7 @@ console.log('\n-- a dissolve does not retract --')
   const FLY_S = 4
   const TOTAL_S = 6
   const DT = 1 / 72
-  const fly = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
+  const fly = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: DRAW_RADIUS })
   fly.place(0, 0)
   const n = fly.maxInstances
   const wasHidden = new Uint8Array(n)
@@ -1521,7 +1521,7 @@ console.log('\n-- the LOD swap dissolves --')
   // sees the outward half of the far swap at all.
   const SPEED = 4
   const SECONDS = 5
-  const walk = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: DRAW_RADIUS })
+  const walk = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: DRAW_RADIUS })
   walk.place(0, 0)
   const n = walk.maxInstances
   const prevTier = new Int8Array(n).fill(-1)
@@ -1765,7 +1765,7 @@ console.log('\n-- the LOD swap dissolves --')
     `${cutSwaps} swaps, ${cutRim} rim crossings, ${cutStarted} fade-frames in flight`)
   check(cutStamped === 0 && cutWrongVis === 0,
     'and every tree is unstamped and drawn exactly when the rim is not hiding it',
-    `${cutStamped} stamped, ${cutWrongVis} drawn against the rim's state`)
+    `${cutStamped} stamped, ${cutWrongVis} drawn against the rim's state, pool ${JSON.stringify(walk.litterCards.stats)}`)
 }
 
 // --- 9c. the shape of the cross-dissolve ramp -------------------------------
@@ -1912,7 +1912,7 @@ console.log('\n-- stretch and sink --')
   // first stream -- position, species, yaw, size -- stands exactly where it
   // did, and they show in the matrix and the pick volume rather than only in
   // the arrays.
-  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   t.place(0, 0)
   const m = new THREE.Matrix4()
   const p = new THREE.Vector3()
@@ -1967,7 +1967,7 @@ console.log('\n-- stretch and sink --')
 
   // Determinism: the same seed lays the same stretch and sink, so the forest
   // you walk away from is the one you come back to.
-  const again = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  const again = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   again.place(0, 0)
   let differ = 0
   for (const tile of t.tiles.values()) {
@@ -1984,7 +1984,7 @@ console.log('\n-- stretch and sink --')
   const { reach, power, hemMin } = SHORE_SINK
   check(power < 3 && power > 0 && reach > 0 && hemMin > 0, 'the shore bends the sink roll toward the deep end within a bounded reach, and stops the hem short of the ground', `power ${power}, reach ${reach} m, hem ${hemMin} m`)
   const shore = { isSubmerged: () => false, shoreDistAt: (x, z, r, h, tan) => Math.min(r, Math.max(-r, x)) }
-  const bank = new Trees(new THREE.Scene(), flat, shore, texArray, { seed: 7, radius: 200 })
+  const bank = new Trees(new THREE.Scene(), flat, shore, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   bank.place(0, 0)
   let moved = 0, inlandDiffer = 0, deeper = 0, shallower = 0, capped = 0, underHem = 0
   let bankN = 0, bankSum = 0, bankDeep = 0, inN = 0, inSum = 0, lineN = 0, lineLow = 0, lineSweep = 0
@@ -2037,7 +2037,7 @@ console.log('\n-- placement --')
 
 {
   const one = (field, water) => {
-    const t = new Trees(new THREE.Scene(), field, water, texArray, { seed: 7, radius: 200 })
+    const t = new Trees(new THREE.Scene(), field, water, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
     t.place(0, 0)
     const n = t.placed
     t.dispose()
@@ -2060,7 +2060,7 @@ console.log('\n-- placement --')
   // same point on the gradient; on the same seed the bed at 0 m above is the
   // reference bed exactly.
   const at = (above, opts = {}) => {
-    const t = new Trees(new THREE.Scene(), { ...flat, snowLineAt: () => 60 - above }, dry, texArray, { seed: 7, radius: 200, ...opts })
+    const t = new Trees(new THREE.Scene(), { ...flat, snowLineAt: () => 60 - above }, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, ...opts })
     t.place(0, 0)
     // The tree's own scale, not its matrix's: a clump draws at CLUMP_SCALE.
     let sum = 0
@@ -2111,7 +2111,7 @@ console.log('\n-- placement --')
     `wood ${wood.clumps} of ${wood.n}, meadow ${meadow.clumps} of ${meadow.n}, treeline ${high.clumps} of ${high.n}`)
   {
     let threw = false
-    try { new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, biome: {} }) } catch { threw = true }
+    try { new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, biome: {} }) } catch { threw = true }
     check(threw, 'something passed as `biome` that cannot answer throws at construction')
   }
 
@@ -2157,7 +2157,7 @@ console.log('\n-- rocks under the trunk --')
       return dx * dx + dz * dz < STONE.r * STONE.r ? STONE.top : -Infinity
     },
   }
-  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, rocks: stone })
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, rocks: stone })
   t.place(0, 0)
 
   let on = 0
@@ -2211,7 +2211,7 @@ console.log('\n-- rocks under the trunk --')
   check(moved === 0, 'and a reground moves a tree on stone with the ground, without re-asking',
     `${moved} of ${before.length} did something else`)
 
-  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   bare.place(0, 0)
   check(bare.placed === t.placed,
     'a rock lifts a tree and never deletes one -- the two beds are the same scatter',
@@ -2219,7 +2219,7 @@ console.log('\n-- rocks under the trunk --')
 
   let threw = false
   try {
-    new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, rocks: {} })
+    new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, rocks: {} })
   } catch { threw = true }
   check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
 
@@ -2258,9 +2258,9 @@ console.log('\n-- the dead wood under the trunk --')
       return PIECES.some((p) => clearance(p, x, z) < pad)
     },
   }
-  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, deadwood })
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, deadwood })
   t.place(0, 0)
-  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   bare.place(0, 0)
 
   // Every placed trunk, surface to surface off the nearest piece, and the
@@ -2295,7 +2295,7 @@ console.log('\n-- the dead wood under the trunk --')
 
   let threw = false
   try {
-    new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, deadwood: {} })
+    new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, deadwood: {} })
   } catch { threw = true }
   check(threw, 'and something passed as `deadwood` that cannot answer throws at construction')
 
@@ -2326,9 +2326,9 @@ console.log('\n-- the road --')
   const key = ([x, z]) => `${x.toFixed(3)},${z.toFixed(3)}`
 
   // Full forest: the road is cleared and nothing else moves, since a keep of 1 has no room to rise.
-  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, paths })
+  const t = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, paths })
   t.place(0, 0)
-  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   bare.place(0, 0)
   const on = trunks(t).filter(([, z]) => Math.abs(z) < HW + ROAD.clearance)
   const bareOn = trunks(bare).filter(([, z]) => Math.abs(z) < HW + ROAD.clearance)
@@ -2346,7 +2346,7 @@ console.log('\n-- the road --')
   let verge = 0
   let open = 0
   for (let seed = 1; seed <= 8; seed++) {
-    const m = new Trees(new THREE.Scene(), flat, dry, texArray, { seed, radius: 200, paths, biome: meadow })
+    const m = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed, radius: 200, paths, biome: meadow })
     m.place(0, 0)
     const inDisc = trunks(m).filter(([x, z]) => x * x + z * z < R * R)
     verge += inDisc.filter(([, z]) => Math.abs(z) >= HW + ROAD.clearance && Math.abs(z) < HW + ROAD.reach).length
@@ -2362,7 +2362,7 @@ console.log('\n-- the road --')
 
   let threw = false
   try {
-    new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, paths: {} })
+    new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, paths: {} })
   } catch { threw = true }
   check(threw, 'and something passed as `paths` that cannot answer throws at construction')
 
@@ -2384,9 +2384,9 @@ console.log('\n-- the trees a room plants --')
   const plants = [{ x: 3.5, z: 4.25, scale: 1.25 }, { x: -18.5, z: 6.5, scale: 0.5 }, { x: 40.5, z: -30.5, scale: 1.5 }]
   const cliff = { scatterAt: (x, z, cell, out) => { out.h = 60; out.tan = 9; return out }, heightAt: () => 60, snowLineAt: () => -1000 }
   const wet = { isSubmerged: () => true }
-  const nothing = new Trees(new THREE.Scene(), cliff, wet, texArray, { seed: 7, radius: 200 })
+  const nothing = new Trees(new THREE.Scene(), cliff, wet, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   nothing.place(0, 0)
-  const wood = new Trees(new THREE.Scene(), cliff, wet, texArray, { seed: 7, radius: 200, plants })
+  const wood = new Trees(new THREE.Scene(), cliff, wet, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, plants })
   wood.place(0, 0)
   const standing = plants.map((p) => {
     for (const tile of wood.tiles.values()) for (let k = 0; k < tile.n; k++) {
@@ -2402,9 +2402,9 @@ console.log('\n-- the trees a room plants --')
   // Never a clump card: a clump draws a stand of several, and a planted tree is the one thing standing where it was put.
   check(standing.every((id) => wood.instInWood[id] === 0), 'and none of them is a clump')
   // The wild wood does not move: a plant draws its look off its own point, never off the tile's three streams.
-  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200 })
+  const bare = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200 })
   bare.place(0, 0)
-  const both = new Trees(new THREE.Scene(), flat, dry, texArray, { seed: 7, radius: 200, plants })
+  const both = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 200, plants })
   both.place(0, 0)
   let moved = 0, wildN = 0
   for (const tile of bare.tiles.values()) {

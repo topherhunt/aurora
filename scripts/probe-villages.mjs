@@ -49,7 +49,7 @@ water.rebuild()
 const rocks = new Rocks(new THREE.Scene(), height, water, layers, buildTextureArray(), { seed: SEED })
 const hollowBed = rocks.beds.find((b) => b.cfg.hollow)
 // The screens walked over the field, water and rocks alone: the census counts mouths, not which end of a screen is open.
-const trees = new Trees(new THREE.Scene(), height, water, buildTextureArray(), { seed: SEED, plantRoom: SCREEN_POOL })
+const trees = new Trees(new THREE.Scene(), height, water, buildTextureArray(), { cards: new LitterCards(12288), seed: SEED, plantRoom: SCREEN_POOL })
 const entrances = new Entrances(new THREE.Scene(), height, water, rocks, { seed: SEED, radius: STEP, bank: mouthBankFrom(readShippedLadder('cave-mouth')), cards: new LitterCards(512), ground: new LeafkinGround({ field: height, water, rocks }), trees })
 
 const hollows = new Map()

@@ -14,7 +14,7 @@ export const BASELINE_EVERY = 4
 /** A group whose removal saves at least this many median frame ms (mean of both rounds) is drilled into. */
 export const DRILL_MIN_MS = 1
 /** Cap on drilled states, so a run with many guilty groups still ends inside two minutes. */
-export const MAX_DRILL = 9
+export const MAX_DRILL = 12
 
 const VILLAGE = ['huts', 'towns', 'townsfolk']
 const EVERYTHING = ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire', ...VILLAGE]
@@ -55,6 +55,13 @@ export const GROUPS = [
   // A Leafkin village's fixtures, a human town's buildings, and a town's people and striders. Drills for layers the
   // current room lacks are skipped (host.present).
   { name: 'village', off: VILLAGE, drill: [...['towns', 'townsfolk', 'huts'].map((k) => ({ name: k, off: [k] })), { name: 'people', off: ['townsPeople'] }, { name: 'striders', off: ['townsStriders'] }, { name: 'hearth+forge', off: ['townsFires'] }] },
+  // Wind's vertex work across every swaying layer (grass, ferns, trees), everything else on.
+  { name: 'wind', off: ['wind'], drill: [], once: true },
+  // A/B pairs per alpha-tested layer: half the instances (saving tracks the count: vertex/instance work) and no discard (saving appears: early-Z was being lost to the cutout). `cards` is the shared card pool.
+  ...['litter', 'grass', 'cards'].flatMap((k) => [
+    { name: `${k} half`, off: [`${k}Half`], drill: [], once: true },
+    ...(k === 'cards' ? [] : [{ name: `${k} no discard`, off: [`${k}Discard`], drill: [], once: true }]),
+  ]),
   // The ground alone, everything else on: its own saving, where `floor+terrain` only brackets it from the empty world.
   { name: 'terrain', off: ['terrain'], drill: [], once: true },
   // The floor: what a frame costs with the world taken away. Its per-stage laps (samples[].stages) and

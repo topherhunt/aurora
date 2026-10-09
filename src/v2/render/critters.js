@@ -12,6 +12,7 @@ import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { TEX_SIZE } from '../../textures.js'
 import { FADE_FRAGMENT, IGN_GLSL } from '../../material.js'
 import { SUPERSAMPLE, downsample, dilate } from '../../props/impostor.js'
+import { CardHash, bakedCard, cardsOn, keepCard } from '../../props/card-cache.js'
 
 // What tools/creatures/ship.mjs writes for each critter, relative to the page like avatar.js's URLs: the pick, and its ladder as critterLodUrl.
 export const CRITTER_GLB = {
@@ -591,15 +592,50 @@ export function setAxisCard(mesh, bounds, core) {
  * OWN unlit material. The second form is what a skinned creature needs: its
  * vertices sit wherever the rig left them and mean nothing until the bones move
  * them, so a plain Mesh over a skinned geometry photographs a heap.
+ *
+ * A production build serves the strip from card-cache.js when it was baked at
+ * deploy. The key reads a map's size and name, not its pixels.
  */
 export function bakeCritterCard(renderer, subject, map, bounds, views) {
   const geometry = subject.isBufferGeometry ? subject : null
   if (geometry && !map) throw new Error('bakeCritterCard: the asset has no colour map to photograph')
   checkViews(views)
-  const ext = critterCardExtents(bounds)
   const material = geometry ? new THREE.MeshBasicMaterial({ map, toneMapped: false }) : null
   const scene = new THREE.Scene()
   scene.add(geometry ? new THREE.Mesh(geometry, material) : subject)
+  scene.updateMatrixWorld(true)
+
+  let cardKey = null
+  if (cardsOn()) {
+    const hash = new CardHash().text(JSON.stringify({ bounds, views }))
+    scene.traverse((o) => {
+      hash.nums(o.matrixWorld.elements)
+      if (!o.isMesh) return
+      const m = o.material.map
+      hash.geometry(o.geometry).text(`${m?.name}:${m?.image?.width}x${m?.image?.height}`)
+      if (o.morphTargetInfluences) hash.nums(o.morphTargetInfluences)
+      if (o.isSkinnedMesh) for (const bone of o.skeleton.bones) hash.nums(bone.matrixWorld.elements)
+    })
+    cardKey = hash.key
+  }
+  const data = (cardKey && bakedCard(cardKey)) || photographViews(renderer, scene, bounds, views)
+  if (cardKey) keepCard(cardKey, data)
+  if (material) material.dispose()
+  // A lent subject goes back out of this throwaway scene, so its parent is not a dead one.
+  else scene.remove(subject)
+
+  const texture = new THREE.DataTexture(data, TEX_SIZE * views.length, TEX_SIZE, THREE.RGBAFormat, THREE.UnsignedByteType)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.generateMipmaps = false
+  texture.needsUpdate = true
+  return texture
+}
+
+/** bakeCritterCard's live photographs, side by side in one TEX_SIZE-high strip. Restores the render target and clear state it found. */
+function photographViews(renderer, scene, bounds, views) {
+  const ext = critterCardExtents(bounds)
   const big = TEX_SIZE * SUPERSAMPLE
   const target = new THREE.WebGLRenderTarget(big, big, {
     format: THREE.RGBAFormat,
@@ -641,9 +677,6 @@ export function bakeCritterCard(renderer, subject, map, bounds, views) {
   renderer.setRenderTarget(prevTarget)
   renderer.setClearColor(prevClear, prevAlpha)
   target.dispose()
-  if (material) material.dispose()
-  // A lent subject goes back out of this throwaway scene, so its parent is not a dead one.
-  else scene.remove(subject)
 
   // GL hands rows back bottom first, which is the row order a DataTexture's v runs in, so a view's bottom is at v = 0 with no flip.
   const n = shots.length
@@ -652,13 +685,7 @@ export function bakeCritterCard(renderer, subject, map, bounds, views) {
   for (let y = 0; y < TEX_SIZE; y++) {
     shots.forEach((px, i) => data.set(px.subarray(y * row, (y + 1) * row), y * n * row + i * row))
   }
-  const texture = new THREE.DataTexture(data, TEX_SIZE * n, TEX_SIZE, THREE.RGBAFormat, THREE.UnsignedByteType)
-  texture.colorSpace = THREE.SRGBColorSpace
-  texture.minFilter = THREE.LinearFilter
-  texture.magFilter = THREE.LinearFilter
-  texture.generateMipmaps = false
-  texture.needsUpdate = true
-  return texture
+  return data
 }
 
 export const tileKey = (tx, tz) => tx * 0x10000 + tz

@@ -972,16 +972,24 @@ function glowTexture() {
 }
 
 // The flames are triangle flames (fire-tris.js) in world space, so they are placed at the room's anchor; the halo behind each is a soft additive sprite.
+const HALO_PULL = 0.1
+
 function buildFlames(candles, ox, oy, oz) {
   const group = new THREE.Group()
   const flames = new TriFlames(candles.length, TRI_CANDLE, { seed: candles.length + 1 })
-  // A candle's `y` is 3.5 cm over its wax's shoulder; the flame's foot rests on the wax.
-  candles.forEach((c, i) => flames.place(i, ox + c.x, oy + c.y - 0.02, oz + c.z, { height: TRI_CANDLE.height, radius: TRI_CANDLE.radius, phase: i * 2.1, group: i % 3 }))
+  // A candle's `y` is 3.5 cm over its wax's shoulder; the flame's foot stands 1 cm over the wax, as on a wick, and its halo is centred on it.
+  candles.forEach((c, i) => flames.place(i, ox + c.x, oy + c.y - 0.01, oz + c.z, { height: TRI_CANDLE.height, radius: TRI_CANDLE.radius, phase: i * 2.1, group: i % 3 }))
   group.add(flames.group)
   const hp = new THREE.BufferGeometry()
-  hp.setAttribute('position', new THREE.Float32BufferAttribute(candles.flatMap((c) => [c.x, c.y, c.z]), 3))
+  hp.setAttribute('position', new THREE.Float32BufferAttribute(candles.flatMap((c) => [c.x, c.y + 0.02, c.z]), 3))
   const glowMap = glowTexture()
   const haloMat = new THREE.PointsMaterial({ map: glowMap, size: 0.35, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false })
+  // The sprite is drawn HALO_PULL metres nearer the eye than its candle, so the wax and dish never cut its square, while walls and furniture still hide it.
+  haloMat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      mvPosition.xyz *= max( 0.0, 1.0 - ${HALO_PULL.toFixed(3)} / length( mvPosition.xyz ) );
+      gl_Position = projectionMatrix * mvPosition;`)
+  }
   const halos = new THREE.Points(hp, haloMat)
   halos.frustumCulled = false
   group.add(halos)

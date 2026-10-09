@@ -1,7 +1,9 @@
 import THREE from './three-instance.js'
 import { buildTextureArray, loadImageLayers, LAYER, TEX_SIZE } from './textures.js'
 import { buildTreeBank, bakeTreeImpostors } from './props/tree-bank.js'
-import { bakeTreeClumps, buildTreeClumpTier, treeClumpLayers } from './props/tree-clump.js'
+import { bakeTreeClumps, treeClumpCards } from './props/tree-clump.js'
+import { LitterCards } from './v2/render/litter-cards.js'
+import { PropArena } from './v2/render/prop-arena.js'
 import { createPropMaterial } from './material.js'
 import { mulberry32 } from './sim/mathx.js'
 
@@ -19,9 +21,9 @@ import { mulberry32 } from './sim/mathx.js'
 //   shipped      the same trees kept where rank < FULL_RADIUS / d, which is
 //                what the world draws past 50 m today
 //   clumps       one clump card per CELL m cell, no thinning, at about a
-//                sixth of the instances of the full forest -- ONE
-//                InstancedMesh, each instance picking its picture with the
-//                per-instance layer shift trees.js uses
+//                sixth of the instances of the full forest, drawn from the
+//                shared card pool, each instance picking its picture with
+//                the layer shift trees.js uses
 //
 // Above the three views, the raw 128 px layers the cards sample, so the bake
 // can be judged as a picture before it is judged as a forest.
@@ -83,29 +85,25 @@ async function run() {
   const pineIdx = bank.variants.findIndex((v) => v.species === 'pine')
   if (pineIdx < 0) throw new Error('no pine in the bank')
   const pineCard = bank.tiers[2].geometries[pineIdx]
-  const clumpTier = buildTreeClumpTier(bank)
-  const pineClump = clumpTier.geometries[pineIdx]
+  const pineCardBox = treeClumpCards(bank)[pineIdx]
   const singles = bakeTreeImpostors(renderer, tex)
-  const clumps = bakeTreeClumps(renderer, tex, bank).filter((c) => c.species === 'pine')
+  const clumps = bakeTreeClumps(renderer, bank).filter((c) => c.species === 'pine')
   tex.needsUpdate = true
 
-  drawLayers(tex, [LAYER.IMPOSTOR_PINE, ...clumps.map((c) => c.layer)])
-
-  // The forest's material as trees.js builds it: the layer shift compiled in,
-  // so every geometry it draws has to carry `aLayerShift` (the singles' all
-  // zero), and the clump layers leaning away from the eye by half its elevation.
-  const clumpLayers = treeClumpLayers()
-  const material = createPropMaterial(tex, {
-    billboardLayers: [LAYER.IMPOSTOR_PINE, ...clumpLayers],
-    vertexColors: true,
-    layerShift: true,
-    billboardTilt: { amount: 0.5, layers: [Math.min(...clumpLayers), Math.max(...clumpLayers)] },
+  const pool = new LitterCards(8192)
+  const pictures = clumps.map((c) => {
+    const i = pool.addPicture({ kind: 'spun', cx: 0, cy: pineCardBox.cardHeight / 2, hw: pineCardBox.cardWidth / 2, hh: pineCardBox.cardHeight / 2, tilt: 0.5 })
+    pool.setPixels(i, c.pixels)
+    return i
   })
-  const withShift = (geometry, n) => {
-    const g = geometry.clone()
-    g.setAttribute('aLayerShift', new THREE.InstancedBufferAttribute(new Float32Array(n), 1))
-    return g
-  }
+  drawLayers(tex, [LAYER.IMPOSTOR_PINE], clumps.map((c) => c.pixels))
+
+  // The singles' material as trees.js builds it, leaning away from the eye by half its elevation.
+  const material = createPropMaterial(tex, {
+    billboardLayers: [LAYER.IMPOSTOR_PINE],
+    vertexColors: true,
+    billboardTilt: { amount: 0.5, layers: [LAYER.IMPOSTOR_PINE, LAYER.IMPOSTOR_PINE] },
+  })
 
   // The forest, tile by tile as trees.js plants it: `perTile` candidates each
   // with a rank, a size and a yaw.
@@ -133,7 +131,7 @@ async function run() {
 
   const singlesMesh = (keep) => {
     const kept = trees.filter(keep)
-    const mesh = new THREE.InstancedMesh(withShift(pineCard, Math.max(1, kept.length)), material, Math.max(1, kept.length))
+    const mesh = new THREE.InstancedMesh(pineCard, material, Math.max(1, kept.length))
     mesh.frustumCulled = false
     kept.forEach((t, i) => {
       q.setFromAxisAngle(up, t.yaw)
@@ -151,12 +149,9 @@ async function run() {
   })
 
   // Clumps: one per cell at a jittered centre, a picture and a size by hash,
-  // all in one mesh.
-  const clumpGeo = withShift(pineClump, 8192)
-  const clumpMesh = new THREE.InstancedMesh(clumpGeo, material, 8192)
-  clumpMesh.frustumCulled = false
-  clumpMesh.count = 0
-  const shifts = clumpGeo.attributes.aLayerShift
+  // all instances of the card pool's quad.
+  const clumpView = PropArena.over(pool.meshes, 8192, 'probe-clumps', { cards: null })
+  let clumpCount = 0
   for (let cz = Math.floor(Z_FAR / CELL); cz * CELL < Z_NEAR; cz++) {
     for (let cx = Math.floor(-X_HALF / CELL); cx * CELL < X_HALF; cx++) {
       const rand = mulberry32((cx * 3571 + cz * 45007 + 777) | 0)
@@ -167,12 +162,12 @@ async function run() {
       q.setFromAxisAngle(up, rand() * Math.PI * 2)
       s.setScalar(scale)
       m.compose(new THREE.Vector3(x, heightAt(x, z), z), q, s)
-      shifts.setX(clumpMesh.count, v)
-      clumpMesh.setMatrixAt(clumpMesh.count++, m)
+      const id = clumpView.addInstance(0)
+      clumpView.setMatrixAt(id, m)
+      clumpView.setLayerShiftAt(id, pictures[v])
+      clumpCount++
     }
   }
-  shifts.needsUpdate = true
-  const clumpCount = clumpMesh.count
 
   const scene = new THREE.Scene()
   const ground = new THREE.PlaneGeometry(2 * X_HALF + 200, -Z_FAR + 200, 220, 190)
@@ -188,7 +183,7 @@ async function run() {
   sun.position.set(-0.45, 0.62, 0.3)
   scene.add(sun)
   scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
-  scene.add(every, shipped, clumpMesh)
+  scene.add(every, shipped, pool.group)
 
   const cam = new THREE.PerspectiveCamera(50, W / H, 1, 2000)
   cam.position.copy(eye)
@@ -197,11 +192,11 @@ async function run() {
   const views = [
     { name: `every tree (${every.count} cards)`, show: [every] },
     { name: `shipped: rank < ${FULL_RADIUS} / d (${shipped.count} cards)`, show: [shipped] },
-    { name: `clumps: one per ${CELL} m cell (${clumpCount} cards, ${clumps.length} variants, one mesh)`, show: [clumpMesh] },
+    { name: `clumps: one per ${CELL} m cell (${clumpCount} cards, ${clumps.length} variants, one draw)`, show: [pool.group] },
   ]
   labels.innerHTML = ''
   views.forEach((view, k) => {
-    for (const o of [every, shipped, clumpMesh]) o.visible = view.show.includes(o)
+    for (const o of [every, shipped, pool.group]) o.visible = view.show.includes(o)
     renderer.setViewport(0, H * (views.length - 1 - k), W, H)
     renderer.setScissor(0, H * (views.length - 1 - k), W, H)
     renderer.setScissorTest(true)
@@ -217,26 +212,25 @@ async function run() {
   return {
     renderer: renderer.getContext().getParameter(renderer.getContext().RENDERER),
     single: singles.find((b) => b.species === 'pine'),
-    clumps,
+    clumps: clumps.map(({ pixels, ...c }) => c),
     counts: { every: every.count, shipped: shipped.count, clumps: clumpCount },
   }
 }
 
 /** The raw texture layers, side by side; the bake stores them the screen's way up. */
-function drawLayers(tex, layers) {
+function drawLayers(tex, layers, pictures) {
   const n = TEX_SIZE
   const c = document.getElementById('cards')
-  c.width = layers.length * (n + 4) * CARD_ZOOM
+  const all = [...layers.map((layer) => tex.image.data.subarray(layer * n * n * 4, (layer + 1) * n * n * 4)), ...pictures]
+  c.width = all.length * (n + 4) * CARD_ZOOM
   c.height = n * CARD_ZOOM
   const ctx = c.getContext('2d')
   ctx.fillStyle = '#05080f'
   ctx.fillRect(0, 0, c.width, c.height)
   ctx.imageSmoothingEnabled = false
-  const data = tex.image.data
-  layers.forEach((layer, k) => {
+  all.forEach((texels, k) => {
     const img = ctx.createImageData(n, n)
-    const base = layer * n * n * 4
-    img.data.set(data.subarray(base, base + n * n * 4))
+    img.data.set(texels)
     const off = document.createElement('canvas')
     off.width = n
     off.height = n

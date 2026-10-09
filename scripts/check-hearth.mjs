@@ -181,7 +181,7 @@ const patch = (m) => m
   check(Math.abs(h.group.position.x - at.x) < 1e-9 && Math.abs(h.group.position.z - at.z) < 1e-9 && Math.abs(h.group.position.y - y) < 1e-9, 'the hearth stands at the clearing\'s centre on its ground')
   check(scene.children.includes(h.group) && scene.children.includes(h.flames.group), 'the mesh and the flame are in the scene')
   h.update(at.x + 3, y + 1.6, at.z, 0)
-  const im = h.flames.levels.find((l) => l.mesh.count === 1).mesh.instanceMatrix.array
+  const im = h.flames.mesh.instanceMatrix.array
   check(Math.abs(im[12] - at.x) < 1e-4 && Math.abs(im[13] - (y + HEARTH.fire.lift)) < 1e-4 && Math.abs(im[14] - at.z) < 1e-4, 'the flame burns at the fire\'s foot in world space', `${im[12].toFixed(2)}, ${im[13].toFixed(2)}, ${im[14].toFixed(2)}`)
   check(Math.abs(im[5] - TRI_CAMPFIRE.height) < 1e-6, 'the flame is the campfire\'s height', `${im[5].toFixed(2)}`)
   {

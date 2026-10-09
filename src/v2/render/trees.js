@@ -2,7 +2,7 @@ import THREE from '../../three-instance.js'
 import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
-import { buildTreeClumpTier, bakeTreeClumps, treeClumpLayers, CLUMP_TREES } from '../../props/tree-clump.js'
+import { treeClumpCards, bakeTreeClumps, CLUMP_TREES } from '../../props/tree-clump.js'
 import { CLUMP_VARIANTS } from '../../textures.js'
 import { HEM_FRAY } from '../../props/tree-v8.js'
 import {
@@ -189,8 +189,9 @@ import { PLACEMENT, TREELINE, BIOME, forestKeepAt, forestScaleAt } from '../laye
 // through out to 150 m -- less the rim's 7.5% and the level quantisation,
 // which the gate measures at 0.86-0.98 of full -- and thins as 3/d beyond.
 // Not one instance is added: a clump is a single card's slot wearing a
-// bigger picture, and the instance count, pool bound and rim are exactly
-// what they were.
+// bigger picture, and it lives in the shared LitterCards pool (a claim of
+// maxInstances * clumpMax; the world holds ~4k clumps at once, so the pool
+// is sized 12,288 in main.js), where it keeps no snow whitening and no wind.
 //
 // WHICH survivors is decided by rank, like everything else here: the clumps
 // are the LOWEST ranks, `rank < clumpTop[q]`, the trees that will stand
@@ -608,6 +609,7 @@ export class Trees {
    *                      the forest crowds the verge (ROAD).
    * @param opts.plants   Trees standing at construction: `{ x, z, scale, sink? }`, `sink` metres in place of the SINK_M roll.
    * @param opts.plantRoom How many trees `plant` may stand at once.
+   * @param opts.cards    The shared LitterCards: the clump tier is its instances, one picture per species and variant, so no mesh of the arena draws them.
    */
   constructor(
     scene,
@@ -628,8 +630,10 @@ export class Trees {
       bounds = null,
       plants = [],
       plantRoom = 0,
+      cards = null,
     } = {}
   ) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Trees: needs the LitterCards its clump cards are drawn by')
     if (!field || typeof field.scatterAt !== 'function') {
       throw new Error('Trees: needs a V2Height with scatterAt')
     }
@@ -718,29 +722,27 @@ export class Trees {
     const bank = buildTreeBank({ billboard: true })
     this.bank = bank
     this.variantCount = bank.variants.length
-    // The arena's tiers are the bank's ladder and then the clump tier, which
-    // draws a single card's instance with a picture of several trees (header,
-    // THE CLUMP TIER).
-    const arenaTiers = [...bank.tiers, buildTreeClumpTier(bank)]
-    this.tierCount = arenaTiers.length
-    this.cardTier = bank.tiers.length - 1
-    this.clumpTier = this.tierCount - 1
+    // The arena's meshes are the bank's ladder. The clump tier after it draws a
+    // single card's instance with a picture of several trees, and lives in the
+    // shared card pool (header, THE CLUMP TIER).
+    const arenaTiers = bank.tiers
+    this.tierCount = arenaTiers.length + 1
+    this.cardTier = arenaTiers.length - 1
+    this.clumpTier = arenaTiers.length
 
     // The billboard list is what ties the material to the impostor layers. Every
     // other geometry in this arena wears a bark or leaf layer and is left alone,
     // so all the meshes share ONE material and therefore one program --
     // DESIGN.md §5's rule as far as an instanced ladder can keep it, and the
     // whole reason this is a shader trick rather than a second material.
-    const cardLayers = [...treeImpostorLayers(), ...treeClumpLayers()]
+    const cardLayers = treeImpostorLayers()
     this.material = createPropMaterial(textureArray, {
       billboardLayers: cardLayers,
-      // Every card, single and clump, pitches CARD_TILT of the way to face an
-      // eye above it, so a hillside from a summit is a wood and not a stack
-      // of edges. The mesh tiers are not cards and never pitch.
+      // Every single card pitches CARD_TILT of the way to face an eye above it
+      // (the clump pictures carry the same tilt in the pool), so a hillside
+      // from a summit is a wood and not a stack of edges. The mesh tiers are
+      // not cards and never pitch.
       billboardTilt: { amount: CARD_TILT, layers: [Math.min(...cardLayers), Math.max(...cardLayers)] },
-      // Which of a species' clump pictures an instance wears, as a per-instance
-      // shift off the clump card's layer; every other tier's shift is 0.
-      layerShift: true,
       wind: 'tree',
       // The bank bakes each tree's sky occlusion into `color` (the shade under
       // the crown, and the crown's own interior); three composes it under the
@@ -761,10 +763,20 @@ export class Trees {
     // also the index of the mesh that draws it.
     this.tierIds = []
     this.tierTris = []
-    for (let t = 0; t < this.tierCount; t++) {
+    for (let t = 0; t < arenaTiers.length; t++) {
       this.tierIds.push(arenaTiers[t].geometries.map((_, v) => t * this.variantCount + v))
       this.tierTris.push(arenaTiers[t].triangles.slice())
     }
+    // The clump tier is the card pool's one quad: every species' geometry id is the pool's first, and the picture is the instance's layer shift (`_clumpShift`).
+    const cardBase = this.clumpTier * this.variantCount
+    this.tierIds.push(new Array(this.variantCount).fill(cardBase))
+    this.tierTris.push(new Array(this.variantCount).fill(cards.cardTris))
+    this.litterCards = cards
+    // At most clumpMax of any tile's trees wear the clump card, and a fade's ghost may wear one too.
+    cards.claim('trees', Math.ceil(this.maxInstances * this.clumpMax) + FADE_MAX_INFLIGHT)
+    this.clumpPicture = treeClumpCards(bank).map((c) => Array.from({ length: CLUMP_VARIANTS }, () => (
+      cards.addPicture({ kind: 'spun', cx: 0, cy: c.cardHeight / 2, hw: c.cardWidth / 2, hh: c.cardHeight / 2, tilt: CARD_TILT })
+    )))
 
     // How many instances each tier is DRAWING, refilled by `update`. The one
     // number that says whether a band is earning its meshes, which is a
@@ -777,7 +789,7 @@ export class Trees {
       this._tierCaps(),
       this.material,
       'v2-trees',
-      { layerShift: true }
+      { cards: cards.meshes, cardBase }
     )
 
     // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at
@@ -1234,8 +1246,8 @@ export class Trees {
    */
   _tierCaps() {
     const caps = []
-    for (let t = 0; t < this.tierCount; t++) {
-      if (t === this.cardTier || t === this.clumpTier) {
+    for (let t = 0; t < this.clumpTier; t++) {
+      if (t === this.cardTier) {
         caps.push(Math.ceil(this.maxInstances / this.variantCount) + 1024)
         continue
       }
@@ -2355,18 +2367,21 @@ export class Trees {
     return this._m.compose(this._p, this._q, this._s)
   }
 
+  /** The card pool's picture instance `id` wears as a clump. */
+  _clumpShift(id) {
+    return this.clumpPicture[this.variantAt[id]][this.instPicture[id]]
+  }
+
   /**
-   * Draw instance `id` on `tier`: geometry, matrix and layer shift together,
-   * because the shift is added to EVERY geometry's layer and so must be the
-   * clump picture exactly while the clump card is worn and 0 otherwise -- a
-   * shift left on a tree handed back to a mesh tier reads its bark off the
-   * next layer along.
+   * Draw instance `id` on `tier`: geometry, matrix and layer shift together.
+   * The shift is the pool's picture index while the clump card is worn and 0
+   * otherwise, so a tree handed back to a mesh tier carries nothing stale.
    */
   _wear(id, tier) {
     this.tierAt[id] = tier
     this.batch.setGeometryIdAt(id, this.tierIds[tier][this.variantAt[id]])
     this.batch.setMatrixAt(id, this._composeAt(id, tier))
-    this.batch.setLayerShiftAt(id, tier === this.clumpTier ? this.instPicture[id] : 0)
+    this.batch.setLayerShiftAt(id, tier === this.clumpTier ? this._clumpShift(id) : 0)
   }
 
   /**
@@ -2462,7 +2477,7 @@ export class Trees {
     // Composed for the tier the ghost wears, not copied: a clump card and a
     // single stand at different scales.
     this.batch.setMatrixAt(dup, this._composeAt(i, oldTier))
-    this.batch.setLayerShiftAt(dup, oldTier === this.clumpTier ? this.instPicture[i] : 0)
+    this.batch.setLayerShiftAt(dup, oldTier === this.clumpTier ? this._clumpShift(i) : 0)
     // The tint too, or the ghost is a differently-lit tree standing inside the
     // one it is dissolving out of. setColorAt writes .rgb only, so the timer
     // below is safe to stamp after it.
@@ -2578,9 +2593,12 @@ export class Trees {
   bakeCards(renderer) {
     const t0 = performance.now()
     const baked = bakeTreeImpostors(renderer, this.textureArray)
-    const clumps = bakeTreeClumps(renderer, this.textureArray, this.bank)
+    const clumps = bakeTreeClumps(renderer, this.bank)
+    this.bank.variants.forEach((v, vi) => {
+      for (const c of clumps.filter((k) => k.species === v.species)) this.litterCards.setPixels(this.clumpPicture[vi][c.variant], c.pixels)
+    })
     this.cardBakeMs = performance.now() - t0
-    return baked.concat(clumps.map((c, i) => ({ ...c, species: `${c.species}-clump${i % CLUMP_VARIANTS}` })))
+    return baked.concat(clumps.map(({ pixels, ...c }) => ({ ...c, species: `${c.species}-clump${c.variant}` })))
   }
 
   /**

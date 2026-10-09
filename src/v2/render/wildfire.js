@@ -6,8 +6,10 @@ import { TriFlames, TRI_WILDFIRE, TRI_TORCH } from './fire-tris.js'
 // the short of them:
 //
 //   a flame dies 5-10 s after it is lit, dimming over its last FADE_S;
+//   an object burns once, BURN_S from its first flame, and no flame on it
+//   outlives that; once out it never lights again;
 //   the third flame on one object makes every flame on it big, chars the
-//   object, and holds them to BIG_LIFE_S from then;
+//   object, and holds them to the object's burn's end;
 //   each second a flame has SPREAD_ODDS of lighting another flame on a
 //   flammable within SPREAD_M of it;
 //   a torch's tip held within TOUCH_M of a flammable for IGNITE_S lights a flame on it, again each IGNITE_S it stays;
@@ -18,7 +20,7 @@ import { TriFlames, TRI_WILDFIRE, TRI_TORCH } from './fire-tris.js'
 // ---------------------------------------------------------------------------
 
 export const LIFE_S = [5, 10]
-export const BIG_LIFE_S = 20
+export const BURN_S = [10, 20]
 export const BIG_AT = 3
 export const BIG_GROW = 1.6
 export const FADE_S = 1.5
@@ -56,6 +58,8 @@ export class Wildfire {
     // Called with each flame this machine lights (a spark's, a spread's); the net sends it.
     this.onLight = null
     this.lit = new Map()
+    // Each object's burn's end, by key, kept after it ends so a spent object never lights again: bounded by the objects the session burns.
+    this.burns = new Map()
     // Seconds each object has had a torch tip in touch, by key.
     this.touching = new Map()
     this.touchStep = 0
@@ -70,21 +74,30 @@ export class Wildfire {
     return n
   }
 
+  /** A flame of `life` seconds, or null. A local flame on an object is held to the object's burn, which it starts, and big ones burn to its end; a peer's keeps the life it was sent. */
   _add(x, y, z, target, now, life, { local, big = false }) {
     if (this.list.length >= CAP) return null
-    const flame = { x, y, z, key: target ? target.key : null, target, born: now, die: now + life, big, local, phase: this.rng() * 6.28 }
+    let die = now + life
+    if (target && local) {
+      if (!this.burns.has(target.key)) this.burns.set(target.key, now + BURN_S[0] + this.rng() * (BURN_S[1] - BURN_S[0]))
+      const end = this.burns.get(target.key)
+      if (now >= end) return null
+      die = big ? end : Math.min(die, end)
+    }
+    const flame = { x, y, z, key: target ? target.key : null, target, born: now, die, big, local, phase: this.rng() * 6.28 }
     this.list.push(flame)
     if (target) this._count(target, now)
     return flame
   }
 
-  /** The object has BIG_AT flames: they all grow, hold to BIG_LIFE_S, and the object chars once. */
+  /** The object has BIG_AT flames: they all grow, local ones hold to its burn's end, and the object chars once. */
   _count(target, now) {
     const here = this.list.filter((f) => f.key === target.key)
     if (here.length < BIG_AT) return
+    const end = this.burns.get(target.key)
     for (const f of here) {
       f.big = true
-      f.die = Math.max(f.die, now + BIG_LIFE_S)
+      if (f.local) f.die = end
     }
     if (!this.lit.has(target.key)) {
       this.lit.set(target.key, now)
@@ -97,8 +110,8 @@ export class Wildfire {
     const hit = this._nearest(x, y, z, LIGHT_M)
     if (!hit) return null
     const life = LIFE_S[0] + this.rng() * (LIFE_S[1] - LIFE_S[0])
-    const flame = this._add(x, y, z, hit, now, this.lit.has(hit.key) ? BIG_LIFE_S : life, { local: true, big: this.lit.has(hit.key) })
-    if (flame && this.onLight) this.onLight(flame, life)
+    const flame = this._add(x, y, z, hit, now, life, { local: true, big: this.lit.has(hit.key) })
+    if (flame && this.onLight) this.onLight(flame, flame.die - now)
     return flame
   }
 
@@ -173,9 +186,8 @@ export class Wildfire {
       const a = Math.atan2(f.z - o.z, f.x - o.x) + (this.rng() - 0.5)
       const y = Math.min(o.y + o.height, Math.max(o.y, f.y)) + (this.rng() - 0.5) * 0.1
       const life = LIFE_S[0] + this.rng() * (LIFE_S[1] - LIFE_S[0])
-      const big = this.lit.has(o.key)
-      const flame = this._add(o.x + Math.cos(a) * o.radius, y, o.z + Math.sin(a) * o.radius, o, now, big ? BIG_LIFE_S : life, { local: true, big })
-      if (flame && this.onLight) this.onLight(flame, life)
+      const flame = this._add(o.x + Math.cos(a) * o.radius, y, o.z + Math.sin(a) * o.radius, o, now, life, { local: true, big: this.lit.has(o.key) })
+      if (flame && this.onLight) this.onLight(flame, flame.die - now)
     }
   }
 

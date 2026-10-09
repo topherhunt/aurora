@@ -27,7 +27,7 @@ export const HEARTH = {
   // The logs: `count` pentagon prisms, `radius` metres across the flats and `length` long, the foot on a ring of `foot` metres and the tip `rise` metres up over a ring of `tip`, so they cross above the centre rather than meet on it; the bark tile once every `tile` metres.
   logs: { count: 6, foot: 0.4, tip: 0.1, rise: 0.5, radius: 0.055, length: 0.7, tile: 1 },
   // The flame's foot, metres over the ground: up among the logs.
-  fire: { lift: 0.1 },
+  fire: { lift: 0.2 },
   // The stools: `count` nonagon prisms on a ring `r` metres out with `spread` metres of play, each `radius` across, every corner moved `jitter` of the radius. The scattered stools (stools.js) are cut to the same numbers. A stool is not cut to a height but to its ground (cutStool): its top rides SEAT_M over the ground its sitter's feet stand on, taller where the fire side falls away and shorter where it rises, and `height` is only the most and least a cut may come to.
   stools: { count: [5, 7], r: 1.7, spread: 0.3, radius: [0.16, 0.2], height: [0.14, 0.34], jitter: 0.15, tile: 1 },
   // Metres: where the decimated tier takes over, where the card does, and the fraction of that a rung comes back at.

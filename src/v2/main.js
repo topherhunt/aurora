@@ -28,8 +28,11 @@ import { Editor, TOOL_KEYS, TOOLS } from './edit/editor.js'
 import { raymarchGround, screenRay, pointerNdc, pickProp } from './edit/pick.js'
 import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
-import { installLogShip, shipLog } from './log-ship.js'
+import { installLogShip, reportLog, reportWarning } from './log-ship.js'
+import { cardStats, loadBakedCards, packCards, recordCards } from '../props/card-cache.js'
 import { PerfTrace, r2 } from './perf-trace.js'
+import { halveDraw, dropDiscard } from './render/ab-switch.js'
+import { UploadCounter } from './gl-uploads.js'
 import { RecordTrace } from './record-trace.js'
 import { AmbientTrace } from './ambient-trace.js'
 import { GpuTimer } from './gpu-timer.js'
@@ -245,17 +248,29 @@ const bootSay = (html) => {
 // rather than buying a frame per step: half the build's steps run under 5 ms
 // and a frame costs 13.9 ms on a 72 Hz headset whatever the step did, so a run
 // of cheap ones collapses into one frame and only what could hold the screen
-// gets its own. No timer here reports that wait -- it falls between the steps.
+// gets its own. That frame is where the step's new materials compile and its
+// buffers upload, so its wait is charged to the step before it as `frame`.
 const bootSteps = []
 let bootStepName = null
 let bootStepAt = 0
 let bootUnyielded = 0
 const YIELD_AFTER_MS = 16
 const bootFmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms.toFixed(0)} ms`)
+// performance.now() at each boot phase's start, for the report: `main` is this module's body (every static import fetched and run), then A-Frame's scene up, then the room build begun.
+const bootMarks = { main: performance.now(), aframe: 0, room: 0 }
+// Deploy-baked card photographs (props/card-cache.js); scripts/bake-cards.mjs boots the build with ?bakecards to record them. Dev always bakes live.
+const BAKE_CARDS = new URLSearchParams(location.search).has('bakecards')
+if (BAKE_CARDS) {
+  recordCards()
+  window.__cards = { stats: cardStats, pack: packCards }
+}
+const cardsLoad = import.meta.env.PROD && !BAKE_CARDS
+  ? loadBakedCards('/cards.bin').catch((err) => reportWarning(`[v2] no deploy-baked cards, baking them all live: ${err.message}`))
+  : null
 async function bootStep(name) {
   if (bootStepName !== null) {
     const ms = performance.now() - bootStepAt
-    bootSteps.push({ name: bootStepName, ms })
+    bootSteps.push({ name: bootStepName, ms, frame: 0 })
     bootUnyielded += ms
   }
   bootStepName = name
@@ -265,10 +280,12 @@ async function bootStep(name) {
   }
   if (bootUnyielded >= YIELD_AFTER_MS || bootSteps.length === 0) {
     bootUnyielded = 0
+    const t0 = performance.now()
     await new Promise((resolve) => {
       requestAnimationFrame(() => setTimeout(resolve, 0))
       setTimeout(resolve, 100)
     })
+    if (bootSteps.length) bootSteps[bootSteps.length - 1].frame += performance.now() - t0
   }
   bootStepAt = performance.now()
 }
@@ -280,18 +297,37 @@ async function bootStep(name) {
  * whole of her stay in this room would be charged to the step that finished
  * building it.
  */
-function bootReport() {
-  if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: performance.now() - bootStepAt })
+function bootReport(first) {
+  const now = performance.now()
+  if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: now - bootStepAt, frame: 0 })
   bootStepName = null
-  const total = bootSteps.reduce((s, x) => s + x.ms, 0)
-  const line = `[v2] boot ${bootFmtMs(total)} in ${bootSteps.length} steps: ` +
-    bootSteps.slice().sort((a, b) => b.ms - a.ms).map((s) => `${s.name} ${bootFmtMs(s.ms)}`).join(', ')
-  console.log(line)
-  shipLog(line)
+  const sum = (key) => bootSteps.reduce((s, x) => s + x[key], 0)
+  const wall = now - bootMarks.room
+  const build = `build ${bootFmtMs(wall)}: steps ${bootFmtMs(sum('ms'))} + frames ${bootFmtMs(sum('frame'))} + other ${bootFmtMs(wall - sum('ms') - sum('frame'))}`
+  const steps = 'steps: ' + bootSteps.slice().sort((a, b) => b.ms + b.frame - a.ms - a.frame)
+    .map((s) => `${s.name} ${bootFmtMs(s.ms)}${s.frame >= 1 ? ` +${bootFmtMs(s.frame)} frame` : ''}`).join(', ')
+  if (!first) return reportLog(`[v2] room ${currentRoom.id} ${build}; ${steps}`)
+  // Everything fetched so far. transferSize is 0 for a cache hit, so a warm boot reads as near-zero MB.
+  const fetches = performance.getEntriesByType('resource')
+  const lastEnd = (list) => list.reduce((m, e) => Math.max(m, e.responseEnd), 0)
+  const isJs = (e) => /\.m?js(\?|$)/.test(e.name)
+  const cdnJs = fetches.filter((e) => isJs(e) && !e.name.startsWith(location.origin))
+  const gl = renderer.getContext()
+  const device = navigator.userAgent.match(/Quest[ \d]*(Pro)?/)?.[0].trim() ?? 'desktop'
+  const cards = cardStats()
+  reportLog(
+    `[v2] boot ready ${bootFmtMs(now)} on ${device} (${import.meta.env.DEV ? 'dev' : 'prod'}, ${gl.drawingBufferWidth}x${gl.drawingBufferHeight}): ` +
+    `code ${bootFmtMs(bootMarks.main)} (CDN scripts done ${bootFmtMs(lastEnd(cdnJs))}), aframe ${bootFmtMs(bootMarks.aframe - bootMarks.main)}, ` +
+    `setup ${bootFmtMs(bootMarks.room - bootMarks.aframe)}, ${build}; ` +
+    `${renderer.info.programs.length} shader programs, parallel compile ${renderer.extensions.has('KHR_parallel_shader_compile') ? 'yes' : 'no'}; ` +
+    `cards ${cards.mode === 'off' ? 'all live (dev)' : `${cards.baked} pre-baked, ${cards.live} live`} so far; ` +
+    `${fetches.length} fetches ${(fetches.reduce((s, e) => s + e.transferSize, 0) / 2 ** 20).toFixed(1)} MB over the wire, ` +
+    `js done ${bootFmtMs(lastEnd(fetches.filter(isJs)))}, last done ${bootFmtMs(lastEnd(fetches))}; ${steps}`
+  )
 }
 const bootDone = async () => {
   await bootStep(null)
-  bootReport()
+  bootReport(true)
   if (boot) boot.classList.add('gone')
 }
 // A failed boot must READ as a failed boot. The overlay covers the canvas, so
@@ -494,6 +530,7 @@ await new Promise((resolve) => {
   if (sceneEl.hasLoaded) resolve()
   else sceneEl.addEventListener('loaded', resolve, { once: true })
 })
+bootMarks.aframe = performance.now()
 // A-FRAME'S DEFAULT LIGHTS ARE THE WHOLE OF QUEST MODE'S LIGHTING DIVERGENCE.
 // Its light system hangs two entities off any scene that has not declared a
 // light of its own, on the 'loaded' event: an ambient #BBB at intensity 1 and
@@ -1410,7 +1447,7 @@ const QUEST_TOGGLE_ROWS = [
 ]
 
 // Toggles the perf-trace battery drives (perf-suite.js) that have no cell on the panel: one per animal species under the `animals` row, and the parts of `townsfolk`.
-const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons', 'townsPeople', 'townsStriders', 'townsFires'].map((key) => ({ key, text: key }))
+const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons', 'townsPeople', 'townsStriders', 'townsFires', 'cardsHalf', 'litterHalf', 'litterDiscard', 'grassHalf', 'grassDiscard'].map((key) => ({ key, text: key }))
 
 function questRowByKey(key) {
   const row = QUEST_SETTING_ROWS.find((r) => r.key === key) ?? QUEST_TOGGLE_ROWS.find((r) => r.key === key) ?? TRACE_ONLY_ROWS.find((r) => r.key === key)
@@ -1456,6 +1493,11 @@ function applyQuestToggle(key) {
     case 'litter':
       applyLitterVisibility()
       break
+    case 'cardsHalf': litterCards.setHalf(!enabled); break
+    case 'litterHalf': halveDraw(litter.batch, !enabled); break
+    case 'litterDiscard': dropDiscard(litter.material, !enabled); break
+    case 'grassHalf': halveDraw(grass.batch, !enabled); break
+    case 'grassDiscard': dropDiscard(grass.material, !enabled); break
     case 'huts': case 'towns': case 'townsfolk': case 'townsPeople': case 'townsStriders': case 'townsFires': applyVillageVisibility(); break
     // Back on, every animal layer is put down fresh at her feet: the ground
     // may have moved under it while it was frozen, and a frozen layer is
@@ -3150,7 +3192,7 @@ const questToggles = {
   critterTint: false, mirror: false, terrainWire: false, roadLines: false, obstacleWire: false,
   wind: true,
   // Trace-only splits of `townsfolk` (TRACE_ONLY_ROWS).
-  townsPeople: true, townsStriders: true, townsFires: true,
+  townsPeople: true, townsStriders: true, townsFires: true, cardsHalf: true, litterHalf: true, litterDiscard: true, grassHalf: true, grassDiscard: true,
   // See QUEST_SETTING_ROWS.
   teleport: true, standHeight: true,
 }
@@ -3183,7 +3225,7 @@ const perfTrace = new PerfTrace({
   refresh: () => refreshQuestRow('perfTrace'),
 })
 window.v2perfTrace = perfTrace // console: `v2perfTrace.start()` runs it on the desktop
-const perfTraceFrame = { jsMs: 0, renderMs: 0, calls: 0, tris: 0 }
+const perfTraceFrame = { jsMs: 0, renderMs: 0, calls: 0, tris: 0, uploadCalls: 0, uploadBytes: 0 }
 
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
@@ -3455,6 +3497,7 @@ async function bootWorld() {
     else cameInBy = saved.door
   }
   flareGuns.wear(await flareGunMesh)
+  await cardsLoad
   const { fresh } = await buildRoom(room, saved)
   if (fresh) saved = null
 
@@ -3477,6 +3520,8 @@ async function bootWorld() {
   loadImageLayers(propTextures).then(() => {
     propLayersReady = true
     bakeImpostors()
+    const cards = cardStats()
+    if (cards.mode === 'use') reportLog(`[v2] prop layers in at ${bootFmtMs(performance.now())}: cards ${cards.baked} pre-baked, ${cards.live} live`)
   })
 
   if (EDITOR_MODE) editor = new Editor({
@@ -4216,6 +4261,7 @@ async function buildRoom(room, at) {
   sparks.setRoom(flares.room)
   visions.setRoom(flares.room)
   bootSteps.length = 0
+  bootMarks.room = performance.now()
   // ONE SEED FOR EVERY ROOM: the terrain worker seeds its own V2Height from the
   // shared constant (terrain/worker.js), so a room seeded otherwise would draw
   // one ground and collide with another.
@@ -4450,8 +4496,9 @@ async function buildRoom(room, at) {
     : townPlan ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ x: w.x, z: w.z, r: Math.max(...w.outline.map(([lx, lz]) => Math.hypot(lx, lz))), spots: fieldSpots(w) })))
     : []
   // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); 2048 is the most it draws at once (the beds' worst cases run near 550 deadwood and 500 mushrooms); a full mesh warns and shows nothing more.
-  litterCards = new LitterCards(8192)
+  litterCards = new LitterCards(12288)
   scene.add(litterCards.group)
+  window.v2cards = litterCards // console: `v2cards.stats`
   lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card' })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds, cards: litterCards })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
@@ -4559,6 +4606,7 @@ async function buildRoom(room, at) {
     plants: room.village ? [...roomSpec.decor.trees, ...roomSpec.wood] : [],
     // The glade mouths' screens (entrances.js SCREEN).
     plantRoom: room.village ? 0 : SCREEN_POOL,
+    cards: litterCards,
   })
   // Per-vertex, like v1's props: a leaf card is smaller than a fragment-rate
   // shadow lookup is worth. Skipping this is a visible failure -- the trees
@@ -5158,7 +5206,7 @@ async function buildRoom(room, at) {
   terrain.cullDeg = (70 * Math.PI) / 180
   // The first build reports from bootDone, which has the overlay to take down
   // and a save to apply after this returns; a swap has nothing after it.
-  if (build > 1) bootReport()
+  if (build > 1) bootReport(false)
   return { spawn, fresh }
 }
 
@@ -6423,6 +6471,7 @@ const mainRender = { triangles: 0, calls: 0 }
 const CPU_FRAMES = 30
 // GPU ms per frame where the browser exposes a timer query; the traces record it beside the CPU laps (gpu-timer.js).
 const gpuTimer = new GpuTimer(renderer)
+const uploads = new UploadCounter(renderer.getContext())
 const cpuTime = { tickAt: 0, tickEnd: 0, js: 0, render: 0, n: 0, jsMs: 0, renderMs: 0 }
 function bankCpuTime() {
   cpuTime.js += cpuTime.tickEnd - cpuTime.tickAt
@@ -7813,8 +7862,9 @@ function stepOverworld(dt, now) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
     carrots.update(headTmp.x, headTmp.y, headTmp.z)
   }
+  spikes.lap('ferns')
   if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
-  spikes.lap('ferns+grass')
+  spikes.lap('grass')
   // Three layers on one `litter` row, hidden AND frozen together -- see the row's
   // own note for why they share a button. Cheap per frame standing still, which is
   // what "the cheapest layers in the world" was measured at; all three are tiled
@@ -7822,12 +7872,16 @@ function stepOverworld(dt, now) {
   // every other one and the row has to be able to take that away.
   if (questToggles.litter) {
     litter.update(headTmp.x, headTmp.y, headTmp.z)
+    spikes.lap('pebbles')
     // After rocks, and for the same reason the construction and the relief
     // re-place are: a clump follows the anchors, so it wants them stepped first.
     mushrooms.update(headTmp.x, headTmp.y, headTmp.z)
+    spikes.lap('mushrooms')
     deadwood.update(headTmp.x, headTmp.y, headTmp.z)
+    spikes.lap('deadwood')
     sticks.update(headTmp.x, headTmp.y, headTmp.z)
     bones.update(headTmp.x, headTmp.y, headTmp.z)
+    spikes.lap('sticks+bones')
   }
   // The rowboats sit on the water row: moored where they were placed, so this
   // is the rim sweep and the mesh-to-card step alone.
@@ -7952,6 +8006,9 @@ AFRAME.registerComponent('v2-quest-tick', {
     perfTraceFrame.renderMs = performance.now() - cpuTime.tickEnd
     perfTraceFrame.calls = mainRender.calls
     perfTraceFrame.tris = mainRender.triangles
+    const sent = uploads.take()
+    perfTraceFrame.uploadCalls = sent.calls
+    perfTraceFrame.uploadBytes = sent.bytes
     perfTrace.frame(perfTraceFrame)
     recordTrace.frame(perfTraceFrame)
     ambientTrace.frame(perfTraceFrame)

@@ -72,6 +72,9 @@ ${DOMAIN} {
 	handle /trace {
 		reverse_proxy 127.0.0.1:${APP_PORT}
 	}
+	handle /log {
+		reverse_proxy 127.0.0.1:${APP_PORT}
+	}
 	root * ${REMOTE_DIR}/dist
 	try_files {path} {path}.html
 	file_server
