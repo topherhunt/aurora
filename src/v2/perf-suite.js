@@ -6,15 +6,15 @@
 
 /** Ms thrown away after a state is applied (shader compiles, re-placement), then ms measured. */
 export const SETTLE_MS = 1000
-export const MEASURE_MS = 5000
+export const MEASURE_MS = 3000
 
 /** A baseline is re-measured after this many states, so thermal drift can be divided out. */
-export const BASELINE_EVERY = 2
+export const BASELINE_EVERY = 3
 
 /** A group whose removal saves at least this many median frame ms (mean of both rounds) is drilled into. */
 export const DRILL_MIN_MS = 0.7
 /** Cap on drilled states, so a run with many guilty groups still ends inside two minutes. */
-export const MAX_DRILL = 18
+export const MAX_DRILL = 10
 
 const VILLAGE = ['huts', 'towns', 'townsfolk']
 const EVERYTHING = ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire', ...VILLAGE]
@@ -55,15 +55,8 @@ export const GROUPS = [
   // A Leafkin village's fixtures, a human town's buildings, and a town's people and striders. Drills for layers the
   // current room lacks are skipped (host.present).
   { name: 'village', off: VILLAGE, drill: [...['towns', 'townsfolk', 'huts'].map((k) => ({ name: k, off: [k] })), { name: 'people', off: ['townsPeople'] }, { name: 'striders', off: ['townsStriders'] }, { name: 'hearth+forge', off: ['townsFires'] }] },
-  // Wind's vertex work across every swaying layer (grass, ferns, trees), everything else on.
-  { name: 'wind', off: ['wind'], drill: [] },
-  // Litter's five batches one at a time: each is its own draw and material, and removing the whole layer saves far more than halving it.
+  // Litter's five batches one at a time. The wind, halve and no-discard A/Bs are settled (_notes/perf-ledger.md); their rows stay in main.js.
   { name: 'litter parts', off: ['litter'], drill: ['Pebbles', 'Sticks', 'Mushrooms', 'Deadwood', 'Bones'].map((k) => ({ name: k.toLowerCase(), off: [`litter${k}`] })) },
-  // A/B pairs per alpha-tested layer: half the instances (saving tracks the count: vertex/instance work) and no discard (saving appears: early-Z was being lost to the cutout). `cards` is the shared card pool.
-  ...['litter', 'grass', 'cards'].flatMap((k) => [
-    { name: `${k} half`, off: [`${k}Half`], drill: [] },
-    ...(k === 'cards' ? [] : [{ name: `${k} no discard`, off: [`${k}Discard`], drill: [] }]),
-  ]),
   // The ground alone, everything else on: its own saving, where `floor+terrain` only brackets it from the empty world.
   { name: 'terrain', off: ['terrain'], drill: [] },
   // The floor: what a frame costs with the world taken away. Its per-stage laps (samples[].stages) and
