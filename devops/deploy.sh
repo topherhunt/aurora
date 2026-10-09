@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "${DEPLOY_USER}" = root ]; then RSYNC_PATH=rsync; else RSYNC_PATH="sudo rsync"; fi
 # Compared by content and without -t: every build restamps every file, and Caddy's ETag is mtime + size, so carrying the build's times over would make the whole site look changed to every browser after every deploy.
 rsync -rlz --checksum --delete --delay-updates --rsync-path="${RSYNC_PATH}" -e "ssh -p ${SSH_PORT}" \
-  "${REPO_ROOT}/dist/""${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/dist/"
+  "${REPO_ROOT}/dist/" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/dist/"
 rsync -az --delete --delay-updates --rsync-path="${RSYNC_PATH}" -e "ssh -p ${SSH_PORT}" \
   "${REPO_ROOT}/server/" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/server/"
 remote_sudo "chown -R '${SERVICE_USER}:${SERVICE_USER}' '${REMOTE_DIR}/dist'"

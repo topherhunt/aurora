@@ -930,7 +930,8 @@ function foliage(base, alt, seed, cutout) {
   }, seed)
 }
 
-export function buildTextureArray() {
+/** The atlas's procedural layers end to end, LAYER_COUNT of them, the image layers left empty. Three-free, so atlas-worker.js can compute it off the main thread. */
+export function atlasData() {
   const n = TEX_SIZE
   const layers = new Array(LAYER_COUNT)
 
@@ -1026,7 +1027,12 @@ export function buildTextureArray() {
   for (let i = 0; i < LAYER_COUNT; i++) {
     if (layers[i]) data.set(layers[i], i * n * n * 4)
   }
+  return data
+}
 
+/** The prop atlas, from `data` when atlas-worker.js made it. */
+export function buildTextureArray(data = atlasData()) {
+  const n = TEX_SIZE
   const tex = new THREE.DataArrayTexture(data, n, n, LAYER_COUNT)
   tex.format = THREE.RGBAFormat
   tex.type = THREE.UnsignedByteType

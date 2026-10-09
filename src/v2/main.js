@@ -49,6 +49,7 @@ import { Boulders } from './render/boulders.js'
 import { Grass } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
 import { createPlainTerrainMaterial } from '../terrain/terrain-material.js'
+import { preloadTerrainDetail } from '../terrain/grit-texture.js'
 import { Rocks } from './render/rocks.js'
 import { Mushrooms } from './render/mushrooms.js'
 import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
@@ -143,6 +144,20 @@ import { CaveMouths } from './render/cave-mouths.js'
 import { CaveRoom, CAVE_AIR, CAVE_MURK } from './render/cave-room.js'
 import { ChalkStones, KIND as CHALK } from './render/chalk.js'
 import { Chalk, ChalkPen, onRock, rayRock } from './caves/chalk.js'
+
+// The terrain's detail textures and the prop atlas's procedural layers, each on another core while A-Frame and the room's first steps take the main thread. The atlas is awaited at its first use (propAtlas), the detail by the terrain step.
+const terrainDetail = preloadTerrainDetail()
+const atlasData = new Promise((resolve, reject) => {
+  const worker = new Worker(new URL('../atlas-worker.js', import.meta.url), { type: 'module' })
+  worker.onmessage = ({ data }) => {
+    worker.terminate()
+    resolve(data)
+  }
+  worker.onerror = (e) => {
+    worker.terminate()
+    reject(new Error(`atlas-worker: ${e.message}`))
+  }
+})
 
 // The trees' albedo-weighted night lift (lighting.js APPLY), so canopy shade goes dark instead of grey; the pool's clump pictures share it.
 const TREE_LIFT = { mix: 1, gain: 7 }
@@ -3472,15 +3487,13 @@ function fade(goal) {
   })
 }
 
+// The atlas is built once, ahead of every room's first prop or terrain material: createTerrainMaterial decides at compile time whether to declare a sampler at all, so it has to have the array in hand before the material exists. It is built from the worker's procedural layers and its image layers land asynchronously (loadImageLayers, bootWorld); the bank and the batches do not wait on them, so the world has trees and stone from the first frame wearing whatever the procedural layers already hold.
+async function propAtlas() {
+  if (propTextures === null) propTextures = buildTextureArray(await atlasData)
+  return propTextures
+}
+
 async function bootWorld() {
-  // The atlas is built once, ahead of every room: createTerrainMaterial decides
-  // at compile time whether to declare a sampler at all, so it has to have the
-  // array in hand before the material exists. It is built empty and its image
-  // layers land asynchronously (loadImageLayers, below); the bank and the
-  // batches do not wait on them, so the world has trees and stone from the
-  // first frame wearing whatever the procedural layers already hold.
-  propTextures = buildTextureArray()
-  setupMark('atlas')
   // The flare gun's mesh, worn before the first room: a saved gun in a hand or the backpack is dressed as the room builds.
   const flareGunMesh = loadCritterGlb(FLAREGUN_GLB, { origin: [0, 0, 0] })
 
@@ -4322,6 +4335,7 @@ async function buildRoom(room, at) {
   if (room.village) {
     bootSay('building the village ...')
     await bootStep('village')
+    await propAtlas()
     bank = buildRockBank()
     const spec = rollVillage(villageSeed(), HOUSE_BOUNDS)
     shell = new Shell(scene, bank, propTextures, spec.shell)
@@ -4413,6 +4427,7 @@ async function buildRoom(room, at) {
 
   bootSay('building the world ...')
   await bootStep('terrain')
+  await Promise.all([terrainDetail, propAtlas()])
   terrain = new TerrainV2(scene, {
     heightmapRaw: heightmap.toRaw(), doc: layers.serialize(), relief, workers: 2, atlas: propTextures, axis: true,
     // Indexed as townsfolk.hearths is, so updateFire's uHearthFar[i] dims the right town's baked glow.

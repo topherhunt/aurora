@@ -1658,6 +1658,17 @@ function bareRoutes() {
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
+// A worker bundle gets a three-instance.js that throws on use, so a worker may import a module like textures.js for its pure half without bundling all of npm three (a namespace import keeps every export). Build only: in dev a worker loads the real one.
+function noThreeInWorkers() {
+  const STUB = '\0three-in-worker'
+  return {
+    name: 'no-three-in-workers',
+    enforce: 'pre',
+    resolveId: (id) => (/(^|\/)three-instance\.js$/.test(id) ? STUB : null),
+    load: (id) => (id === STUB ? "export default new Proxy({}, { get(_, k) { throw new Error(`THREE.${String(k)} in a worker bundle, where three-instance.js is a stub (vite.config.js noThreeInWorkers)`) } })" : null),
+  }
+}
+
 // index.html is the world; every other root .html file is a bench, and the
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
@@ -1694,7 +1705,7 @@ export default defineConfig({
   // Set `hmr: true` for the old behaviour: page reload on save, and Vite's own
   // config-dependency restart back with it.
   server: { host: true, port: 5173, hmr: false },
-  worker: { format: 'es' },
+  worker: { format: 'es', plugins: () => [noThreeInWorkers()] },
   build: {
     // Every root .html file is an entry -- the same disk question bareRoutes()
     // asks, so a bench reachable in dev is in the build with no second edit.

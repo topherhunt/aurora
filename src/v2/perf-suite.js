@@ -6,13 +6,13 @@
 
 /** Ms thrown away after a state is applied (shader compiles, re-placement), then ms measured. */
 export const SETTLE_MS = 1000
-export const MEASURE_MS = 3000
+export const MEASURE_MS = 5000
 
 /** A baseline is re-measured after this many states, so thermal drift can be divided out. */
-export const BASELINE_EVERY = 4
+export const BASELINE_EVERY = 2
 
 /** A group whose removal saves at least this many median frame ms (mean of both rounds) is drilled into. */
-export const DRILL_MIN_MS = 1
+export const DRILL_MIN_MS = 0.7
 /** Cap on drilled states, so a run with many guilty groups still ends inside two minutes. */
 export const MAX_DRILL = 18
 
@@ -56,16 +56,16 @@ export const GROUPS = [
   // current room lacks are skipped (host.present).
   { name: 'village', off: VILLAGE, drill: [...['towns', 'townsfolk', 'huts'].map((k) => ({ name: k, off: [k] })), { name: 'people', off: ['townsPeople'] }, { name: 'striders', off: ['townsStriders'] }, { name: 'hearth+forge', off: ['townsFires'] }] },
   // Wind's vertex work across every swaying layer (grass, ferns, trees), everything else on.
-  { name: 'wind', off: ['wind'], drill: [], once: true },
+  { name: 'wind', off: ['wind'], drill: [] },
   // Litter's five batches one at a time: each is its own draw and material, and removing the whole layer saves far more than halving it.
-  { name: 'litter parts', off: ['litter'], drill: ['Pebbles', 'Sticks', 'Mushrooms', 'Deadwood', 'Bones'].map((k) => ({ name: k.toLowerCase(), off: [`litter${k}`] })), once: true },
+  { name: 'litter parts', off: ['litter'], drill: ['Pebbles', 'Sticks', 'Mushrooms', 'Deadwood', 'Bones'].map((k) => ({ name: k.toLowerCase(), off: [`litter${k}`] })) },
   // A/B pairs per alpha-tested layer: half the instances (saving tracks the count: vertex/instance work) and no discard (saving appears: early-Z was being lost to the cutout). `cards` is the shared card pool.
   ...['litter', 'grass', 'cards'].flatMap((k) => [
-    { name: `${k} half`, off: [`${k}Half`], drill: [], once: true },
-    ...(k === 'cards' ? [] : [{ name: `${k} no discard`, off: [`${k}Discard`], drill: [], once: true }]),
+    { name: `${k} half`, off: [`${k}Half`], drill: [] },
+    ...(k === 'cards' ? [] : [{ name: `${k} no discard`, off: [`${k}Discard`], drill: [] }]),
   ]),
   // The ground alone, everything else on: its own saving, where `floor+terrain` only brackets it from the empty world.
-  { name: 'terrain', off: ['terrain'], drill: [], once: true },
+  { name: 'terrain', off: ['terrain'], drill: [] },
   // The floor: what a frame costs with the world taken away. Its per-stage laps (samples[].stages) and
   // waitMs say where that cost is when no layer is drawing; `floor+terrain` puts only the ground back.
   { name: 'everything', off: EVERYTHING, drill: [], once: true },
