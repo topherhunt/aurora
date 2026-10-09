@@ -87,7 +87,7 @@ async function run() {
   const pineCard = bank.tiers[2].geometries[pineIdx]
   const pineCardBox = treeClumpCards(bank)[pineIdx]
   const singles = bakeTreeImpostors(renderer, tex)
-  const clumps = bakeTreeClumps(renderer, bank).filter((c) => c.species === 'pine')
+  const clumps = bakeTreeClumps(renderer, tex, bank).filter((c) => c.species === 'pine')
   tex.needsUpdate = true
 
   const pool = new LitterCards(8192)

@@ -61,7 +61,22 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 cat > "/etc/caddy/sites/${SERVICE_NAME}.caddy" <<CADDY
 ${DOMAIN} {
-	encode zstd gzip
+	# Caddy's default list plus GLB, which it skips and which compresses ~60% (the creature models).
+	encode {
+		zstd
+		gzip
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xhtml+xml*
+			header Content-Type application/atom+xml*
+			header Content-Type application/rss+xml*
+			header Content-Type application/wasm*
+			header Content-Type image/svg+xml*
+			header Content-Type model/gltf-binary*
+		}
+	}
 	@health path /health
 	handle @health {
 		reverse_proxy 127.0.0.1:${APP_PORT}

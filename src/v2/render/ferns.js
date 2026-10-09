@@ -1,7 +1,7 @@
 import THREE from '../../three-instance.js'
 import { QUANT, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
-import { buildShipFernTiers, shipFernCard, bakeShipFernImpostor } from '../../props/fern-bank.js'
+import { buildShipFernTiers, shipFernCard, bakeShipFernImpostor, SHIP_CARD_LAYER } from '../../props/fern-bank.js'
 import { FERN_DEFAULTS } from '../../props/fern.js'
 import {
   createPropMaterial, setSnowLine,
@@ -11,6 +11,7 @@ import { InstancedArena } from './instanced-arena.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade, RIM_AT } from './rim.js'
 import { ROCK_STAND_MIN } from './rocks.js'
+import { reportWarning } from '../log-ship.js'
 import { CARD_TILT } from './trees.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -256,7 +257,7 @@ const RING_FLOOR = 32
 // hands 200 ferns a second across at a 20 m/s fly, which is 50 in flight against
 // a 66-slot pool. FADE_MAX_INFLIGHT bounds the per-frame sweep and the extra
 // geometry drawn; FADE_RING_RESERVE keeps a swap from eating the slots a fern
-// arriving in that ring needs, because _setTier THROWS on an exhausted ring and
+// arriving in that ring needs, because _setTier REFUSES a swap into a dry ring and
 // a bed that starves its own LOD ladder to animate a band crossing has its
 // priorities backwards. Past either limit a swap simply pops, which is what
 // every swap did before this existed.
@@ -599,7 +600,7 @@ export class Ferns {
       mesh.addGeometry(tier.geometry)
       const free = new Int32Array(cap)
       for (let i = 0; i < cap; i++) free[cap - 1 - i] = mesh.addInstance(0)
-      return { name, mesh, tris: triangleCount(tier.geometry), cap, free, freeCount: cap }
+      return { name, mesh, tris: triangleCount(tier.geometry), cap, free, freeCount: cap, warned: false }
     })
 
     this.meshes = this.rings.map((r) => r.mesh)
@@ -938,7 +939,7 @@ export class Ferns {
           }
         }
 
-        if (tier !== cur) this._setTier(i, tier, now)
+        if (tier !== cur) tier = this._setTier(i, tier, now)
         tris += tier === cardTier ? cardTris : this.rings[tier].tris
       }
     }
@@ -1165,12 +1166,15 @@ export class Ferns {
 
       // The pool is sized for every tile inside the eviction radius holding its
       // full graded complement, so running dry means _poolBound is wrong or a
-      // tile was leaked -- either way it must be loud, because the quiet version
-      // is ferns that stop appearing in one direction only.
+      // tile was leaked. The tile keeps what it has placed and the warning
+      // ships, because the quiet version is ferns that stop appearing in one
+      // direction only.
       if (this.freeCount === 0) {
-        throw new Error(
-          `Ferns: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident)`
-        )
+        if (!this._poolWarned) {
+          this._poolWarned = true
+          reportWarning(`Ferns: instance pool exhausted at ${this.maxInstances} (${this.tiles.size} tiles resident); placing no more`)
+        }
+        break
       }
 
       const scale = plant ? plant.scale : this.scaleLo + scaleSpan * size
@@ -1409,13 +1413,18 @@ export class Ferns {
    */
   _setTier(i, tier, now) {
     const cur = this.tierAt[i]
-    if (cur === tier) return
+    if (cur === tier) return tier
 
     // A second boundary crossed while the first swap is still dithering. Finish
     // it NOW: its ghost would otherwise leak a ring slot, and there is one fade
     // slot per instance, so this swap's stamp is about to overwrite its start.
     const running = this.fadeAt[i]
     if (running >= 0) this._endFade(running)
+
+    // A dry ring refuses the swap and the fern stays where it is; `update` asks
+    // again next frame.
+    const slot = tier === this.cardTier ? -1 : this._takeSlot(tier)
+    if (tier !== this.cardTier && slot < 0) return cur
 
     const oldSlot = cur >= 0 && cur < this.ringCount ? this.slotAt[i] : -1
     const fade = this._canFade(i, cur)
@@ -1430,7 +1439,6 @@ export class Ferns {
       if (!this.rim.isHidden(i)) this.cards.setVisibleAt(i, true)
       this.slotAt[i] = -1
     } else {
-      const slot = this._takeSlot(tier)
       const ring = this.rings[tier]
       this.slotAt[i] = slot
       this.cards.getMatrixAt(i, this._m)
@@ -1443,10 +1451,11 @@ export class Ferns {
     // ...then DEPART, either dithering out under the arrival or cutting.
     if (fade) {
       this._startFade(i, cur, oldSlot, now)
-      return
+      return tier
     }
     if (cur === this.cardTier) this.cards.setVisibleAt(i, false)
     else if (oldSlot >= 0) this._returnSlot(cur, oldSlot)
+    return tier
   }
 
   /**
@@ -1519,13 +1528,12 @@ export class Ferns {
   /**
    * Borrow a slot in a mesh ring, giving up a cross-dissolve to get one if the
    * pool is dry. A ghost is COSMETIC and an arrival is not, so a ring under
-   * pressure sacrifices the dither rather than throwing -- which is what makes a
-   * teleport survivable, where FADE_RING_RESERVE only handles a fast walk.
+   * pressure sacrifices the dither first -- which is what makes a teleport
+   * survivable, where FADE_RING_RESERVE only handles a fast walk.
    *
-   * The ring pools are bounded by geometry -- a disc of known radius at a known
-   * density -- so running dry with no ghost to reclaim means a band, the density
-   * or RING_SLACK is wrong, and the quiet version of that is near ferns that
-   * stop appearing.
+   * -1 when there is still none. The ring pools are bounded by geometry -- a
+   * disc of known radius at a known density -- so that means a band, the
+   * density or RING_SLACK is wrong; it warns once per ring.
    */
   _takeSlot(tier) {
     const ring = this.rings[tier]
@@ -1539,7 +1547,11 @@ export class Ferns {
       }
     }
     if (ring.freeCount === 0) {
-      throw new Error(`Ferns: the ${ring.name} ring's pool is exhausted at ${ring.cap}`)
+      if (!ring.warned) {
+        ring.warned = true
+        reportWarning(`Ferns: the ${ring.name} ring's pool is exhausted at ${ring.cap}; ferns stay on their coarser tier`)
+      }
+      return -1
     }
     return ring.free[--ring.freeCount]
   }
@@ -1587,18 +1599,21 @@ export class Ferns {
   }
 
   /**
-   * Photograph the shipping fern into its impostor layer and copy that into the shared card picture. Call ONCE, after
+   * Photograph the shipping fern into its atlas layer. Call ONCE, after
    * loadImageLayers() has resolved -- until then the card draws a fully
    * transparent picture, which alphaTest discards, so distant ferns fade in
    * rather than flashing.
    */
-  bakeCards(renderer) {
+  photographCards(renderer) {
+    return bakeShipFernImpostor(renderer, this.textureArray)
+  }
+
+  /** Copy the atlas' photographed layer into this room's card pool; the pool is new every room, so this runs every room. */
+  fillCards() {
     const t0 = performance.now()
-    const baked = bakeShipFernImpostor(renderer, this.textureArray)
     const stride = this.litterCards.stride
-    this.litterCards.setPixels(this.cardPicture, this.textureArray.image.data.subarray(baked.layer * stride, (baked.layer + 1) * stride))
+    this.litterCards.setPixels(this.cardPicture, this.textureArray.image.data.subarray(SHIP_CARD_LAYER * stride, (SHIP_CARD_LAYER + 1) * stride))
     this.cardBakeMs = performance.now() - t0
-    return baked
   }
 
   /** Draw the whole bed or none of it; the far cards are shared instances, so the rings' `visible` alone would leave them. */

@@ -132,6 +132,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { lazyLoad } from '../lazy-load.js'
 import { clamp, lerp, mulberry32 } from '../../sim/mathx.js'
 import {
   CATCH_UP_TICKS, TICK_HZ, TICK_S, Score, chapterOf, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
@@ -502,7 +503,8 @@ export class Wildlife {
       this.setAssets(assets)
       this.ready = Promise.resolve(true)
     } else {
-      this.ready = this.load()
+      this.lazy = lazyLoad(() => this.load())
+      this.ready = this.lazy.ready
     }
   }
 
@@ -1785,7 +1787,7 @@ export class Wildlife {
    * peers'), the kinds the species want being what they take an interest in.
    */
   update(hx, hy, hz, now, lures = NO_LURES) {
-    if (!this.loaded) return
+    if (!this.loaded) return this.lazy.want()
     if (!Number.isFinite(now)) throw new Error(`Wildlife.update: world time ${now}`)
     const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
     this.last = now

@@ -313,6 +313,8 @@ function captureLayer(
   { tint, vertexColors, hemFray = null, bounce, unlit = false, exposure = 1 }
 ) {
   if (!(exposure > 0)) throw new Error(`captureLayer: exposure must be positive, got ${exposure}`)
+  // The atlas is what the photograph SAMPLES, not only where it lands: without one every texel alpha-tests away and the card is a blank that throws nowhere.
+  if (!texArray) throw new Error('captureLayer: needs the atlas the subject samples, even when `layer` is null')
   if (layer !== null && (layer < 0 || layer >= texArray.image.depth)) {
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }

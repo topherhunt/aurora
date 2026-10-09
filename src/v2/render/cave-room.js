@@ -11,6 +11,7 @@ import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
 import { CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../caves/mesh.js'
+import { shoreMesh } from '../caves/water.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
@@ -66,6 +67,10 @@ varying vec3 vEmit;
 #endif
 #ifdef MUSH
 attribute float cap;
+attribute vec2 uvProj;
+attribute float texLayer;
+varying vec2 vUv;
+varying float vLayer;
 #endif
 void main() {
   vec4 p = vec4(position, 1.0);
@@ -77,9 +82,10 @@ void main() {
   vGlow = vec3(0.0);
   vEmit = iEmit;
 #ifdef MUSH
-  // A mushroom wears its tint and glow on the cap; the stem is pale flesh, lit faintly from above.
-  vCol = mix(vec3(0.2, 0.19, 0.17), iColor, cap);
+  // A mushroom's glow is on its cap; the stem is lit faintly from above.
   vEmit = iEmit * mix(0.12, 1.0, cap);
+  vUv = uvProj;
+  vLayer = texLayer;
 #endif
 #else
   vCol = color.rgb;
@@ -100,16 +106,28 @@ varying vec3 vNrm;
 #ifdef INSTANCED
 varying vec3 vEmit;
 #endif
+#ifdef MUSH
+precision highp sampler2DArray;
+uniform sampler2DArray uAtlas;
+varying vec2 vUv;
+varying float vLayer;
+#endif
 void main() {
   vec3 n = normalize(vNrm);
   if (!gl_FrontFacing) n = -n;
 #ifdef STONE
   vec3 albedo = vCol * caveStone(vPos, n);
+#elif defined(MUSH)
+  // The forest's cap and flesh sheets: the glow is scaled by the sheet's own lightness, so fibres, scales and warts read through it instead of one flat tint.
+  vec3 tex = texture(uAtlas, vec3(vUv, vLayer)).rgb;
+  vec3 albedo = vCol * tex;
 #else
   vec3 albedo = vCol;
 #endif
   vec3 c = albedo * (caveTorch(vPos, n) + vGlow * ${GLOW_GAIN.toFixed(2)});
-#ifdef INSTANCED
+#ifdef MUSH
+  c += vEmit * (0.2 + 1.6 * dot(tex, vec3(0.2126, 0.7152, 0.0722)));
+#elif defined(INSTANCED)
   c += vEmit;
 #endif
   gl_FragColor = vec4(caveFog(c, vPos), 1.0);
@@ -124,26 +142,31 @@ void main() {
   vPos = w.xyz;
   gl_Position = projectionMatrix * viewMatrix * w;
 }`
-// Black water: what shows is the torch's glint off a slow ripple, and the glows' colour on its face.
+// Black water: from above, the cave the mirror cube saw (Fresnel-weighted: the far wall shows at a glance, the bed looking straight down) rippled by a slow normal, and the torch's glint off the ripple.
 const WATER_FRAG = /* glsl */ `
 ${COMMON}
 uniform float uTime;
+uniform samplerCube uMirror;
+uniform float uMirrorOn;
 varying vec3 vPos;
 void main() {
   vec2 p = vPos.xz;
   vec2 g = 0.05 * vec2(cos(p.x * 3.1 + uTime * 1.1) + 0.6 * cos(p.y * 4.3 - uTime * 0.8), sin(p.y * 2.7 + uTime * 0.9) + 0.6 * sin(p.x * 3.9 + uTime * 1.3));
   vec3 n = normalize(vec3(g.x, 1.0, g.y));
   vec3 v = normalize(vPos - cameraPosition);
-  if (v.y > 0.0) n.y = -n.y;
+  bool under = v.y > 0.0;
+  if (under) n.y = -n.y;
   vec3 r = reflect(v, n);
   vec3 c = vec3(0.004, 0.008, 0.009) + 0.25 * caveTorch(vPos, n) * vec3(0.05, 0.08, 0.09);
+  float f = under ? 0.0 : 0.02 + 0.98 * pow(1.0 - max(dot(-v, n), 0.0), 5.0);
+  c = mix(c, texture(uMirror, r).rgb * uMirrorOn, f);
   for (int i = 0; i < 4; i++) {
     float s = uTorch[i].w;
     if (s <= 0.0) continue;
     vec3 l = uTorch[i].xyz - vPos;
     c += uTorchColor * s * pow(max(dot(r, normalize(l)), 0.0), 120.0) * 3.0 / (1.0 + 0.05 * dot(l, l));
   }
-  gl_FragColor = vec4(caveFog(c, vPos), 0.82);
+  gl_FragColor = vec4(caveFog(c, vPos), mix(0.82, 1.0, f));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`
@@ -216,14 +239,12 @@ function dripGeometry(seed, sides, rings, flute) {
   return g
 }
 
-// The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), each with a `cap` attribute (1 on the cap) and its built height.
+// The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), capped from the cave sheet, each with a `cap` attribute (1 on the cap) and its built height.
 function mushroomGeometries(tier) {
   return mushroomVariants().map((v, i) => {
-    const g = buildMushroom(mushroomParams(v, 0xca7e + i * 101, tier))
+    const g = buildMushroom({ ...mushroomParams(v, 0xca7e + i * 101, tier), capLayer: LAYER.MUSHROOM_CAP_CAVE })
     const layer = g.getAttribute('texLayer').array
-    g.setAttribute('cap', new THREE.BufferAttribute(Float32Array.from(layer, (l) => (l === LAYER.MUSHROOM_CAP ? 1 : 0)), 1))
-    g.deleteAttribute('texLayer')
-    g.deleteAttribute('uvProj')
+    g.setAttribute('cap', new THREE.BufferAttribute(Float32Array.from(layer, (l) => (l === LAYER.MUSHROOM_CAP_CAVE ? 1 : 0)), 1))
     return { geometry: g, height: g.userData.mushroom.height }
   })
 }
@@ -234,22 +255,33 @@ const tmpQ2 = new THREE.Quaternion()
 const tmpE = new THREE.Euler()
 const tmpP = new THREE.Vector3()
 const tmpS = new THREE.Vector3()
+const tmpC = new THREE.Color()
+// The water's mirror cube: its face size, and how far from her eye (m) a water vertex may be to be captured over.
+const MIRROR_SIZE = 64
+const MIRROR_REACH = 30
 
 export class CaveRoom {
-  /** `plan` from planCave, `oy` the cave's world height, `lighting` the WorldLighting whose torches light it, `stone` the boulders' tile (rocks/stone.png, repeating, sRGB). */
-  constructor(plan, oy, lighting, stone) {
+  /** `plan` from planCave, `oy` the cave's world height, `lighting` the WorldLighting whose torches light it, `stone` the boulders' tile (rocks/stone.png, repeating, sRGB), `atlas` the props' texture array (textures.js) the mushrooms wear. */
+  constructor(plan, oy, lighting, stone, atlas) {
     if (!(stone instanceof THREE.Texture)) throw new Error('CaveRoom: needs the stone tile')
+    if (!(atlas instanceof THREE.DataArrayTexture)) throw new Error('CaveRoom: needs the props\' texture array')
     this.plan = plan
     this.oy = oy
     this.group = new THREE.Group()
     this.group.name = 'cave-room'
     this.group.position.y = oy
     this.uniforms = caveUniforms(lighting, stone)
+    this.mushUniforms = { ...this.uniforms, uAtlas: { value: atlas } }
     this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { STONE: '' }, vertexColors: true })
     this.propMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '' }, side: THREE.DoubleSide })
     this.rockMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', STONE: '' }, side: THREE.DoubleSide })
-    this.mushMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', MUSH: '' }, side: THREE.DoubleSide })
-    this.waterMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide })
+    this.mushMaterial = new THREE.ShaderMaterial({ uniforms: this.mushUniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', MUSH: '' }, side: THREE.DoubleSide })
+    this.mirror = new THREE.WebGLCubeRenderTarget(MIRROR_SIZE, { type: THREE.HalfFloatType, generateMipmaps: false, depthBuffer: true })
+    this.mirrorRig = new THREE.CubeCamera(0.1, 80, this.mirror)
+    this.mirrorFace = 0
+    this.waterUniforms = { ...this.uniforms, uMirror: { value: this.mirror.texture }, uMirrorOn: { value: 0 } }
+    this.waterMeshes = []
+    this.waterMaterial = new THREE.ShaderMaterial({ uniforms: this.waterUniforms, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: true, depthWrite: false, side: THREE.DoubleSide })
     this.markMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: MARK_VERT, fragmentShader: MARK_FRAG, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     // The marks laid (drawChalk), and the strokes being drawn (drawLive).
     this.marks = null
@@ -257,7 +289,7 @@ export class CaveRoom {
     // key -> { x, y, z (the chunk's centre), lods: [meshes per LODS tier, null until it arrives or if empty there] }, a mesh per region.
     this.chunks = new Map()
     this.region = plan.graph.nodes[plan.doors[0].node].region
-    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.mushMaterial, this.waterMaterial, this.markMaterial]
+    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.mushMaterial, this.waterMaterial, this.markMaterial, this.mirror]
     this._props(plan.props)
     this._water(plan.waters)
   }
@@ -361,7 +393,7 @@ export class CaveRoom {
         tmpP.set(m.x, m.y, m.z).addScaledVector(tmpS, -0.04)
         const k = m.h / height
         tmpM.compose(tmpP, tmpQ, tmpS.set(k, k, k))
-        return m.glow ? { color: [0.05, 0.05, 0.05], emit: m.glow.map((c) => c * (m.giant ? 1.1 : 0.8)) } : { color: [0.16, 0.11, 0.07] }
+        return m.glow ? { color: [0.35, 0.35, 0.35], emit: m.glow.map((c) => c * (m.giant ? 0.9 : 0.7)) } : { color: [0.7, 0.7, 0.7] }
       }, this.mushMaterial)
       mesh.userData.region = region
       mesh.visible = false
@@ -401,8 +433,12 @@ export class CaveRoom {
   _water(waters) {
     for (const b of waters) {
       let g
-      if (b.kind === 'pool') {
-        g = new THREE.CircleGeometry(1, 28).rotateX(-Math.PI / 2).scale(b.rx, 1, b.rz).rotateY(-b.rot).translate(b.x, b.level, b.z)
+      if (b.kind !== 'river') {
+        const m = shoreMesh(b.shore, b.level)
+        if (m.index.length === 0) continue
+        g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(m.position, 3))
+        g.setIndex(m.index)
       } else {
         // A ribbon along the edge's samples where it holds water.
         const pos = [], idx = []
@@ -429,6 +465,7 @@ export class CaveRoom {
       const mesh = new THREE.Mesh(g, this.waterMaterial)
       mesh.renderOrder = 2
       this.group.add(mesh)
+      this.waterMeshes.push(mesh)
       this.disposables.push(g)
     }
   }
@@ -504,6 +541,51 @@ export class CaveRoom {
       })
       this.crabs.instanceMatrix.needsUpdate = true
     }
+  }
+
+  /**
+   * Each frame she is above water, after update(): one face of the cube the water reflects, taken a hand over the water vertex nearest her eye within MIRROR_REACH, re-picked at each full turn so the six faces share a point. The water itself is hidden from it; the torches are not, so the wall she lights shows in the ripple.
+   */
+  reflect(renderer, scene, eye) {
+    const rig = this.mirrorRig
+    if (this.mirrorFace === 0) {
+      const ly = eye.y - this.oy
+      let best = MIRROR_REACH * MIRROR_REACH, at = null, p = null
+      for (const m of this.waterMeshes) {
+        const q = m.geometry.getAttribute('position').array
+        for (let i = 0; i < q.length; i += 3) {
+          const d = (q[i] - eye.x) ** 2 + (q[i + 1] - ly) ** 2 + (q[i + 2] - eye.z) ** 2
+          if (d < best) { best = d; at = i; p = q }
+        }
+      }
+      if (at === null) return
+      const y = p[at + 1] + 0.3
+      if (this.plan.field.at(p[at], y, p[at + 2]) > 0) return
+      rig.position.set(p[at], y + this.oy, p[at + 2])
+      rig.updateMatrixWorld(true)
+    }
+    // CubeCamera's six cameras face nowhere until updateCoordinateSystem, which only its own update() calls.
+    if (rig.coordinateSystem !== renderer.coordinateSystem) {
+      rig.coordinateSystem = renderer.coordinateSystem
+      rig.updateCoordinateSystem()
+    }
+    const wasXR = renderer.xr.enabled, prevTarget = renderer.getRenderTarget(), prevBackground = scene.background
+    renderer.getClearColor(tmpC)
+    const prevAlpha = renderer.getClearAlpha()
+    renderer.xr.enabled = false
+    renderer.setClearColor(0x000000, 1)
+    scene.background = null
+    for (const m of this.waterMeshes) m.visible = false
+    renderer.setRenderTarget(this.mirror, this.mirrorFace)
+    renderer.clear(true, true, false)
+    renderer.render(scene, rig.children[this.mirrorFace])
+    for (const m of this.waterMeshes) m.visible = true
+    scene.background = prevBackground
+    renderer.setRenderTarget(prevTarget)
+    renderer.setClearColor(tmpC, prevAlpha)
+    renderer.xr.enabled = wasXR
+    this.mirrorFace = (this.mirrorFace + 1) % 6
+    if (this.mirrorFace === 0) this.waterUniforms.uMirrorOn.value = 1
   }
 
   dispose() {

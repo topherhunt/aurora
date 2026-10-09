@@ -191,13 +191,15 @@ const WORLD_POS_GLSL = /* glsl */ `
 // texel, which reads as grey shadow in a canopy; albedo-weighted lift keeps
 // greens green and lets dark texels fall toward black, at the cost of dark
 // trunks sinking back toward the hole the NIGHT block in clock.js describes.
+// An optional `weight` (GLSL float) scales mix per fragment, for a material
+// that only some of whose fragments are canopy.
 const APPLY = (sun, sky, near, liftAlbedo) => /* glsl */ `
   float wlNear = ${near};
   reflectedLight.directDiffuse *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
   reflectedLight.directSpecular *= ${sun} * mix( uFarLight.x, 1.0, wlNear );
   float wlSkyF = mix( uSkyFloor, 1.0, ${sky} ) * mix( uFarLight.y, 1.0, wlNear );
   reflectedLight.indirectDiffuse *= wlSkyF;
-  reflectedLight.indirectDiffuse += uNightLift * wlSkyF${liftAlbedo ? ' * mix( vec3( 1.0 ), diffuseColor.rgb * uLiftAlbedo.y, uLiftAlbedo.x )' : ''};
+  reflectedLight.indirectDiffuse += uNightLift * wlSkyF${liftAlbedo ? ` * mix( vec3( 1.0 ), diffuseColor.rgb * uLiftAlbedo.y, ${liftAlbedo} )` : ''};
 `
 
 // Declared separately from SAMPLE_GLSL because the vertex-shaded path does not
@@ -841,6 +843,8 @@ export class WorldLighting {
     const hearthDecl = hearths ? `\nattribute float hearth;\nuniform vec4 uHearthFar[${HEARTHS / 4}];` : ''
     // Per material, and on userData so a console can tune it live.
     const liftU = liftAlbedo && { value: new THREE.Vector2(liftAlbedo.mix, liftAlbedo.gain) }
+    if (liftAlbedo?.weight !== undefined && typeof liftAlbedo.weight !== 'string') throw new Error('lighting.patch: liftAlbedo.weight is a GLSL float expression')
+    const liftMix = liftU && (liftAlbedo.weight === undefined ? 'uLiftAlbedo.x' : `uLiftAlbedo.x * ( ${liftAlbedo.weight} )`)
     if (liftU) material.userData.wlLiftAlbedo = liftU
     const liftDecl = liftU ? '\nuniform vec2 uLiftAlbedo;' : ''
 
@@ -885,7 +889,7 @@ export class WorldLighting {
               maps ? `wlSun( ${worldPosVarying}.xz )` : '1.0',
               maps ? `wlSky( ${worldPosVarying}.xz )` : '1.0',
               NEAR_GLSL(`${worldPosVarying}.xyz`),
-              liftU
+              liftMix
             )}
             ${lamps ? `reflectedLight.directDiffuse += diffuseColor.rgb * wlLamp( ${worldPosVarying}.xyz );` : ''}
             reflectedLight.directDiffuse += diffuseColor.rgb * wlTorch( ${worldPosVarying}.xyz );`
@@ -933,7 +937,7 @@ export class WorldLighting {
               maps ? 'vWlShade.x' : '1.0',
               maps ? 'vWlShade.y' : '1.0',
               maps ? 'vWlShade.z' : 'vWlNear',
-              liftU
+              liftMix
             )}
             ${lamps ? 'reflectedLight.directDiffuse += diffuseColor.rgb * vWlLamp;' : ''}
             reflectedLight.directDiffuse += diffuseColor.rgb * vWlTorch;`

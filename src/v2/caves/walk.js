@@ -6,6 +6,7 @@
 
 import { WALK } from '../walk.js'
 import { RIVER_FREEBOARD } from './graph.js'
+import { wetAt } from './water.js'
 
 const WALL = 1000
 const DEEP = 60
@@ -143,12 +144,14 @@ export class CaveWalk {
   }
 
   /**
-   * The water she would swim in at (x, z), about hintY, or null. Under a roof lower than the surface (a sump) this is the roof less ROOF_GAP, so a swimmer is held under the rock and follows it down and back up.
+   * The water she would swim in at (x, z), about hintY, or null. Under a roof lower than the surface (a sump) this is the roof less ROOF_GAP, so a swimmer is held under the rock and follows it down and back up. The roof is read up from her floor, not her feet: feet at the bed are often a bump inside rock, and a roof search started in rock finds none, which floats her eye up to the true level inside the rock.
    */
   waterAt(x, z) {
     const level = this.trueWaterAt(x, z, this.hintY)
     if (level === null) return null
-    const roof = this.ceilingAt(x, z, Math.min(level, this.hintY + 0.3))
+    const floor = this.heightAt(x, z, this.hintY)
+    if (floor > level) return level
+    const roof = this.ceilingAt(x, z, floor + 0.05)
     return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
   }
 
@@ -184,27 +187,22 @@ function crossing(f, x, z, yRock, yAir) {
   return a + ((b - a) * fa) / (fa - fb)
 }
 
-/** Every pool, sump and river as a box and a levelAt(x, z) (null outside its shore), which also leaves the body's bed under the point in `bed`. Pure; the renderer draws the same list. */
+/** Every pool, sump and river as a box and a levelAt(x, z) (null outside its shore), which also leaves the body's bed under the point in `bed`. Pools and sumps read the shore settleWaters left them. Pure; the renderer draws the same list. */
 export function waterBodies(graph) {
   const out = []
   for (const p of graph.pools) {
-    if (p.node !== undefined) {
-      const n = graph.nodes[p.node]
-      const c = Math.cos(n.rot), s = Math.sin(n.rot)
-      const r = Math.max(n.rx, n.rz)
-      out.push({
-        kind: 'pool', node: n.i, level: p.level, x: n.x, z: n.z, rx: n.rx, rz: n.rz, rot: n.rot, bed: n.y - n.dish,
-        x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r,
-        levelAt(x, z) {
-          const dx = x - n.x, dz = z - n.z
-          const lx = (dx * c + dz * s) / n.rx, lz = (dz * c - dx * s) / n.rz
-          return lx * lx + lz * lz <= 1 ? p.level : null
-        },
-      })
-    } else {
-      const e = graph.edges[p.edge]
-      out.push(alongEdge('sump', e, (q) => (q.y < p.level ? p.level : null), (q) => q.w + 0.6))
-    }
+    if (p.shore === null) continue
+    const sh = p.shore
+    out.push({
+      kind: p.node !== undefined ? 'pool' : 'sump', node: p.node, edge: p.edge, level: p.level, shore: sh, bed: 0,
+      x0: sh.x0, x1: sh.x0 + (sh.nx - 1) * sh.cell, z0: sh.z0, z1: sh.z0 + (sh.nz - 1) * sh.cell,
+      levelAt(x, z) {
+        if (!wetAt(sh, x, z)) return null
+        const f = sh.floor[Math.round((z - sh.z0) / sh.cell) * sh.nx + Math.round((x - sh.x0) / sh.cell)]
+        this.bed = f < p.level ? f : p.level
+        return p.level
+      },
+    })
   }
   for (const i of graph.rivers) out.push(alongEdge('river', graph.edges[i], (q) => (q.cut > RIVER_FREEBOARD ? q.y - RIVER_FREEBOARD : null), (q) => 0.55 * q.w))
   return out

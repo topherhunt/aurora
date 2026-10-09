@@ -6,7 +6,7 @@ import { treeClumpCards, bakeTreeClumps, CLUMP_TREES } from '../../props/tree-cl
 import { CLUMP_VARIANTS } from '../../textures.js'
 import { HEM_FRAY } from '../../props/tree-v8.js'
 import {
-  createPropMaterial, setSnowLine, setLeafSnowVary,
+  createPropMaterial, setSnowLine, setLeafSnowVary, cardFacing,
   getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { RimFade, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
@@ -754,6 +754,8 @@ export class Trees {
       // The ragged edge and the holed mat ride on the near tier alone
       // (tree-bank.js), so nothing past 8 m is touched by either.
       hemFray: HEM_FRAY,
+      // The single cards light as the clump pictures do (litter-cards.js CANOPY).
+      billboardFacing: cardFacing,
     })
     // What the layer SHIPS at, so `setCutout` restores the material's own
     // threshold rather than a number typed here that could drift from it.
@@ -775,7 +777,7 @@ export class Trees {
     // At most clumpMax of any tile's trees wear the clump card, and a fade's ghost may wear one too.
     cards.claim('trees', Math.ceil(this.maxInstances * this.clumpMax) + FADE_MAX_INFLIGHT)
     this.clumpPicture = treeClumpCards(bank).map((c) => Array.from({ length: CLUMP_VARIANTS }, () => (
-      cards.addPicture({ kind: 'spun', cx: 0, cy: c.cardHeight / 2, hw: c.cardWidth / 2, hh: c.cardHeight / 2, tilt: CARD_TILT })
+      cards.addPicture({ kind: 'spun', cx: 0, cy: c.cardHeight / 2, hw: c.cardWidth / 2, hh: c.cardHeight / 2, tilt: CARD_TILT, canopy: true })
     )))
 
     // How many instances each tier is DRAWING, refilled by `update`. The one
@@ -2585,20 +2587,27 @@ export class Trees {
 
   /**
    * Photograph the trees into their impostor layers, and the clumps into
-   * theirs. Call ONCE, after `loadImageLayers()` has resolved -- see
-   * bakeTreeImpostors for why this is a deliberate one-off stall at load and
-   * not an offline asset. One record per photograph, the clumps' named
-   * `<species>-clump<i>`.
+   * pixels of their own. Call ONCE, after `loadImageLayers()` has resolved --
+   * see bakeTreeImpostors for why this is a deliberate one-off stall at load
+   * and not an offline asset. `{ singles, clumps }`: bakeTreeImpostors' and
+   * bakeTreeClumps' records. The clumps live in no atlas, so the caller keeps
+   * them for `fillCards` in every later room.
    */
-  bakeCards(renderer) {
+  photographCards(renderer) {
     const t0 = performance.now()
-    const baked = bakeTreeImpostors(renderer, this.textureArray)
-    const clumps = bakeTreeClumps(renderer, this.bank)
-    this.bank.variants.forEach((v, vi) => {
-      for (const c of clumps.filter((k) => k.species === v.species)) this.litterCards.setPixels(this.clumpPicture[vi][c.variant], c.pixels)
-    })
+    const singles = bakeTreeImpostors(renderer, this.textureArray)
+    const clumps = bakeTreeClumps(renderer, this.textureArray, this.bank)
     this.cardBakeMs = performance.now() - t0
-    return baked.concat(clumps.map(({ pixels, ...c }) => ({ ...c, species: `${c.species}-clump${c.variant}` })))
+    return { singles, clumps }
+  }
+
+  /** Copy `photographCards`' clumps into this room's card pool; the pool is new every room, so this runs every room. */
+  fillCards(clumps) {
+    this.bank.variants.forEach((v, vi) => {
+      const mine = clumps.filter((k) => k.species === v.species)
+      if (mine.length !== CLUMP_VARIANTS) throw new Error(`Trees.fillCards: ${v.species} has ${mine.length} clump pictures, not ${CLUMP_VARIANTS}`)
+      for (const c of mine) this.litterCards.setPixels(this.clumpPicture[vi][c.variant], c.pixels)
+    })
   }
 
   /**

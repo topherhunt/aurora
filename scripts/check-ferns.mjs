@@ -3,9 +3,10 @@
 //   node scripts/check-ferns.mjs
 //
 // The bed allocates ONE card pool up front, from `_poolBound`, and running dry
-// THROWS -- so every way the resident tile set can end up holding more than the
-// bound allows is a hard crash in the middle of a session rather than a bed that
-// quietly thins. Two of them, and this file exists for both:
+// warns through reportWarning and stops placing -- a bed that quietly thins in
+// one direction. So a `Ferns:` warning fails a check here exactly as a throw
+// does. Two ways the resident tile set can outgrow the bound, and this file
+// exists for both:
 //
 //   A TILE SURVIVING A CAMERA JUMP AT THE WRONG LEVEL. `_reseat` evicts past the
 //   eviction radius and grows what is missing; everything in between keeps the
@@ -20,8 +21,7 @@
 //   AN ID THAT NEVER COMES BACK. Every fern owns a card id for as long as it
 //   stands, handed out by `_growTile` and returned by `_thin` and `_release`. A
 //   path that drops a tile without releasing it, or retires an instance without
-//   handing the id back, leaks the pool empty over a long walk and throws the
-//   same way. So the walk below audits the three counts that must agree --
+//   handing the id back, leaks the pool empty over a long walk the same way. So the walk below audits the three counts that must agree --
 //   sum(tile.n), `placed`, and the pool's own used count -- every frame.
 //
 // The world here is deliberately flat, unrejecting, pathless and ALL SHORE:
@@ -38,6 +38,14 @@ import { buildShipFernTiers } from '../src/props/fern-bank.js'
 import { FERN_DEFAULTS } from '../src/props/fern.js'
 import { buildTextureArray } from '../src/textures.js'
 import { setPropClock } from '../src/material.js'
+
+// Pool exhaustion is a reportWarning, not a throw; collect ours to fail on.
+const fernWarnings = []
+const warn = console.warn.bind(console)
+console.warn = (...args) => {
+  if (typeof args[0] === 'string' && args[0].startsWith('Ferns:')) fernWarnings.push(args[0])
+  warn(...args)
+}
 import { taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -106,6 +114,7 @@ for (const jump of [12, 24, 40, 60, 80, 100, 107, 120, 200]) {
       thrown = err.message
       break
     }
+    if (fernWarnings.length) { thrown = fernWarnings.splice(0).join('; '); break }
     peak = Math.max(peak, ferns.maxInstances - ferns.freeCount)
     const a = audit(ferns)
     if (!leaked && !a.ok) leaked = JSON.stringify(a)
@@ -138,6 +147,7 @@ const step = (nx, nz) => {
     thrown = err.message
     return
   }
+  if (fernWarnings.length) { thrown = fernWarnings.splice(0).join('; '); return }
   const used = walk.maxInstances - walk.freeCount
   if (used > peak) { peak = used; peakTiles = walk.tiles.size }
   const a = audit(walk)
@@ -158,6 +168,23 @@ for (let i = 0; i < 3600; i++) {
 check(!thrown, 'a 700 m walk, a fly and twenty circles never run the pool dry',
   thrown || `peak ${peak} of ${walk.maxInstances} (${peakTiles} tiles)`)
 check(!leaked, 'and the ids balance on every frame of it', leaked || audit(walk).used + ' still out')
+
+{
+  const dry = build()
+  dry.place(0, 0)
+  dry.rings[0].freeCount = 0
+  let err = null
+  try {
+    for (let f = 0; f < 3; f++) { setPropClock(t += 1 / 72); dry.update(0, GROUND + 1.6, 0) }
+  } catch (e) {
+    err = e.message
+  }
+  const said = fernWarnings.splice(0)
+  check(!err && said.length === 1 && said[0].includes(dry.rings[0].name),
+    'a dry LOD0 ring warns once and keeps its ferns on the coarser tier, rather than throwing',
+    err || said.join('; ') || 'no warning')
+  check(audit(dry).ok, 'and the ids still balance', JSON.stringify(audit(dry)))
+}
 
 // ---------------------------------------------------------------------------
 console.log('\n4. the carpet is a quarter as thick away from water and stone\n')

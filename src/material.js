@@ -1253,6 +1253,18 @@ function billboardGrowVertex({ from, to, scale, sink, top }) {
 const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
           smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) )`
 
+// How far a tree card's normal turns from straight up toward the eye: 0 lights it as a top whichever way she looks, 1 as the litter cards' CARD_NORMAL (bright with the sun behind her, dark looking into it). One value for the single cards and the clumps, so the two tiers never disagree. Live: `v2treeFacing(k)`.
+export const cardFacing = { value: 0.5 }
+
+/** Set `normal` to straight up turned toward the eye by GLSL float `k`; k = 1 is gen-props.js CARD_NORMAL exactly. */
+export const facingNormal = (k) => /* glsl */ `
+  {
+    vec3 fnUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+    vec3 fnSum = fnUp + normalize( vViewPosition );
+    float fnLen = length( fnSum );
+    normal = normalize( mix( fnUp, fnLen > 1e-4 ? fnSum / fnLen : fnUp, ${k} ) );
+  }`
+
 // `leafThrough`: a leaf whose authored normal faces the ground is lit as if it
 // faced the sky, its world-up component mirrored and scaled by `through`. A
 // prop that can be turned over -- a fern carried, dropped and rolled -- would
@@ -2535,7 +2547,7 @@ export function createPropMaterial(
     vertexColors = false, billboardLayers = null, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
     side = THREE.DoubleSide, bump = false, seasons = false, hemFray = null,
-    layerShift = false, billboardTilt = null, leafThrough = 0,
+    layerShift = false, billboardTilt = null, leafThrough = 0, billboardFacing = false,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2563,6 +2575,10 @@ export function createPropMaterial(
       || !billboards.includes(layers[0]) || !billboards.includes(layers[1])) {
       throw new Error(`createPropMaterial: billboardTilt.layers must be [first, last] of the billboard layers, got ${JSON.stringify(layers)}`)
     }
+  }
+  // Lights the spun cards by facingNormal(cardFacing) after every other use of the normal, so snow, moss and the rim darkening still read the authored one.
+  if (billboardFacing && (!billboardSpin || !billboards)) {
+    throw new Error('createPropMaterial: billboardFacing needs spun billboardLayers to light')
   }
   if (billboardGrow) {
     if (!billboards) {
@@ -2633,6 +2649,7 @@ export function createPropMaterial(
       shader.uniforms.uBillboardLayers = { value: billboards }
       bindHeadEye(shader.uniforms)
     }
+    if (billboardFacing) shader.uniforms.uCardFacing = cardFacing
     if (windSpec && windCompiled) {
       shader.uniforms.uWindDir = windDir
       shader.uniforms.uWindStrength = windStrength
@@ -2675,6 +2692,7 @@ export function createPropMaterial(
         ${seasons ? SEASONS_VERTEX_COMMON : ''}
         uniform float uPropClock;
         varying float vPropFade;
+        ${billboardFacing ? 'varying float vPropSpun;' : ''}
         ${billboards ? `uniform float uBillboardLayers[ ${billboards.length} ];
         ${HEAD_EYE_DECL}` : ''}
         ${windSpec && windCompiled ? `uniform vec2 uWindDir;
@@ -2695,6 +2713,7 @@ export function createPropMaterial(
         `#include <begin_vertex>
         vTexLayer = propLayer;
         vUvProj = uvProj;
+        ${billboardFacing ? 'vPropSpun = propSpun;' : ''}
         ${hemFray ? HEM_FRAY_GLSL.vertexBegin : ''}
         vec3 propObjPos = transformed;
         ${FADE_VERTEX}
@@ -2721,6 +2740,8 @@ export function createPropMaterial(
         varying float vTexLayer;
         varying vec2 vUvProj;
         varying float vPropFade;
+        ${billboardFacing ? `varying float vPropSpun;
+        uniform float uCardFacing;` : ''}
         ${hemFray ? HEM_FRAY_GLSL.fragmentCommon : ''}
         ${IGN_GLSL}
         ${seasons ? SNOW_COMMON : ''}
@@ -2756,7 +2777,8 @@ export function createPropMaterial(
         ${seasons ? MOSS_APPLY : ''}
         ${seasons ? SNOW_APPLY : ''}
         diffuseColor.rgb *= ${RIM_DARKEN};
-        ${leafThrough ? leafThroughApply(leafThrough) : ''}`
+        ${leafThrough ? leafThroughApply(leafThrough) : ''}
+        ${billboardFacing ? `if ( vPropSpun > 0.5 ) ${facingNormal('uCardFacing')}` : ''}`
       )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
@@ -2804,7 +2826,7 @@ export function createPropMaterial(
     : ''
   const hemKey = hemFray ? hemFrayKey(hemFray) : ''
   const tiltKey = billboardTilt ? `-tilt${billboardTilt.amount}.${billboardTilt.layers[0]}.${billboardTilt.layers[1]}` : ''
-  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}${leafThrough ? `-leaf${leafThrough}` : ''}`
+  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}${leafThrough ? `-leaf${leafThrough}` : ''}${billboardFacing ? '-facing' : ''}`
   material.customProgramCacheKey = () =>
     `${key}${windSpec && !windCompiled ? '-nowind' : ''}${material.userData.noDiscard ? '-nodiscard' : ''}`
 

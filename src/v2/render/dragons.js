@@ -106,6 +106,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { lazyLoad } from '../lazy-load.js'
 import { clamp, lerp, mulberry32 } from '../../sim/mathx.js'
 import {
   CATCH_UP_TICKS, CHAPTER_S, EASE_S, TICK_S, Score, chapterOf, easeWeight, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
@@ -481,7 +482,8 @@ export class Dragons {
       this.setAsset(asset)
       this.ready = Promise.resolve(true)
     } else {
-      this.ready = this.load()
+      this.lazy = lazyLoad(() => this.load())
+      this.ready = this.lazy.ready
     }
   }
 
@@ -1755,7 +1757,7 @@ export class Dragons {
    * and `striders`, this client's own `[{ key, x, y, z }]`.
    */
   update(hx, hy, hz, now, lures = NO_LURES, quarry = NO_QUARRY) {
-    if (!this.loaded) return
+    if (!this.loaded) return this.lazy.want()
     if (!Number.isFinite(now)) throw new Error(`Dragons.update: world time ${now}`)
     const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
     this.last = now

@@ -1,16 +1,15 @@
 import { halveDraw } from './ab-switch.js'
 import THREE from '../../three-instance.js'
 import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
-import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, propClockUniform } from '../../material.js'
+import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, cardFacing, facingNormal, propClockUniform } from '../../material.js'
 import { TEX_SIZE } from '../../textures.js'
 import { AXIS_VIEWS, HUE_FRAGMENT, SPUN_VIEWS, bakeCritterCard, billboardVertex, critterCardExtents, spunBounds } from './critters.js'
-import { CARD_NORMAL } from './gen-props.js'
 import { PropMeshes } from './prop-arena.js'
 
 // ---------------------------------------------------------------------------
 // THE LITTER CARDS. Every far card of the ground litter (stumps, logs, skeletons, skulls, mushrooms) is one instance of ONE unit quad in ONE InstancedMesh, so the whole band is a single draw call however many kinds there are. A layer's instance carries its picture index in `aLayerShift` (PropArena `cards`); the quad's extents come from a uniform row per picture and its picture from a layer of one 128 px array.
 //
-// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), AXIAL (the piece lies along its own Z and its card turns only about that axis, to the eye as seen in the piece's own frame; one quad stands in for the crossed pair a log used to need) or FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall).
+// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), CANOPY (spun, and lit as a tree card is: material.js facingNormal at the trees' cardFacing and the trees' albedo-weighted night lift, so a clump matches the single cards around it; every other picture is facingNormal at 1, CARD_NORMAL), AXIAL (the piece lies along its own Z and its card turns only about that axis, to the eye as seen in the piece's own frame; one quad stands in for the crossed pair a log used to need) or FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall).
 //
 // Pictures are stored top row first (the prop atlas's order); critter bakes arrive bottom row first and `setCritterPixels` flips them.
 // ---------------------------------------------------------------------------
@@ -20,6 +19,7 @@ export const MAX_PICTURES = 32
 const SPUN = 0
 const AXIAL = 1
 const FIXED = 2
+const CANOPY = 3
 
 const VERTEX_COMMON = /* glsl */ `
   #define PROP_FADE_ATTRIBUTE
@@ -34,6 +34,7 @@ const VERTEX_COMMON = /* glsl */ `
   varying float vPropFade;
   varying vec2 vCardUv;
   flat varying float vCardLayer;
+  flat varying float vCardCanopy;
   ${HEAD_EYE_DECL}`
 
 // uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame. Spun and fixed: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z, centred on the axis through (cx, cy) and turned about it to face the eye.
@@ -42,12 +43,14 @@ const VERTEX_BODY = /* glsl */ `
     float cardId = floor( aLayerShift + 0.5 );
     int ci = int( cardId );
     vec4 cb = uCardBox[ ci ];
+    float ck = uCardKind[ ci ];
     vCardLayer = cardId;
+    vCardCanopy = step( 2.5, ck );
     vHue = aHue;
     vCardUv = vec2( position.x + 0.5, 0.5 - position.y );
-    if ( uCardKind[ ci ] > 1.5 ) {
+    if ( abs( ck - 2.0 ) < 0.5 ) {
       transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
-    } else if ( uCardKind[ ci ] > 0.5 ) {
+    } else if ( abs( ck - 1.0 ) < 0.5 ) {
       mat4 cim = modelMatrix * instanceMatrix;
       vec3 cd = ${HEAD_EYE_GLSL} - cim[ 3 ].xyz;
       vec2 ce = vec2( dot( cim[ 0 ].xyz, cd ) / dot( cim[ 0 ].xyz, cim[ 0 ].xyz ), dot( cim[ 1 ].xyz, cd ) / dot( cim[ 1 ].xyz, cim[ 1 ].xyz ) ) - cb.xy;
@@ -67,6 +70,8 @@ const FRAGMENT_COMMON = /* glsl */ `
   varying vec2 vCardUv;
   varying float vHue;
   flat varying float vCardLayer;
+  flat varying float vCardCanopy;
+  uniform float uCardFacing;
   uniform highp sampler2DArray uCardPics;
   ${IGN_GLSL}`
 
@@ -137,16 +142,17 @@ export class LitterCards {
     this.owners.push(`${owner}:${n}`)
   }
 
-  /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex). */
-  addPicture({ kind, cx, cy, hw, hh, tilt = 0 }) {
+  /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex). `canopy` lights a spun card as a tree card (header). */
+  addPicture({ kind, cx, cy, hw, hh, tilt = 0, canopy = false }) {
     if (kind !== 'spun' && kind !== 'axial' && kind !== 'fixed') throw new Error(`LitterCards: a picture is 'spun', 'axial' or 'fixed', not ${kind}`)
     if (this.pictures >= MAX_PICTURES) throw new Error(`LitterCards: ${MAX_PICTURES} pictures is the table's size`)
     if (!(hw > 0) || !(hh > 0)) throw new Error(`LitterCards: need a positive half width and height, got ${hw} x ${hh}`)
     if (!(tilt >= 0 && tilt <= 1)) throw new Error(`LitterCards: tilt must be in [0, 1], got ${tilt}`)
     if (tilt && kind !== 'spun') throw new Error(`LitterCards: only a spun picture tilts, not ${kind}`)
+    if (canopy && kind !== 'spun') throw new Error(`LitterCards: only a spun picture is a canopy, not ${kind}`)
     const i = this.pictures++
     this.box[i].set(cx, cy, hw, hh)
-    this.kind[i] = kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : SPUN
+    this.kind[i] = kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : canopy ? CANOPY : SPUN
     this.tilt[i] = tilt
     return i
   }
@@ -191,6 +197,7 @@ export class LitterCards {
       shader.uniforms.uCardKind = { value: this.kind }
       shader.uniforms.uCardTilt = { value: this.tilt }
       shader.uniforms.uCardPics = { value: this.texture }
+      shader.uniforms.uCardFacing = cardFacing
       bindHeadEye(shader.uniforms)
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\n${VERTEX_COMMON}`)
@@ -198,7 +205,7 @@ export class LitterCards {
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>\n${FRAGMENT_COMMON}`)
         .replace('#include <map_fragment>', `#include <map_fragment>\ndiffuseColor *= texture( uCardPics, vec3( vCardUv, vCardLayer ) );\n${HUE_FRAGMENT}\n${FADE_FRAGMENT}`)
-        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${CARD_NORMAL}`)
+        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>\n${facingNormal('( vCardCanopy > 0.5 ? uCardFacing : 1.0 )')}`)
     }
     material.customProgramCacheKey = () => 'litter-card'
     return material

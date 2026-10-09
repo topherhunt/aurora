@@ -62,6 +62,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { lazyLoad } from '../lazy-load.js'
 import { lerp, mulberry32 } from '../../sim/mathx.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, keyHash, stepTo, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { CRITTER_GLB, LOD_RUNGS, critterTier, tileSeed, walkTiles } from './critters.js'
@@ -247,7 +248,8 @@ export class Snowmen {
       this.setAsset(asset)
       this.ready = Promise.resolve(true)
     } else {
-      this.ready = this.load()
+      this.lazy = lazyLoad(() => this.load())
+      this.ready = this.lazy.ready
     }
   }
 
@@ -737,7 +739,7 @@ export class Snowmen {
    * live on one. `dt` is the frame's seconds, for the puppets' fades.
    */
   update(hx, hy, hz, now, peers, dt) {
-    if (!this.loaded) return
+    if (!this.loaded) return this.lazy.want()
     if (!Number.isFinite(now)) throw new Error(`Snowmen.update needs the world time, got ${now}`)
     this.hx = hx; this.hy = hy; this.hz = hz
     this.peers = peers

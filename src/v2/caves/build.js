@@ -4,6 +4,7 @@ import { buildGraph } from './graph.js'
 import { CaveField } from './field.js'
 import { placeProps, columnAt } from './props.js'
 import { waterBodies } from './walk.js'
+import { settleWaters } from './water.js'
 
 // The daylight leaking in at a mouth: a light every DAY_STEP metres in from it, fading to nothing by DAY_M, so the way out reads from down the passage.
 const DAYLIGHT = { color: [0.55, 0.6, 0.7], reach: 6, power: 0.8 }
@@ -19,6 +20,7 @@ export const EXIT_R = 1.6
 export function planCave({ seed, entries }) {
   const graph = buildGraph({ seed, entries })
   const field = new CaveField(graph, seed)
+  settleWaters(graph, field)
   const props = placeProps(graph, field, seed)
   const lights = [...props.lights]
   const doors = []

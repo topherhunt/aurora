@@ -12,6 +12,7 @@ import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S, loadBipedGlb } from './snowmen.js'
 import { atFace, dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { EAT } from '../eating.js'
+import { lazyLoad } from '../lazy-load.js'
 import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
 import { RISER, TREAD } from '../layers/towns.js'
 import { TRI_CAMPFIRE, TriFlames } from './fire-tris.js'
@@ -167,6 +168,8 @@ export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride
 const LOD_TIERS = LOD_RUNGS
 const STEP_S = 2
 const ROSTER_URL = 'creatures/avatars.json'
+// How far outside a town's wake range the bodies start to download: ~6 MB on the wire, with room for her riding in at a strider's gallop.
+const LOAD_LEAD_M = 200
 // A tied strider's startle on the wire: `ts:` and its key past `town:`, in one of its phases.
 const SHY_WIRE = 'ts:'
 const SHY_PHASES = ['run', 'wait', 'back', 'turn']
@@ -1317,7 +1320,8 @@ export class Townsfolk {
     this.ranks = new Array(TOWNSFOLK.bodies.length).fill(0)
     this.greets = 0
     this.loaded = false
-    this.ready = this.load()
+    this.lazy = lazyLoad(() => this.load())
+    this.ready = this.lazy.ready
   }
 
   async load() {
@@ -1434,7 +1438,10 @@ export class Townsfolk {
 
   /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders. */
   update(feet, head, seconds, dt, t, lures = []) {
-    if (!this.loaded) return
+    if (!this.loaded) {
+      if (this._near(head, seconds)) this.lazy.want()
+      return
+    }
     this.now = seconds
     this.frame++
     const [wake, sleep] = TOWNSFOLK.live
@@ -1494,6 +1501,20 @@ export class Townsfolk {
       for (const m of mounts) this._rein(m)
       this.striders.end()
     }
+  }
+
+  /** A town or a traveller within LOAD_LEAD_M of waking, checked as often as the road is: time to fetch the bodies before anyone needs one. */
+  _near(head, seconds) {
+    if (seconds < this.roadAt) return false
+    this.roadAt = seconds + TOWNSFOLK.road.every
+    const wake = TOWNSFOLK.live[0] + LOAD_LEAD_M
+    if (this.towns.some((town) => Math.hypot(town.x - head.x, town.z - head.z) - town.radius < wake)) return true
+    if (!this.striders) return false
+    const J = this.journeys, at = {}
+    return J.onRoad(seconds, this.onRoad).some((j) => {
+      J.at(j, 0, seconds, at)
+      return Math.hypot(at.x - head.x, at.z - head.z) < TOWNSFOLK.road.m + LOAD_LEAD_M
+    })
   }
 
   /** Each alive town stepped to the clock, those catching up sharing the replay budget; alone, as while she is in one of its houses, nothing drawn. */

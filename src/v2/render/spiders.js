@@ -110,6 +110,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { lazyLoad } from '../lazy-load.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import {
   CRITTER_GLB, critterCardExtents,
@@ -469,7 +470,8 @@ export class Spiders {
       this.setAsset(assets)
       this.ready = Promise.resolve(true)
     } else {
-      this.ready = this.load()
+      this.lazy = lazyLoad(() => this.load())
+      this.ready = this.lazy.ready
     }
   }
 
@@ -1637,6 +1639,7 @@ export class Spiders {
    * her body, for the flee, is the capsule from there up to her head.
    */
   update(hx, hy, hz, now, fy, peers = null) {
+    if (!this.loaded) this.lazy.want()
     if (!Number.isFinite(now)) throw new Error(`Spiders.update: bad world time ${now}`)
     if (!(fy <= hy)) throw new Error(`Spiders.update: her feet must be under her head, got feet ${fy} and head ${hy}`)
     const players = this._players(hx, fy, hy, hz, peers)

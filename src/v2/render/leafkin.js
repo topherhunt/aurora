@@ -35,6 +35,7 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
+import { lazyLoad } from '../lazy-load.js'
 import { clamp, mulberry32 } from '../../sim/mathx.js'
 import { CATCH_UP_TICKS, CHAPTER_S, SILENT_TICKS, TICK_HZ, TICK_S, chapterOf, hash32, keyHash, swing, tickAfter, tickOf } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
@@ -366,7 +367,8 @@ export class Leafkin {
       this.setAsset(asset)
       this.ready = Promise.resolve(true)
     } else {
-      this.ready = this.load()
+      this.lazy = lazyLoad(() => this.load())
+      this.ready = this.lazy.ready
     }
   }
 
@@ -1097,7 +1099,7 @@ export class Leafkin {
    * silent and undrawn; let go SIM_OUT_M further out or when evicted.
    */
   update(feet, head, seconds, dt) {
-    if (!this.loaded) return
+    if (!this.loaded) return this.lazy.want()
     this.frame++
     this.feet.x = feet.x; this.feet.y = feet.y; this.feet.z = feet.z
     this.head.x = head.x; this.head.y = head.y; this.head.z = head.z

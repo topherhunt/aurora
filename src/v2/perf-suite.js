@@ -14,7 +14,7 @@ export const BASELINE_EVERY = 4
 /** A group whose removal saves at least this many median frame ms (mean of both rounds) is drilled into. */
 export const DRILL_MIN_MS = 1
 /** Cap on drilled states, so a run with many guilty groups still ends inside two minutes. */
-export const MAX_DRILL = 12
+export const MAX_DRILL = 18
 
 const VILLAGE = ['huts', 'towns', 'townsfolk']
 const EVERYTHING = ['terrain', 'trees', 'boulders', 'grass', 'ferns', 'litter', 'animals', 'aurora', 'clouds', 'precip', 'water', 'reflections', 'fire', ...VILLAGE]
@@ -57,6 +57,8 @@ export const GROUPS = [
   { name: 'village', off: VILLAGE, drill: [...['towns', 'townsfolk', 'huts'].map((k) => ({ name: k, off: [k] })), { name: 'people', off: ['townsPeople'] }, { name: 'striders', off: ['townsStriders'] }, { name: 'hearth+forge', off: ['townsFires'] }] },
   // Wind's vertex work across every swaying layer (grass, ferns, trees), everything else on.
   { name: 'wind', off: ['wind'], drill: [], once: true },
+  // Litter's five batches one at a time: each is its own draw and material, and removing the whole layer saves far more than halving it.
+  { name: 'litter parts', off: ['litter'], drill: ['Pebbles', 'Sticks', 'Mushrooms', 'Deadwood', 'Bones'].map((k) => ({ name: k.toLowerCase(), off: [`litter${k}`] })), once: true },
   // A/B pairs per alpha-tested layer: half the instances (saving tracks the count: vertex/instance work) and no discard (saving appears: early-Z was being lost to the cutout). `cards` is the shared card pool.
   ...['litter', 'grass', 'cards'].flatMap((k) => [
     { name: `${k} half`, off: [`${k}Half`], drill: [], once: true },

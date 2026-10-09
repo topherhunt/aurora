@@ -78,7 +78,8 @@ export function placeProps(graph, field, seed) {
       const glow = rand() < 0.2 + pal.glow * 0.6 ? regionGlow[n.region] : null
       out.mush.push({ x: p.x, y: p.y, z: p.z, h, lean: rr(-0.15, 0.15), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: UP })
       if (huge) block(p.x, p.z, Math.max(0.12, h * 0.07), p.y, p.y + h)
-      if (glow && huge) out.lights.push({ x: p.x, y: p.y + h, z: p.z, color: glow, reach: 6 + h, power: 0.35 })
+      // Every glowing cap tints the rock round it, the small ones a pace or two of floor and wall.
+      if (glow) out.lights.push({ x: p.x, y: p.y + h, z: p.z, color: glow, reach: huge ? 6 + h : 1.6 + 2.5 * h, power: huge ? 0.35 : 0.14 })
     }
 
     // Wall clumps: a few small glowing caps standing out of the rock, each lighting its own patch of wall faintly.

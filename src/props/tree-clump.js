@@ -128,12 +128,13 @@ export function treeClumpCards(bank) {
  * Photograph CLUMP_VARIANTS clumps per planted species, each framed to the
  * species' shared extents and lit at the single card's CARD_EXPOSURE, since it
  * stands in the same forest beside those cards. Call once, after
- * `loadImageLayers()` has resolved, beside bakeTreeImpostors. Returns one
+ * `loadImageLayers()` has resolved, beside bakeTreeImpostors: the bake samples
+ * bark and leaf from `texArray` but writes nothing into it. Returns one
  * record per photograph, species-major:
  * `{ species, variant, seed, pixels, width, height, coverage, meanLuma, trees }`,
  * `pixels` top row first as LitterCards.setPixels takes them.
  */
-export function bakeTreeClumps(renderer, bank, { count = CLUMP_TREES } = {}) {
+export function bakeTreeClumps(renderer, texArray, bank, { count = CLUMP_TREES } = {}) {
   const out = []
   bank.variants.forEach((v, vi) => {
     const treeGeo = bank.tiers[0].geometries[vi]
@@ -144,7 +145,7 @@ export function bakeTreeClumps(renderer, bank, { count = CLUMP_TREES } = {}) {
       if (clump.width > subject.width || clump.height > subject.height) {
         throw new Error(`bakeTreeClumps: ${v.species} clump ${i} is ${clump.width.toFixed(2)}x${clump.height.toFixed(2)}, past its ${subject.width.toFixed(2)}x${subject.height.toFixed(2)} frame`)
       }
-      const baked = bakeImpostor(renderer, clump.geometry, null, null, {
+      const baked = bakeImpostor(renderer, clump.geometry, texArray, null, {
         ...subject,
         hemFray: HEM_FRAY,
         vertexColors: true,

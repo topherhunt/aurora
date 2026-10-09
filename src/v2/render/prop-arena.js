@@ -141,8 +141,9 @@ export class PropMeshes {
         const mesh = new THREE.InstancedMesh(geo, materialFor(t, v), cap)
         mesh.name = `${name}-t${t}-v${v}`
         // Nothing is drawn until an instance takes a slot; `count` is the live
-        // population from here on.
+        // population from here on. An EMPTY mesh is hidden too: three still runs setProgram and the VAO setup for a visible mesh with count 0 and only then skips the draw, which on the headset is a per-mesh cost.
         mesh.count = 0
+        mesh.visible = false
         // An InstancedMesh's own frustum test computes a bounding sphere over
         // every instance matrix, which is both expensive and stale the moment a
         // tile grows. The scatter follows the camera and the answer would be yes
@@ -204,6 +205,7 @@ export class PropMeshes {
     const mesh = this.meshes[g]
     const s = mesh.count
     mesh.count = s + 1
+    mesh.visible = true
     this.owner[g][s] = instanceId
     this.ownerView[g][s] = view
     view.slot[instanceId] = s
@@ -223,6 +225,7 @@ export class PropMeshes {
     const s = view.slot[instanceId]
     const last = mesh.count - 1
     mesh.count = last
+    mesh.visible = last > 0
     view.slot[instanceId] = -1
     if (s === last) return
     const moved = this.owner[g][last]

@@ -61,7 +61,11 @@ Nodes are `mouth`, `junction`, `chamber` and `cavern`. Each mouth gets a throat 
 
 ## 5. Water
 
-Pools sit in chambers and caverns with a dish; rivers cut `RIVER_DEPTH` under a long, gentle walk's floor. Up to three tree walks become **sumps**: the passage dips under its water level to the roof and climbs out at `SUMP_GRADE`. Fish and crabs keep to the pools. Under a roof lower than the water, `CaveWalk.waterAt` answers the roof less `ROOF_GAP`, so a swimmer is held under the rock and follows it down and back up instead of floating through it.
+Pools sit in chambers and caverns with a dish; rivers cut `RIVER_DEPTH` under a long, gentle walk's floor. Up to three tree walks become **sumps**: the passage dips under its water level to the roof and climbs out at `SUMP_GRADE`. Fish and crabs keep to the pools.
+
+**Shores.** `settleWaters` (caves/water.js) floods each pool and sump from its deepest point over the real floor under its planned level, on a 0.5 m grid refined to 0.25 m where the shoreline crosses, so the plane runs into the bank instead of stopping at an ellipse. Two columns join only with air `LIP` over the higher floor, so water does not leak into a passage under rock. The flood stays within the body's home (node ellipse × `HOME`, a sump's line padded `SUMP_HOME`) and stops a cell past it. The level is never lowered to the lip it would spill over: the planned level is what floats her past a dish's steep wall to a bank she can mantle onto, and check-caves fails its exits with the water 0.1 m lower. A pool a sump's water covers takes the sump's level and draws no plane of its own. `CaveWalk` and the renderer both read the shore grid.
+
+**Reflection.** From above, the water shows a 64 px cube (`MIRROR_SIZE`) the room captures one face a frame, a hand over the water vertex nearest her eye within `MIRROR_REACH` (30 m). It is Fresnel-weighted and rippled by the shader's slow normal, with the analytic torch glint on top. The water is hidden from the capture; the torches are not, so the wall she lights shows in it. Underneath, the murk. Under a roof lower than the water, `CaveWalk.waterAt` answers the roof less `ROOF_GAP`, so a swimmer is held under the rock and follows it down and back up instead of floating through it.
 
 **Sumps and the torch.** Under water her view is the blurry murk (`CAVE_MURK`), like a night swim outside, and `underWater` reads the cave's water, so a sump douses the torch and blocks the flint as the overworld's water does. She relights it after surfacing. Both ends of a sump glow with odds 0.85 (others by their region's `glow`), so exits are usually but not always near glowing mushrooms.
 
@@ -69,7 +73,7 @@ Pools sit in chambers and caverns with a dish; rivers cut `RIVER_DEPTH` under a 
 
 A region is a connected group of nodes with one of seven `PALETTES` (grey rocky, dusty brown, blue-grey mushroom, pale limestone, old ruin, rust red, green damp): rock, vein and floor albedo in the terrain's range, and densities of dripstone, mushrooms, glow, ruins and rubble. Each region's biggest chamber holds its landmark (pillar, arch, giant mushroom, column, colonnade).
 
-`placeProps` lays stalagmites and stalactites, mushrooms (the forest's species from `mushroom-bank.js` grown large, each region's glowing its one colour, and small glowing clumps standing out of the walls), blocky ruin columns, chalk lumps, fish and crabs. **Anything she cannot step past** (a stalagmite over `MITE_BLOCKS`, 1 m, a column, a giant stem) is an obstacle in `CaveWalk` and is kept clear of every passage line into its node, so dressing cannot close a route the graph promised.
+`placeProps` lays stalagmites and stalactites, mushrooms (the forest's species from `mushroom-bank.js` grown large, wearing the props atlas with caps from `MUSHROOM_CAP_CAVE`, each region's glowing its one colour scaled by the cap texture's luminance so the grain still shows, and small glowing clumps standing out of the walls), blocky ruin columns, chalk lumps, fish and crabs. **Anything she cannot step past** (a stalagmite over `MITE_BLOCKS`, 1 m, a column, a giant stem) is an obstacle in `CaveWalk` and is kept clear of every passage line into its node, so dressing cannot close a route the graph promised.
 
 ## 7. Walking
 
@@ -77,7 +81,7 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 
 ## 8. Drawing, light and chalk
 
-**Light.** Pitch dark: the torches (`uTorch`) are the only light that moves. Glowing mushrooms and the mouths' daylight are baked into a per-vertex glow the cave shader adds unlit, so stretches can be walked by glow alone; a mouth's daylight runs `DAY_M` (11 m) down its passage. Torch shadows are not built; the baked AO carries the depth. The rock wears the boulders' stone tile every `STONE_M` (2.2 m), tinted by its region.
+**Light.** Pitch dark: the torches (`uTorch`) are the only light that moves. Every glowing mushroom (a giant's light reaching `6 + h` m, a small cap's a pace or two) and the mouths' daylight are baked into a per-vertex glow the cave shader adds unlit, so stretches can be walked by glow alone; a mouth's daylight runs `DAY_M` (11 m) down its passage. Torch shadows are not built; the baked AO carries the depth. The rock wears the boulders' stone tile every `STONE_M` (2.2 m), tinted by its region.
 
 **Chalk lumps** are a hands source (`ChalkStones`, kind `chalk`) over the room's `chalkRows`. Taking one marks it in `taken` (session only).
 
@@ -91,7 +95,8 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 
 ## 9. Open
 
-- `planCave` also runs on the main thread at warm-up, a hitch near a mouth.
+- `planCave` also runs on the main thread at warm-up, a hitch near a mouth; `settleWaters` adds 70-100 ms of it.
+- Where a chamber's floor lies under its pool's planned level, the water floods on down a descending passage and its plane ends in the air a cell past home, up to 1.4 m over the floor (tmp/cave-water-hover.mjs; 21 m² across check-caves' seven systems). The fix is in the plan: a lip at such a passage's mouth, or a level set from the real rim.
 - The marks mesh rebuilds whole on every stroke commit; many strokes may hitch.
 - Chalk lumps come back on reload (`taken` is session only); things dropped in a cave are not kept once she leaves.
 - The arch does not collide; she can walk through its stones. Grass and ferns still grow in the notch.

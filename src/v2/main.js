@@ -30,6 +30,7 @@ import { Panel } from './ui/panel.js'
 import * as persist from './edit/persist.js'
 import { installLogShip, reportLog, reportWarning } from './log-ship.js'
 import { cardStats, loadBakedCards, packCards, recordCards } from '../props/card-cache.js'
+import { lazyLoad, openLoads } from './lazy-load.js'
 import { PerfTrace, r2 } from './perf-trace.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
@@ -92,7 +93,7 @@ import { loadCritterGlb, setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor, buildRockBank } from '../props/rock-bank.js'
-import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripTiling, setWindEnabled } from '../material.js'
+import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripTiling, setWindEnabled, cardFacing } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -133,6 +134,7 @@ import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
+import { WarnMark } from './render/warn-mark.js'
 import { Bites, EAT, Effects, atMost, buzzBuffer, edible, reversedBuffer } from './eating.js'
 import { siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
@@ -141,6 +143,9 @@ import { CaveMouths } from './render/cave-mouths.js'
 import { CaveRoom, CAVE_AIR, CAVE_MURK } from './render/cave-room.js'
 import { ChalkStones, KIND as CHALK } from './render/chalk.js'
 import { Chalk, ChalkPen, onRock, rayRock } from './caves/chalk.js'
+
+// The trees' albedo-weighted night lift (lighting.js APPLY), so canopy shade goes dark instead of grey; the pool's clump pictures share it.
+const TREE_LIFT = { mix: 1, gain: 7 }
 
 // First, before anything below can warn: a copy of every warning and error goes
 // to the dev server's tmp/client-log.txt, for the headset, which shows none of
@@ -328,6 +333,7 @@ function bootReport(first) {
 const bootDone = async () => {
   await bootStep(null)
   bootReport(true)
+  openLoads()
   if (boot) boot.classList.add('gone')
 }
 // A failed boot must READ as a failed boot. The overlay covers the canvas, so
@@ -1036,6 +1042,7 @@ const sleep = new Sleep()
 const effects = new Effects()
 const bites = new Bites()
 let vitalsHud = null
+let warnMark = null
 // The bed she was laid in (by a click, or by walking or teleporting onto it), the standing pose to give back, whether to stand her `beside` the bed instead, and `upAt` (ms) once she has woken, when she stands. Null when she is not laid in one.
 let laid = null
 // Whether her feet were on a bed last frame: stepping onto one lays her in it, standing up by it does not.
@@ -1284,9 +1291,11 @@ function stepSize() {
   netplay.scale = k
 }
 
-/** Every frame from the top of the tick: the veil, the donut, the heartbeat and the death card. */
+/** Every frame from the top of the tick: the veil, the donut, the heartbeat, the death card and the warning mark. */
 function stepHud(dt) {
   vitalsHud.place(renderer.xr.isPresenting, camera.fov, camera.aspect)
+  warnMark.place(renderer.xr.isPresenting, camera.fov, camera.aspect)
+  warnMark.update(dt)
   const card = health.dead && !reviving
   const hit = questPointer === null ? null : questPointer.hit
   const hot = hit === null ? null : hit.object.userData.death
@@ -1447,7 +1456,7 @@ const QUEST_TOGGLE_ROWS = [
 ]
 
 // Toggles the perf-trace battery drives (perf-suite.js) that have no cell on the panel: one per animal species under the `animals` row, and the parts of `townsfolk`.
-const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons', 'townsPeople', 'townsStriders', 'townsFires', 'cardsHalf', 'litterHalf', 'litterDiscard', 'grassHalf', 'grassDiscard'].map((key) => ({ key, text: key }))
+const TRACE_ONLY_ROWS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons', 'townsPeople', 'townsStriders', 'townsFires', 'cardsHalf', 'litterHalf', 'litterDiscard', 'grassHalf', 'grassDiscard', 'litterPebbles', 'litterSticks', 'litterMushrooms', 'litterDeadwood', 'litterBones'].map((key) => ({ key, text: key }))
 
 function questRowByKey(key) {
   const row = QUEST_SETTING_ROWS.find((r) => r.key === key) ?? QUEST_TOGGLE_ROWS.find((r) => r.key === key) ?? TRACE_ONLY_ROWS.find((r) => r.key === key)
@@ -1494,6 +1503,7 @@ function applyQuestToggle(key) {
       applyLitterVisibility()
       break
     case 'cardsHalf': litterCards.setHalf(!enabled); break
+    case 'litterPebbles': case 'litterSticks': case 'litterMushrooms': case 'litterDeadwood': case 'litterBones': applyLitterVisibility(); break
     case 'litterHalf': halveDraw(litter.batch, !enabled); break
     case 'litterDiscard': dropDiscard(litter.material, !enabled); break
     case 'grassHalf': halveDraw(grass.batch, !enabled); break
@@ -1556,8 +1566,9 @@ function applyFernVisibility() {
 
 function applyLitterVisibility() {
   const on = questToggles.litter
-  for (const l of [litter, sticks, mushrooms, deadwood, bones]) l.batch.visible = on
-  for (const l of [mushrooms, deadwood, bones]) l.batch.setShown(on)
+  const parts = [[litter, 'litterPebbles'], [sticks, 'litterSticks'], [mushrooms, 'litterMushrooms'], [deadwood, 'litterDeadwood'], [bones, 'litterBones']]
+  for (const [l, key] of parts) l.batch.visible = on && questToggles[key]
+  for (const [l, key] of parts.slice(2)) l.batch.setShown(on && questToggles[key])
 }
 
 function applyRockVisibility() {
@@ -2933,7 +2944,8 @@ peerAvatars.ready.then((roster) => {
   netplay.avatar = roster[Math.floor(Math.random() * roster.length)].id
   console.log(`[net] wearing ${netplay.avatar}`)
 })
-peerAvatars.warm(renderer, camera)
+// Precompiles the shared avatar programs so a friend joining doesn't hitch; it fetches a body, so it waits for the boot.
+lazyLoad(() => peerAvatars.warm(renderer, camera)).want()
 
 const poseQuat = new THREE.Quaternion()
 const posePos = new THREE.Vector3()
@@ -3192,7 +3204,7 @@ const questToggles = {
   critterTint: false, mirror: false, terrainWire: false, roadLines: false, obstacleWire: false,
   wind: true,
   // Trace-only splits of `townsfolk` (TRACE_ONLY_ROWS).
-  townsPeople: true, townsStriders: true, townsFires: true, cardsHalf: true, litterHalf: true, litterDiscard: true, grassHalf: true, grassDiscard: true,
+  townsPeople: true, townsStriders: true, townsFires: true, cardsHalf: true, litterHalf: true, litterDiscard: true, grassHalf: true, grassDiscard: true, litterPebbles: true, litterSticks: true, litterMushrooms: true, litterDeadwood: true, litterBones: true,
   // See QUEST_SETTING_ROWS.
   teleport: true, standHeight: true,
 }
@@ -3556,6 +3568,7 @@ async function bootWorld() {
   ownHandBank = await loadOwnHand({ patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-own-hand' }) })
   buildQuestPanel()
   vitalsHud = new VitalsHud(camera, QUEST_SERIF)
+  warnMark = new WarnMark(camera)
   for (const b of deathButtons.children) b.style.font = QUEST_SERIF(18).font
   window.v2menu = { toggle: toggleQuestPanel, view: setQuestView } // console: `v2menu.view('help')`
   // The rest of the save, now that there is a backpack view to paint. Her
@@ -3581,6 +3594,8 @@ async function bootWorld() {
 // twice. Keyed by what the picture is OF: the grass bed's style decides whether
 // its layer holds tufts or nothing at all, so it carries the style.
 const atlasBaked = new Set()
+// The tree clumps' photographs, which are in no atlas: each room's card pool is new and is filled from these.
+let treeClumps = null
 /** `bake()` the first time this atlas picture is asked for, and its answer; null on every later room. */
 function once(key, bake) {
   if (atlasBaked.has(key)) return null
@@ -3593,8 +3608,11 @@ function once(key, bake) {
 function bakeImpostors() {
   // The images can land mid-swap, with no room standing; the next room bakes at its own end.
   if (!trees) return
-  const baked = once('trees', () => trees.bakeCards(renderer))
-  once('ferns', () => ferns.bakeCards(renderer))
+  const treeShots = once('trees', () => trees.photographCards(renderer))
+  if (treeShots) treeClumps = treeShots.clumps
+  trees.fillCards(treeClumps)
+  once('ferns', () => ferns.photographCards(renderer))
+  ferns.fillCards()
   once(`grass-${grassStyle}`, () => grass.bakeCards(renderer))
   once('mushrooms', () => mushrooms.photographCards(renderer))
   mushrooms.fillCards()
@@ -3615,10 +3633,11 @@ function bakeImpostors() {
   // right, and there is nowhere else it can be taken: the bake needs a live
   // renderer, so no node gate can reach it. See BAKE_KEY in props/impostor.js
   // for what these numbers are supposed to be.
-  if (baked) {
+  if (treeShots) {
+    const shots = treeShots.singles.concat(treeShots.clumps.map((c) => ({ ...c, species: `${c.species}-clump${c.variant}` })))
     console.log(
       'tree impostors baked:',
-      baked.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
+      shots.map((b) => `${b.species} luma ${b.meanLuma.toFixed(3)} cover ${b.coverage.toFixed(3)}`).join(', ')
     )
   }
   // Same instrument, same reason. A rock card is a grey blob, which makes
@@ -3772,7 +3791,7 @@ async function enterHouse(open) {
 /** A saved game's house open again, and her beside the bed she slept in, facing away from it as if just up. */
 async function intoSavedHouse(house) {
   if (house.town) {
-    await townsfolk.ready
+    await townsfolk.lazy.need()
     await openTownHouse(house.town.t, house.town.i)
   } else {
     await villagers.ready
@@ -3980,7 +3999,7 @@ function buildCave(sys, door) {
   const t0 = performance.now()
   const entries = caveEntries(sys, caveSites.mouths, caveSites.cellars)
   const plan = planCave({ seed: sys.seed, entries })
-  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone)
+  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone, propTextures)
   chalkStones.setRoom(room)
   chalkShown = -1
   const id = ++caveJob
@@ -4089,7 +4108,7 @@ async function leaveCave(i) {
   } else {
     const c = caveSites.cellars[sys.cellars[i - sys.mouths.length]]
     if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
-    await townsfolk.ready
+    await townsfolk.lazy.need()
     await openTownHouse(c.t, c.i)
     const o = indoors.view.group.position, d = indoors.room.cellar
     player.teleportTo(o.x + d.in.x, o.z + d.in.z)
@@ -4151,6 +4170,7 @@ function stepCave(head, t) {
   keepUnderRoof(caveKeep).add(caveBuild.room.group)
   hideOutside(caveKeep, caveHidden)
   caveBuild.room.update(head, submerged, t)
+  if (questToggles.reflections && !submerged) caveBuild.room.reflect(renderer, scene, head)
   stepChalk()
 }
 
@@ -4499,7 +4519,8 @@ async function buildRoom(room, at) {
   litterCards = new LitterCards(12288)
   scene.add(litterCards.group)
   window.v2cards = litterCards // console: `v2cards.stats`
-  lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card' })
+  window.v2treeFacing = (k) => { cardFacing.value = k } // console: tree cards' sun-facing, 0 flat to 1 CARD_NORMAL
+  lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card', liftAlbedo: { ...TREE_LIFT, weight: 'vCardCanopy' } })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds, cards: litterCards })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their
   // materials differ by map alone (render/gen-props.js keys the program on its
@@ -4615,8 +4636,7 @@ async function buildRoom(room, at) {
   // on it, and these two materials compile DIFFERENT shader source -- the tree
   // material's uBillboardLayers is four long, the ferns' is one -- so sharing a
   // key would hand one of them the other's program.
-  // liftAlbedo: see APPLY in lighting.js. Lets canopy shade go dark instead of grey.
-  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb', liftAlbedo: { mix: 1, gain: 7 } })
+  lighting.patch(trees.material, { mode: 'vertex', cacheKey: 'v2-tree-bb', liftAlbedo: TREE_LIFT })
   // So a tree and the ground it stands on cross the snow line together.
   trees.syncSnowLine(layers)
   trees.place(spawn.x, spawn.z)
@@ -7644,7 +7664,8 @@ function tick() {
   //
   // `submerged` is last frame's answer, because applySubmersion runs later in
   // this one. A frame of lag on a 2.5 s ease is not a thing that can be seen.
-  swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged ? dt : -dt) / CURRENT.ease, 0, 1)
+  // Not in a cave: the drift moves the rig with no wall test, and a sump's walls are within its reach.
+  swayStrength = THREE.MathUtils.clamp(swayStrength + (submerged && cave === null ? dt : -dt) / CURRENT.ease, 0, 1)
   currentDrift(now / 1000, swayStrength, swayWant)
   player.rig.position.x += swayWant.x - swayApplied.x
   player.rig.position.z += swayWant.z - swayApplied.z

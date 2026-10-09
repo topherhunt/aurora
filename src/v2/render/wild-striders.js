@@ -1,4 +1,5 @@
 import THREE from '../../three-instance.js'
+import { lazyLoad } from '../lazy-load.js'
 import { CHAPTER_S, hash32, keyHash, swing } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S } from './snowmen.js'
@@ -191,7 +192,8 @@ export class WildStriders {
     this.ids = 0
     this.list = []
     this.loaded = false
-    this.ready = this.load()
+    this.lazy = lazyLoad(() => this.load())
+    this.ready = this.lazy.ready
   }
 
   async load() {
@@ -346,7 +348,7 @@ export class WildStriders {
    * peerHeadsNow): one live on a peer is stepped against that peer's head.
    */
   update(dt, head, feet, lures, seconds, peers) {
-    if (!this.loaded) return
+    if (!this.loaded) return this.lazy.want()
     this.now = seconds
     this.peers = peers
     this._scan(feet.x, feet.z)
