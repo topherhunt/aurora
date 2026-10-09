@@ -1,5 +1,6 @@
 import { LAYERS_URL } from '../config.js'
 import { emptyDoc } from './restore.js'
+import { earlyFetch } from '../early-fetch.js'
 
 // ---------------------------------------------------------------------------
 // Where an authored world lives, and in what order it is looked for.
@@ -141,7 +142,7 @@ export async function exportHeightFile(heightmap, name = 'height.png') {
 
 /** The committed world, or null when nothing has been authored yet. */
 export async function loadServer() {
-  const res = await fetch(LAYERS_URL, { cache: 'no-store' })
+  const res = await earlyFetch(LAYERS_URL, { cache: 'no-store' })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`load ${LAYERS_URL} failed: HTTP ${res.status}`)
   const text = await res.text()

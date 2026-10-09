@@ -7,6 +7,8 @@
 // ATLAS IT SAMPLES: a file baked by an older build would serve stale pictures
 // without a single miss, so it is only ever valid for the build it was baked from.
 
+import { earlyFetch } from '../v2/early-fetch.js'
+
 const baked = new Map()
 const recorded = new Map()
 const stats = { baked: 0, live: 0 }
@@ -16,7 +18,7 @@ let mode = 'off'
 /** Serve the cards packed at `url` (gzip of packCards' layout). Rejects on a missing or unreadable file; the mode stays 'use' so every card then counts as live. */
 export async function loadBakedCards(url) {
   mode = 'use'
-  const res = await fetch(url)
+  const res = await earlyFetch(url)
   if (!res.ok) throw new Error(`${url} answered ${res.status}`)
   const buf = new Uint8Array(await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer())
   const head = new DataView(buf.buffer).getUint32(0, true)

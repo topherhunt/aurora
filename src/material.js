@@ -1254,7 +1254,7 @@ const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
           smoothstep( -0.35, 0.15, dot( normal, normalize( vViewPosition ) ) ) )`
 
 // How far a tree card's normal turns from straight up toward the eye: 0 lights it as a top whichever way she looks, 1 as the litter cards' CARD_NORMAL (bright with the sun behind her, dark looking into it). One value for the single cards and the clumps, so the two tiers never disagree. Live: `v2treeFacing(k)`.
-export const cardFacing = { value: 0.5 }
+export const cardFacing = { value: 0.25 }
 
 /** Set `normal` to straight up turned toward the eye by GLSL float `k`; k = 1 is gen-props.js CARD_NORMAL exactly. */
 export const facingNormal = (k) => /* glsl */ `

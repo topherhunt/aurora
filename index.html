@@ -6,6 +6,13 @@
     <title>Aurora v2</title>
     <!-- The boot report counts every fetch; the browser's default buffer keeps 250 and a dev boot makes ~570. -->
     <script>performance.setResourceTimingBufferSize(4000)</script>
+    <!-- The boot's data, asked for before the seconds the code takes to arrive and start; src/v2/early-fetch.js hands each over once. Each URL and init must match its loader's fetch exactly. -->
+    <script>
+      window.earlyFetches = Object.fromEntries([
+        ['world/height.json'], ['world/height.png'], ['world/plan.json', { cache: 'no-cache' }], ['world/layers.json', { cache: 'no-store' }],
+        ...('%PROD%' === 'true' && !new URLSearchParams(location.search).has('bakecards') ? [['/cards.bin']] : []),
+      ].map(([url, init]) => [url, fetch(url, init)]))
+    </script>
     <!-- Loaded before main.js (like quest.html), which injects the live
          <a-scene> that owns the renderer and the XR session. -->
     <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>

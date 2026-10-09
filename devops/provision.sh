@@ -77,6 +77,11 @@ ${DOMAIN} {
 			header Content-Type model/gltf-binary*
 		}
 	}
+	# Vite's assets/ carry a content hash in the name, so a cached copy is right forever. Everything else keeps its name across deploys and is revalidated on every load (a 304 when unchanged; deploy.sh keeps unchanged files' ETags stable).
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+	@named not path /assets/* /ws* /trace /log /health
+	header @named Cache-Control "no-cache"
 	@health path /health
 	handle @health {
 		reverse_proxy 127.0.0.1:${APP_PORT}

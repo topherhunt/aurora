@@ -63,7 +63,7 @@ export function windowGlow(material, u = windowUniforms()) {
 }
 
 /**
- * Paints evenly spaced lit windows on the far box's walls (farBoxGeometry, scaled per instance to metres). Past a few hundred metres a window is under a pixel and a hard pattern sparkles, so each axis's pulse is
+ * Paints evenly spaced lit windows on those of the far box's walls (farBoxGeometry, scaled per instance to metres) that aFarWin, box-local +x -x +z -z, says the house glazes. Past a few hundred metres a window is under a pixel and a hard pattern sparkles, so each axis's pulse is
  * blended toward its duty cycle as the pixel footprint (fwidth) approaches the spacing: far off a wall reads as an even warm wash of the same mean.
  */
 export function farWindowGlow(material, u) {
@@ -73,14 +73,14 @@ export function farWindowGlow(material, u) {
     prev.call(material, shader, renderer)
     shader.uniforms.uWindowGlow = u.glow
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec4 vFarWin;\nvarying float vFarWall;')
+      .replace('#include <common>', '#include <common>\nattribute vec4 aFarWin;\nvarying vec4 vFarWin;\nvarying float vFarWall;')
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
         vec3 fwS = vec3( length( instanceMatrix[ 0 ].xyz ), length( instanceMatrix[ 1 ].xyz ), length( instanceMatrix[ 2 ].xyz ) );
         bool fwEnd = abs( normal.x ) > 0.5;
         vFarWin = vec4( fwEnd ? position.z * fwS.z : position.x * fwS.x, position.y * fwS.y, 0.5 * ( fwEnd ? fwS.z : fwS.x ), ${f1(EAVE)} * fwS.y );
-        vFarWall = 1.0 - aRoof;`
+        vFarWall = ( 1.0 - aRoof ) * ( normal.x > 0.5 ? aFarWin.x : normal.x < -0.5 ? aFarWin.y : normal.z > 0.5 ? aFarWin.z : aFarWin.w );`
       )
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -254,6 +254,8 @@ export class Towns {
     const geo = farBoxGeometry()
     this.wallTint = new Float32Array(count * 3)
     geo.setAttribute('aWallTint', new THREE.InstancedBufferAttribute(this.wallTint, 3))
+    this.farWin = new Float32Array(count * 4)
+    geo.setAttribute('aFarWin', new THREE.InstancedBufferAttribute(this.farWin, 4))
     this.far = new THREE.InstancedMesh(geo, this.farMaterial, count)
     this.far.frustumCulled = false
     this.far.name = 'town-far'
@@ -270,7 +272,14 @@ export class Towns {
         if (ms.ridgeAxis === 'z') m.multiply(tmp.makeRotationY(Math.PI / 2))
         m.multiply(tmp.makeScale(along, top - base, across))
         const r = ROOF_TINT[b.plan.roofKind]
-        this.sites[i].masses.push({ matrix: m.clone(), roof: new THREE.Color(r[0], r[1], r[2]), wall: WALL_TINT[b.plan.style] })
+        // The walls of this mass the plan puts a window in, turned into the box's frame (a z ridge is rotated a quarter turn).
+        const win = [0, 0, 0, 0]
+        for (const wn of b.plan.windows) {
+          if (wn.massId !== ms.id) continue
+          const [nx, nz] = ms.ridgeAxis === 'z' ? [-wn.nz, wn.nx] : [wn.nx, wn.nz]
+          win[nx > 0.5 ? 0 : nx < -0.5 ? 1 : nz > 0.5 ? 2 : 3] = 1
+        }
+        this.sites[i].masses.push({ matrix: m.clone(), roof: new THREE.Color(r[0], r[1], r[2]), wall: WALL_TINT[b.plan.style], win })
       }
     }
     this.far.count = 0
@@ -388,6 +397,7 @@ export class Towns {
         this.far.setMatrixAt(k, ms.matrix)
         this.far.setColorAt(k, ms.roof)
         this.wallTint.set(ms.wall, k * 3)
+        this.farWin.set(ms.win, k * 4)
         k++
       }
     }
@@ -395,6 +405,7 @@ export class Towns {
     this.far.instanceMatrix.needsUpdate = true
     this.far.instanceColor.needsUpdate = true
     this.far.geometry.getAttribute('aWallTint').needsUpdate = true
+    this.far.geometry.getAttribute('aFarWin').needsUpdate = true
     this.stats.farShown = k
   }
 

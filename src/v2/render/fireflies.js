@@ -64,7 +64,7 @@ const smooth = (t) => t * t * (3 - 2 * t)
 
 const VERT = /* glsl */ `
   attribute float aGlow;
-  uniform float uHalo;
+  uniform float uHalo, uBody;
   varying vec2 vP;
   varying float vGlow;
   void main() {

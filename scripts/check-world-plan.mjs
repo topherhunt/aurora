@@ -10,7 +10,7 @@ import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED, RELIEF_DEFAULTS } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
-import { planWorld, packWorldPlan, unpackWorldPlan, worldPlanKey } from '../src/v2/layers/world-plan.js'
+import { applyWorldPlan, packShores, planWorld, packWorldPlan, unpackWorldPlan, worldPlanKey } from '../src/v2/layers/world-plan.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -64,6 +64,17 @@ const same = (a, b, path) => {
 }
 same(live, back, 'plan')
 check(firstDiff === null, 'a baked plan read back is the live plan, sharing and all', firstDiff ?? `${pairs.size} objects`)
+
+// The bake traces its shores on the layers planWorld grew in place; the boot rebuilds them from the unpacked records. Any difference between the two grounds is a shore that sits off its bank with nothing to say so.
+applyWorldPlan(layers, live)
+const baked = JSON.stringify(packShores(layers, field))
+const bootLayers = Layers.deserialize(JSON.parse(JSON.stringify(doc)))
+const bootField = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
+bootField.setLayers(bootLayers)
+for (const p of [back.townPlan, back.roadPlan, back.trailPlan]) bootLayers.addGenerated(p.records)
+applyWorldPlan(bootLayers, back)
+const traced = JSON.stringify(packShores(bootLayers, bootField))
+check(baked === traced && baked.length > 2, "the baked lake shores are the ones the boot's ground traces", `${Object.keys(JSON.parse(baked)).length} shores, ${(baked.length / 1024).toFixed(0)} KB`)
 
 const key = worldPlanKey({ doc, relief: RELIEF_SHIPPED, seed: SEED, spawn: SPAWN })
 check(key === worldPlanKey({ doc: JSON.parse(JSON.stringify(doc)), relief: { ...RELIEF_SHIPPED }, seed: SEED, spawn: { ...SPAWN } }), 'the key reads the inputs, not their identity')

@@ -360,10 +360,11 @@ export function buildTreeBank({ billboard = true } = {}) {
 // every hour and from every side. The mesh it stands in for is a crown of
 // leaves that face the sun, and at the swap it is brighter than the card by
 // this much averaged over the sun's compass -- front-lit more, back-lit about
-// even. Measured, not derived: a pine at LOD0 against its card under the noon
-// palette, mean linear luma over covered pixels. The clump cards
+// even. Measured, not derived: the 8-24 m band drawn as LOD1 and then as cards
+// (setMeshBand) at the four compass headings, 09:00 and 13:00, mean linear luma
+// over the tree pixels, cards lit at cardFacing 0.25. The clump cards
 // (tree-clump.js) are the same picture six times over and bake at the same.
-export const CARD_EXPOSURE = 1.6
+export const CARD_EXPOSURE = 1.75
 
 export function bakeTreeImpostors(renderer, texArray) {
   const done = []

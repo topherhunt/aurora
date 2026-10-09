@@ -15,6 +15,11 @@ import { ringArea, inRing, simplifyRing, spaced } from '../../sim/rings.js'
 
 export { ringArea, inRing }
 
+// The scalars a traced shore depends on besides the ground. A BAKED RING IS NOT IN HERE: WaterSurfaces compares it by identity beside this key, because LakeSet builds a fresh array of contours every time a record is read or patched, and a hash short enough to be cheap is a hash that can collide and serve a stale shore.
+export function shoreKey(lake) {
+  return `${lake.x},${lake.z},${lake.y},${lake.rx},${lake.rz},${lake.rot},${lake.shape},${lake.carve ? 1 : 0},${lake.depth}`
+}
+
 // Metres of ground over every polygon edge.
 export const SHORE_BURY = 1.5
 // Douglas-Peucker tolerance on the traced ring, in metres, and the longest edge left after it.

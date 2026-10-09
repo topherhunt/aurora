@@ -7,8 +7,8 @@ import { V2Height } from './height/field.js'
 import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { townsOccupyAt } from './layers/towns.js'
-import { fieldRecord, fieldSpots } from './layers/trades.js'
-import { loadWorldPlan, planWorld, unpackWorldPlan, worldPlanKey } from './layers/world-plan.js'
+import { fieldSpots } from './layers/trades.js'
+import { applyWorldPlan, loadWorldPlan, planWorld, unpackWorldPlan, worldPlanKey } from './layers/world-plan.js'
 import { Towns, WINDOW_GLOW } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
 import { WILD, WildStriders } from './render/wild-striders.js'
@@ -263,6 +263,12 @@ const YIELD_AFTER_MS = 16
 const bootFmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms.toFixed(0)} ms`)
 // performance.now() at each boot phase's start, for the report: `main` is this module's body (every static import fetched and run), then A-Frame's scene up, then the room build begun.
 const bootMarks = { main: performance.now(), aframe: 0, room: 0 }
+// The setup phase (A-Frame up to the room build) split at setupMark()s, each the time since the mark before it.
+const setupMarks = []
+function setupMark(name) {
+  const at = performance.now()
+  setupMarks.push({ name, ms: at - (setupMarks.length ? setupMarks[setupMarks.length - 1].at : bootMarks.aframe), at })
+}
 // Deploy-baked card photographs (props/card-cache.js); scripts/bake-cards.mjs boots the build with ?bakecards to record them. Dev always bakes live.
 const BAKE_CARDS = new URLSearchParams(location.search).has('bakecards')
 if (BAKE_CARDS) {
@@ -323,7 +329,7 @@ function bootReport(first) {
   reportLog(
     `[v2] boot ready ${bootFmtMs(now)} on ${device} (${import.meta.env.DEV ? 'dev' : 'prod'}, ${gl.drawingBufferWidth}x${gl.drawingBufferHeight}): ` +
     `code ${bootFmtMs(bootMarks.main)} (CDN scripts done ${bootFmtMs(lastEnd(cdnJs))}), aframe ${bootFmtMs(bootMarks.aframe - bootMarks.main)}, ` +
-    `setup ${bootFmtMs(bootMarks.room - bootMarks.aframe)}, ${build}; ` +
+    `setup ${bootFmtMs(bootMarks.room - bootMarks.aframe)} (${setupMarks.map((m) => `${m.name} ${bootFmtMs(m.ms)}`).join(', ')}, to room ${bootFmtMs(bootMarks.room - setupMarks[setupMarks.length - 1].at)}), ${build}; ` +
     `${renderer.info.programs.length} shader programs, parallel compile ${renderer.extensions.has('KHR_parallel_shader_compile') ? 'yes' : 'no'}; ` +
     `cards ${cards.mode === 'off' ? 'all live (dev)' : `${cards.baked} pre-baked, ${cards.live} live`} so far; ` +
     `${fetches.length} fetches ${(fetches.reduce((s, e) => s + e.transferSize, 0) / 2 ** 20).toFixed(1)} MB over the wire, ` +
@@ -744,6 +750,7 @@ const water = new Water(scene, { sky, lighting, probe, world: worldProbe })
 // Both under the sky's clouds, by reference: the cloud that hides the sun hides the stars and the curtain behind it.
 const stars = new Stars(scene, { seed: SEED, pixelRatio: renderer.getPixelRatio(), clouds: sky.uniforms })
 const aurora = new SkyAurora(scene, { renderer, seed: SEED, clouds: sky.uniforms })
+setupMark('sky')
 // The aurora only. The stars are POINTS, and gl_PointSize counts framebuffer
 // pixels rather than angle -- so the 1.1-4.5 px speck that is right on a 1500 px
 // screen spans 1.5 to 6.3 degrees of a 64 px cube face, against the ~0.05 degrees
@@ -2925,6 +2932,7 @@ function bodyRow(body) {
   ]
 }
 
+setupMark('state')
 const input = new Input(renderer)
 const peerAvatars = new PeerAvatars(scene, { camera, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-avatars' }) })
 const room = new URLSearchParams(location.search).get('room') || 'default'
@@ -3472,6 +3480,7 @@ async function bootWorld() {
   // batches do not wait on them, so the world has trees and stone from the
   // first frame wearing whatever the procedural layers already hold.
   propTextures = buildTextureArray()
+  setupMark('atlas')
   // The flare gun's mesh, worn before the first room: a saved gun in a hand or the backpack is dressed as the room builds.
   const flareGunMesh = loadCritterGlb(FLAREGUN_GLB, { origin: [0, 0, 0] })
 
@@ -3479,9 +3488,15 @@ async function bootWorld() {
   // never holds the world; until they land, and forever if one fails, the
   // frame loop sees `ambience` null and stays silent -- a world with half its
   // sounds is worse than one with none. The context itself stays suspended
-  // until the first gesture; see unlockSound.
-  sound = new SoundEngine()
-  soundReady = sound.load(SOUNDS).then(
+  // until the first gesture; see unlockSound. Opening the AudioContext blocks the
+  // main thread (~170 ms on desktop, the first time), so it waits for the boot.
+  const soundOpen = lazyLoad(async () => {
+    sound = new SoundEngine()
+    if (!questToggles.sound) sound.setMuted(true)
+    return sound
+  })
+  soundOpen.want()
+  soundReady = soundOpen.ready.then((engine) => engine.load(SOUNDS)).then(
     () => {
       sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); sound.buffers.set('flintClick', clickBuffer(sound.ctx))
       sound.buffers.set('zoomBack', reversedBuffer(sound.ctx, sound.buffers.get('zoom')))
@@ -3508,8 +3523,11 @@ async function bootWorld() {
     if (saved.door?.key === undefined) { console.warn('[v2] the save is in a village with no door: booting the overworld'); room = ROOMS.overworld; saved = null }
     else cameInBy = saved.door
   }
+  setupMark('world prep')
   flareGuns.wear(await flareGunMesh)
+  setupMark('flare gun wait')
   await cardsLoad
+  setupMark('cards wait')
   const { fresh } = await buildRoom(room, saved)
   if (fresh) saved = null
 
@@ -3983,11 +4001,10 @@ const chalkRay = new THREE.Raycaster()
 const chalkNdc = new THREE.Vector2()
 
 /** The overworld's cave systems over the world plan's mouths; then the clefts behind them, cut into `layers` before the terrain first reads them. */
-function siteCaves(mouths, layers, townPlan) {
+function siteCaves(mouths, townPlan) {
   const t0 = performance.now()
   const cellars = siteCellars(townPlan.towns, SEED)
   const systems = groupSystems(mouths, SEED, cellars)
-  layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
   console.log(`[v2] caves: ${mouths.length} mouths and ${cellars.length} cellars in ${systems.length} systems, sited in ${(performance.now() - t0).toFixed(0)} ms`)
   return { mouths, cellars, systems, cellarOf: new Map(cellars.map((c) => [c.t * 256 + c.i, c])) }
 }
@@ -4336,6 +4353,7 @@ async function buildRoom(room, at) {
   }
 
   let from
+  let bakedShores = null
   caveSites = null
   if (kept !== null) {
     ;({ height, layers, from, townPlan, roadPlan, caveSites } = kept)
@@ -4367,6 +4385,8 @@ async function buildRoom(room, at) {
       let mouths, trailPlan
       if (file !== null && file.key === key) {
         ;({ townPlan, roadPlan, mouths, trailPlan } = unpackWorldPlan(file.plan))
+        if (file.shores === undefined) throw new Error(`${WORLD_PLAN_URL} carries no lake shores; re-bake it`)
+        bakedShores = file.shores
         layers.addGenerated(townPlan.records)
         layers.addGenerated(roadPlan.records)
         layers.addGenerated(trailPlan.records)
@@ -4380,9 +4400,8 @@ async function buildRoom(room, at) {
         `[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ` +
           `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
       )
-      layers.setFields(townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map(fieldRecord)))
-      // After the towns, which keep them out, and on the faces before their clefts cut them.
-      caveSites = siteCaves(mouths, layers, townPlan)
+      applyWorldPlan(layers, { townPlan, mouths })
+      caveSites = siteCaves(mouths, townPlan)
     }
   }
   const bands = height.bands
@@ -4434,7 +4453,8 @@ async function buildRoom(room, at) {
     waterSurfaces.attach()
   } else {
     waterSurfaces = new WaterSurfaces({ water, layers, field: height })
-    waterSurfaces.rebuild()
+    const built = waterSurfaces.rebuild(null, bakedShores)
+    console.log(`[v2] water ${built.bodies} bodies, ${built.triangles} triangles; ${built.baked} lake shores baked, the rest traced live`)
     if (!room.village) overworld = { relief, heightmap, height, layers, from, townPlan, roadPlan, caveSites, waterSurfaces }
   }
   markers = new Markers({ scene, layers })
@@ -8069,6 +8089,7 @@ renderer.xr.addEventListener('sessionend', () => {
   camera.rotation.copy(desktopRotation)
 })
 
+setupMark('module rest')
 bootWorld().catch(reportRuntimeError)
 
 })().catch(bootFail)

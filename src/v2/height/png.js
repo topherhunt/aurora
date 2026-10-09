@@ -311,17 +311,9 @@ export async function encodePng(width, height, pixels) {
   return out
 }
 
-/** Browser: fetch and decode. Throws on a non-2xx rather than decoding an error page. */
-export async function loadPng(url) {
-  if (IS_NODE) throw new Error('png: loadPng is the browser path -- use readPng in node')
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`png: ${res.status} ${res.statusText} fetching ${url}`)
-  return decodePng(new Uint8Array(await res.arrayBuffer()))
-}
-
 /** Node: read from disk and decode. */
 export async function readPng(path) {
-  if (!IS_NODE) throw new Error('png: readPng is the node path -- use loadPng in the browser')
+  if (!IS_NODE) throw new Error('png: readPng is the node path -- the browser fetches and calls decodePng')
   const { readFile } = await import(/* @vite-ignore */ 'node:fs/promises')
   return decodePng(new Uint8Array(await readFile(path)))
 }

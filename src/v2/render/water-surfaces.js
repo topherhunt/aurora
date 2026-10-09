@@ -1,7 +1,7 @@
 import THREE from '../../three-instance.js'
 import { footprint, lakeBox, SHAPE_RECT } from '../layers/water-bodies.js'
 import { RIVER_WIDEN, RIVER_WIDEN_FRAC, drawnHalfWidth } from '../layers/paths.js'
-import { traceShore } from './shoreline.js'
+import { traceShore, shoreKey } from './shoreline.js'
 import { ribbonVertices, flowFrame, ribbonLod, lodIndices, LOD_FINE, LOD_STEP, LOD_STATE_FINE, LOD_STATE_COARSE, FLOW_FADE_HALF_WIDTHS, FLOW_FADE_MIN } from './ribbon.js'
 import { riverRaise, RAISE_RUNGS, RUNG_AT_DEPTH, RAISE_EYE, RAISE_EYE_LIFT, RAISE_SLOPE } from './river-raise.js'
 import { smoothstep } from '../../sim/mathx.js'
@@ -79,8 +79,8 @@ export class WaterSurfaces {
     this.lodVersion = NaN
   }
 
-  /** Every lake and every river, from scratch. `rect` is the world region whose ground or records changed -- the lakes outside it keep their traced shores -- and null means everything did. */
-  rebuild(rect = null) {
+  /** Every lake and every river, from scratch. `rect` is the world region whose ground or records changed -- the lakes outside it keep their traced shores -- and null means everything did. `baked` is world-plan.js packShores' output for this exact ground; a lake it holds is not traced. */
+  rebuild(rect = null, baked = null) {
     for (const mesh of this.meshes.values()) mesh.geometry.dispose()
     this.meshes.clear()
     this.riverSamples.clear()
@@ -94,6 +94,16 @@ export class WaterSurfaces {
       if (kept !== undefined && kept.key === key && kept.ring === lake.ring && rect !== null && !touches(rect, lakeBox(lake))) continue
       this.shores.delete(lake.id)
     }
+    let fromBake = 0
+    if (baked !== null) {
+      for (const lake of lakes.values()) {
+        const b = baked[lake.id]
+        if (b === undefined) continue
+        if (b.key !== shoreKey(lake)) throw new Error(`WaterSurfaces: lake ${lake.id}'s baked shore is for ${b.key}, the record is ${shoreKey(lake)}`)
+        this.shores.set(lake.id, { key: b.key, ring: lake.ring, shore: b.shore })
+        fromBake++
+      }
+    }
     for (const lake of lakes.values()) this.buildLake(lake)
     for (const path of this.pathRecords()) {
       if (path.kind === 'river') this.buildRiver(path)
@@ -102,7 +112,7 @@ export class WaterSurfaces {
     this.reindex()
     this.compose()
     this.epoch = this.layers.epoch
-    return { bodies: this.meshes.size, triangles: this.triangles }
+    return { bodies: this.meshes.size, triangles: this.triangles, baked: fromBake }
   }
 
   /**
@@ -748,12 +758,6 @@ export class WaterSurfaces {
     if (this.group.parent) this.group.parent.remove(this.group)
     this.triangles = 0
   }
-}
-
-// What a lake's traced shore depends on besides the ground: the record itself.
-// The scalars a shore depends on. A BAKED RING IS NOT IN HERE: it is compared by identity beside this key, because LakeSet builds a fresh array of contours every time a record is read or patched, and hashing a few thousand vertices on every rebuild to reach the same answer is work for nothing -- while a hash short enough to be cheap is a hash that can collide and serve a stale shore.
-function shoreKey(lake) {
-  return `${lake.x},${lake.z},${lake.y},${lake.rx},${lake.rz},${lake.rot},${lake.shape},${lake.carve ? 1 : 0},${lake.depth}`
 }
 
 function touches(a, b) {

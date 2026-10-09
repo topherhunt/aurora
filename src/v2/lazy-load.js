@@ -1,6 +1,6 @@
-// Creature models load on first need instead of at boot. A wanted load waits for
-// openLoads (main.js, once the first room is playable) and runs one at a time,
-// so no GLB fetch or parse lands inside the build or stacks on another's.
+// Creature models and the sound engine load on first need instead of at boot. A
+// wanted load waits for openLoads (main.js, once the first room is playable) and
+// runs one at a time, so no GLB fetch or parse lands inside the build or stacks on another's.
 
 let open = false
 let running = false

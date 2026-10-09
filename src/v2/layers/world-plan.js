@@ -6,6 +6,9 @@ import { planRoads } from './roads.js'
 import { routeTrails } from './trails.js'
 import { siteMouths } from '../caves/sites.js'
 import { RELIEF_KNOBS } from '../height/relief.js'
+import { earlyFetch } from '../early-fetch.js'
+import { traceShore, shoreKey } from '../render/shoreline.js'
+import { fieldRecord } from './trades.js'
 
 /** Lays towns, names, roads and cave trails into `layers` (adding their records), as the overworld boot needs them. `ground` samples the raw `heightmap`, `surface` is the live field over `layers`. The mouths are sited on the roads' ground and before their trails, which would move them. */
 export function planWorld({ heightmap, ground, surface, layers, seed, spawn }) {
@@ -50,6 +53,7 @@ export function unpackWorldPlan({ towns, roadPlan, mouths, trailPlan }) {
       const p = b.plan
       b.plan = planBuilding({ seed: p.seed, kind: b.kind, style: p.style, roof: p.roof })
       b.plan.plinthBottom = p.plinthBottom
+      b.plan.wealth = b.wealth
       if (b.plan.steps) b.plan.steps.groundY = p.groundY
     }
     for (const post of t.posts) post.gate = post.tethers[0].reach
@@ -58,9 +62,30 @@ export function unpackWorldPlan({ towns, roadPlan, mouths, trailPlan }) {
   return { townPlan: { towns, records: towns.flatMap((t) => t.records) }, roadPlan, mouths, trailPlan }
 }
 
-/** The baked `{ key, plan }`, or null when the deploy carries none (the dev server answers index.html for a missing file). */
+// What the plan puts in the layers beyond its records: the towns' farm fields, and a cleft cut into the face at each cave mouth. The boot and the bake both reach the ground through this, so a shore baked against it is traced on the boot's ground.
+export function applyWorldPlan(layers, { townPlan, mouths }) {
+  layers.setFields(townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map(fieldRecord)))
+  layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
+}
+
+// The traced shores (shoreline.js) of the lakes that carry no ring of their own, by lake id, for WaterSurfaces.rebuild's `baked`. `layers` must be as the boot has them when the water is built: the plan's records, the fields and the clefts all reshape the ground a shore is traced on.
+export function packShores(layers, field) {
+  const mm = (ring) => Array.from(ring, (v) => Math.round(v * 1000) / 1000)
+  const out = {}
+  for (const lake of layers.lakes.lakes.values()) {
+    if (lake.ring) continue
+    const s = traceShore(lake, field)
+    out[lake.id] = {
+      key: shoreKey(lake),
+      shore: { polygons: s.polygons.map((p) => ({ outer: mm(p.outer), holes: p.holes.map(mm), area: p.area })), slabs: s.slabs, vertices: s.vertices, samples: 0 },
+    }
+  }
+  return out
+}
+
+/** The baked `{ key, plan, shores }`, or null when the deploy carries none (the dev server answers index.html for a missing file). */
 export async function loadWorldPlan(url) {
-  const res = await fetch(url, { cache: 'no-cache' })
+  const res = await earlyFetch(url, { cache: 'no-cache' })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`load ${url} failed: HTTP ${res.status}`)
   const text = await res.text()

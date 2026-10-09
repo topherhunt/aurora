@@ -7,8 +7,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ( cd "${REPO_ROOT}" && node scripts/bake-cards.mjs ) || { echo >&2 "ERROR: card bake failed; not deploying"; exit 1; }
 ( cd "${REPO_ROOT}" && printf '{"commit":"%s","dirtyFiles":%s}\n' "$(git rev-parse --short HEAD)" "$(git status --porcelain | wc -l | tr -d ' ')" > dist/build.json )
 if [ "${DEPLOY_USER}" = root ]; then RSYNC_PATH=rsync; else RSYNC_PATH="sudo rsync"; fi
-rsync -az --delete --delay-updates --rsync-path="${RSYNC_PATH}" -e "ssh -p ${SSH_PORT}" \
-  "${REPO_ROOT}/dist/" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/dist/"
+# Compared by content and without -t: every build restamps every file, and Caddy's ETag is mtime + size, so carrying the build's times over would make the whole site look changed to every browser after every deploy.
+rsync -rlz --checksum --delete --delay-updates --rsync-path="${RSYNC_PATH}" -e "ssh -p ${SSH_PORT}" \
+  "${REPO_ROOT}/dist/""${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/dist/"
 rsync -az --delete --delay-updates --rsync-path="${RSYNC_PATH}" -e "ssh -p ${SSH_PORT}" \
   "${REPO_ROOT}/server/" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/server/"
 remote_sudo "chown -R '${SERVICE_USER}:${SERVICE_USER}' '${REMOTE_DIR}/dist'"

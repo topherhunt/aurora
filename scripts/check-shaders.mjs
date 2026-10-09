@@ -366,12 +366,12 @@ const PROP_VARIANTS = [
     { vertexColors: true },
     { vert: [...PROP_MARKS.vert, 'vWinFlicker = 1.0 +'], frag: [...PROP_MARKS.frag, 'uniform vec3 uWindowGlow;', 'totalEmissiveRadiance += uWindowGlow * vWinFlicker'] },
   ],
-  // The far box (towns.js farTownMaterial): instanced, and the painted windows read the instance scale and aRoof.
+  // The far box (towns.js farTownMaterial): instanced, and the painted windows read the instance scale, aRoof and aFarWin.
   [
     'far town box',
     farTownMaterial(atlas, windowUniforms()),
     { vertexColors: true, batched: false, instanced: true },
-    { vert: [...PROP_MARKS.vert, 'attribute float aRoof;', 'vFarWall = 1.0 - aRoof;'], frag: [...PROP_MARKS.frag, 'float fwPulse(', 'totalEmissiveRadiance += uWindowGlow * ('] },
+    { vert: [...PROP_MARKS.vert, 'attribute float aRoof;', 'attribute vec4 aFarWin;', 'vFarWall = ( 1.0 - aRoof ) * ( normal.x > 0.5 ? aFarWin.x'], frag: [...PROP_MARKS.frag, 'float fwPulse(', 'totalEmissiveRadiance += uWindowGlow * ('] },
   ],
   [
     'billboardLayers',

@@ -1,5 +1,6 @@
 import { WORLD_SIZE, WORLD_HALF } from '../config.js'
-import { decodePng, encodePng, loadPng, readPng } from './png.js'
+import { decodePng, encodePng, readPng } from './png.js'
+import { earlyFetch } from '../early-fetch.js'
 
 // ---------------------------------------------------------------------------
 // The imported coarse field. §18 step 1 of the composed height field.
@@ -263,10 +264,10 @@ export class Heightmap {
 
   /** Browser. */
   static async load({ url, metaUrl }) {
-    const metaRes = await fetch(metaUrl)
-    if (!metaRes.ok) throw new Error(`Heightmap: ${metaRes.status} fetching ${metaUrl}`)
+    const [metaRes, pngRes] = await Promise.all([earlyFetch(metaUrl), earlyFetch(url)])
+    for (const [res, at] of [[metaRes, metaUrl], [pngRes, url]]) if (!res.ok) throw new Error(`Heightmap: ${res.status} fetching ${at}`)
     const meta = await metaRes.json()
-    return Heightmap.fromDecoded(await loadPng(url), meta)
+    return Heightmap.fromDecoded(await decodePng(new Uint8Array(await pngRes.arrayBuffer())), meta)
   }
 
   /** Node -- the gate's path, and make-heightmap.mjs's own verification path. */
