@@ -12,10 +12,11 @@
 
 import * as THREE from 'three'
 import {
-  DRAFT, KEEL_CLEAR, LENGTH, ROWBOATS_PER_M, RUNGS, SHORE_M, Rowboats, hullYaw, rowboatCull, rowboatsBankFrom,
+  CARD_ROLL, CARD_TURN, DRAFT, KEEL_CLEAR, LENGTH, ROWBOATS_PER_M, RUNGS, SHORE_M, Rowboats, hullYaw, rowboatCull, rowboatsBankFrom,
 } from '../src/v2/render/rowboats.js'
 import { PROP_STEPS, propReach } from '../src/v2/render/gen-props.js'
-import { LOD_DEG, LOD_HYSTERESIS, distAt } from '../src/v2/render/critters.js'
+import { LOD_DEG, LOD_HYSTERESIS, critterCardExtents, distAt } from '../src/v2/render/critters.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 import path from 'node:path'
 
@@ -52,8 +53,8 @@ const DRY = {
   field: { heightAt: () => 40, heightAndSlopeAt: () => ({ h: 40, tan: 0 }) },
   water: { levelAt: () => null, lakeLevelAt: () => null, lakeShoreDistAt: (x, z, reach) => reach },
 }
-const place = (world, { seed = 5, radius = null } = {}) => {
-  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed, radius, bank: shippedBank() })
+const place = (world, { seed = 5, radius = null, cards = new LitterCards(4096) } = {}) => {
+  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed, radius, bank: shippedBank(), cards })
   r.place(0, 0)
   return r
 }
@@ -86,13 +87,12 @@ const eachBoat = (r, fn) => {
     kz = Math.max(kz, Math.abs(pos[i + 2]))
   }
   check(kz > kx * 2, 'the keel itself is at least twice as long along Z as it is across X', `keel band ${(2 * kx).toFixed(2)} across, ${(2 * kz).toFixed(2)} along`)
-  check(bank.tiers.length === 2 && RUNGS === 2, 'two tiers, the pick and its card, one rung each', `${bank.tiers.length} tiers, ${RUNGS} rungs`)
-  const card = bank.tiers[1].geometries[0]
-  card.computeBoundingBox()
-  const cb = card.boundingBox
-  const quads = card.index.count / 6
-  check(quads === 2 && cb.max.z - cb.min.z >= b.long - 1e-3 && cb.max.y - cb.min.y >= b.height - 1e-3 && cb.max.x - cb.min.x >= b.height - 1e-3,
-    'the card is the boat\'s length crossed about its axis, upright and flat, covering the pick', `${quads} quads, ${(cb.max.z - cb.min.z).toFixed(2)} long`)
+  check(bank.tiers.length === 1 && RUNGS === 2, 'one mesh tier, the pick, and the shared card past it: one rung each', `${bank.tiers.length} mesh tiers, ${RUNGS} rungs`)
+  // One axial quad along the keel, centred on the bake's middle so the upright card stands where the hull does, turned and rolled half way toward the eye.
+  const c = bank.card
+  const ext = critterCardExtents(b)
+  check(c.kind === 'axial' && c.roll === CARD_ROLL && CARD_ROLL === 0.5 && c.turn === CARD_TURN && CARD_TURN === 0.5 && 2 * c.hw >= b.long - 1e-3 && 2 * c.hh >= b.height - 1e-3 && Math.abs(c.cy - (ext.y0 + ext.y1) / 2) < 1e-6,
+    'the card is one axial picture the boat\'s length and height, centred on its bake, turned and rolled half way', `${c.kind}, roll ${c.roll}, turn ${c.turn}, ${(2 * c.hw).toFixed(2)} x ${(2 * c.hh).toFixed(2)} at y ${c.cy.toFixed(2)}`)
   check(Math.abs(propReach(1, 1) - distAt(1, LOD_DEG) * PROP_STEPS[1]) < 1e-9 && rowboatCull(1) === propReach(1, PROP_STEPS.length - 1),
     'the mesh holds to the props\' second rung and the card to their card reach',
     `per metre of length: mesh to ${propReach(1, 1).toFixed(1)} m, culled at ${rowboatCull(1).toFixed(1)} m; a ${LENGTH[1]} m boat is gone past ${rowboatCull(LENGTH[1]).toFixed(0)} m`)
@@ -185,7 +185,8 @@ const eachBoat = (r, fn) => {
 {
   console.log('\nit steps to its card at its own apparent size, and is the same world every time')
   const world = coast(40, 1.0)
-  const a = place(world, { seed: 3, radius: 1200 })
+  const cards = new LitterCards(4096)
+  const a = place(world, { seed: 3, radius: 1200, cards })
   const keyOf = (r) => {
     const keys = []
     eachBoat(r, (id) => keys.push(`${r.instX[id].toFixed(3)},${r.instY[id].toFixed(3)},${r.instZ[id].toFixed(3)}:${r.instSize[id].toFixed(3)}`))
@@ -217,6 +218,16 @@ const eachBoat = (r, fn) => {
   check(seen >= 4, 'walked enough moored boats to measure the ladder', `${seen} instance-frames`)
   check(wrong.length === 0, 'no boat is a card while its mesh is still due', wrong.length === 0 ? `mesh to ${propReach(LENGTH[1], 1).toFixed(0)} m on a ${LENGTH[1]} m boat` : wrong.slice(0, 3).join('; '))
   check(a.tris > 0, 'and the frame counts the triangles it draws', `${a.tris}`)
+  // The far tier is drawn by the shared litter-card quad wearing the boat's picture, not by a mesh of the boats' own.
+  let carded = 0
+  let wrongPicture = 0
+  eachBoat(a, (id) => {
+    if (a.rim.isHidden(id) || a.tierAt[id] !== a.cardTier) return
+    carded++
+    if (a.batch.layer[id] !== a.cardPicture) wrongPicture++
+  })
+  check(carded > 0 && wrongPicture === 0 && cards.stats.used >= carded && cards.stats.pictures === 1 && cards.mode[a.cardPicture].y === CARD_ROLL && cards.mode[a.cardPicture].z === CARD_TURN,
+    'a far boat is an instance of the shared card quad, its picture axial, rolled CARD_ROLL and turned CARD_TURN', `${carded} carded boats, ${cards.stats.used} card instances, ${wrongPicture} on another picture`)
 
   const before = keyOf(a)
   a.update(9000, 1.6, 9000)

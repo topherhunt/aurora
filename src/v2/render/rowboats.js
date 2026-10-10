@@ -3,7 +3,8 @@ import THREE from '../../three-instance.js'
 import { boundedRadius, tileOutOfBounds } from './tile-pool.js'
 
 import { PROP_STEPS, createGenPropMaterial, ladderBounds, ladderGeometries, propReach } from './gen-props.js'
-import { AXIS_VIEWS, LOD_DEG, bakeCritterCard, distAt, ladderTier, loadCritterGlb, setAxisCard } from './critters.js'
+import { LOD_DEG, distAt, ladderTier, loadCritterGlb } from './critters.js'
+import { cardPicture } from './litter-cards.js'
 import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
@@ -24,7 +25,9 @@ import { RimFade } from './rim.js'
 //
 // THE PICK IS SHIPPED WITHOUT A LADDER, so the tiers are the pick and its card:
 // the mesh holds to the props' second rung and the card past it to the props'
-// card reach. Tripo laid this hull DIAGONALLY in its own frame (the keel runs
+// card reach. The card is an axial picture in the shared litter-card quad
+// (litter-cards.js), upright along the keel, turned and rolled half the way
+// toward her eye (CARD_TURN, CARD_ROLL). Tripo laid this hull DIAGONALLY in its own frame (the keel runs
 // about 42 degrees off X), so `hullYaw` finds the keel's axis from the lowest
 // vertices -- the oars overhang the gunwales and would pull a whole-mesh fit
 // off the hull -- and the geometry is turned so the hull runs along Z, the
@@ -67,6 +70,9 @@ export const KEEL_CLEAR = 0.3
 // The rungs: the pick to the props' second reach, the card to their last.
 const STEPS = [PROP_STEPS[1], PROP_STEPS[PROP_STEPS.length - 1]]
 export const RUNGS = STEPS.length
+// The shares of the roll about the keel and the turn about Y toward her eye the card takes: a whole roll would lay a boat seen from above flat on the water, and no turn would show one seen end-on as a sliver.
+export const CARD_ROLL = 0.5
+export const CARD_TURN = 0.5
 /** Past this a boat of `size` metres is not drawn at all. */
 export const rowboatCull = (size) => distAt(size, LOD_DEG) * STEPS[RUNGS - 1]
 
@@ -354,9 +360,8 @@ export function rowboatsBankFrom(pick) {
   geo.computeBoundingBox()
   const bounds = ladderBounds(geo)
   if (!(bounds.long > bounds.width)) throw new Error(`Rowboats: the hull is ${bounds.width.toFixed(2)} across and ${bounds.long.toFixed(2)} long after turning; hullYaw found no keel`)
-  const card = { geometry: new THREE.BufferGeometry() }
-  setAxisCard(card, bounds, { x: 0, y: bounds.height / 2 })
-  const tiers = [{ geometries: [geo] }, { geometries: [card.geometry] }]
+  const card = { ...cardPicture('axial', bounds, { x: 0, y: bounds.height / 2 }), roll: CARD_ROLL, turn: CARD_TURN }
+  const tiers = [{ geometries: [geo] }]
 
   // The section. The waterline is DRAFT of the length over the keel whatever
   // the boat's scale, so it is one height in the pick's units.
@@ -417,7 +422,7 @@ export function rowboatsBankFrom(pick) {
   let bytes = geometryBytes(lid) + sole.h.byteLength
   for (const tier of tiers) for (const g of tier.geometries) bytes += geometryBytes(g)
   return {
-    tiers, map: pick.map, bounds, bytes,
+    tiers, card, map: pick.map, bounds, bytes,
     // The hull's own frame, all in the pick's units: its centre in plan, which
     // sign of z the bow lies on, the keel's bottom and the section heights;
     // the lid; and the sole she walks, bounded by `walk` inside `pad`, its
@@ -437,9 +442,11 @@ export class Rowboats {
    * @param field    V2Height. Needs heightAt, heightAndSlopeAt.
    * @param water    WaterSurfaces. Needs levelAt, lakeLevelAt, lakeShoreDistAt.
    * @param bank     rowboatsBankFrom's answer. Required.
+   * @param cards    LitterCards, the shared quad the far tier is drawn by. Required.
    */
-  constructor(scene, field, water, { seed = 1, radius = null, bank = null, none = false, bounds = null } = {}) {
-    if (!bank || !Array.isArray(bank.tiers) || !bank.bounds) throw new Error('Rowboats: needs the bank from loadRowboatsBank (or rowboatsBankFrom)')
+  constructor(scene, field, water, { seed = 1, radius = null, bank = null, none = false, bounds = null, cards = null } = {}) {
+    if (!bank || !Array.isArray(bank.tiers) || !bank.bounds || !bank.card) throw new Error('Rowboats: needs the bank from loadRowboatsBank (or rowboatsBankFrom)')
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Rowboats: needs the LitterCards its far tier is drawn by')
     if (!field || typeof field.heightAndSlopeAt !== 'function' || typeof field.heightAt !== 'function') {
       throw new Error('Rowboats: needs a V2Height with heightAt and heightAndSlopeAt')
     }
@@ -475,24 +482,26 @@ export class Rowboats {
     this.bank = bank
     this.long = bank.bounds.long
     this.height = bank.bounds.height
-    this.tierCount = bank.tiers.length
-    this.cardTier = this.tierCount - 1
+    // The far tier is the shared card quad, one id past the mesh tiers; it draws nothing until `bakeCards` photographs its picture.
+    this.cards = cards
+    this.cardTier = bank.tiers.length
+    this.tierCount = this.cardTier + 1
     this.meshMaterial = createGenPropMaterial()
     this.meshMaterial.map = bank.map
-    // Photographed by `bakeCards`; not drawn until then, since an unbaked card is a white quad.
-    this.cardMaterial = createGenPropMaterial({ card: true })
-    this.cardMaterial.visible = false
-    this.materials = [this.meshMaterial, this.cardMaterial]
+    this.materials = [this.meshMaterial]
 
+    cards.claim('rowboats', this.maxInstances)
+    this.cardPicture = cards.addPicture(bank.card)
     this.batch = new PropArena(
       this.maxInstances,
       bank.tiers,
-      new Array(this.tierCount).fill(this.maxInstances),
-      (t) => (t === this.cardTier ? this.cardMaterial : this.meshMaterial),
-      'v2-rowboats'
+      new Array(this.cardTier).fill(this.maxInstances),
+      () => this.meshMaterial,
+      'v2-rowboats',
+      { cards: cards.meshes, cardBase: this.cardTier }
     )
-    this.tierIds = bank.tiers.map((_t, t) => t)
-    this.tierTris = bank.tiers.map((t) => t.geometries[0].index.count / 3)
+    this.tierIds = [...bank.tiers.map((_t, t) => t), this.cardTier]
+    this.tierTris = [...bank.tiers.map((t) => t.geometries[0].index.count / 3), cards.cardTris]
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances
@@ -708,6 +717,7 @@ export class Rowboats {
     // Born as a card on no rung yet; `update` takes it to its rung on the next frame.
     this.tierAt[id] = -1
     this.batch.setGeometryIdAt(id, this.tierIds[this.cardTier])
+    this.batch.setLayerShiftAt(id, this.cardPicture)
     this.rim.place(id, Math.min(this.radius, rowboatCull(length)))
     this.rim.markDue(tile)
   }
@@ -840,6 +850,7 @@ export class Rowboats {
     this.batch.getColorAt(i, this._c)
     this.batch.setColorAt(dup, this._c)
     this.batch.setGeometryIdAt(dup, this.tierIds[oldTier])
+    this.batch.setLayerShiftAt(dup, this.cardPicture)
     this.batch.setVisibleAt(dup, true)
     setPropFadeTimerAt(this.batch, dup, now, false)
     setPropFadeTimerAt(this.batch, i, now, true)
@@ -879,8 +890,7 @@ export class Rowboats {
   bakeCards(renderer) {
     if (this.none) return
     const t0 = performance.now()
-    this.cardMaterial.map = bakeCritterCard(renderer, this.bank.tiers[0].geometries[0], this.bank.map, this.bank.bounds, AXIS_VIEWS)
-    this.cardMaterial.visible = true
+    this.cards.bake(renderer, this.cardPicture, this.bank.tiers[0].geometries[0], this.bank.map, this.bank.bounds, 'axial')
     this.cardBakeMs = performance.now() - t0
   }
 

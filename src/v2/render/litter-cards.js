@@ -9,7 +9,7 @@ import { PropMeshes } from './prop-arena.js'
 // ---------------------------------------------------------------------------
 // THE LITTER CARDS. Every far card of the ground litter (stumps, logs, skeletons, skulls, mushrooms) is one instance of ONE unit quad in ONE InstancedMesh, so the whole band is a single draw call however many kinds there are. A layer's instance carries its picture index in `aLayerShift` (PropArena `cards`); the quad's extents come from a uniform row per picture and its picture from a layer of one 128 px array.
 //
-// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), CANOPY (spun, and lit as a tree card is: material.js facingNormal at the trees' cardFacing and the trees' albedo-weighted night lift, so a clump matches the single cards around it; every other picture is facingNormal at 1, CARD_NORMAL), AXIAL (the piece lies along its own Z and its card turns only about that axis, to the eye as seen in the piece's own frame; one quad stands in for the crossed pair a log used to need) or FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall).
+// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), CANOPY (spun, and lit as a tree card is: material.js facingNormal at the trees' cardFacing and the trees' albedo-weighted night lift, so a clump matches the single cards around it; every other picture is facingNormal at 1, CARD_NORMAL), AXIAL (the piece lies along its own Z and its card stands along it: turned about Y from the piece's X toward her by its picture's turn share, then rolled about its axis from upright toward her by its roll share; a log takes no turn and the whole roll, a boat half of each, so a boat seen from above leans toward her and never lies flat on the water, and one seen end-on shows a three-quarter side) or FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall).
 //
 // Pictures are stored top row first (the prop atlas's order); critter bakes arrive bottom row first and `setCritterPixels` flips them.
 // ---------------------------------------------------------------------------
@@ -29,21 +29,21 @@ const VERTEX_COMMON = /* glsl */ `
   varying float vHue;
   uniform float uPropClock;
   uniform vec4 uCardBox[${MAX_PICTURES}];
-  uniform float uCardKind[${MAX_PICTURES}];
-  uniform float uCardTilt[${MAX_PICTURES}];
+  uniform vec4 uCardMode[${MAX_PICTURES}];
   varying float vPropFade;
   varying vec2 vCardUv;
   flat varying float vCardLayer;
   flat varying float vCardCanopy;
   ${HEAD_EYE_DECL}`
 
-// uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame. Spun and fixed: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z, centred on the axis through (cx, cy) and turned about it to face the eye.
+// uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame; uCardMode is (kind, tilt or roll share, turn share, 0), one vec4 row so the table costs one uniform register per picture. Spun and fixed: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z through (cx, cy, 0), turned about Y and rolled about its own length toward the eye by the two shares. A turn share under 1 flips sides as she crosses the keel's line end-on: both three-quarter views are equally right there.
 const VERTEX_BODY = /* glsl */ `
   {
     float cardId = floor( aLayerShift + 0.5 );
     int ci = int( cardId );
     vec4 cb = uCardBox[ ci ];
-    float ck = uCardKind[ ci ];
+    vec4 cm = uCardMode[ ci ];
+    float ck = cm.x;
     vCardLayer = cardId;
     vCardCanopy = step( 2.5, ck );
     vHue = aHue;
@@ -53,14 +53,18 @@ const VERTEX_BODY = /* glsl */ `
     } else if ( abs( ck - 1.0 ) < 0.5 ) {
       mat4 cim = modelMatrix * instanceMatrix;
       vec3 cd = ${HEAD_EYE_GLSL} - cim[ 3 ].xyz;
-      vec2 ce = vec2( dot( cim[ 0 ].xyz, cd ) / dot( cim[ 0 ].xyz, cim[ 0 ].xyz ), dot( cim[ 1 ].xyz, cd ) / dot( cim[ 1 ].xyz, cim[ 1 ].xyz ) ) - cb.xy;
-      float cl = length( ce );
-      vec2 cu = cl > 1e-4 ? vec2( -ce.y, ce.x ) / cl : vec2( 0.0, 1.0 );
-      if ( ce.x < 0.0 ) cu = -cu;
-      transformed = vec3( cb.xy + cu * ( 2.0 * position.y * cb.w ), -2.0 * position.x * cb.z );
+      vec3 ce = vec3( dot( cim[ 0 ].xyz, cd ) / dot( cim[ 0 ].xyz, cim[ 0 ].xyz ), dot( cim[ 1 ].xyz, cd ) / dot( cim[ 1 ].xyz, cim[ 1 ].xyz ), dot( cim[ 2 ].xyz, cd ) / dot( cim[ 2 ].xyz, cim[ 2 ].xyz ) ) - vec3( cb.xy, 0.0 );
+      float cy = length( ce.xz ) > 1e-4 ? ( ce.x < 0.0 ? -1.0 : 1.0 ) * atan( ce.z, abs( ce.x ) ) * cm.z : 0.0;
+      vec2 cp = vec2( cos( cy ), sin( cy ) );
+      float ch = dot( cp, ce.xz );
+      float ca = length( vec2( ch, ce.y ) ) > 1e-4 ? atan( ce.y, abs( ch ) ) * cm.y : 0.0;
+      vec2 cu = vec2( ch < 0.0 ? sin( ca ) : -sin( ca ), cos( ca ) );
+      float cl = -2.0 * position.x * cb.z;
+      float cv = 2.0 * position.y * cb.w;
+      transformed = vec3( cb.x + cp.x * cu.x * cv - cp.y * cl, cb.y + cu.y * cv, cp.y * cu.x * cv + cp.x * cl );
     } else {
       transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
-      ${billboardVertex(false, 'vCardUv', 'uCardTilt[ ci ]')}
+      ${billboardVertex(false, 'vCardUv', 'cm.y')}
     }
     ${FADE_VERTEX}
   }`
@@ -100,8 +104,7 @@ export class LitterCards {
     this.owners = []
     this.pictures = 0
     this.box = Array.from({ length: MAX_PICTURES }, () => new THREE.Vector4())
-    this.kind = new Float32Array(MAX_PICTURES)
-    this.tilt = new Float32Array(MAX_PICTURES)
+    this.mode = Array.from({ length: MAX_PICTURES }, () => new THREE.Vector4())
 
     const stride = TEX_SIZE * TEX_SIZE * 4
     this.stride = stride
@@ -142,18 +145,21 @@ export class LitterCards {
     this.owners.push(`${owner}:${n}`)
   }
 
-  /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex). `canopy` lights a spun card as a tree card (header). */
-  addPicture({ kind, cx, cy, hw, hh, tilt = 0, canopy = false }) {
+  /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex); `roll` and `turn` are the shares of the roll about its length and the turn about Y toward her an axial card takes (header). `canopy` lights a spun card as a tree card (header). */
+  addPicture({ kind, cx, cy, hw, hh, tilt = 0, roll = 1, turn = 0, canopy = false }) {
     if (kind !== 'spun' && kind !== 'axial' && kind !== 'fixed') throw new Error(`LitterCards: a picture is 'spun', 'axial' or 'fixed', not ${kind}`)
     if (this.pictures >= MAX_PICTURES) throw new Error(`LitterCards: ${MAX_PICTURES} pictures is the table's size`)
     if (!(hw > 0) || !(hh > 0)) throw new Error(`LitterCards: need a positive half width and height, got ${hw} x ${hh}`)
     if (!(tilt >= 0 && tilt <= 1)) throw new Error(`LitterCards: tilt must be in [0, 1], got ${tilt}`)
     if (tilt && kind !== 'spun') throw new Error(`LitterCards: only a spun picture tilts, not ${kind}`)
+    if (!(roll >= 0 && roll <= 1)) throw new Error(`LitterCards: roll must be in [0, 1], got ${roll}`)
+    if (roll !== 1 && kind !== 'axial') throw new Error(`LitterCards: only an axial picture rolls, not ${kind}`)
+    if (!(turn >= 0 && turn <= 1)) throw new Error(`LitterCards: turn must be in [0, 1], got ${turn}`)
+    if (turn && kind !== 'axial') throw new Error(`LitterCards: only an axial picture turns, not ${kind}`)
     if (canopy && kind !== 'spun') throw new Error(`LitterCards: only a spun picture is a canopy, not ${kind}`)
     const i = this.pictures++
     this.box[i].set(cx, cy, hw, hh)
-    this.kind[i] = kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : canopy ? CANOPY : SPUN
-    this.tilt[i] = tilt
+    this.mode[i].set(kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : canopy ? CANOPY : SPUN, kind === 'axial' ? roll : tilt, turn, 0)
     return i
   }
 
@@ -194,8 +200,7 @@ export class LitterCards {
     material.onBeforeCompile = (shader) => {
       shader.uniforms.uPropClock = propClockUniform()
       shader.uniforms.uCardBox = { value: this.box }
-      shader.uniforms.uCardKind = { value: this.kind }
-      shader.uniforms.uCardTilt = { value: this.tilt }
+      shader.uniforms.uCardMode = { value: this.mode }
       shader.uniforms.uCardPics = { value: this.texture }
       shader.uniforms.uCardFacing = cardFacing
       bindHeadEye(shader.uniforms)

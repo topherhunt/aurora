@@ -369,7 +369,7 @@ const sinkOf = (c) => SINK * 0.3 * c.size
   const lc = crabs.litterCards
   const pic = crabs.cardPicture
   const { halfX, halfZ } = crabs.bounds
-  check(pic >= 0 && lc.kind[pic] === 2 && lc.box[pic].z > halfX && lc.box[pic].w > halfZ && crabs.cards.layer.every((v) => v === pic) && lc.claimed === 96, 'every slot\'s card instance wears the one top picture, sized to the body\'s length by its breadth, and the pool was told the crowd it needs', `kind ${lc.kind[pic]}, claimed ${lc.claimed}`)
+  check(pic >= 0 && lc.mode[pic].x === 2 && lc.box[pic].z > halfX && lc.box[pic].w > halfZ && crabs.cards.layer.every((v) => v === pic) && lc.claimed === 96, 'every slot\'s card instance wears the one top picture, sized to the body\'s length by its breadth, and the pool was told the crowd it needs', `kind ${lc.mode[pic].x}, claimed ${lc.claimed}`)
   check(crabs.cardCount === 0 && !crabs.cardReady, 'no card is drawn until its picture is baked')
   // Pooled over seeds again, so both sides of the line are populated: the shelf is a few metres from her, the floor and the beach well past CARD_M.
   const HEAD = [15, LEVEL + 1.6, 0]

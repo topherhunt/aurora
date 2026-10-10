@@ -12,6 +12,7 @@
 // boat, or carries it through the bank; and a lake's edge that stops it.
 
 import * as THREE from 'three'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { DRAFT, Rowboats, inLoop, loopArea, rowboatsBankFrom, sliceLoops, soleAt } from '../src/v2/render/rowboats.js'
 import { Boats, MAX_LIVE } from '../src/v2/boats.js'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
@@ -153,7 +154,7 @@ const firstBoat = (r) => {
 // --- live and moored --------------------------------------------------------
 {
   console.log('\na boat taken live leaves the scatter and moors back where it is left')
-  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed: 11, radius: 1200, bank: shippedBank(), cards: new LitterCards(4096) })
   r.place(0, 0)
   const b = firstBoat(r)
   const placed = r.placed
@@ -184,7 +185,7 @@ const firstBoat = (r) => {
 // --- the drive --------------------------------------------------------------
 {
   console.log('\nweight forward rows, weight to a side turns, no weight glides to a stop')
-  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed: 11, radius: 1200, bank: shippedBank(), cards: new LitterCards(4096) })
   r.place(0, 0)
   const scene = new THREE.Scene()
   const player = fakePlayer()
@@ -349,7 +350,7 @@ const firstBoat = (r) => {
 {
   console.log('\nthe current carries the boat downstream, rider or none, off the lake and onto the river')
   const w = riverCoast(LEVEL, 1.0, (x) => x >= 5 && x <= 15, [0, 1])
-  const r = new Rowboats(new THREE.Scene(), w.field, w.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  const r = new Rowboats(new THREE.Scene(), w.field, w.water, { seed: 11, radius: 1200, bank: shippedBank(), cards: new LitterCards(4096) })
   r.place(0, 0)
   const player = fakePlayer()
   const net = fakeNet('a')
@@ -410,7 +411,7 @@ const firstBoat = (r) => {
 
   // Set onto the beach broadside, nobody aboard, the current pins it where the keel would touch.
   const w2 = riverCoast(LEVEL, 1.0, (x) => x <= 15, [-1, 0])
-  const r2 = new Rowboats(new THREE.Scene(), w2.field, w2.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  const r2 = new Rowboats(new THREE.Scene(), w2.field, w2.water, { seed: 11, radius: 1200, bank: shippedBank(), cards: new LitterCards(4096) })
   r2.place(0, 0)
   const boats2 = new Boats(new THREE.Scene(), r2, w2.water, player, fakeNet('a'))
   const b2 = firstBoat(r2)
@@ -434,7 +435,7 @@ const firstBoat = (r) => {
 // --- the net ----------------------------------------------------------------
 {
   console.log('\na peer\'s boat is dead-reckoned from its samples without a step')
-  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed: 11, radius: 1200, bank: shippedBank() })
+  const r = new Rowboats(new THREE.Scene(), world.field, world.water, { seed: 11, radius: 1200, bank: shippedBank(), cards: new LitterCards(4096) })
   r.place(0, 0)
   const player = fakePlayer()
   const net = fakeNet('b')

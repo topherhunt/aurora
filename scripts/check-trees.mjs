@@ -1393,7 +1393,7 @@ trees.place(0, 0)
   const cardLayers = trees.tierIds[trees.cardTier].map((g) => trees.batch.meshes[g].geometry.attributes.texLayer.array[0])
   const tilt = trees.material.customProgramCacheKey().match(/-tilt([\d.]+)\.(\d+)\.(\d+)/)
   const pictures = trees.clumpPicture.flat()
-  check(tilt && Number(tilt[1]) === CARD_TILT && cardLayers.every((l) => l >= Number(tilt[2]) && l <= Number(tilt[3])) && pictures.every((i) => trees.litterCards.tilt[i] === CARD_TILT),
+  check(tilt && Number(tilt[1]) === CARD_TILT && cardLayers.every((l) => l >= Number(tilt[2]) && l <= Number(tilt[3])) && pictures.every((i) => trees.litterCards.mode[i].y === CARD_TILT),
     `every card, single and clump, pitches ${CARD_TILT} of the way to face an eye above it`,
     `key ${trees.material.customProgramCacheKey()}, card layers ${cardLayers.join(' ')}, clump pictures ${pictures.join(' ')}`)
 }

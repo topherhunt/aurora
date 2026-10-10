@@ -386,6 +386,30 @@ export const billboardVertex = (mixed, uv = 'vMapUv', tilt = null) => /* glsl */
     if ( bbA.x < 0.0 ${mixed ? '&& aSpin > 0.5' : ''}) ${uv}.x = 1.0 - ${uv}.x;
   }`
 export const BILLBOARD_VERTEX = billboardVertex(false)
+
+// A card that keeps the side view along the body's own heading, so the animal reads as facing the way it walks from
+// every side. It turns about Y only as far as keeps its normal within 45 degrees of her (no edge-on sliver), choosing
+// the nearer of the two such turns; the picture is never mirrored.
+export const HEADING_CARD_VERTEX = /* glsl */ `
+  {
+    vec4 bbOrigin = modelMatrix * ( instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) );
+    vec4 bbAxis = modelMatrix * ( instanceMatrix * vec4( 1.0, 0.0, 0.0, 0.0 ) );
+    vec2 bbA = normalize( bbAxis.xz );
+    vec2 bbTo = ${HEAD_EYE_GLSL}.xz - bbOrigin.xz;
+    float bbLen = length( bbTo );
+    vec2 bbF = bbLen > 1e-4 ? bbTo / bbLen : vec2( 0.0, 1.0 );
+    vec2 bbN = vec2( -bbA.y, bbA.x );
+    float bbD = dot( bbN, bbF );
+    if ( abs( bbD ) < 0.70710678 ) {
+      vec2 bbP = vec2( -bbF.y, bbF.x );
+      float bbSide = dot( bbN, bbP ) >= 0.0 ? 1.0 : -1.0;
+      // Only the F half flips with the face she sees; negating the P half too would swing the nose past her, 135 degrees off.
+      vec2 bbN2 = 0.70710678 * ( ( bbD >= 0.0 ? bbF : -bbF ) + bbSide * bbP );
+      vec2 bbA2 = vec2( bbN2.y, -bbN2.x );
+      vec2 bbC = vec2( bbA2.x * bbA.x + bbA2.y * bbA.y, bbA2.y * bbA.x - bbA2.x * bbA.y );
+      transformed.xz = vec2( transformed.x * bbC.x - transformed.z * bbC.y, transformed.x * bbC.y + transformed.z * bbC.x );
+    }
+  }`
 // What a `mixed` material declares at <common>, ahead of the body at <begin_vertex>.
 export const SPIN_ATTRIBUTE = 'attribute float aSpin;'
 
@@ -415,7 +439,7 @@ const CARD_FADE_COMMON = /* glsl */ `
  * keys the program, and the flags key it further: two materials differing only
  * in these are two programs.
  */
-export function createCritterCardMaterial(label, { billboard = false, fade = false, hue = true } = {}) {
+export function createCritterCardMaterial(label, { billboard = false, fade = false, hue = true, heading = false } = {}) {
   const material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
   material.onBeforeCompile = (shader) => {
     if (hue) hueVary(shader)
@@ -423,7 +447,7 @@ export function createCritterCardMaterial(label, { billboard = false, fade = fal
     if (billboard || fade) {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\n${fade ? CARD_FADE_COMMON : ''}\n${billboard ? HEAD_EYE_DECL : ''}`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? BILLBOARD_VERTEX : ''}\n${fade ? 'vPropFade = aCardFade;' : ''}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? (heading ? HEADING_CARD_VERTEX : BILLBOARD_VERTEX) : ''}\n${fade ? 'vPropFade = aCardFade;' : ''}`)
     }
     // three flips a double-sided normal toward the viewer; twice is the identity, and the authored up-normal lights both faces alike.
     shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
@@ -434,7 +458,7 @@ export function createCritterCardMaterial(label, { billboard = false, fade = fal
     }
     tierTintSplice(shader, CARD_TIER)
   }
-  material.customProgramCacheKey = () => `${label}-card${billboard ? '-spun' : ''}${fade ? '-fade' : ''}${hue ? '' : '-flat'}`
+  material.customProgramCacheKey = () => `${label}-card${billboard ? (heading ? '-heading' : '-spun') : ''}${fade ? '-fade' : ''}${hue ? '' : '-flat'}`
   return material
 }
 
@@ -544,41 +568,6 @@ export function setSpunTopCard(mesh, bounds) {
 
 // A card for a thing lying along its own Z: its length, seen from beside it.
 export const AXIS_VIEWS = ['front']
-
-/**
- * The quads for a piece that LIES ALONG ITS OWN Z and is seen from beside,
- * above and anywhere between, never usefully from an end: AXIS_VIEWS' one
- * picture on two quads through the piece's own axis (`core`, x and y in the
- * unit frame), the second the first turned a quarter about that axis. Both
- * read the whole picture; the bake is bakeCritterCard with AXIS_VIEWS.
- */
-export function setAxisCard(mesh, bounds, core) {
-  const ext = critterCardExtents(bounds)
-  const view = cardView(AXIS_VIEWS[0], ext)
-  const yMid = (ext.y0 + ext.y1) / 2
-  const pos = []
-  const uv = []
-  const nrm = []
-  const p = new THREE.Vector3()
-  for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
-    cardCorner(view, u, v, p)
-    pos.push(core.x, p.y, p.z)
-    uv.push(u, v)
-    nrm.push(0, 1, 0)
-  }
-  for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
-    cardCorner(view, u, v, p)
-    pos.push(core.x + (p.y - yMid), core.y, p.z)
-    uv.push(u, v)
-    nrm.push(0, 1, 0)
-  }
-  const geo = mesh.geometry
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nrm), 3))
-  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
-  geo.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7])
-  geo.computeBoundingBox()
-}
 
 /**
  * Photograph the loaded creature for its card: each view the quads of `views`

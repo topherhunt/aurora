@@ -1561,6 +1561,7 @@ function applyQuestToggle(key) {
     case 'water':
       water.group.visible = enabled
       rowboats.batch.visible = enabled
+      rowboats.batch.setShown(enabled)
       break
     // Two halves of one thing, and they have to move together: the row gates
     // the two cube CAPTURES in tick(), and it compiles the water's fetches of
@@ -1586,7 +1587,7 @@ function applyQuestToggle(key) {
   }
 }
 
-// The far cards of ferns, litter and entrances are instances of the one shared card mesh, so a row hides its own instances (PropArena.setShown) and never the shared group.
+// The far cards of ferns, litter, rowboats and entrances are instances of the one shared card mesh, so a row hides its own instances (PropArena.setShown) and never the shared group.
 function applyFernVisibility() {
   ferns.setShown(questToggles.ferns)
   carrots.setShown(questToggles.ferns)
@@ -4862,13 +4863,13 @@ async function buildRoom(room, at) {
   // The console hook lives here rather than beside window.v2ferns, because the
   // layer does not exist until this line has run.
   window.v2mushrooms = mushrooms
-  // Trees and rocks are the skyline, so they build as if nearer; the small ground scatter as if farther. Grass is rebuilt by buildGrass, so its source reads the live bed.
+  // Within a distance ring the big things build first: trees, boulders, ferns, grass, then the small litter. Grass is rebuilt by buildGrass, so its source reads the live bed.
   const grassView = { get queue() { return grass ? grass.queue : [] }, _growTile: (job) => grass._growTile(job) }
-  buildScheduler.add(trees, undefined, { on: () => questToggles.trees, reach: 0.5 })
-  buildScheduler.add(ferns, undefined, { on: () => questToggles.ferns })
-  buildScheduler.add(grassView, undefined, { on: () => questToggles.grass })
-  rocks.schedule(buildScheduler, { on: () => questToggles.boulders, reach: 0.5 })
-  for (const layer of [litter, mushrooms, deadwood]) buildScheduler.add(layer, undefined, { on: () => questToggles.litter, reach: 1.5 })
+  buildScheduler.add(trees, undefined, { on: () => questToggles.trees, rank: 0 })
+  buildScheduler.add(ferns, undefined, { on: () => questToggles.ferns, rank: 2 })
+  buildScheduler.add(grassView, undefined, { on: () => questToggles.grass, rank: 3 })
+  rocks.schedule(buildScheduler, { on: () => questToggles.boulders, rank: 1 })
+  for (const layer of [litter, mushrooms, deadwood]) buildScheduler.add(layer, undefined, { on: () => questToggles.litter, rank: 4 })
   grass.buildBudgetMs = 0
 
   // The bones: a rare find on any ground (render/bones.js), on the litter row
@@ -4905,7 +4906,7 @@ async function buildRoom(room, at) {
   await bootStep('rowboats')
   // A village's pond is a puddle with no shoreline to moor on: `none` grows no
   // tile and photographs no card, which is a quarter second of GPU readback.
-  rowboats = new Rowboats(scene, height, waterSurfaces, { seed, bank: await banks.rowboats, none: !!room.village, bounds })
+  rowboats = new Rowboats(scene, height, waterSurfaces, { seed, bank: await banks.rowboats, none: !!room.village, bounds, cards: litterCards })
   for (const m of rowboats.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   rowboats.place(spawn.x, spawn.z)
   rowboats.bakeCards(renderer)
@@ -5219,6 +5220,7 @@ async function buildRoom(room, at) {
   applyFernVisibility()
   water.group.visible = questToggles.water
   rowboats.batch.visible = questToggles.water
+  rowboats.batch.setShown(questToggles.water)
   water.setCubeReflections(questToggles.reflections)
   aurora.mesh.visible = questToggles.aurora
   applyLitterVisibility()
@@ -8122,6 +8124,7 @@ renderer.xr.addEventListener('sessionstart', async () => {
   const rates = [...(session.supportedFrameRates ?? [])]
   if (!rates.includes(TARGET_HZ)) { console.warn(`headset refresh rates ${rates.join('/') || 'unreported'} lack ${TARGET_HZ} Hz; staying at ${session.frameRate ?? 'default'}`); return }
   await session.updateTargetFrameRate(TARGET_HZ)
+  console.log(`[v2] headset refresh rate asked ${TARGET_HZ} Hz, now ${session.frameRate} Hz (offered ${rates.join('/')})`)
 })
 renderer.xr.addEventListener('sessionend', () => {
   eyeLevel.reset()

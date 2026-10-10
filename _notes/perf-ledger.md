@@ -19,10 +19,14 @@ Goal: 80 Hz on Quest 2 in every environment (12.5 ms budget; 90 Hz is 11.1 ms, s
 - Ambient town (12:09): js 6 to 8 + rend 9 = 15 to 17 ms cpu, worse than the battery spot. Forest (08:30): rend 7.3 to 8.5, grass 1.3 and rocks 0.8 mean.
 
 ## Tile placement budget
-`BuildScheduler` (build-budget.js, `v2build`) drains every layer's tile queue nearest-first, averaging 1 ms a frame (a dear tile borrows against up to 6 frames of debt). Layers have `buildBudgetMs = 0` once it owns them. Single tiles can still overrun: grass up to 3 to 4 ms desktop, litter 2.1, ferns 1.1, rocks 1.0; slicing `_growTile` is open (grass needs resumable RNG state and id handling for an interrupted job).
+`BuildScheduler` (build-budget.js, `v2build`) drains every layer's tile queue by distance ring (40 m, doubling), then layer rank (trees, boulders, ferns, grass, litter), then distance, averaging 1 ms a frame (a dear tile borrows against up to 6 frames of debt). Layers have `buildBudgetMs = 0` once it owns them. Single tiles can still overrun: grass up to 3 to 4 ms desktop, litter 2.1, ferns 1.1, rocks 1.0; slicing `_growTile` is open (grass needs resumable RNG state and id handling for an interrupted job).
 
 ## Boulders standing still
 The cost was a re-queue loop: `thicken = near2 < loSq[q]` is always true at level 0, so every nearby tile was queued each walk and `_growTile` returned early (331 no-op calls per 90 still frames in rocks). Fixed with `q > 0 &&` in all seven tile layers. What remains of rocks while still is small (`blockTopAt`/`columnAt` about 0.03 ms each desktop) and mostly other systems asking: butterflies `_wander`, `player.flySpeedAt`, townsfolk. The `_nearestInto` path queries (0.1 ms/frame desktop) come from `ambience.js` `sense.sample -> lakeShore` and `_rivers`, not from rocks.
+
+## Reported, not yet investigated
+- Flying produces major stutters (suspect towns nearby, or place() on long hops); trace a flight.
+- A forest-looking spot with birdsong showed no trees nearby after a long flight: either a treeless spot or the tree queue starved; check with `tmp/sched-order.mjs` style probes at that spot.
 
 ## Hitches (they cost more than the means)
 - `probes` 4 to 5 ms on most windows in town and forest; `grass` 3 to 6 ms and `rocks` 2 to 7 ms tile growth while moving; `ferns` 2 to 4.5; `pebbles` 5 to 6 ms in the forest; a 79 ms `sky+ambience` frame; 15.9 ms `animals` spike; `other` (GC, A-Frame, GPU wait) 10 to 78 ms on single frames.

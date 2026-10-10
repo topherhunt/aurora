@@ -437,7 +437,7 @@ export class Wildlife {
       // material with its lighting the moment the layer exists and the GLBs
       // land long after. The quad and the picture arrive in setAssets and
       // bakeCards; until the picture does, the mesh draws nothing.
-      const cardMaterial = createCritterCardMaterial(`wildlife-${sp.key}`, { billboard: true, fade: true, hue: false })
+      const cardMaterial = createCritterCardMaterial(`wildlife-${sp.key}`, { billboard: true, heading: true, fade: true, hue: false })
       this.materials.push(cardMaterial)
       const slots = []
       for (let i = 0; i < MAX; i++) {
@@ -1742,8 +1742,8 @@ export class Wildlife {
 
   /**
    * This animal into its species' card buffer for this frame: where it stands,
-   * which way it faces (the spin keeps the yaw, and reads the picture mirrored
-   * for a body facing away), how big it is and its turn round the colour wheel.
+   * which way it faces (the card keeps that heading and turns toward her only
+   * to stay within 45 degrees of face-on: critters.js HEADING_CARD_VERTEX), how big it is and its turn round the colour wheel.
    * On the world vertical, as the mesh it stands in for is.
    *
    * `aCardFade` is the dissolve, in material.js's FADE_FRAGMENT terms: positive
