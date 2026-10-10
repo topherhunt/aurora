@@ -26,7 +26,7 @@ import { RimFade } from './rim.js'
 // THE PICK IS SHIPPED WITHOUT A LADDER, so the tiers are the pick and its card:
 // the mesh holds to the props' second rung and the card past it to the props'
 // card reach. The card is an axial picture in the shared litter-card quad
-// (litter-cards.js), upright along the keel, turned and rolled half the way
+// (litter-cards.js), upright along the keel, turned a quarter and rolled half the way
 // toward her eye (CARD_TURN, CARD_ROLL). Tripo laid this hull DIAGONALLY in its own frame (the keel runs
 // about 42 degrees off X), so `hullYaw` finds the keel's axis from the lowest
 // vertices -- the oars overhang the gunwales and would pull a whole-mesh fit
@@ -72,7 +72,7 @@ const STEPS = [PROP_STEPS[1], PROP_STEPS[PROP_STEPS.length - 1]]
 export const RUNGS = STEPS.length
 // The shares of the roll about the keel and the turn about Y toward her eye the card takes: a whole roll would lay a boat seen from above flat on the water, and no turn would show one seen end-on as a sliver.
 export const CARD_ROLL = 0.5
-export const CARD_TURN = 0.5
+export const CARD_TURN = 0.25
 /** Past this a boat of `size` metres is not drawn at all. */
 export const rowboatCull = (size) => distAt(size, LOD_DEG) * STEPS[RUNGS - 1]
 

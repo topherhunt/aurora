@@ -130,7 +130,7 @@ const FADE_MAX_INFLIGHT = 64
 // Metres per tile. Twice the forest's 25, because at this density a 25 m tile
 // holds under half a candidate, which `perTile` would round up to one and
 // double the density behind the knob's back; 50 m gives 1.875, rounded to 2.
-const TILE = 50
+export const TILE = 50
 
 // The attitude roll. A stump leans by up to this many degrees about a random
 // horizontal bearing: a snag is a trunk the wind has been at. A log lies as it

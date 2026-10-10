@@ -1731,6 +1731,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       // relief a face shows is the same whatever its tile size, which is what
       // keeps the far ground as rough on screen as the near.
       uStippleBump: { value: 0.5 },
+      // Grit and bump both scale by this on snow, which reads as a smooth
+      // field with a little speckle rather than as rock painted white.
+      uStippleSnow: { value: 0.35 },
     })
   }
 
@@ -1744,7 +1747,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         attribute float forest;${stipple ? `
         attribute vec4 stipple;
         flat varying vec4 vStipFrame;
-        varying vec3 vStipPos;` : ''}`)
+        varying vec3 vStipPos;
+        varying float vStipSnow;` : ''}`)
       // AFTER project_vertex, NOT at color_vertex: three applies the BatchedMesh
       // per-chunk matrix (batching_vertex) between the two, so this is the first
       // hook where mvPosition is the vertex's real view-space position and its
@@ -1764,7 +1768,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         float auroraGreenBase = smoothstep( 0.004, 0.030, vColor.g - max( vColor.r, vColor.b ) );
         float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
         vColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase * ${PLAIN_GRASS_TONE.toFixed(2)} );
-        vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );
+        vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );${stipple ? `
+        vStipSnow = auroraVertexSnow;` : ''}
         // THE FOREST TINT LAST, past both exposure stages, so uForestTint IS the
         // colour the far wood's ground is drawn in and neither mask reads it.
         vColor.rgb = mix( vColor.rgb, uForestTint, forest * smoothstep( ${FOREST_TINT_NEAR.toFixed(1)}, ${FOREST_TINT_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );`)
@@ -1790,8 +1795,10 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         uniform sampler2D uStippleMap;
         uniform float uStippleGrit;
         uniform float uStippleBump;
+        uniform float uStippleSnow;
         flat varying vec4 vStipFrame;
         varying vec3 vStipPos;
+        varying float vStipSnow;
         // Filled at color_fragment, read at normal_fragment_begin.
         vec3 auroraStippleTilt;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
@@ -1815,11 +1822,12 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         vec2 auroraStipP = vStipFrame.w < 0.5 ? vStipPos.xz : vStipFrame.w < 1.5 ? vStipPos.zy : vStipPos.xy;
         vec2 auroraStipUv = vStipFrame.yz + vStipFrame.x * auroraStipP;
         vec4 auroraStippleG = texture( uStippleMap, auroraStipUv );
-        diffuseColor.rgb *= 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit;
+        float auroraStipGain = mix( 1.0, uStippleSnow, vStipSnow );
+        diffuseColor.rgb *= 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit * auroraStipGain;
         // .gb are the gradient of the .r this pixel was just coloured by, as
         // a unit slope in tile units, laid back onto the plane's two world
         // axes. Not divided by the tile size on purpose -- see uStippleBump.
-        vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0;
+        vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0 * auroraStipGain;
         auroraStippleTilt = vStipFrame.w < 0.5 ? vec3( auroraStipGrad.x, 0.0, auroraStipGrad.y )
           : vStipFrame.w < 1.5 ? vec3( 0.0, auroraStipGrad.y, auroraStipGrad.x )
           : vec3( auroraStipGrad, 0.0 );`)

@@ -97,6 +97,7 @@ export class PerfTrace {
    *   camera,                         the head, for the HUD and for movement during a sample
    *   gpuTake(),                      mean GPU ms per frame since the last call, or null (gpu-timer.js)
    *   spikes(),                       the Spikes instance, whose laps for the current frame are summed per stage
+   *   census,                         a Census (perf-census.js), run once with every layer on for the per-layer table
    *   toggles,                        main.js questToggles, read only
    *   setToggle(key, on),             flip a row to `on` the way its button would
    *   present(key),                   whether the row's layer exists in this room; drills on absent layers are skipped
@@ -144,6 +145,7 @@ export class PerfTrace {
       samples: [],
     }
     this.queue = this.withBaselines(GROUPS.map((g) => ({ kind: 'group', name: g.name, off: g.off, round: 1 })), true)
+    this.queue.splice(1, 0, { kind: 'census', name: 'census', off: [] })
     this.queue.push(...this.withBaselines(GROUPS.filter((g) => !g.once).map((g) => ({ kind: 'group', name: g.name, off: g.off, round: 2 })).reverse(), false))
     this.drilled = false
     this.state = 'running'
@@ -191,6 +193,7 @@ export class PerfTrace {
       this.advance(f)
     } catch (err) {
       // Once, not every frame: the run is over and the world is put back.
+      if (this.host.census.active) this.host.census.end()
       if (this.state === 'running') this.applyState([])
       this.end('failed', 'FAILED', `TRACE FAILED: ${err.message}`.slice(0, 44), '#ff6b6b')
       throw err
@@ -212,7 +215,7 @@ export class PerfTrace {
     }
     const into = now - this.stepAt
     const left = Math.ceil((this.queue.length * (SETTLE_MS + MEASURE_MS) + Math.max(0, SETTLE_MS + MEASURE_MS - into)) / 1000)
-    const what = this.step.kind === 'base' ? 'baseline' : `${this.step.name} off`
+    const what = this.step.kind === 'base' ? 'baseline' : this.step.kind === 'census' ? 'census' : `${this.step.name} off`
     this.hud.show(`TRACE ${this.trace.samples.length + 1}  ${what}  ~${left}s${this.drilled ? '' : '+'}  hold still`, '#ffd27a')
     if (into < SETTLE_MS) return
 
@@ -223,6 +226,7 @@ export class PerfTrace {
       this.host.gpuTake()
       this.pos0 = _pos.clone()
       this.quat0 = _quat.clone()
+      if (this.step.kind === 'census') this.host.census.begin()
     } else if (this.n < MAX_FRAMES) {
       this.frameMs[this.n] = ms
       this.js += f.jsMs
@@ -238,6 +242,7 @@ export class PerfTrace {
         this.worstStages = {}
         for (let i = 0; i < laps; i++) this.worstStages[names[i]] = (this.worstStages[names[i]] ?? 0) + lapMs[i]
       }
+      if (this.host.census.active) this.host.census.frame()
       this.moveM = Math.max(this.moveM, _pos.distanceTo(this.pos0))
       this.turnRad = Math.max(this.turnRad, _quat.angleTo(this.quat0))
       this.n++
@@ -255,7 +260,9 @@ export class PerfTrace {
     const mean = sorted.reduce((s, v) => s + v, 0) / n
     const stages = {}
     for (const [k, v] of Object.entries(this.stages)) if (v / n >= SPIKES.floor) stages[k] = r2(v / n)
+    const census = this.step.kind === 'census' ? this.host.census.end() : null
     this.trace.samples.push({
+      census,
       kind: this.step.kind, name: this.step.name, round: this.step.round ?? null,
       off: this.step.off.filter((k) => this.baseline[k]),
       alreadyOff: this.step.off.filter((k) => !this.baseline[k]),
@@ -284,7 +291,7 @@ export class PerfTrace {
   /** Per non-baseline sample, frame and CPU ms saved against the drift-corrected baseline. */
   savings() {
     const bases = this.trace.samples.filter((s) => s.kind === 'base')
-    return this.trace.samples.filter((s) => s.kind !== 'base').map((s) => ({
+    return this.trace.samples.filter((s) => s.kind === 'group' || s.kind === 'drill').map((s) => ({
       name: s.name, kind: s.kind, round: s.round,
       savedMs: r2(baselineAt(bases, s.t, 'ms') - s.ms),
       savedP50: r2(baselineAt(bases, s.t, 'p50') - s.p50),
@@ -320,6 +327,7 @@ export class PerfTrace {
   }
 
   finish(now, aborted) {
+    if (this.host.census.active) this.host.census.end()
     this.applyState([])
     this.trace.aborted = aborted
     this.trace.seconds = r2((now - this.startedAt) / 1000)

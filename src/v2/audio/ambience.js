@@ -119,6 +119,10 @@ export const SOUNDS = {
   flaregun: 'sounds/ui-flaregun-shoot.mp3',
 }
 
+const LAKE_MOVING_S = 0.5
+const LAKE_STILL_S = 5
+// Metres from the last shore search that count as moving.
+const LAKE_MOVED_M = 0.5
 const RAPTORS = ['crow', 'eagle', 'hawk']
 const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird5', 'songbird6']
 const CROAKS = ['croak1', 'croak2']
@@ -316,6 +320,9 @@ export class Ambience {
     this.frame = 0
     this.s = WorldSense.blank()
     this.sensed = false
+    this.lakeAt = -Infinity
+    this.lakeX = 0
+    this.lakeZ = 0
     this.senseLeft = 0
     this.wet = false
     this.teleportCredit = 0
@@ -473,7 +480,11 @@ export class Ambience {
     // Accumulated, not reset, so the cadence does not drift by a frame per sample.
     this.senseLeft -= dt
     if (!this.sensed || this.senseLeft <= 0) {
-      this.sense.sample(head.x, head.y, head.z, this.s)
+      // The shore search is the dear read: every LAKE_MOVING_S while she moves, every LAKE_STILL_S standing, at once after a jump.
+      const moved = Math.hypot(head.x - this.lakeX, head.z - this.lakeZ)
+      const lake = moved > SHORE_REACH || now - this.lakeAt >= (moved > LAKE_MOVED_M ? LAKE_MOVING_S : LAKE_STILL_S)
+      if (lake) { this.lakeAt = now; this.lakeX = head.x; this.lakeZ = head.z }
+      this.sense.sample(head.x, head.y, head.z, this.s, lake)
       this.sensed = true
       this.senseLeft = Math.max(this.senseLeft, -1 / SENSE_HZ) + 1 / SENSE_HZ
     }

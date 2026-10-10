@@ -300,7 +300,7 @@ const _edge = new THREE.Vector3()
 // corner, so a tile wide relative to the full-density radius over-keeps its whole
 // far half. 12 m also keeps a single regrow (72 candidates) inside the frame
 // budget.
-const TILE = 12
+export const TILE = 12
 // A planted fern's rank: under every thinning band, so no distance cuts it, and
 // over 0, so _goneFor reads it as the whole draw radius rather than NaN.
 const PLANT_U = 1e-9

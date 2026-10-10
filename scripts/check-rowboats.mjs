@@ -88,11 +88,11 @@ const eachBoat = (r, fn) => {
   }
   check(kz > kx * 2, 'the keel itself is at least twice as long along Z as it is across X', `keel band ${(2 * kx).toFixed(2)} across, ${(2 * kz).toFixed(2)} along`)
   check(bank.tiers.length === 1 && RUNGS === 2, 'one mesh tier, the pick, and the shared card past it: one rung each', `${bank.tiers.length} mesh tiers, ${RUNGS} rungs`)
-  // One axial quad along the keel, centred on the bake's middle so the upright card stands where the hull does, turned and rolled half way toward the eye.
+  // One axial quad along the keel, centred on the bake's middle so the upright card stands where the hull does, turned a quarter and rolled half way toward the eye.
   const c = bank.card
   const ext = critterCardExtents(b)
-  check(c.kind === 'axial' && c.roll === CARD_ROLL && CARD_ROLL === 0.5 && c.turn === CARD_TURN && CARD_TURN === 0.5 && 2 * c.hw >= b.long - 1e-3 && 2 * c.hh >= b.height - 1e-3 && Math.abs(c.cy - (ext.y0 + ext.y1) / 2) < 1e-6,
-    'the card is one axial picture the boat\'s length and height, centred on its bake, turned and rolled half way', `${c.kind}, roll ${c.roll}, turn ${c.turn}, ${(2 * c.hw).toFixed(2)} x ${(2 * c.hh).toFixed(2)} at y ${c.cy.toFixed(2)}`)
+  check(c.kind === 'axial' && c.roll === CARD_ROLL && CARD_ROLL === 0.5 && c.turn === CARD_TURN && CARD_TURN === 0.25 && 2 * c.hw >= b.long - 1e-3 && 2 * c.hh >= b.height - 1e-3 && Math.abs(c.cy - (ext.y0 + ext.y1) / 2) < 1e-6,
+    'the card is one axial picture the boat\'s length and height, centred on its bake, turned a quarter and rolled half way', `${c.kind}, roll ${c.roll}, turn ${c.turn}, ${(2 * c.hw).toFixed(2)} x ${(2 * c.hh).toFixed(2)} at y ${c.cy.toFixed(2)}`)
   check(Math.abs(propReach(1, 1) - distAt(1, LOD_DEG) * PROP_STEPS[1]) < 1e-9 && rowboatCull(1) === propReach(1, PROP_STEPS.length - 1),
     'the mesh holds to the props\' second rung and the card to their card reach',
     `per metre of length: mesh to ${propReach(1, 1).toFixed(1)} m, culled at ${rowboatCull(1).toFixed(1)} m; a ${LENGTH[1]} m boat is gone past ${rowboatCull(LENGTH[1]).toFixed(0)} m`)

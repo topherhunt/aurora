@@ -32,6 +32,7 @@ import { installLogShip, reportLog, reportWarning } from './log-ship.js'
 import { cardStats, loadBakedCards, packCards, recordCards } from '../props/card-cache.js'
 import { lazyLoad, openLoads } from './lazy-load.js'
 import { PerfTrace, r2 } from './perf-trace.js'
+import { Census } from './perf-census.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
 import { BuildScheduler } from './build-budget.js'
@@ -44,21 +45,21 @@ import { RecordTrace } from './record-trace.js'
 import { AmbientTrace } from './ambient-trace.js'
 import { GpuTimer } from './gpu-timer.js'
 import { Spikes } from './spikes.js'
-import { Trees, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
-import { Ferns, FERN_PERCH_STRIDE } from './render/ferns.js'
+import { Trees, TILE as TREE_TILE, DENSITY as TREE_DENSITY, TRUNK_STRIDE } from './render/trees.js'
+import { Ferns, TILE as FERN_TILE, FERN_PERCH_STRIDE } from './render/ferns.js'
 import { Wildfire, TORCH_CAP } from './render/wildfire.js'
 import { flicker as flameFlicker, FLICKER } from './render/fire.js'
 import { HEARTH_LIGHT } from './hearth-light.js'
 import { TriFlames } from './render/fire-tris.js'
 import { bakedRoot, cullBakedTo, puppetMode, setPuppetMode } from './render/baked-puppet.js'
 import { Boulders } from './render/boulders.js'
-import { Grass } from './render/grass.js'
+import { Grass, TILE as GRASS_TILE } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
 import { createPlainTerrainMaterial } from '../terrain/terrain-material.js'
 import { preloadTerrainDetail } from '../terrain/grit-texture.js'
 import { Rocks } from './render/rocks.js'
-import { Mushrooms } from './render/mushrooms.js'
-import { Deadwood, loadDeadwoodBank } from './render/deadwood.js'
+import { Mushrooms, TILE as MUSHROOM_TILE } from './render/mushrooms.js'
+import { Deadwood, TILE as DEADWOOD_TILE, loadDeadwoodBank } from './render/deadwood.js'
 import { LitterCards } from './render/litter-cards.js'
 import { Sticks, KIND as STICK, TIP as STICK_TIP } from './render/sticks.js'
 import { Bones, loadBonesBank } from './render/bones.js'
@@ -3242,8 +3243,17 @@ const eyeLevel = new EyeLevel()
 const _eyeDir = new THREE.Vector3()
 const probeLook = new THREE.Vector3()
 
+// Layers whose update() the trace census times; draws are counted for the whole scene.
+const censusLayers = () => [
+  ['trees', trees], ['ferns', ferns], ['rocks', rocks], ['litter', litter], ['mushrooms', mushrooms], ['deadwood', deadwood], ['sticks', sticks], ['bones', bones], ['carrots', carrots],
+  ['fish', fish], ['frogs', frogs], ['crabs', crabs], ['butterflies', butterflies], ['grasshoppers', grasshoppers], ['fireflies', fireflies], ['spiders', spiders],
+  ['wildlife', wildlife], ['wildStriders', wildStriders], ['snowmen', snowmen], ['dragons', dragons], ['leafkin', leafkin], ['villagers', villagers], ['hobs', hobs],
+  ['townsfolk', townsfolk], ['town', towns], ['roosts', roosts], ['wildfire', wildfire], ['boats', boats], ['rowboats', rowboats], ['creatureNet', creatureNet], ['ambience', ambience], ['precip', precip],
+]
+let censusInstance = null
 const perfTrace = new PerfTrace({
   camera,
+  get census() { return censusInstance ??= new Census(scene, renderer, censusLayers) },
   spikes: () => spikes,
   gpuTake: () => gpuTimer.take(),
   toggles: questToggles,
@@ -4705,12 +4715,13 @@ async function buildRoom(room, at) {
   if (towns) {
     walk.addStone(towns)
     const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies }) : null
-    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure, 'strider'), harm, hourAt: (s) => clock.hourAt(s) })
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, cards: litterCards, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure, 'strider'), harm, hourAt: (s) => clock.hourAt(s) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
     if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addStone(townsfolk)
     walk.addBody(townsfolk)
     window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
+    townsfolk.ready.then(() => { if (build === roomBuild) townsfolk.bakeCards(renderer) })
     townHearths = townsfolk.hearths
   }
   if (bridges) walk.addStone(bridges)
@@ -4865,11 +4876,11 @@ async function buildRoom(room, at) {
   window.v2mushrooms = mushrooms
   // Within a distance ring the big things build first: trees, boulders, ferns, grass, then the small litter. Grass is rebuilt by buildGrass, so its source reads the live bed.
   const grassView = { get queue() { return grass ? grass.queue : [] }, _growTile: (job) => grass._growTile(job) }
-  buildScheduler.add(trees, undefined, { on: () => questToggles.trees, rank: 0 })
-  buildScheduler.add(ferns, undefined, { on: () => questToggles.ferns, rank: 2 })
-  buildScheduler.add(grassView, undefined, { on: () => questToggles.grass, rank: 3 })
+  buildScheduler.add(trees, undefined, { on: () => questToggles.trees, rank: 0, tile: TREE_TILE })
+  buildScheduler.add(ferns, undefined, { on: () => questToggles.ferns, rank: 2, tile: FERN_TILE })
+  buildScheduler.add(grassView, undefined, { on: () => questToggles.grass, rank: 3, tile: GRASS_TILE })
   rocks.schedule(buildScheduler, { on: () => questToggles.boulders, rank: 1 })
-  for (const layer of [litter, mushrooms, deadwood]) buildScheduler.add(layer, undefined, { on: () => questToggles.litter, rank: 4 })
+  for (const [layer, tile] of [[litter, litter.tile], [mushrooms, MUSHROOM_TILE], [deadwood, DEADWOOD_TILE]]) buildScheduler.add(layer, undefined, { on: () => questToggles.litter, rank: 4, tile })
   grass.buildBudgetMs = 0
 
   // The bones: a rare find on any ground (render/bones.js), on the litter row
@@ -5008,10 +5019,11 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, cards: litterCards, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
+    wildStriders.ready.then(() => { if (build === roomBuild) wildStriders.bakeCards(renderer) })
   }
   // The room's creatures over the relay (creature-net.js): a lured animal's
   // anchors out, everyone else's in, routed to its layer by the key's first word.
@@ -7956,7 +7968,7 @@ function stepOverworld(dt, now) {
     bones.update(headTmp.x, headTmp.y, headTmp.z)
     spikes.lap('sticks+bones')
   }
-  buildScheduler.run()
+  buildScheduler.run(headTmp.x, headTmp.z)
   spikes.lap('builds')
   // The rowboats sit on the water row: moored where they were placed, so this
   // is the rim sweep and the mesh-to-card step alone.

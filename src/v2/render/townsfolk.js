@@ -1238,6 +1238,7 @@ export class Townsfolk {
    * @param opts.field     V2Height: heightAt, for the hearths
    * @param opts.bank      buildRockBank()'s answer, for the fire ring
    * @param opts.textures  the prop atlas
+   * @param opts.cards     the shared LitterCards the far striders are drawn by
    * @param opts.patch     (material, cacheKey) => material, the lighting patch
    * @param opts.seed      the world's seed
    * @param opts.journeys  journeys.js Journeys over the roads, if any: the striders at the rails and the travellers
@@ -1246,7 +1247,7 @@ export class Townsfolk {
    * @param opts.harm      (n, why) => her hurt by a maddened tied strider (_fury)
    * @param opts.hourAt    (seconds) => the hour of day at a room time (clock.js WorldClock.hourAt), for the evening's fire and the night's homes
    */
-  constructor(scene, { towns, walk, field, bank, textures, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false, harm = () => {}, hourAt } = {}) {
+  constructor(scene, { towns, walk, field, bank, textures, cards, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false, harm = () => {}, hourAt } = {}) {
     if (!Array.isArray(towns)) throw new Error('Townsfolk: needs the towns')
     if (typeof hourAt !== 'function') throw new Error('Townsfolk: needs hourAt')
     this.hourAt = hourAt
@@ -1301,7 +1302,7 @@ export class Townsfolk {
       return [name, { geometry, meshes }]
     }))
     // Its materials are the caller's to light, as these are.
-    this.striders = journeys ? new Striders(scene, { walk, textures, patch }) : null
+    this.striders = journeys ? new Striders(scene, { walk, textures, patch, cards }) : null
     this.bodies = null
     this.hearthScale = 1
     // The perf trace's split of the layer (main.js townsPeople, townsStriders, townsFires): a part off is neither stepped nor drawn.
@@ -1335,6 +1336,11 @@ export class Townsfolk {
       return entry.heightM
     }), strider)
     return true
+  }
+
+  /** Photograph the striders' card (Striders.bakeCards); after `ready`. */
+  bakeCards(renderer) {
+    if (this.striders) this.striders.bakeCards(renderer)
   }
 
   setAssets(assets, heights, strider = null) {

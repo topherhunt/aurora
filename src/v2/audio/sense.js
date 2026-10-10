@@ -70,8 +70,8 @@ export class WorldSense {
     }
   }
 
-  /** Read the world around the head at (hx, hy, hz) into `out`. */
-  sample(hx, hy, hz, out) {
+  /** Read the world around the head at (hx, hy, hz) into `out`. `lake` false leaves the last lakeShore, lakeDir and lakeLevel in `out`: that search is the dear read. */
+  sample(hx, hy, hz, out, lake = true) {
     const field = this.field
     const s = field.scatterAt(hx, hz, SENSE_CELL, this._scatter)
     out.fieldH = s.h
@@ -86,7 +86,7 @@ export class WorldSense {
     out.cliff = this.cliffAt(hx, hz)
 
     // `out.fieldH`, not `s.h`: cliffAt has reused the scratch `s` by now.
-    this.lakeShore(hx, hz, out.fieldH, out)
+    if (lake) this.lakeShore(hx, hz, out.fieldH, out)
 
     const river = this.water.riverShoreDistAt(hx, hz, SHORE_REACH)
     out.riverShore = river

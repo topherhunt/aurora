@@ -82,7 +82,13 @@ export function tintRange(path, spread = 0.08) {
 
 /** A baked puppet taken for the creature keyed `key` wears its `roll` (rollTint, a tintRange) seeded by that key, so every peer and every visit agree; a skinned one is left white. */
 export function tintFor(puppet, key, roll) {
-  if (puppet.baked) roll(mulberry32(hash32(keyHash(key), 0x71a7)), puppet.tint)
+  if (puppet.baked) tintOf(key, roll, puppet.tint)
+}
+
+/** The colour `roll` gives the creature keyed `key`, into `out`: what tintFor dresses its baked puppet in. */
+export function tintOf(key, roll, out) {
+  roll(mulberry32(hash32(keyHash(key), 0x71a7)), out)
+  return out
 }
 
 // ---------------------------------------------------------------------------

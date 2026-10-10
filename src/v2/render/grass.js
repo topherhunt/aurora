@@ -282,7 +282,7 @@ const LOD_HYSTERESIS = 0.12
 // Metres per tile. See the header. The over-keep this grid causes scales with
 // TILE/F, which is 0.8 now that FULL_RADIUS is 5 -- the rim is what pays for
 // that rather than a finer grid, because halving the tile quadruples the jobs.
-const TILE = 4
+export const TILE = 4
 
 // Milliseconds per frame allowed for growing and regrowing tiles.
 const BUILD_BUDGET_MS = 2.0

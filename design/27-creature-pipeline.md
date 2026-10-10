@@ -388,7 +388,7 @@ src/v2/render/wildlife.js            the stag, fox and hare in the world: a hare
 scripts/check-wildlife.mjs           its gate -- the three shipped GLBs, and a synthetic moor of pond, crag, trunks and snow line
 src/v2/render/snowmen.js             the abominable snowmen: one per 40,000 m2 above the snow line, cowering until she is near, watching, following her off
 scripts/check-snowmen.mjs            its gate -- the shipped GLB, and a synthetic mountain of tarn, crag, trunks and a slope out of the snow
-src/v2/render/roosts.js              the dragon roosts: one per territory on its highest summit near the snow line, an 18 m fortress of the rocks' boulders set into the ground, four tiers, a walk grid
+src/v2/render/roosts.js              the dragon roosts: one per territory on its highest summit near the snow line, an 18 m fortress of the rocks' boulders set into the ground, three tiers to 150 m and one squashed boulder on the rocks' ladder past it, a walk grid
 src/v2/render/dragons.js             a fen dragon pair per roost, the guard home and the male on the patrol, hunt, strike, seize and carry home; every resident one simulated, two crossed cards far
 scripts/check-dragons.mjs            its gate -- the shipped GLB, the fortress and summit scatter, the whole hunt on a flat field, the pair, the rungs and the retire
 scripts/check-decimate.mjs           the decimator gate -- synthetic fixtures whose answers are known by construction

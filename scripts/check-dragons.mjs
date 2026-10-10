@@ -33,10 +33,11 @@ import {
 } from '../src/v2/render/dragons.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
-  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, NEST_FERNS, REACH, buildFortress, layFortress, gridCell,
+  Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, FAR_AT, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, NEST_FERNS, REACH, buildFortress, layFortress, gridCell,
   EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
+import { ROCK_LOD_AT, ROCK_TIERS } from '../src/props/rock.js'
 import { LAYER, buildTextureArray } from '../src/textures.js'
 import { LOCOMOTION } from '../src/player.js'
 import { WALK } from '../src/v2/walk.js'
@@ -171,9 +172,16 @@ console.log('\nroost fortress')
   check(f.geometries.length === LODS && f.tris.every((t, k) => k === 0 || t < f.tris[k - 1]), `${LODS} tiers, each fewer triangles than the one above`, f.tris.join('/'))
   check(f.geometries.every((g) => g.index && g.groups.length === 0 && ['position', 'normal', 'uvProj', 'texLayer', 'color'].every((a) => g.getAttribute(a))), 'every tier is one indexed geometry on the prop material\'s attributes and a vertex colour, so a roost is one draw')
   const layersOf = (g) => new Set(g.getAttribute('texLayer').array)
-  check(f.geometries.every((g, k) => layersOf(g).has(LAYER.BARK) === (k < LODS - 1) && [...layersOf(g)].some((l) => l !== LAYER.BARK)), 'stone on every tier and logs in bark on all but the last', f.geometries.map((g) => [...layersOf(g)].join(',')).join(' / '))
+  check(f.geometries.every((g) => layersOf(g).has(LAYER.BARK) && [...layersOf(g)].some((l) => l !== LAYER.BARK)), 'stone and logs in bark on every tier', f.geometries.map((g) => [...layersOf(g)].join(',')).join(' / '))
   const b = f.geometries[0].boundingBox
   check(b.max.x - b.min.x > WIDTH * 0.85 && b.max.x - b.min.x < WIDTH * 1.1 && b.max.z - b.min.z > WIDTH * 0.85 && b.max.z - b.min.z < WIDTH * 1.1, `about ${WIDTH} m across`, `${fmt(b.max.x - b.min.x)} x ${fmt(b.max.z - b.min.z)} m`)
+  // The far boulder: one stone on the rocks' four rungs, over the fortress's footprint and up to its wall's crest, measured by its longest axis.
+  const fb = f.far.geometries[0].boundingBox
+  const crest = f.stones.filter((s) => s.wall).reduce((n, s, _, w) => n + s.top / w.length, 0)
+  check(f.far.geometries.length === ROCK_TIERS.length && f.far.tris.every((t, k) => k === 0 || t < f.far.tris[k - 1]) && f.far.tris[ROCK_TIERS.length - 1] < f.tris[LODS - 1] / 10, `the far boulder is ${ROCK_TIERS.length} tiers of falling triangles, its last a tenth of the fortress's last or less`, `${f.far.tris.join('/')} against ${f.tris[LODS - 1]}`)
+  check(f.far.geometries.every((g) => [...layersOf(g)].every((l) => l !== LAYER.BARK) && g.getAttribute('color').array.every((c, i) => c === Math.fround(TINT[i % 3]))), 'all stone, in the peak\'s tint')
+  check(Math.abs(fb.min.x - b.min.x) < 0.3 && Math.abs(fb.max.x - b.max.x) < 0.3 && Math.abs(fb.min.z - b.min.z) < 0.3 && Math.abs(fb.max.z - b.max.z) < 0.3 && Math.abs(fb.max.y - crest) < 0.3 && fb.max.y < b.max.y, 'over the fortress\'s footprint and squashed to its wall\'s mean crest', `${fmt(fb.max.x - fb.min.x)} x ${fmt(fb.max.z - fb.min.z)} m, top ${fmt(fb.max.y)} against crest ${fmt(crest)}`)
+  check(Math.abs(f.far.size - Math.max(b.max.x - b.min.x, b.max.z - b.min.z)) < 1e-6, 'and stepped at its longest axis, its width', fmt(f.far.size))
   const pos = (g) => g.getAttribute('position').array
   check(pos(f.geometries[0]).every((x, i) => x === pos(again.geometries[0])[i]) && pos(f.geometries[0]).some((x, i) => x !== pos(other.geometries[0])[i]), 'the fortress is a function of its seed: the same twice, another with another seed')
 
@@ -223,7 +231,7 @@ console.log('\nroost fortress')
     }
     check(leaks === 0 && outside > 4 * (GRID_N * GRID_N) * 0.3, `the wall is closed on ${name} ground: walked at from outside, she reaches no cell of the floor over four seeds`, `${leaks} floor cells reached`)
   }
-  for (const g of [f, again, other]) for (const geo of g.geometries) geo.dispose()
+  for (const g of [f, again, other]) for (const geo of [...g.geometries, ...g.far.geometries]) geo.dispose()
 }
 
 // --- the roost's placement ------------------------------------------------------------
@@ -288,8 +296,16 @@ class Tilted extends Roosts {
   const a = sites.find((s) => peakOf(s) === 'A')
   const ta = r.tiles.get(a.key)
   const tierFrom = (d) => { r.update(a.x + d, a.y + 1.7, a.z); return ta.tier }
-  const tiers = [0, 100, 400, 0].map(tierFrom)
-  check(tiers.join() === `0,2,${LODS - 1},0` && ta.mesh.geometry === ta.geometries[0] && r.stats.tris > 0, 'standing in it, the top tier; 100 m off the third; 400 m off the last; back in it, the top again', tiers.join(' '))
+  const tiers = [0, 100, FAR_AT - 5, 0].map(tierFrom)
+  check(tiers.join() === `0,${LODS - 1},${LODS - 1},0` && ta.mesh.geometry === ta.geometries[0] && r.stats.tris > 0, `standing in it, the top tier; 100 m and just inside FAR_AT ${FAR_AT} m off, the fortress's last`, tiers.join(' '))
+  // Past FAR_AT the far boulder, on the rung a rock its size takes there, held back to FAR_AT less the hysteresis; then the fortress again.
+  const size = Math.sqrt(ta.farSizeSq)
+  const rungAt = (d) => { const k = ROCK_LOD_AT.findIndex((at) => d < at * size); return k < 0 ? ROCK_LOD_AT.length : k }
+  const out = [FAR_AT + 5, FAR_AT - 10, 400, 1000, FAR_AT - 25].map(tierFrom)
+  const want = [LODS + rungAt(FAR_AT + 5), LODS + rungAt(FAR_AT + 5), LODS + rungAt(400), LODS + ROCK_LOD_AT.length, LODS - 1]
+  check(out.join() === want.join() && ta.mesh.geometry === ta.geometries[LODS - 1], `the far boulder (${fmt(size)} m) from FAR_AT out on the rocks' rungs, kept just inside it, its hull at 1 km, the fortress back at ${FAR_AT - 25} m`, out.join(' '))
+  tierFrom(1000)
+  check(r.stats.tris < ta.tris[LODS - 1] / 10, 'and at range a roost costs the boulder\'s hull, not its stones', `${r.stats.tris} tris against ${ta.tris[LODS - 1]}`)
   r.update(a.x + 4000, a.y, a.z)
   check(r.sites().length === 0 && r.group.children.length === 0 && !r.tiles.has(a.key), 'walked 4 km off, every roost is released and its mesh gone')
   r.dispose()

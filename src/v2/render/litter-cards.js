@@ -3,13 +3,13 @@ import THREE from '../../three-instance.js'
 import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, cardFacing, facingNormal, propClockUniform } from '../../material.js'
 import { TEX_SIZE } from '../../textures.js'
-import { AXIS_VIEWS, HUE_FRAGMENT, SPUN_VIEWS, bakeCritterCard, billboardVertex, critterCardExtents, spunBounds } from './critters.js'
+import { AXIS_VIEWS, HEADING_CARD_VERTEX, HUE_FRAGMENT, SPUN_VIEWS, bakeCritterCard, billboardVertex, critterCardExtents, spunBounds } from './critters.js'
 import { PropMeshes } from './prop-arena.js'
 
 // ---------------------------------------------------------------------------
 // THE LITTER CARDS. Every far card of the ground litter (stumps, logs, skeletons, skulls, mushrooms) is one instance of ONE unit quad in ONE InstancedMesh, so the whole band is a single draw call however many kinds there are. A layer's instance carries its picture index in `aLayerShift` (PropArena `cards`); the quad's extents come from a uniform row per picture and its picture from a layer of one 128 px array.
 //
-// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), CANOPY (spun, and lit as a tree card is: material.js facingNormal at the trees' cardFacing and the trees' albedo-weighted night lift, so a clump matches the single cards around it; every other picture is facingNormal at 1, CARD_NORMAL), AXIAL (the piece lies along its own Z and its card stands along it: turned about Y from the piece's X toward her by its picture's turn share, then rolled about its axis from upright toward her by its roll share; a log takes no turn and the whole roll, a boat half of each, so a boat seen from above leans toward her and never lies flat on the water, and one seen end-on shows a three-quarter side) or FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall).
+// A picture is SPUN (the quad turns about the instance's Y to face her, billboardVertex), CANOPY (spun, and lit as a tree card is: material.js facingNormal at the trees' cardFacing and the trees' albedo-weighted night lift, so a clump matches the single cards around it; every other picture is facingNormal at 1, CARD_NORMAL), AXIAL (the piece lies along its own Z and its card stands along it: turned about Y from the piece's X toward her by its picture's turn share, then rolled about its axis from upright toward her by its roll share; a log takes no turn and the whole roll, a boat half the roll and a quarter of the turn, so a boat seen from above leans toward her and never lies flat on the water, and one seen end-on shows some of its side), FIXED (the quad stays in the XY plane the instance matrix put it in: a face on a wall) or HEADING (the side view along the instance's +X, turned toward her only as far as keeps it within 45 degrees of face-on: critters.js HEADING_CARD_VERTEX, the wildlife cards' rule).
 //
 // Pictures are stored top row first (the prop atlas's order); critter bakes arrive bottom row first and `setCritterPixels` flips them.
 // ---------------------------------------------------------------------------
@@ -20,6 +20,7 @@ const SPUN = 0
 const AXIAL = 1
 const FIXED = 2
 const CANOPY = 3
+const HEADING = 4
 
 const VERTEX_COMMON = /* glsl */ `
   #define PROP_FADE_ATTRIBUTE
@@ -36,7 +37,7 @@ const VERTEX_COMMON = /* glsl */ `
   flat varying float vCardCanopy;
   ${HEAD_EYE_DECL}`
 
-// uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame; uCardMode is (kind, tilt or roll share, turn share, 0), one vec4 row so the table costs one uniform register per picture. Spun and fixed: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z through (cx, cy, 0), turned about Y and rolled about its own length toward the eye by the two shares. A turn share under 1 flips sides as she crosses the keel's line end-on: both three-quarter views are equally right there.
+// uCardBox is (cx, cy, halfWidth, halfHeight) in the instance's frame; uCardMode is (kind, tilt or roll share, turn share, 0), one vec4 row so the table costs one uniform register per picture. Spun and fixed: the picture stands in the XY plane centred at (cx, cy). Axial: the picture runs along -Z through (cx, cy, 0), turned about Y and rolled about its own length toward the eye by the two shares. A turn share under 1 flips sides as she crosses the keel's line end-on: both oblique views are equally right there.
 const VERTEX_BODY = /* glsl */ `
   {
     float cardId = floor( aLayerShift + 0.5 );
@@ -45,11 +46,14 @@ const VERTEX_BODY = /* glsl */ `
     vec4 cm = uCardMode[ ci ];
     float ck = cm.x;
     vCardLayer = cardId;
-    vCardCanopy = step( 2.5, ck );
+    vCardCanopy = abs( ck - 3.0 ) < 0.5 ? 1.0 : 0.0;
     vHue = aHue;
     vCardUv = vec2( position.x + 0.5, 0.5 - position.y );
     if ( abs( ck - 2.0 ) < 0.5 ) {
       transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
+    } else if ( abs( ck - 4.0 ) < 0.5 ) {
+      transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
+      ${HEADING_CARD_VERTEX}
     } else if ( abs( ck - 1.0 ) < 0.5 ) {
       mat4 cim = modelMatrix * instanceMatrix;
       vec3 cd = ${HEAD_EYE_GLSL} - cim[ 3 ].xyz;
@@ -79,7 +83,7 @@ const FRAGMENT_COMMON = /* glsl */ `
   uniform highp sampler2DArray uCardPics;
   ${IGN_GLSL}`
 
-/** The extents of the card for a piece of `bounds` (setCritterAsset's): `{ kind, cx, cy, hw, hh }` for `addPicture`. `core` is where an axial piece's axis runs in its frame. A fixed card is the side view as it stands, `bounds` already the width it spans. */
+/** The extents of the card for a piece of `bounds` (setCritterAsset's): `{ kind, cx, cy, hw, hh }` for `addPicture`. `core` is where an axial piece's axis runs in its frame. A fixed card is the side view as it stands, `bounds` already the width it spans; a spun or heading card is as wide as the piece's widest side. */
 export function cardPicture(kind, bounds, core = { x: 0, y: 0 }) {
   if (kind === 'fixed') {
     const ext = critterCardExtents(bounds)
@@ -147,7 +151,7 @@ export class LitterCards {
 
   /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex); `roll` and `turn` are the shares of the roll about its length and the turn about Y toward her an axial card takes (header). `canopy` lights a spun card as a tree card (header). */
   addPicture({ kind, cx, cy, hw, hh, tilt = 0, roll = 1, turn = 0, canopy = false }) {
-    if (kind !== 'spun' && kind !== 'axial' && kind !== 'fixed') throw new Error(`LitterCards: a picture is 'spun', 'axial' or 'fixed', not ${kind}`)
+    if (!['spun', 'axial', 'fixed', 'heading'].includes(kind)) throw new Error(`LitterCards: a picture is 'spun', 'axial', 'fixed' or 'heading', not ${kind}`)
     if (this.pictures >= MAX_PICTURES) throw new Error(`LitterCards: ${MAX_PICTURES} pictures is the table's size`)
     if (!(hw > 0) || !(hh > 0)) throw new Error(`LitterCards: need a positive half width and height, got ${hw} x ${hh}`)
     if (!(tilt >= 0 && tilt <= 1)) throw new Error(`LitterCards: tilt must be in [0, 1], got ${tilt}`)
@@ -159,7 +163,7 @@ export class LitterCards {
     if (canopy && kind !== 'spun') throw new Error(`LitterCards: only a spun picture is a canopy, not ${kind}`)
     const i = this.pictures++
     this.box[i].set(cx, cy, hw, hh)
-    this.mode[i].set(kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : canopy ? CANOPY : SPUN, kind === 'axial' ? roll : tilt, turn, 0)
+    this.mode[i].set(kind === 'axial' ? AXIAL : kind === 'fixed' ? FIXED : kind === 'heading' ? HEADING : canopy ? CANOPY : SPUN, kind === 'axial' ? roll : tilt, turn, 0)
     return i
   }
 
@@ -184,9 +188,9 @@ export class LitterCards {
     this.upload()
   }
 
-  /** Photograph `geometry` (wearing `map`) into picture `i`, as the `kind` of card it was added as. */
+  /** Photograph `geometry` (wearing `map`), or an Object3D already posed and wearing its own unlit material (bakeCritterCard), into picture `i`, as the `kind` of card it was added as. */
   bake(renderer, i, geometry, map, bounds, kind) {
-    const texture = bakeCritterCard(renderer, geometry, map, kind === 'spun' ? spunBounds(bounds) : bounds, kind === 'axial' ? AXIS_VIEWS : SPUN_VIEWS)
+    const texture = bakeCritterCard(renderer, geometry, map, kind === 'spun' || kind === 'heading' ? spunBounds(bounds) : bounds, kind === 'axial' ? AXIS_VIEWS : SPUN_VIEWS)
     this.setCritterPixels(i, texture.image.data)
     texture.dispose()
   }

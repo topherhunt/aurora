@@ -109,7 +109,7 @@ const DRAW_RADIUS = 55
 // one `anchorsInto` query per source, and that query walks the source's own
 // resident tiles. A big tile would mean a long walk on a frame where the budget
 // is already being spent on the mushrooms themselves.
-const TILE = 10
+export const TILE = 10
 
 // Milliseconds per frame allowed for growing and regrowing tiles.
 const BUILD_BUDGET_MS = 1.5

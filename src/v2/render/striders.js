@@ -1,9 +1,11 @@
 import THREE from '../../three-instance.js'
-import { createPropMaterial } from '../../material.js'
+import { PROP_FADE_SECONDS, createPropMaterial, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { LAYER } from '../../textures.js'
-import { LOD_RUNGS, critterTier } from './critters.js'
-import { lodFadeS, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
+import { CARD_RUNGS, LOD_DEG, LOD_RUNGS, LOD_STEP, distAt, ladderTier } from './critters.js'
+import { Puppet, lodFadeS, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
+import { makePuppet, tintFor, tintOf, tintRange } from './baked-puppet.js'
+import { cardPicture } from './litter-cards.js'
+import { PropArena } from './prop-arena.js'
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
 import { Cords } from './cord.js'
 import { PADDLE, paddleHz, striderClips } from './strider-clips.js'
@@ -34,6 +36,13 @@ export const STRIDER = {
 /** A strider's size against the shipped body, from `u` in 0..1. */
 export const striderSize = (u) => STRIDER.size.mean * (STRIDER.size.vary[0] + (STRIDER.size.vary[1] - STRIDER.size.vary[0]) * u)
 
+// The arc ladder (critters.js ladderTier): puppet tiers 0..2, then the side card (litter-cards.js HEADING) from where tier 3 began out to the wildlife cards' cull, the CARD_RUNGS ladder's last reach; RUNGS is undrawn.
+const STEPS = [1, LOD_STEP, LOD_STEP ** 2, LOD_STEP ** (CARD_RUNGS - 1)]
+const CARD_RUNG = 3
+const RUNGS = LOD_RUNGS
+// Shared-pool ids per layer (LitterCards.claim): more than the live striders of either layer.
+const CARD_IDS = 64
+
 const PLANTED = new Set(['idle'])
 // Afloat it paddles, unless it is shaking off.
 const clipOf = (pose) => (pose.swim && pose.clip !== 'fidget' ? 'paddle' : pose.clip)
@@ -47,6 +56,7 @@ const _q = new THREE.Quaternion()
 const _v = new THREE.Vector3()
 const _s = new THREE.Vector3()
 const _m = new THREE.Matrix4()
+const _c = new THREE.Color()
 
 /**
  * Of the bind-pose vertices mostly skinned to bone `hi`, in that bone's frame: their `middle` (the head bone sits at the neck, half a metre behind the beak), and the `jowl` a rein is tied to, on the right of the head (+x in the bind frame, the beak toward -z) half way down from the middle.
@@ -101,7 +111,7 @@ export function dashAim(walk, m, want, v, dt, crowd = null) {
 export function mountFields(size, hue) {
   if (!(size > 0)) throw new Error(`mountFields: a strider's size must be positive, not ${size}`)
   const [lo, hi] = STRIDER.call
-  return { hue, pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0, swim: false }, lod: LOD_RUNGS, puppet: null, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
+  return { hue, pose: { x: 0, y: 0, z: 0, heading: 0, k: 0, size, speed: 0, clip: 'idle', cue: 0, swim: false }, lod: RUNGS, puppet: null, card: -1, cardAt: -1, drawn: -1, dist: 0, gone: false, dash: { wob: 0, left: 0 }, heard: -1, call: lo + (hi - lo) * Math.random(), tread: { x: 0, y: 0, z: 0, size: 0, clip: 'idle', cycle: 1, speed: 0 } }
 }
 
 /** A body's matrix from its pose: at x, y, z, turned `heading` about the up, scaled `k`. */
@@ -184,8 +194,9 @@ async function loadStrider(url) {
 }
 
 export class Striders {
-  /** `walk` is the WalkSurface their feet and the rails stand on; `patch` the lighting patch. */
-  constructor(scene, { walk, textures, patch }) {
+  /** `walk` is the WalkSurface their feet and the rails stand on; `patch` the lighting patch; `cards` the shared LitterCards their card rung is drawn by. */
+  constructor(scene, { walk, textures, patch, cards }) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Striders needs the LitterCards its far card is drawn by')
     this.scene = scene
     this.walk = walk
     this.batch = new THREE.Group()
@@ -212,10 +223,25 @@ export class Striders {
     this.rank = 0
     this.frame = 0
     this.starved = 0
+    // The card rung: ids in the shared pool, its pictures (bakeCards; -1 until then, and the rung draws nothing), the mounts holding a card, and the cards dissolving out { id, at }.
+    cards.claim('striders', CARD_IDS)
+    this.litterCards = cards
+    this.cardView = PropArena.over(cards.meshes, CARD_IDS, 'v2-strider-card')
+    for (let i = 0; i < CARD_IDS; i++) {
+      this.cardView.addInstance(0)
+      this.cardView.setVisibleAt(i, false)
+    }
+    this.cardIds = Array.from({ length: CARD_IDS }, (_, i) => CARD_IDS - 1 - i)
+    this.picture = -1
+    this.tackPicture = -1
+    this.carded = new Set()
+    this.fading = []
+    this.dark = 0
   }
 
   /** Every body drawn `dark` 0..1 of the way to black: her chanterelle (eating.js). */
   darken(dark) {
+    this.dark = dark
     for (const m of this.materials) m.color.setScalar(1 - dark)
   }
 
@@ -230,6 +256,34 @@ export class Striders {
       this.puppets.push(makePuppet(asset, mats, { clipFade: 0.3 }))
     }
     this.free = this.puppets.slice()
+    this.clipS = new Map(asset.clips.map((c) => [c.name, c.duration]))
+  }
+
+  /**
+   * Photograph the side card off a throwaway puppet posed in `idle`, as the
+   * wildlife's (wildlife.js bakeCards), and start drawing the card rung; with
+   * `tack` tiers, a second picture of the body wearing them, for a mount whose
+   * `m.tack` is set (wild-striders.js). Once, after the asset has landed.
+   */
+  bakeCards(renderer, tack = null) {
+    if (!this.asset) throw new Error('Striders.bakeCards: the asset has not landed')
+    const a = this.asset, bounds = { halfX: a.span / 2, halfZ: a.width / 2, height: a.height }
+    const bake = (tiers) => {
+      const flat = new THREE.MeshBasicMaterial({ map: a.map, toneMapped: false })
+      const p = new Puppet({ ...a, tiers }, { plain: flat, in: flat, out: flat, uCut: { value: 1 } }, {})
+      p.show(0)
+      p.play('idle')
+      p.step(0)
+      p.group.updateMatrixWorld(true)
+      const i = this.litterCards.addPicture(cardPicture('heading', bounds))
+      this.litterCards.bake(renderer, i, p.group, a.map, bounds, 'heading')
+      p.release()
+      p.skeleton.dispose()
+      flat.dispose()
+      return i
+    }
+    this.picture = bake(a.tiers)
+    if (tack) this.tackPicture = bake(tack)
   }
 
   /** What the sim needs of it: its walk in m/s and its fidget clip's seconds. */
@@ -251,36 +305,42 @@ export class Striders {
    * the sim, and the rest this layer's (mountFields).
    */
   draw(m, dt) {
-    const pose = m.pose, k = this.k * pose.size
+    const pose = m.pose, k = this.k * pose.size, base = distAt(this.asset.sizeM * pose.size, LOD_DEG)
     pose.k = k
-    m.lod = critterTier(this.asset.sizeM * pose.size, m.dist, m.lod, LOD_RUNGS)
-    const want = m.gone || m.lod === LOD_RUNGS || this.rank++ >= STRIDER.puppets ? -1 : m.lod
+    m.drawn = this.frame
+    m.lod = ladderTier(base, STEPS, RUNGS, m.dist, m.lod)
+    let want = m.gone || m.lod >= CARD_RUNG || this.rank++ >= STRIDER.puppets ? -1 : m.lod
     if (want !== -1 && !m.puppet) {
       const p = this.free.pop()
-      if (!p) { this.starved++; return }
-      m.puppet = p
-      tintFor(p, m.hue, STRIDER.tint)
-      this.batch.add(p.group)
-      p.play(clipOf(pose), pose.cue, 0)
+      if (p) {
+        m.puppet = p
+        tintFor(p, m.hue, STRIDER.tint)
+        this.batch.add(p.group)
+        p.play(clipOf(pose), pose.cue, 0)
+      } else { this.starved++; want = -1 }
     }
-    const p = m.puppet
-    if (!p) return
-    p.show(want, lodFadeS())
+    // Past the puppets, the card: dissolved in over a puppet that cuts out once it is whole, and dissolved out from over a puppet that cuts in.
+    const had = m.card >= 0, card = this._card(m, !m.gone && m.lod < RUNGS && want === -1, k)
     const clip = clipOf(pose), gait = this.asset.gait[clip]
-    p.play(clip, pose.cue)
     // On the clip's own action, not the mixer: the mixer's clock also times the fade between clips, which run backward never ends. Afloat the strokes quicken with its speed.
-    if (clip === 'paddle') {
-      const pace = clamp(Math.abs(pose.speed) / (this.asset.gait.walk * k), 0, 1)
-      p.current.timeScale = (PADDLE.hz[0] + (PADDLE.hz[1] - PADDLE.hz[0]) * pace) / this.paddleHz
-    } else p.current.timeScale = gait === undefined ? 1 : pose.speed / (gait * k)
-    if (pose.swim) p.unplant()
-    else groundFeet(p, pose, this.walk, PLANTED, (this.frame + m.id) % 6 === 0)
-    p.step(dt)
-    poseMatrix(pose, k, p.group.matrix)
-    p.group.matrixWorldNeedsUpdate = true
-    if (p.done) { this.release(m); return }
-    if (want === -1) return
-    Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM * pose.size, clip: pose.clip, cycle: p.current.getClip().duration / Math.abs(p.current.timeScale), speed: Math.abs(pose.speed) })
+    let scale = gait === undefined ? 1 : pose.speed / (gait * k)
+    if (clip === 'paddle') scale = (PADDLE.hz[0] + (PADDLE.hz[1] - PADDLE.hz[0]) * clamp(Math.abs(pose.speed) / (this.asset.gait.walk * k), 0, 1)) / this.paddleHz
+    const p = m.puppet
+    if (p) {
+      if (card) { if (this._settled(m.cardAt)) p.show(-1, 0) }
+      else p.show(want, had && want !== -1 ? 0 : lodFadeS())
+      p.play(clip, pose.cue)
+      p.current.timeScale = scale
+      if (pose.swim) p.unplant()
+      else groundFeet(p, pose, this.walk, PLANTED, (this.frame + m.id) % 6 === 0)
+      p.step(dt)
+      poseMatrix(pose, k, p.group.matrix)
+      p.group.matrixWorldNeedsUpdate = true
+      if (p.done) this._unpuppet(m)
+    }
+    // Heard as far as the puppets reached before the card rung took tier 3's span.
+    if (want === -1 && !(card && m.dist <= base * LOD_STEP ** (LOD_RUNGS - 1))) return
+    Object.assign(m.tread, { x: pose.x, y: pose.y, z: pose.z, size: this.asset.sizeM * pose.size, clip: pose.clip, cycle: this.clipS.get(clip) / Math.abs(scale), speed: Math.abs(pose.speed) })
     if (!pose.swim) this.treading.push(m.tread)
     if (pose.clip === 'fidget' && m.heard !== pose.cue) this.say('striderFlutter', pose)
     m.heard = pose.cue
@@ -305,7 +365,52 @@ export class Striders {
     if (this.said.length < STRIDER.said) this.said.push({ sound, x, y: y + 0.6 * this.k * size * this.asset.height, z, rate, gain })
   }
 
+  /** Whether a dissolve stamped at `at` on the prop clock is over: past PROP_FADE_SECONDS, or across the clock's wrap (material.js setPropClock). */
+  _settled(at) {
+    const age = getPropClock() - at
+    return !(age >= 0 && age < PROP_FADE_SECONDS)
+  }
+
+  /** `m`'s card on or off as `on` asks, posed at scale `k` if on; whether it has one now. */
+  _card(m, on, k) {
+    on &&= (m.tack && this.tackPicture >= 0 ? this.tackPicture : this.picture) >= 0
+    if (!on) {
+      this._uncard(m)
+      return false
+    }
+    const V = this.cardView
+    if (m.card < 0) {
+      if (this.cardIds.length === 0) { this.starved++; return false }
+      m.card = this.cardIds.pop()
+      m.cardAt = dissolvesOn() ? getPropClock() : -1
+      if (m.cardAt >= 0) setPropFadeTimerAt(V, m.card, m.cardAt, true)
+      else setPropSolidAt(V, m.card)
+      this.carded.add(m)
+    }
+    V.setLayerShiftAt(m.card, m.tack && this.tackPicture >= 0 ? this.tackPicture : this.picture)
+    V.setMatrixAt(m.card, poseMatrix(m.pose, k, _m))
+    // The baked puppet's colour (tintFor); a skinned one wears none.
+    V.setColorAt(m.card, (this.puppets[0].baked ? tintOf(m.hue, STRIDER.tint, _c) : _c.setScalar(1)).multiplyScalar(1 - this.dark))
+    V.setVisibleAt(m.card, true)
+    return true
+  }
+
+  /** `m`'s card, if any, dissolving out (finished in end). */
+  _uncard(m) {
+    if (m.card < 0) return
+    const at = dissolvesOn() ? getPropClock() : -1
+    if (at >= 0) setPropFadeTimerAt(this.cardView, m.card, at, false)
+    this.fading.push({ id: m.card, at })
+    this.carded.delete(m)
+    m.card = -1
+  }
+
   release(m) {
+    this._uncard(m)
+    this._unpuppet(m)
+  }
+
+  _unpuppet(m) {
     if (!m.puppet) return
     m.puppet.release()
     this.batch.remove(m.puppet.group)
@@ -377,6 +482,16 @@ export class Striders {
   /** The frame's reins to the GPU. */
   end() {
     this.reins.end()
+    for (const m of this.carded) if (m.drawn !== this.frame) this._uncard(m)
+    for (let i = this.fading.length - 1; i >= 0; i--) {
+      const f = this.fading[i]
+      if (!this._settled(f.at)) continue
+      this.cardView.setVisibleAt(f.id, false)
+      setPropSolidAt(this.cardView, f.id)
+      this.cardIds.push(f.id)
+      this.fading[i] = this.fading[this.fading.length - 1]
+      this.fading.pop()
+    }
   }
 
   /** The height of a rail's bar over (x, z). */
@@ -414,6 +529,7 @@ export class Striders {
   }
 
   dispose() {
+    for (let i = 0; i < CARD_IDS; i++) this.cardView.setVisibleAt(i, false)
     for (const p of this.puppets) this.batch.remove(p.group)
     this.batch.removeFromParent()
     this.reins.dispose()

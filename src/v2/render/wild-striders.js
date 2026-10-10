@@ -157,7 +157,7 @@ export class WildStriders {
    * @param opts.lend      (key) => the town's strider under that key lent as for borrow, for a peer riding it, or null where its town is not awake here
    * @param opts.hand      (out, key) => the hand her rein is in, in the world, into `out` (a Vector3) as of now: riding, `key` null; leading, the hand that took it (lead). None, she rides and leads without one
    */
-  constructor(scene, { walk, textures, patch, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null, hand = null }) {
+  constructor(scene, { walk, textures, patch, cards, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null, hand = null }) {
     this.walk = walk
     this.avoid = avoid
     this.crowd = crowd
@@ -177,7 +177,7 @@ export class WildStriders {
     this.warned = false
     // Whether every one of hers within EAT.chanterelle.m charges her, tamed or not (madden).
     this.maddened = false
-    this.inner = new Striders(scene, { walk, textures, patch })
+    this.inner = new Striders(scene, { walk, textures, patch, cards })
     this.materials = this.inner.materials
     this.live = new Map()
     // Homes let go while still in range, not respawned until she has been out of range of them; homes whose strider struck at her.
@@ -235,6 +235,9 @@ export class WildStriders {
     this.loaded = true
     return true
   }
+
+  /** Photograph the bare body's card and the tacked one's, for a lent strider (Striders.bakeCards); after `ready`. */
+  bakeCards(renderer) { this.inner.bakeCards(renderer, this.full) }
 
   get riding() { return this.ridden !== null }
 
