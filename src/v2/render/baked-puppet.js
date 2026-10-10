@@ -352,7 +352,7 @@ function makeBatch(tier, material, fade, cap) {
   for (const name in tier.attributes) geometry.setAttribute(name, tier.attributes[name])
   // A wild strider's bare tier is its full one drawn short of the tack: dropped here, every wild one wears a saddle.
   geometry.setDrawRange(tier.drawRange.start, tier.drawRange.count)
-  const b = { geometry, material, fade, cap: 0, n: 0, mesh: null, vat: null, fadeAttr: null }
+  const b = { geometry, material, fade, cap: 0, n: 0, mesh: null, vat: null, fadeAttr: null, dirty: 0 }
   grow(b, cap)
   return b
 }
@@ -361,6 +361,7 @@ function grow(b, cap) {
   if (b.mesh) { b.mesh.removeFromParent(); b.mesh.dispose() }
   const dyn = (n, size) => new THREE.InstancedBufferAttribute(new Float32Array(n * size), size).setUsage(THREE.DynamicDrawUsage)
   b.cap = cap
+  b.dirty = DIRTY_ALL
   b.vat = dyn(cap, 3)
   b.geometry.setAttribute('aVat', b.vat)
   if (b.fade) {
@@ -380,6 +381,10 @@ function grow(b, cap) {
 }
 
 const _rows = [0, 0, 0]
+// Which of a batch's buffers a frame changed; an unchanged one is not re-uploaded (a standing townsman's matrix, colour and rows repeat).
+const D_MATRIX = 1, D_COLOR = 2, D_VAT = 4, D_FADE = 8, DIRTY_ALL = 15
+const _m16 = new Float32Array(16)
+const f32 = Math.fround
 const _col = new THREE.Color()
 const touched = new Set()
 
@@ -393,14 +398,25 @@ function put(b, matrix, rows, color, cut, side) {
     if (b.fade) b.fadeAttr.array.set(keep.f)
   }
   const i = b.n++
-  matrix.toArray(b.mesh.instanceMatrix.array, i * 16)
-  color.toArray(b.mesh.instanceColor.array, i * 3)
-  b.vat.array[i * 3] = rows[0]
-  b.vat.array[i * 3 + 1] = rows[1]
-  b.vat.array[i * 3 + 2] = rows[2]
+  matrix.toArray(_m16)
+  const ma = b.mesh.instanceMatrix.array
+  for (let k = 0; k < 16; k++) if (ma[i * 16 + k] !== _m16[k]) { ma.set(_m16, i * 16); b.dirty |= D_MATRIX; break }
+  const ca = b.mesh.instanceColor.array
+  if (ca[i * 3] !== f32(color.r) || ca[i * 3 + 1] !== f32(color.g) || ca[i * 3 + 2] !== f32(color.b)) {
+    ca[i * 3] = color.r; ca[i * 3 + 1] = color.g; ca[i * 3 + 2] = color.b
+    b.dirty |= D_COLOR
+  }
+  const va = b.vat.array
+  if (va[i * 3] !== f32(rows[0]) || va[i * 3 + 1] !== f32(rows[1]) || va[i * 3 + 2] !== f32(rows[2])) {
+    va[i * 3] = rows[0]; va[i * 3 + 1] = rows[1]; va[i * 3 + 2] = rows[2]
+    b.dirty |= D_VAT
+  }
   if (b.fade) {
-    b.fadeAttr.array[i * 2] = cut
-    b.fadeAttr.array[i * 2 + 1] = side
+    const fa = b.fadeAttr.array
+    if (fa[i * 2] !== f32(cut) || fa[i * 2 + 1] !== f32(side)) {
+      fa[i * 2] = cut; fa[i * 2 + 1] = side
+      b.dirty |= D_FADE
+    }
   }
   touched.add(b)
 }
@@ -471,10 +487,11 @@ export function flushBaked() {
   for (const b of touched) {
     b.mesh.count = b.n
     b.mesh.visible = true
-    b.mesh.instanceMatrix.needsUpdate = true
-    b.mesh.instanceColor.needsUpdate = true
-    b.vat.needsUpdate = true
-    if (b.fade) b.fadeAttr.needsUpdate = true
+    if (b.dirty & D_MATRIX) b.mesh.instanceMatrix.needsUpdate = true
+    if (b.dirty & D_COLOR) b.mesh.instanceColor.needsUpdate = true
+    if (b.dirty & D_VAT) b.vat.needsUpdate = true
+    if (b.fade && b.dirty & D_FADE) b.fadeAttr.needsUpdate = true
+    b.dirty = 0
   }
   live.clear()
   for (const b of touched) live.add(b)

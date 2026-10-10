@@ -34,6 +34,12 @@ import { lazyLoad, openLoads } from './lazy-load.js'
 import { PerfTrace, r2 } from './perf-trace.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
+import { BuildScheduler } from './build-budget.js'
+
+// Every tile layer's builds share this much of a frame, nearest tile first (build-budget.js). Ms of Quest wall clock.
+const BUILD_MS = 1
+const buildScheduler = new BuildScheduler(BUILD_MS)
+window.v2build = buildScheduler // console: `v2build.debt`, `v2build.lastMs`
 import { RecordTrace } from './record-trace.js'
 import { AmbientTrace } from './ambient-trace.js'
 import { GpuTimer } from './gpu-timer.js'
@@ -3420,6 +3426,7 @@ function buildGrass(style, cx, cz, opts = {}) {
   // one the first one's.
   lighting.patch(grass.material, { mode: 'vertex', cacheKey: `v2-grass-${style}` })
   grass.syncSnowLine(layers)
+  grass.buildBudgetMs = 0
   grass.place(cx, cz)
   // A rebuilt bed is a new mesh and arrives visible. Without this, changing
   // the density while the grass row is OFF turns the grass back on.
@@ -4855,6 +4862,14 @@ async function buildRoom(room, at) {
   // The console hook lives here rather than beside window.v2ferns, because the
   // layer does not exist until this line has run.
   window.v2mushrooms = mushrooms
+  // Trees and rocks are the skyline, so they build as if nearer; the small ground scatter as if farther. Grass is rebuilt by buildGrass, so its source reads the live bed.
+  const grassView = { get queue() { return grass ? grass.queue : [] }, _growTile: (job) => grass._growTile(job) }
+  buildScheduler.add(trees, undefined, { on: () => questToggles.trees, reach: 0.5 })
+  buildScheduler.add(ferns, undefined, { on: () => questToggles.ferns })
+  buildScheduler.add(grassView, undefined, { on: () => questToggles.grass })
+  rocks.schedule(buildScheduler, { on: () => questToggles.boulders, reach: 0.5 })
+  for (const layer of [litter, mushrooms, deadwood]) buildScheduler.add(layer, undefined, { on: () => questToggles.litter, reach: 1.5 })
+  grass.buildBudgetMs = 0
 
   // The bones: a rare find on any ground (render/bones.js), on the litter row
   // with the dead wood.
@@ -7939,6 +7954,8 @@ function stepOverworld(dt, now) {
     bones.update(headTmp.x, headTmp.y, headTmp.z)
     spikes.lap('sticks+bones')
   }
+  buildScheduler.run()
+  spikes.lap('builds')
   // The rowboats sit on the water row: moored where they were placed, so this
   // is the rim sweep and the mesh-to-card step alone.
   if (questToggles.water) rowboats.update(headTmp.x, headTmp.y, headTmp.z)
@@ -8097,6 +8114,14 @@ renderer.xr.addEventListener('sessionstart', () => {
   desktopRotation.copy(camera.rotation)
   camera.position.y = 0
   camera.rotation.set(0, 0, 0)
+})
+// The headset defaults to 90 Hz (11.1 ms); the perf target is 80 Hz (12.5 ms). `?hz=` overrides it for A/B.
+const TARGET_HZ = Number(new URLSearchParams(location.search).get('hz')) || 80
+renderer.xr.addEventListener('sessionstart', async () => {
+  const session = renderer.xr.getSession()
+  const rates = [...(session.supportedFrameRates ?? [])]
+  if (!rates.includes(TARGET_HZ)) { console.warn(`headset refresh rates ${rates.join('/') || 'unreported'} lack ${TARGET_HZ} Hz; staying at ${session.frameRate ?? 'default'}`); return }
+  await session.updateTargetFrameRate(TARGET_HZ)
 })
 renderer.xr.addEventListener('sessionend', () => {
   eyeLevel.reset()

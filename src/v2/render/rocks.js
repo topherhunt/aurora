@@ -2889,7 +2889,7 @@ class RockBed {
     const tileHidden = this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
 
     const q = t.q
-    const thicken = near2 < this.loSq[q]
+    const thicken = q > 0 && near2 < this.loSq[q]
     const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
     if (!t.queued && (thicken || thin)) {
       t.queued = true
@@ -4646,7 +4646,14 @@ export class Rocks {
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.walkBudgetMs = WALK_BUDGET_MS
+    this.buildBudgetMs = BUILD_BUDGET_MS
     this.updateMs = 0
+  }
+
+  /** Hand every bed's tile builds to a BuildScheduler (build-budget.js); `opts.on` says whether the layer runs. */
+  schedule(scheduler, opts) {
+    this.buildBudgetMs = 0
+    for (const bed of this.beds) scheduler.add(bed, undefined, opts)
   }
 
   /** Grow every bed at once, ignoring the frame budget. Boot only. */
@@ -4666,7 +4673,7 @@ export class Rocks {
    */
   update(camX, camY, camZ) {
     const tStart = performance.now()
-    const slice = BUILD_BUDGET_MS / this.beds.length
+    const slice = this.buildBudgetMs / this.beds.length
     const walkSlice = this.walkBudgetMs / this.beds.length
     for (const bed of this.beds) bed.update(camX, camY, camZ, slice, walkSlice)
     // The whole of this call, smoothed over ~20 frames: the layer's main-thread

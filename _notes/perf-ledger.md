@@ -2,7 +2,7 @@
 
 The standing record of what the trace battery has established. Read this before proposing a perf experiment. Edit facts in place; per-trace chronology lives in `2026-10-05-perf-trace-findings.md` and `design/history/`.
 
-Goal: 80 Hz on Quest 2 in every environment (12.5 ms budget; the headset runs 90 Hz, 11.1 ms, so a CPU-bound frame snaps to 22 ms).
+Goal: 80 Hz on Quest 2 in every environment (12.5 ms budget; 90 Hz is 11.1 ms, so a CPU-bound frame snaps to 22 ms). `main.js` asks the session for 80 Hz at `sessionstart` (`?hz=` overrides); the trace header's `xr` line shows the rate actually granted.
 
 ## How to measure
 - Pull with `bash ./devops/fetch-traces.sh`, read with `node scripts/trace-report.mjs <id>`. The battery is `src/v2/perf-suite.js`; it must stay near two minutes (the user will not sit through seven).
@@ -18,6 +18,12 @@ Goal: 80 Hz on Quest 2 in every environment (12.5 ms budget; the headset runs 90
 - terrain 1.9 / 1.4; water, sky+fire 0.2 to 1.8 and not repeatable
 - Ambient town (12:09): js 6 to 8 + rend 9 = 15 to 17 ms cpu, worse than the battery spot. Forest (08:30): rend 7.3 to 8.5, grass 1.3 and rocks 0.8 mean.
 
+## Tile placement budget
+`BuildScheduler` (build-budget.js, `v2build`) drains every layer's tile queue nearest-first, averaging 1 ms a frame (a dear tile borrows against up to 6 frames of debt). Layers have `buildBudgetMs = 0` once it owns them. Single tiles can still overrun: grass up to 3 to 4 ms desktop, litter 2.1, ferns 1.1, rocks 1.0; slicing `_growTile` is open (grass needs resumable RNG state and id handling for an interrupted job).
+
+## Boulders standing still
+The cost was a re-queue loop: `thicken = near2 < loSq[q]` is always true at level 0, so every nearby tile was queued each walk and `_growTile` returned early (331 no-op calls per 90 still frames in rocks). Fixed with `q > 0 &&` in all seven tile layers. What remains of rocks while still is small (`blockTopAt`/`columnAt` about 0.03 ms each desktop) and mostly other systems asking: butterflies `_wander`, `player.flySpeedAt`, townsfolk. The `_nearestInto` path queries (0.1 ms/frame desktop) come from `ambience.js` `sense.sample -> lakeShore` and `_rivers`, not from rocks.
+
 ## Hitches (they cost more than the means)
 - `probes` 4 to 5 ms on most windows in town and forest; `grass` 3 to 6 ms and `rocks` 2 to 7 ms tile growth while moving; `ferns` 2 to 4.5; `pebbles` 5 to 6 ms in the forest; a 79 ms `sky+ambience` frame; 15.9 ms `animals` spike; `other` (GC, A-Frame, GPU wait) 10 to 78 ms on single frames.
 
@@ -30,10 +36,10 @@ Goal: 80 Hz on Quest 2 in every environment (12.5 ms budget; the headset runs 90
 - Fireflies: 0.8 in one trace, -0.8 in the next. Noise.
 
 ## Open, ranked by evidence
-1. Townsfolk: 2 to 3 ms, 21 small upload calls (`baked-puppet`, `v2-strider-reins`); the NPC efficient autopilot (GPU clip time, velocity position) is queued.
+1. Townsfolk: 2 to 3 ms, 21 small upload calls (`baked-puppet`, `v2-strider-reins`). `flushBaked` now re-uploads a batch's matrix, colour, rows or fade buffer only when this frame changed it (unmeasured on the headset). The full autopilot (per-instance p0, velocity, t0, clip phase and rate, a time uniform in the VAT shader, CPU rewriting an instance only when its phrase changes) is not built; it also serves animals (item 4).
 2. Probes, grass and rocks tile-growth hitches while moving; a shared per-tile height/path cache (`heightAt`, `carveRivers`, `_nearestInto` dominate); gate litter loops on camera movement.
-3. Boulders about 1.5 ms (10 calls).
-4. Animals: water critters, insects, wildlife about 1.2 each.
+3. Boulders about 1.5 ms (10 calls, draw side); throttle the ambience `lakeShore` samples that feed `_nearestInto`.
+4. Animals: water critters, insects, wildlife about 1.2 each. Far ones: `Wildlife.update` walks every spawn each frame, asks `score.at` and refills the card buffers from nothing (`cardN = 0`). Plan: (a) card and VAT instances carry p0, v, t0 and a clip phase, so the shader moves them between score phrases and the CPU touches an instance only when its phrase turns (motion stays smooth, no visible stagger); (b) persistent card slots with swap-remove like `PropArena` instead of the per-frame refill; (c) beyond the last mesh rung, test spawns on a coarse timer (a spawn's distance cannot change faster than its speed plus the player's).
 5. A SharedTri pool for distant single trees.
 
 ## Structural facts

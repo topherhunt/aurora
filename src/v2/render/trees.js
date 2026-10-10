@@ -936,6 +936,8 @@ export class Trees {
     // key -> tile; the shape is the literal at the foot of _growTile.
     this.tiles = new Map()
     this.queue = []
+    // Zero once a BuildScheduler owns the drain (build-budget.js).
+    this.buildBudgetMs = BUILD_BUDGET_MS
     this.camTileX = null
     this.camTileZ = null
 
@@ -1400,7 +1402,7 @@ export class Trees {
     this._reseat(camX, camZ)
 
     const t0 = performance.now()
-    while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
+    while (this.queue.length && performance.now() - t0 < this.buildBudgetMs) {
       this._growTile(this.queue.pop())
     }
     this.lastBuildMs = performance.now() - t0
@@ -1560,7 +1562,7 @@ export class Trees {
     // read and a compare; _levelFor is only called once the answer is known to
     // have changed, which is a handful of tiles a frame out of thousands.
     const q = tile.q
-    const thicken = near2 < this.loSq[q]
+    const thicken = q > 0 && near2 < this.loSq[q]
     const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
     if (!tile.queued && (thicken || thin)) {
       tile.queued = true

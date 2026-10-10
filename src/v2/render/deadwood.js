@@ -679,6 +679,8 @@ export class Deadwood {
     // or not. See `_plan`.
     this.plans = new Map()
     this.queue = []
+    // Zero once a BuildScheduler owns the drain (build-budget.js).
+    this.buildBudgetMs = BUILD_BUDGET_MS
     this.camTileX = null
     this.camTileZ = null
     this.scanX = null
@@ -1159,7 +1161,7 @@ export class Deadwood {
     const lift2 = this.lift2
 
     const t0 = performance.now()
-    while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) {
+    while (this.queue.length && performance.now() - t0 < this.buildBudgetMs) {
       this._growTile(this.queue.pop())
     }
     this.lastBuildMs = performance.now() - t0
@@ -1186,7 +1188,7 @@ export class Deadwood {
         const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
         const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2 + lift2
         const q = tile.q
-        const thicken = near2 < this.loSq[q]
+        const thicken = q > 0 && near2 < this.loSq[q]
         const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
         if (!tile.queued && (thicken || thin)) {
           tile.queued = true

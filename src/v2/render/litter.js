@@ -424,6 +424,8 @@ export class Litter {
 
     this.tiles = new Map()
     this.queue = []
+    // Zero once a BuildScheduler owns the drain (build-budget.js).
+    this.buildBudgetMs = BUILD_BUDGET_MS
     this.camTileX = null
     this.camTileZ = null
 
@@ -603,7 +605,7 @@ export class Litter {
     const lift2 = this.lift2
 
     const t0 = performance.now()
-    while (this.queue.length && performance.now() - t0 < BUILD_BUDGET_MS) this._growTile(this.queue.pop())
+    while (this.queue.length && performance.now() - t0 < this.buildBudgetMs) this._growTile(this.queue.pop())
     this.lastBuildMs = performance.now() - t0
 
     const tile = this.tile
@@ -629,7 +631,7 @@ export class Litter {
       const near = ((t.tx + 0.5) * tile - camX) ** 2 + ((t.tz + 0.5) * tile - camZ) ** 2 + lift2 <= this.radiusSq
 
       const q = t.q
-      const thicken = near2 < this.loSq[q]
+      const thicken = q > 0 && near2 < this.loSq[q]
       const thin = q + 2 <= this.maxQ && near2 >= this.loSq[q + 2]
       // A road tile she has walked within RADIUS of owes its pebbles at the level it already holds.
       if (!t.queued && (thicken || thin || (near && !t.dry))) {
