@@ -63,7 +63,7 @@ import { snowDefaults } from '../src/v2/layers/doc.js'
 import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { TerrainTint } from '../src/terrain/terrain-tint.js'
-import { buildChunkV2, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { buildChunkV2, restippleChunk, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN, STIPPLE_WALL_SCALE } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { HEARTH_LIGHT, HEARTHS } from '../src/v2/hearth-light.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
@@ -732,20 +732,21 @@ export async function run({ heightmap } = {}) {
       const wy = r.positions[v * 3 + 1]
       const wz = -1024 + r.positions[v * 3 + 2]
       const k = r.stipple[v * 4]
-      if (k !== Math.fround(stippleTilesPerM(Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z)))) kBad++
-      const tileStep = Math.log2(1 / (k * STIPPLE_TILE_MIN))
-      if (Math.abs(tileStep - Math.round(tileStep)) > 1e-6 || tileStep < 0) pow2Bad++
       const plane = r.stipple[v * 4 + 3]
+      const wall = plane === 0 ? 1 : STIPPLE_WALL_SCALE
+      if (k !== Math.fround(stippleTilesPerM(Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z)) / wall)) kBad++
+      const tileStep = Math.log2(1 / (k * wall * STIPPLE_TILE_MIN))
+      if (Math.abs(tileStep - Math.round(tileStep)) > 1e-6 || tileStep < 0) pow2Bad++
       if (!(plane === 0 || plane === 1 || plane === 2)) planeBad++
       const ou = r.stipple[v * 4 + 1]
       const ov = r.stipple[v * 4 + 2]
       const wantU = plane === 1 ? frac(k * -1024) : frac(k * 512)
       const wantV = plane === 0 ? frac(k * -1024) : 0
       if (Math.abs(ou - wantU) > 1e-6 || Math.abs(ov - wantV) > 1e-6) offBad++
-      ks.add(k)
+      ks.add(k * wall)
       planes.add(plane)
     }
-    check(kBad === 0, 'every vertex tiles the stipple at stippleTilesPerM(distance)', `${kBad} of ${inner} off`)
+    check(kBad === 0, 'every vertex tiles the stipple at stippleTilesPerM(distance), a wall STIPPLE_WALL_SCALE times larger', `${kBad} of ${inner} off`)
     check(pow2Bad === 0, 'every tile is the minimum times a power of two', `${pow2Bad} of ${inner} off`)
     check(planeBad === 0, 'every vertex names one of the three planes', `${planeBad} of ${inner} off`)
     check(offBad === 0, 'stipple offsets are frac(k * chunk origin) on the plane\'s axes', `${offBad} wrong`)
@@ -759,6 +760,17 @@ export async function run({ heightmap } = {}) {
       const kCorner = near.stipple[0]
       check(kMid === Math.fround(1 / STIPPLE_TILE_MIN), 'the vertex under the feet gets the minimum tile', `${(1 / kMid).toFixed(2)} m`)
       check(kCorner < kMid, 'the corner of the chunk under the feet gets a coarser tile than its middle', `${(1 / kCorner).toFixed(2)} m vs ${(1 / kMid).toFixed(2)} m`)
+      // Built from 30 m out, then restippled from the feet: terrain-v2 hands
+      // restippleChunk the slot's Float32 interior heights, so this does too.
+      const stale = buildChunkV2(field, layers, { ox: -size / 2, oz: -size / 2, size, res: CHUNK_RES, cam: { x: 30, y: field.heightAt(0, 0) + 1.6, z: 0 } })
+      const heights = new Float32Array(inner)
+      for (let v = 0; v < inner; v++) heights[v] = stale.positions[v * 3 + 1]
+      const span = new Float32Array(stale.stipple)
+      restippleChunk(span, heights, -size / 2, -size / 2, size, CHUNK_RES, { x: 0, y: field.heightAt(0, 0) + 1.6, z: 0 })
+      let restipBad = 0
+      for (let c = 0; c < span.length; c++) if (span[c] !== near.stipple[c]) restipBad++
+      check(stale.stipple[((vpr >> 1) * vpr + (vpr >> 1)) * 4] < kMid, 'a chunk built from 30 m out is too coarse underfoot', `${(1 / stale.stipple[((vpr >> 1) * vpr + (vpr >> 1)) * 4]).toFixed(2)} m`)
+      check(restipBad === 0, 'restippleChunk from the feet matches a fresh build from the feet, skirts included', `${restipBad} of ${span.length} floats differ`)
     }
     // The plane pick, on ground that is exactly a plane rising along x: past
     // 45 degrees the geometric normal's x beats its y and the tile goes onto

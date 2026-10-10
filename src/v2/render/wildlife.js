@@ -1775,6 +1775,7 @@ export class Wildlife {
   /** The card buffer's count and upload flags set to what has been pushed this frame. */
   _commitCards(sp) {
     sp.cardMesh.count = sp.cardN
+    sp.cardMesh.visible = sp.cardN > 0 && sp.cardMaterial.map !== null
     if (!sp.cardN) return
     sp.cardMesh.instanceMatrix.needsUpdate = true
     sp.cardFade.needsUpdate = true

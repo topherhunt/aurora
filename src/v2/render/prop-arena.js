@@ -84,6 +84,12 @@ import { reportWarning } from '../log-ship.js'
 // Geometry ids at or above this belong to the card set; no view without one reaches it.
 const NO_CARDS = 0x3fffffff
 
+/** Whether `n` floats of `a` from `ao` equal those of `b` from `bo`: a setter that finds its value already on the GPU side flags no upload. */
+function same(a, ao, b, bo, n) {
+  for (let i = 0; i < n; i++) if (a[ao + i] !== b[bo + i]) return false
+  return true
+}
+
 /**
  * The mesh set: one InstancedMesh per (tier, variant), the slot bookkeeping and
  * the dirty spans. Not a scene object -- the owner adds `meshes` to whatever
@@ -437,7 +443,9 @@ export class PropArena extends THREE.Group {
     const set = this._setFor(g)
     const l = this._localOf(g)
     const mesh = set.meshes[l]
-    matrix.toArray(mesh.instanceMatrix.array, s * 16)
+    const dst = mesh.instanceMatrix.array
+    if (same(this.mat, instanceId * 16, dst, s * 16, 16)) return
+    matrix.toArray(dst, s * 16)
     set._dirty(mesh.instanceMatrix, set._matRange[l], s, 16)
   }
 
@@ -454,7 +462,9 @@ export class PropArena extends THREE.Group {
     const set = this._setFor(g)
     const l = this._localOf(g)
     const mesh = set.meshes[l]
-    color.toArray(mesh.instanceColor.array, s * 3)
+    const dst = mesh.instanceColor.array
+    if (same(this.col, instanceId * 3, dst, s * 3, 3)) return
+    color.toArray(dst, s * 3)
     set._dirty(mesh.instanceColor, set._colRange[l], s, 3)
   }
 
@@ -471,6 +481,7 @@ export class PropArena extends THREE.Group {
     const set = this._setFor(g)
     const l = this._localOf(g)
     const attr = set.meshes[l].geometry.getAttribute('aPropFade')
+    if (attr.array[s] === this.fade[instanceId]) return
     attr.array[s] = value
     set._dirty(attr, set._fadeRange[l], s, 1)
   }
@@ -486,6 +497,7 @@ export class PropArena extends THREE.Group {
     if (!set.layerShift) return
     const l = this._localOf(g)
     const attr = set.meshes[l].geometry.getAttribute('aLayerShift')
+    if (attr.array[s] === this.layer[instanceId]) return
     attr.array[s] = value
     set._dirty(attr, set._layerRange[l], s, 1)
   }
@@ -500,6 +512,7 @@ export class PropArena extends THREE.Group {
     if (!set.hue) return
     const l = this._localOf(g)
     const attr = set.meshes[l].geometry.getAttribute('aHue')
+    if (attr.array[s] === this.turn[instanceId]) return
     attr.array[s] = radians
     set._dirty(attr, set._hueRange[l], s, 1)
   }

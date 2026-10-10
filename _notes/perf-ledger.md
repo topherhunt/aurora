@@ -9,10 +9,11 @@ Goal: 80 Hz on Quest 2 in every environment (12.5 ms budget; 90 Hz is 11.1 ms, s
 - `calls` are two-eye sums. `gpuMs` is null on this headset. `waitMs` includes idle to vsync. "cpu" (js + rend) is the smooth column; "saved" steps in jumps.
 - The battery drifts thermally (about 19 to 23.6 ms over a run). A single state is good to about ±1 to 2 ms. Trust only a group that repeats across both rounds (spread under about 1 ms); baselines are interpolated per state.
 - The battery's second step is a census (`src/v2/perf-census.js`, printed as "per-layer census"): with everything on, per layer per frame, `update()` ms, main/offscreen/shadow draws, instances, material and program switches, attribute uploads (upper bound in KB). It explains a group's saved ms; hobs, villagers and leafkin appear there whether or not they have a toggle. Baked-puppet draws are shared and count under `baked`.
+- Census checks: `empty` (draws with 0 instances) must be 0 -- three issues the draw anyway, so every count-driven mesh hides itself at 0 (`mesh.visible = count > 0`; `InstancedArena` drops its layer mask; `TriFlames.update`); trace-report prints `!!` for any layer that does not. `upl` is attribute uploads a frame: a still scene should write about nothing, trace-report lists layers at 1 or more.
 - Ambient traces (record mode) show per-window stages and the worst frames; use them for hitches, the battery for steady-state cost.
 
-## Current budget (village, trace 2026-10-10T08-11-59, ms saved by turning off)
-- Floor (everything off): 11.3 to 12 ms, at vsync. Baseline about 21 ms: js 4.4 + rend 7.0, wait 9.5. The 80 Hz request did not take (header still 90 Hz); `main.js` now logs the granted rate.
+## Current budget (village, traces 2026-10-10T08-11-59 and T20-08-49, ms saved by turning off)
+- Floor (everything off): 11.3 to 12 ms, at vsync. Baseline 21 to 22 ms: js 4.4 to 5 + rend 7 to 7.5, wait 9.3 to 9.5. Across the 11 baselines of T20-08-49, frame ms rises 0.14 ms per upload call (r 0.75, confounded with NPC count and draws); mean frame is cpu + 8 to 9 ms in every state, so the wait is not plain slack (GPU utilisation needs the OVR Metrics Tool). The 80 Hz request did not take (header still 90 Hz); `main.js` now logs the granted rate.
 - scatter 3.8 / 3.2 (ladder: boulders 1.5, grass+trees 1.5, litter 0.6, ferns about 0)
 - animals 1.8 / 2.9 (drills: insects 0.5, water critters noise; stage lap animals 0.7 to 1.2)
 - village 1.8 / 0.4 (townsfolk drill 2.0 with 16 calls and 13 upload calls)
@@ -49,5 +50,5 @@ The cost was a re-queue loop: `thicken = near2 < loSq[q]` is always true at leve
 
 ## Structural facts
 - `LitterCards` is the shared far-card pool (12,288 instances; real use 5 to 6k). Clumps in it get no snow whitening and no wind; mipmaps are on for all users.
-- `PropMeshes` and `PropArena` use swap-remove packing and range uploads; `InstancedArena` (instanced-arena.js, used by grass) tracks dirty ranges. three's ranged `bufferSubData` passes the whole array, so count `length * BYTES_PER_ELEMENT` (`gl-uploads.js` does).
+- `PropMeshes` and `PropArena` use swap-remove packing and range uploads, and every `PropArena` setter skips a write whose value is already in the buffer (the shared litter-card pool was re-uploaded every frame by bridges, striders and crabs rewriting identical values); `InstancedArena` (instanced-arena.js, used by grass) tracks dirty ranges. three's ranged `bufferSubData` passes the whole array, so count `length * BYTES_PER_ELEMENT` (`gl-uploads.js` does).
 - Battery A/B rows (`cardsHalf`, `litterDiscard`, `grassHalf`, `litterPebbles`, and so on) are trace-only toggles in `main.js`; the helpers are `src/v2/render/ab-switch.js`.

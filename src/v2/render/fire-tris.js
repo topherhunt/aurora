@@ -220,6 +220,7 @@ export class TriFlames {
     this.shared.uTime.value = t
     this.shared.uGlow.value.set(glow[0], glow[1], glow[2])
     this.mesh.count = this.sparks.count = TriFlames.shown ? this.count : 0
+    this.mesh.visible = this.sparks.visible = this.mesh.count > 0
   }
 
   /** Triangles the flames draw this frame. */

@@ -6,7 +6,7 @@ import { treeClumpCards, bakeTreeClumps, CLUMP_TREES } from '../../props/tree-cl
 import { CLUMP_VARIANTS } from '../../textures.js'
 import { HEM_FRAY } from '../../props/tree-v8.js'
 import {
-  createPropMaterial, setSnowLine, setLeafSnowVary, cardFacing,
+  createPropMaterial, setSnowLine, setLeafSnowVary, cardFacing, treeMeshGain,
   getPropClock, setPropFadeTimerAt, setPropSolidAt, PROP_FADE_SECONDS, dissolvesOn,
 } from '../../material.js'
 import { RimFade, RIM_PHASES, RIM_SLACK_MIN, tilePhase } from './rim.js'
@@ -756,6 +756,7 @@ export class Trees {
       hemFray: HEM_FRAY,
       // The single cards light as the clump pictures do (litter-cards.js CANOPY).
       billboardFacing: cardFacing,
+      meshGain: treeMeshGain,
     })
     // What the layer SHIPS at, so `setCutout` restores the material's own
     // threshold rather than a number typed here that could drift from it.

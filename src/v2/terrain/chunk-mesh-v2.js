@@ -34,9 +34,10 @@ import { hearthGlowAt, hearthsReach } from '../hearth-light.js'
 //
 // The size is per VERTEX and not per chunk on purpose: the far edge of an 8 m
 // chunk is not the near edge, and a 128 m chunk spans a doubling of distance.
-// It is still only as current as the last rebuild -- the ring swap is what
-// refreshes it -- so within a ring it drifts up to 2x from ideal. Rough by
-// design.
+// A leaf is never rebuilt as she walks onto it, so its size would stay the one
+// from 10-20 m out (4-8x too coarse underfoot) and chunks baked from far-apart
+// cameras would meet in a straight seam; terrain-v2's RESTIPPLE rewrites the
+// near chunks' frames from the current camera via restippleChunk.
 //
 // STIPPLE_TILE_PER_M is the tile's size as a fraction of viewing distance:
 // 0.125 puts one 256-texel tile across ~7 degrees, a texel across ~0.028
@@ -50,6 +51,59 @@ export const STIPPLE_TILE_MIN = 0.375
 export function stippleTilesPerM(dist) {
   const step = Math.max(0, Math.round(Math.log2((dist * STIPPLE_TILE_PER_M) / STIPPLE_TILE_MIN)))
   return 1 / (STIPPLE_TILE_MIN * 2 ** step)
+}
+
+/** Wall planes (1, 2) tile the stipple this many times larger: the ground's size reads as gravel on a cliff. */
+export const STIPPLE_WALL_SCALE = 2
+
+// One vertex's frame at `s`, keeping the plane already at s + 3. `k` is the
+// ground's tiles per metre at that distance; a wall takes it / STIPPLE_WALL_SCALE.
+function writeStippleFrame(stipple, s, kGround, ox, oz) {
+  const plane = stipple[s + 3]
+  const k = plane === 0 ? kGround : kGround / STIPPLE_WALL_SCALE
+  stipple[s] = k
+  stipple[s + 1] = plane === 1 ? ((k * oz) % 1 + 1) % 1 : ((k * ox) % 1 + 1) % 1
+  stipple[s + 2] = plane === 0 ? ((k * oz) % 1 + 1) % 1 : 0
+}
+
+/** The four skirt edges as rows of interior vertex indices, in skirt-vertex order. */
+export function skirtEdges(res) {
+  const vpr = res + 1
+  const idx = (i, j) => j * vpr + i
+  const north = []
+  for (let i = 0; i <= res; i++) north.push(idx(i, 0))
+  const south = []
+  for (let i = res; i >= 0; i--) south.push(idx(i, res))
+  const west = []
+  for (let j = res; j >= 0; j--) west.push(idx(0, j))
+  const east = []
+  for (let j = 0; j <= res; j++) east.push(idx(res, j))
+  return [north, south, west, east]
+}
+
+/**
+ * Re-size a built chunk's stipple frames for a new camera, in place. `stipple`
+ * is the chunk's (CHUNK_VERTS * 4) span, planes intact; `heights` its interior
+ * y grid. Matches what buildChunkV2 would bake from `cam`.
+ */
+export function restippleChunk(stipple, heights, ox, oz, size, res, cam) {
+  const step = size / res
+  const vpr = res + 1
+  for (let j = 0; j <= res; j++) {
+    const wz = oz + j * step
+    for (let i = 0; i <= res; i++) {
+      const vi = j * vpr + i
+      const k = stippleTilesPerM(Math.hypot(ox + i * step - cam.x, heights[vi] - cam.y, wz - cam.z))
+      writeStippleFrame(stipple, vi * 4, k, ox, oz)
+    }
+  }
+  let sv = vpr * vpr
+  for (const edge of skirtEdges(res)) {
+    for (const vi of edge) {
+      for (let c = 0; c < 4; c++) stipple[sv * 4 + c] = stipple[vi * 4 + c]
+      sv++
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -781,11 +835,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       const adx = Math.abs(dx)
       const adz = Math.abs(dz)
       const plane = adx > 1 && adx >= adz ? 1 : adz > 1 ? 2 : 0
-      const s = vi * 4
-      stipple[s] = k
-      stipple[s + 1] = plane === 1 ? ((k * oz) % 1 + 1) % 1 : ((k * ox) % 1 + 1) % 1
-      stipple[s + 2] = plane === 0 ? ((k * oz) % 1 + 1) % 1 : 0
-      stipple[s + 3] = plane
+      stipple[vi * 4 + 3] = plane
+      writeStippleFrame(stipple, vi * 4, k, ox, oz)
     }
   }
 
@@ -801,18 +852,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // is (dz, 0, -dx), so north needs dx = +1, south dx = -1, west dz = -1, east
   // dz = +1. Getting this wrong makes the skirts invisible from outside, which
   // is the only place they are ever seen.
-  const edges = []
-  {
-    const north = []
-    for (let i = 0; i <= res; i++) north.push(idx(i, 0))
-    const south = []
-    for (let i = res; i >= 0; i--) south.push(idx(i, res))
-    const west = []
-    for (let j = res; j >= 0; j--) west.push(idx(0, j))
-    const east = []
-    for (let j = 0; j <= res; j++) east.push(idx(res, j))
-    edges.push(north, south, west, east)
-  }
+  const edges = skirtEdges(res)
 
   let sv = innerCount
   const skirtIndex = []

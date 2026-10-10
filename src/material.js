@@ -1255,6 +1255,8 @@ const RIM_DARKEN = /* glsl */ `mix( 0.72, 1.0,
 
 // How far a tree card's normal turns from straight up toward the eye: 0 lights it as a top whichever way she looks, 1 as the litter cards' CARD_NORMAL (bright with the sun behind her, dark looking into it). One value for the single cards and the clumps, so the two tiers never disagree. Live: `v2treeFacing(k)`.
 export const cardFacing = { value: 0.25 }
+// The mesh tiers' albedo beside those cards: a crown of leaves catches a low sun its cards cannot, so the meshes are toned down to sit with the cards. Live: `v2treeMeshGain(g)`.
+export const treeMeshGain = { value: 0.9 }
 
 /** Set `normal` to straight up turned toward the eye by GLSL float `k`; k = 1 is gen-props.js CARD_NORMAL exactly. */
 export const facingNormal = (k) => /* glsl */ `
@@ -2547,7 +2549,7 @@ export function createPropMaterial(
     vertexColors = false, billboardLayers = null, stripTiling = false,
     billboardGrow = null, billboardSpin = true, instancedFade = false, wind = null,
     side = THREE.DoubleSide, bump = false, seasons = false, hemFray = null,
-    layerShift = false, billboardTilt = null, leafThrough = 0, billboardFacing = false,
+    layerShift = false, billboardTilt = null, leafThrough = 0, billboardFacing = false, meshGain = false,
   } = {}
 ) {
   const billboards = billboardLayers && billboardLayers.length ? Array.from(billboardLayers) : null
@@ -2580,6 +2582,7 @@ export function createPropMaterial(
   if (billboardFacing && (!billboardSpin || !billboards)) {
     throw new Error('createPropMaterial: billboardFacing needs spun billboardLayers to light')
   }
+  if (meshGain && !billboardFacing) throw new Error('createPropMaterial: meshGain tells meshes from cards by billboardFacing\'s vPropSpun')
   if (billboardGrow) {
     if (!billboards) {
       throw new Error('createPropMaterial: billboardGrow needs billboardLayers to grow')
@@ -2650,6 +2653,7 @@ export function createPropMaterial(
       bindHeadEye(shader.uniforms)
     }
     if (billboardFacing) shader.uniforms.uCardFacing = cardFacing
+    if (meshGain) shader.uniforms.uMeshGain = treeMeshGain
     if (windSpec && windCompiled) {
       shader.uniforms.uWindDir = windDir
       shader.uniforms.uWindStrength = windStrength
@@ -2742,6 +2746,7 @@ export function createPropMaterial(
         varying float vPropFade;
         ${billboardFacing ? `varying float vPropSpun;
         uniform float uCardFacing;` : ''}
+        ${meshGain ? 'uniform float uMeshGain;' : ''}
         ${hemFray ? HEM_FRAY_GLSL.fragmentCommon : ''}
         ${IGN_GLSL}
         ${seasons ? SNOW_COMMON : ''}
@@ -2778,7 +2783,8 @@ export function createPropMaterial(
         ${seasons ? SNOW_APPLY : ''}
         diffuseColor.rgb *= ${RIM_DARKEN};
         ${leafThrough ? leafThroughApply(leafThrough) : ''}
-        ${billboardFacing ? `if ( vPropSpun > 0.5 ) ${facingNormal('uCardFacing')}` : ''}`
+        ${billboardFacing ? `if ( vPropSpun > 0.5 ) ${facingNormal('uCardFacing')}` : ''}
+        ${meshGain ? 'if ( vPropSpun < 0.5 ) diffuseColor.rgb *= uMeshGain;' : ''}`
       )
       .replace(
         'vec4 diffuseColor = vec4( diffuse, opacity );',
@@ -2826,7 +2832,7 @@ export function createPropMaterial(
     : ''
   const hemKey = hemFray ? hemFrayKey(hemFray) : ''
   const tiltKey = billboardTilt ? `-tilt${billboardTilt.amount}.${billboardTilt.layers[0]}.${billboardTilt.layers[1]}` : ''
-  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}${leafThrough ? `-leaf${leafThrough}` : ''}${billboardFacing ? '-facing' : ''}`
+  const key = `prop-moss-v6${vertexColors ? '-vc' : ''}${billboards ? `-bb${billboards.join('.')}` : ''}${billboardSpin ? '' : '-nospin'}${tiltKey}${stripTiling ? '-strip' : ''}${growKey}${instancedFade ? '-ifade' : ''}${layerShift ? '-lshift' : ''}${bump ? '-bump' : ''}${seasons ? '-seasons' : ''}${hemKey}${leafThrough ? `-leaf${leafThrough}` : ''}${billboardFacing ? '-facing' : ''}${meshGain ? '-mgain' : ''}`
   material.customProgramCacheKey = () =>
     `${key}${windSpec && !windCompiled ? '-nowind' : ''}${material.userData.noDiscard ? '-nodiscard' : ''}`
 

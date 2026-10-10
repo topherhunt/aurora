@@ -870,6 +870,7 @@ export class Frogs {
         this.hues[k].needsUpdate = true
       }
       tier.count = counts[k]
+      tier.visible = counts[k] > 0
     })
     this.stats.alive = MAX - this.free.length
     this.stats.tiles = this.tiles.size

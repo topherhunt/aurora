@@ -341,6 +341,7 @@ export class Fireflies {
     if (!this.night) {
       if (this.tiles.size) this._clear()
       this.mesh.count = 0
+      this.mesh.visible = false
       return
     }
     if (walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t)) > 0) this.rescan.length = 0
@@ -369,6 +370,7 @@ export class Fireflies {
       }
     }
     this.mesh.count = n
+    this.mesh.visible = n > 0
     this.mesh.instanceMatrix.needsUpdate = true
     this.glow.needsUpdate = true
   }

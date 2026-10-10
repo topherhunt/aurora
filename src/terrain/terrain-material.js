@@ -1734,6 +1734,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       // Grit and bump both scale by this on snow, which reads as a smooth
       // field with a little speckle rather than as rock painted white.
       uStippleSnow: { value: 0.35 },
+      // Bump only, on the wall planes (1, 2): a cliff's relief is the
+      // stipple's to carry, since its mesh is starved of vertices.
+      uStippleWallBump: { value: 2.0 },
     })
   }
 
@@ -1796,6 +1799,7 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         uniform float uStippleGrit;
         uniform float uStippleBump;
         uniform float uStippleSnow;
+        uniform float uStippleWallBump;
         flat varying vec4 vStipFrame;
         varying vec3 vStipPos;
         varying float vStipSnow;
@@ -1827,7 +1831,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // .gb are the gradient of the .r this pixel was just coloured by, as
         // a unit slope in tile units, laid back onto the plane's two world
         // axes. Not divided by the tile size on purpose -- see uStippleBump.
-        vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0 * auroraStipGain;
+        vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0 * auroraStipGain
+          * ( vStipFrame.w < 0.5 ? 1.0 : uStippleWallBump );
         auroraStippleTilt = vStipFrame.w < 0.5 ? vec3( auroraStipGrad.x, 0.0, auroraStipGrad.y )
           : vStipFrame.w < 1.5 ? vec3( 0.0, auroraStipGrad.y, auroraStipGrad.x )
           : vec3( auroraStipGrad, 0.0 );`)

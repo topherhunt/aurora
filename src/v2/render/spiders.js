@@ -1779,10 +1779,13 @@ export class Spiders {
     }
     for (let k = 0; k < LOD_TIERS; k++) {
       const mesh = this.meshes[k]
+      if (counts[k] > 0 || mesh.count > 0) {
+        mesh.instanceMatrix.needsUpdate = true
+        mesh.instanceColor.needsUpdate = true
+        this.gaits[k].needsUpdate = true
+      }
       mesh.count = counts[k]
-      mesh.instanceMatrix.needsUpdate = true
-      mesh.instanceColor.needsUpdate = true
-      this.gaits[k].needsUpdate = true
+      mesh.visible = counts[k] > 0
     }
     // A card not stamped this frame is a spider that went to a mesh, out of range or away.
     let n = 0

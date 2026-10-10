@@ -27,6 +27,7 @@ import {
   validRect,
 } from './stream-policy.js'
 import { createTerrainMaterial } from '../../terrain/terrain-material.js'
+import { restippleChunk } from './chunk-mesh-v2.js'
 import { RELIEF_DEFAULTS, normalizeRelief, sameRelief } from '../height/relief.js'
 import { GroundTint } from '../layers/ground.js'
 import { HEARTHS } from '../hearth-light.js'
@@ -78,6 +79,16 @@ const SELECT_EVERY_FRAMES = 6
 // 12 Hz above. Two frames is 28 ms of extra stand-in-swap latency at 72 Hz, which
 // nobody can see, and caps the burst at half rate.
 const MIN_SELECT_FRAMES = 2
+
+// RESTIPPLE (chunk-mesh-v2 STIPPLE FRAME): a drawn chunk within RESTIP_RADIUS
+// whose stipple was sized from a camera more than max(RESTIP_MOVE_M, RESTIP_REL
+// * its range) from hers is re-sized in place, nearest first, RESTIP_PER_TICK a
+// selection tick. The pass only looks when she has moved RESTIP_MOVE_M since it
+// last finished or a chunk has landed; standing still it is one distance test.
+const RESTIP_RADIUS = 32
+const RESTIP_MOVE_M = 2
+const RESTIP_REL = 0.25
+const RESTIP_PER_TICK = 8
 
 // The near field the yaw cull is never allowed to touch, in metres, and the
 // multiple of her height above a node that counts as near when she is above it.
@@ -259,7 +270,11 @@ export class TerrainV2 {
       const geometryId = this.batch.addGeometry(this._scratch, CHUNK_VERTS, CHUNK_INDICES)
       const instanceId = this.batch.addInstance(geometryId)
       this.batch.setVisibleAt(instanceId, false)
-      this._free.push({ geometryId, instanceId, row: i, heights: this.heightsArena.subarray(i * GRID_VERTS, (i + 1) * GRID_VERTS) })
+      // Where this slot's vertices sit in the batch's own attributes, which the
+      // restipple writes straight into.
+      const { vertexStart } = this.batch.getGeometryRangeAt(geometryId)
+      if (!Number.isInteger(vertexStart)) throw new Error(`v2 terrain: this three's getGeometryRangeAt gives no vertexStart (${vertexStart})`)
+      this._free.push({ geometryId, instanceId, row: i, vertexStart, heights: this.heightsArena.subarray(i * GRID_VERTS, (i + 1) * GRID_VERTS) })
     }
 
     this._mat = new THREE.Matrix4()
@@ -301,6 +316,8 @@ export class TerrainV2 {
     this._groundStamp = new Uint32Array(STAMP_SPAN * STAMP_SPAN)
     this._lastSelect = -SELECT_EVERY_FRAMES
     this._dirty = true
+    this._restipDirty = false
+    this._restipCam = null
     // Always a real object so nothing downstream has to guard for its absence.
     // yaw is what enables cone culling; a caller with only a ground position
     // still gets correct, merely more expensive, terrain (quadtree-v2.js).
@@ -353,6 +370,7 @@ export class TerrainV2 {
       bounds: 0,
       evictions: 0,
       stale: 0,
+      restippled: 0,
       invalidated: 0,
       pendingEdits: 0,
       workerBusy01: 0,
@@ -898,6 +916,8 @@ export class TerrainV2 {
 
     entry.slot = slot
     entry.state = 'ready'
+    entry.stipCam = entry.sentCam
+    this._restipDirty = true
     entry.tris = CHUNK_INDICES / 3
 
     if (this.inFlight === 0) pruneFloors(this._floors)
@@ -910,7 +930,7 @@ export class TerrainV2 {
   _request(node) {
     let entry = this.cache.get(node.key)
     if (!entry) {
-      entry = { node, slot: null, state: 'queued', lastUsed: this.frame, tris: 0, visible: false, pinned: false }
+      entry = { node, slot: null, state: 'queued', lastUsed: this.frame, tris: 0, visible: false, pinned: false, sentCam: null, stipCam: null }
       this.cache.set(node.key, entry)
     }
     entry.lastUsed = this.frame
@@ -955,9 +975,10 @@ export class TerrainV2 {
     entry.state = 'pending'
     const w = this.workers[this._nextWorker]
     this._nextWorker = (this._nextWorker + 1) % this.workers.length
-    // The camera at send time sizes each vertex's stipple; a chunk keeps that
-    // sizing until the LOD tree rebuilds it, which is rough and intended.
+    // The camera at send time sizes each vertex's stipple, until RESTIPPLE
+    // re-sizes it from a nearer one.
     const cam = { x: this._cam.x, y: this._cam.y, z: this._cam.z }
+    entry.sentCam = cam
     w.postMessage({ type: 'chunk', key: node.key, epoch: this.epoch, ox: node.x, oz: node.z, size: node.size, res: CHUNK_RES, cam })
     this.inFlight++
   }
@@ -994,6 +1015,7 @@ export class TerrainV2 {
       this._select(cam)
       this._lastSelect = this.frame
       this._dirty = false
+      this._restipple(cam)
     }
 
     this._syncVisibility()
@@ -1296,6 +1318,40 @@ export class TerrainV2 {
     // hunts for. null rather than a fabricated number, so the panel prints ??
     // instead of quietly showing the cell of ground on the far side of the map.
     this.stats.cellUnderfoot = underfoot < 0 ? null : cellSize(underfoot)
+  }
+
+  // See RESTIPPLE. Writes into the batch's stipple attribute directly: the
+  // slot's positions cannot be read back, but its interior heights are kept and
+  // the plane is already in the span being rewritten.
+  _restipple(cam) {
+    const last = this._restipCam
+    if (!this._restipDirty && last !== null && Math.hypot(cam.x - last.x, cam.y - last.y, cam.z - last.z) < RESTIP_MOVE_M) return
+    const stale = []
+    for (const key of this._render) {
+      const entry = this.cache.get(key)
+      const n = entry.node
+      const range = Math.hypot(Math.max(n.x - cam.x, 0, cam.x - n.x - n.size), Math.max(n.z - cam.z, 0, cam.z - n.z - n.size))
+      if (range > RESTIP_RADIUS) continue
+      const s = entry.stipCam
+      if (Math.hypot(cam.x - s.x, cam.y - s.y, cam.z - s.z) <= Math.max(RESTIP_MOVE_M, RESTIP_REL * range)) continue
+      entry.restipRange = range
+      stale.push(entry)
+    }
+    stale.sort((a, b) => a.restipRange - b.restipRange)
+    const attr = this.batch.geometry.getAttribute('stipple')
+    const done = Math.min(stale.length, RESTIP_PER_TICK)
+    for (let i = 0; i < done; i++) {
+      const entry = stale[i]
+      const n = entry.node
+      const at = entry.slot.vertexStart * 4
+      restippleChunk(attr.array.subarray(at, at + CHUNK_VERTS * 4), entry.slot.heights, n.x, n.z, n.size, CHUNK_RES, cam)
+      attr.addUpdateRange(at, CHUNK_VERTS * 4)
+      entry.stipCam = { x: cam.x, y: cam.y, z: cam.z }
+    }
+    if (done > 0) attr.needsUpdate = true
+    this.stats.restippled += done
+    this._restipDirty = stale.length > done
+    if (!this._restipDirty) this._restipCam = { x: cam.x, y: cam.y, z: cam.z }
   }
 
   _evict() {

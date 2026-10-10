@@ -72,7 +72,10 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] There should also be larger caverns: irregularly-shaped rooms 30-200m in length, with many offbranching tunnels, ceiling out of sight, rough uneven floor with higher regions and lower regions, populated by forests of giant glowing mushrooms of various sizes, interspersed with varying-sized boulders and rivers and pools of water.
   - [ ] If you dip a lit torch into water, extinguishing it, it should hiss.
   - [ ] There should be more stalactites and stalagmites. Make 1 stalagmite model - it should be lumpy and irregular, lopsided, ~200 tris, they often show up in bunches of varying sizes.
-  - [ ] Cave ambient sounds. Ominous deep. Your footsteps scrabble and echo. Echoing water drops when 
+  - [ ] Cave ambient sounds. Ominous deep. Your footsteps scrabble and echo. Echoing water drops when you're near water.
+  - [ ] DON'T have any overworld sounds, muffled or otherwise, when you're in a cave. The cave is a wholly different environs from the overworld, with no sound leakage through.
+  - [ ] You can buy a pouch of colored glowing marbles. Drop them like a trail of breadcrumbs to lead you back to safety. Also is an alternate (limited) light source, especially useful in places where torches are.... not welcome. And they work underwater which is a plus.
+  - [ ] Some cave passages open up into the WALL of a massive chamber with no end in sight. You need to tie a rope to a stalagmite and climb down, either into the unknown dark, or to a semiglowing sporescape
 - [ ] Human villages
   - [ ] Experiment with giving each NPC combinatorial accoutrements: hats, helmets, beards, scarves, cloaks, etc.
     - Claude recommends I test out 2 approaches:

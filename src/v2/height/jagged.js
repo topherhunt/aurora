@@ -30,8 +30,9 @@ import { Hillocks } from './hillocks.js'
 //   fine layers (spacing ~<= 1 m)   amplitude = the calibrated Detail table's
 //                                   entry at that wavelength, times the same
 //                                   (1 + SLOPE_BOOST * slope01) gain Detail
-//                                   applies -- so the sub-metre end is the one
-//                                   that ships, rendered without the smoothing.
+//                                   applies, times JAGGED_CLIFF_GAIN on a cliff
+//                                   -- so the sub-metre end is the one that
+//                                   ships, rendered without the smoothing.
 //
 // plus a term that does not read the slope at all: `bump` metres of scattered
 // hillocks and pits (hillocks.js), under the fine layers' slope gain. Without
@@ -59,6 +60,11 @@ import { Hillocks } from './hillocks.js'
 
 /** Layers whose spacing is at or under this take the calibrated fine amplitude instead of the jitter rule. Geometric midpoint of 1 m and 2 m, so a texel a hair over a power of two still puts its ~1 m layer on the calibrated side. */
 export const JAGGED_FINE_SPACING = Math.SQRT2
+
+/** The fine layers and hillocks run this many times stronger on a cliff, ramped in by the macro slope between JAGGED_CLIFF_TAN_LO and _HI (45 to 65 deg). */
+export const JAGGED_CLIFF_GAIN = 4
+export const JAGGED_CLIFF_TAN_LO = 1
+export const JAGGED_CLIFF_TAN_HI = Math.tan((65 * Math.PI) / 180)
 
 /**
  * Deterministic integer hash of a lattice point, to a uniform in [-1, 1).
@@ -140,7 +146,7 @@ export class Jagged {
     // slope01 is g / (1 + g), so this is the tangent back; it can only reach 1
     // on a vertical face, which a bilinear read of finite texels never gives.
     const tan = s01 >= 1 ? 1e6 : s01 / (1 - s01)
-    const fineGain = 1 + SLOPE_BOOST * s01
+    const fineGain = (1 + SLOPE_BOOST * s01) * (1 + (JAGGED_CLIFF_GAIN - 1) * smoothstep(JAGGED_CLIFF_TAN_LO, JAGGED_CLIFF_TAN_HI, tan))
 
     const lo = cell
     const hi = cell * 2

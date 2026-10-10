@@ -943,6 +943,7 @@ export class Crabs {
       this.hue.needsUpdate = true
     }
     this.mesh.count = n
+    this.mesh.visible = n > 0
     let cards = 0
     for (const c of this.slots) {
       if (c.cardOn && c.cardStamp !== this.frame) {

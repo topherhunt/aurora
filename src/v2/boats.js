@@ -237,6 +237,7 @@ export class Boats {
     }
     this.hulls.count = this.live.length
     this.lids.count = this.live.length
+    this.hulls.visible = this.lids.visible = this.live.length > 0
     if (this.live.length) {
       this.hulls.instanceMatrix.needsUpdate = true
       this.lids.instanceMatrix.needsUpdate = true

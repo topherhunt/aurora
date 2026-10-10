@@ -480,9 +480,9 @@ export class Ambience {
     // Accumulated, not reset, so the cadence does not drift by a frame per sample.
     this.senseLeft -= dt
     if (!this.sensed || this.senseLeft <= 0) {
-      // The shore search is the dear read: every LAKE_MOVING_S while she moves, every LAKE_STILL_S standing, at once after a jump.
+      // The shore search is the dear read: every LAKE_MOVING_S while she moves, every LAKE_STILL_S standing.
       const moved = Math.hypot(head.x - this.lakeX, head.z - this.lakeZ)
-      const lake = moved > SHORE_REACH || now - this.lakeAt >= (moved > LAKE_MOVED_M ? LAKE_MOVING_S : LAKE_STILL_S)
+      const lake = now - this.lakeAt >= (moved > LAKE_MOVED_M ? LAKE_MOVING_S : LAKE_STILL_S)
       if (lake) { this.lakeAt = now; this.lakeX = head.x; this.lakeZ = head.z }
       this.sense.sample(head.x, head.y, head.z, this.s, lake)
       this.sensed = true

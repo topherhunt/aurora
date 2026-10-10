@@ -6,7 +6,7 @@
 //
 // Per layer, per frame:
 //   jsMs       inclusive time in the layer's `update` (a layer listed by the host; draws are counted for all layers)
-//   draws      main-pass draw calls; `offDraws` into offscreen targets (reflections), `shadowDraws` into shadow maps
+//   draws      main-pass draw calls, `emptyDraws` of them with 0 instances (three still issues those); `offDraws` into offscreen targets (reflections), `shadowDraws` into shadow maps
 //   inst       instances drawn in the main pass (1 for a plain mesh, or for a geometry with no instanceCount); `tris` is index count x instances, ignoring groups
 //   matSw/progSw  draws whose material / compiled program differs from the previous main-pass draw anywhere in the frame
 //   upCalls    attribute uploads, counted as version bumps of the layer's geometry attributes and instance buffers
@@ -78,7 +78,7 @@ export class Census {
   stat(name) {
     let s = this.stats.get(name)
     if (!s) {
-      s = { draws: 0, offDraws: 0, shadowDraws: 0, inst: 0, tris: 0, matSw: 0, progSw: 0, upCalls: 0, upKbMax: 0, objects: 0 }
+      s = { draws: 0, emptyDraws: 0, offDraws: 0, shadowDraws: 0, inst: 0, tris: 0, matSw: 0, progSw: 0, upCalls: 0, upKbMax: 0, objects: 0 }
       this.stats.set(name, s)
     }
     return s
@@ -96,18 +96,24 @@ export class Census {
       const buffers = buffersOf(obj)
       this.hooked.set(obj, { own, orig, buffers, v0: buffers.map((b) => b.version) })
       obj.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
-        this.draw(st, obj, geometry, material, renderer)
+        this.draw(st, obj, geometry, material, renderer, camera)
         orig.call(obj, renderer, scene, camera, geometry, material, group)
       }
     })
   }
 
-  draw(st, obj, geometry, material, renderer) {
+  /** In a headset the main pass is drawn per eye camera into the XR framebuffer, which is itself a render target; on the desktop it is the null target. */
+  mainPass(renderer, camera) {
+    return renderer.xr.isPresenting ? renderer.xr.getCamera().cameras.includes(camera) : renderer.getRenderTarget() === null
+  }
+
+  draw(st, obj, geometry, material, renderer, camera) {
     if (isDepth(material)) { st.shadowDraws++; return }
-    if (renderer.getRenderTarget() !== null) { st.offDraws++; return }
+    if (!this.mainPass(renderer, camera)) { st.offDraws++; return }
     st.draws++
     const inst = obj.isInstancedMesh ? obj.count : Number.isFinite(geometry.instanceCount) ? geometry.instanceCount : 1
     st.inst += inst
+    if (inst === 0) st.emptyDraws++
     const count = geometry.index ? geometry.index.count : geometry.attributes.position.count
     st.tris += (count / 3) * inst
     if (this.lastMat !== material) st.matSw++
@@ -148,7 +154,7 @@ export class Census {
       const s = this.stats.get(name)
       out[name] = {
         jsMs: this.js.has(name) ? r(this.js.get(name) / n) : null,
-        draws: s ? r(s.draws / n) : 0, offDraws: s ? r(s.offDraws / n) : 0, shadowDraws: s ? r(s.shadowDraws / n) : 0,
+        draws: s ? r(s.draws / n) : 0, emptyDraws: s ? r(s.emptyDraws / n) : 0, offDraws: s ? r(s.offDraws / n) : 0, shadowDraws: s ? r(s.shadowDraws / n) : 0,
         inst: s ? Math.round(s.inst / n) : 0, tris: s ? Math.round(s.tris / n) : 0,
         matSw: s ? r(s.matSw / n) : 0, progSw: s ? r(s.progSw / n) : 0,
         upCalls: s ? r(s.upCalls / n) : 0, upKbMax: s ? r(s.upKbMax / n) : 0,

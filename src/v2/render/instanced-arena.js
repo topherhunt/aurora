@@ -73,6 +73,9 @@ export class InstancedArena extends THREE.InstancedMesh {
     this._slot = new Int32Array(maxInstances).fill(-1)
     this._owner = new Int32Array(maxInstances).fill(-1)
     this.count = 0
+    // An empty arena leaves every camera's layer test, because three still issues the draw at `count` 0. `visible` stays the layer toggle's: passes that save and restore it would otherwise freeze an empty arena hidden.
+    this._layerMask = this.layers.mask
+    this.layers.mask = 0
     this.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     // Made here rather than left to three's lazy path inside setColorAt, because
     // _writeSlot has to be able to move a tint before anyone has set one.
@@ -239,6 +242,7 @@ export class InstancedArena extends THREE.InstancedMesh {
       throw new Error(`InstancedArena: more than ${this._max} instances visible at once`)
     }
     this.count = s + 1
+    this.layers.mask = this._layerMask
     this._owner[s] = instanceId
     this._slot[instanceId] = s
     this._writeSlot(instanceId)
@@ -249,6 +253,7 @@ export class InstancedArena extends THREE.InstancedMesh {
     const s = this._slot[instanceId]
     const last = this.count - 1
     this.count = last
+    if (last === 0) this.layers.mask = 0
     this._slot[instanceId] = -1
     if (s === last) return
     const moved = this._owner[last]

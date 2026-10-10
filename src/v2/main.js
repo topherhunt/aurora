@@ -101,7 +101,7 @@ import { loadCritterGlb, setTierTint } from './render/critters.js'
 import { Litter } from './render/litter.js'
 import { buildTextureArray, loadImageLayers } from '../textures.js'
 import { bakeRockImpostor, buildRockBank } from '../props/rock-bank.js'
-import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripTiling, setWindEnabled, cardFacing } from '../material.js'
+import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripTiling, setWindEnabled, cardFacing, treeMeshGain } from '../material.js'
 
 // v1 LEAF MODULES, shared on purpose (§18's shared list). Every one of these is
 // about the SKY or about the BODY and neither depends on where the ground came
@@ -4573,6 +4573,7 @@ async function buildRoom(room, at) {
   scene.add(litterCards.group)
   window.v2cards = litterCards // console: `v2cards.stats`
   window.v2treeFacing = (k) => { cardFacing.value = k } // console: tree cards' sun-facing, 0 flat to 1 CARD_NORMAL
+  window.v2treeMeshGain = (g) => { treeMeshGain.value = g } // console: LOD0/LOD1 tree albedo
   lighting.patch(litterCards.material, { mode: 'vertex', cacheKey: 'v2-litter-card', liftAlbedo: { ...TREE_LIFT, weight: 'vCardCanopy' } })
   deadwood = new Deadwood(scene, height, waterSurfaces, layers, { seed, bank: await banks.deadwood, biome, bounds, cards: litterCards })
   // ONE KEY FOR EVERY GENERATED PROP, here and at the bones and roosts: their

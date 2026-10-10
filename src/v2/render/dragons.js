@@ -1791,6 +1791,7 @@ export class Dragons {
     for (const d of this.byKey.values()) if (d.seen !== this.frame) this._retire(d)
 
     this.cardMesh.count = this.cardN
+    this.cardMesh.visible = this.cardN > 0 && this.cardMaterial.map !== null
     if (this.cardN) {
       this.cardMesh.instanceMatrix.needsUpdate = true
       this.cardMesh.instanceColor.needsUpdate = true
