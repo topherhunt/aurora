@@ -128,10 +128,10 @@ const boxAsset = () => {
 const scene = new THREE.Scene()
 const make = (seed = 7) => new Grasshoppers(scene, height, water, { seed, walk, assets: boxAsset() })
 const flock = make()
-check(flock.loaded && flock.mesh.visible && flock.mesh.parent === flock.batch && Math.abs(flock.length - 1) < 1e-6, 'asset set: visible in the batch, length 1', `length ${flock.length}`)
+check(flock.loaded && flock.mesh.parent === flock.batch && Math.abs(flock.length - 1) < 1e-6, 'asset set: visible in the batch, length 1', `length ${flock.length}`)
 check(flock.mesh.isInstancedMesh && flock.mesh.instanceMatrix.count === MAX && flock.batch.children.length === 1, 'one InstancedMesh of MAX slots: every shown grasshopper is one draw call')
 check(flock.material.isMeshLambertMaterial && flock.material.alphaTest === 0 && flock.material.side === THREE.FrontSide && !flock.material.transparent, 'a plain single-sided Lambert: no cutout, no glint')
-check(!flock.mesh.frustumCulled && flock.mesh.instanceMatrix.usage === THREE.DynamicDrawUsage, 'never frustum culled, matrices dynamic')
+check(!flock.mesh.frustumCulled && flock.rows.usage === THREE.DynamicDrawUsage && flock.mesh.geometry.getAttribute('aRow') === flock.rows, 'never frustum culled, the plan-table rows dynamic')
 
 // --- placement -----------------------------------------------------------------
 const alive = (of = flock) => of.slots.filter((g) => g.tile !== null)
@@ -157,20 +157,22 @@ flock.place(0, 0)
   check(onStone.length > 0 && onStone.every((g) => g.y > groundAt(g.x, g.z)), 'the ones on the boulder sit on its dome, not the field under it', `${onStone.length} on the stone`)
   // Seated up along the slope: the field rises 0.05 in x, so the normal leans -x.
   flock.update(0, 11, 0, 0)
-  const m = flock.mesh.instanceMatrix.array
+  check(flock.mesh.visible && flock.mesh.count > 0, 'a drawn flock is visible')
+  const mats = flock.shown.map((g) => flock.matrixOf(g).elements)
   let leaning = 0, scaled = 0, seated = 0
-  for (let k = 0; k < flock.mesh.count; k++) {
-    const up = [m[k * 16 + 4], m[k * 16 + 5], m[k * 16 + 6]]
+  for (let k = 0; k < mats.length; k++) {
+    const m = mats[k]
+    const up = [m[4], m[5], m[6]]
     const len = Math.hypot(...up)
     if (flock.shown[k].state !== 'hop') {
       seated++
       if (Math.abs(up[0] / len + SLOPE / Math.hypot(1, SLOPE)) < 1e-5 && Math.abs(up[1] / len - 1 / Math.hypot(1, SLOPE)) < 1e-5) leaning++
     }
     // The instances are written in shown order; a seated body's X column is its length over the mesh's.
-    if (Math.abs(Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) - flock.shown[k].len / flock.length) < 1e-6) scaled++
+    if (Math.abs(Math.hypot(m[0], m[1], m[2]) - flock.shown[k].len / flock.length) < 1e-6) scaled++
   }
   check(seated > 0 && leaning === seated, 'every written instance on the ground stands up along the slope', `${leaning} of ${seated}`)
-  check(scaled === flock.mesh.count, 'and is drawn at its length over the mesh\'s X extent', `${scaled} of ${flock.mesh.count}`)
+  check(scaled === mats.length, 'and is drawn at its length over the mesh\'s X extent', `${scaled} of ${mats.length}`)
   // The tint: each written instance's colour is a mix of the two ends by a shade, and the meadow holds greener and browner ones.
   const tint = flock.mesh.instanceColor.array
   let inGamut = 0, greener = 0, browner = 0
@@ -213,6 +215,8 @@ const drive = (of, { from = 0, secs, dt = 1 / 72, x = 0, y = 11, z = 0, dayness 
   const end = from + secs
   while (now < end) {
     of.update(x, y, z, now, dayness)
+    // The GPU poses the flock; the CPU poses it for a hand and the ambience only when asked, so the driver asks every frame.
+    of._refresh(0)
     each?.(now)
     now += dt
   }
@@ -349,7 +353,7 @@ const drive = (of, { from = 0, secs, dt = 1 / 72, x = 0, y = 11, z = 0, dayness 
 // one of them meeting the meadow late, draw the same grasshopper in the same
 // place.
 {
-  const pose = (of) => alive(of).map((g) => `${g.key}|${g.x.toFixed(9)},${g.y.toFixed(9)},${g.z.toFixed(9)}|${g.yaw.toFixed(9)},${g.pitch.toFixed(9)}|${g.squash.toFixed(9)}|${g.state}`).sort().join('\n')
+  const pose = (of) => (of._refresh(0), alive(of)).map((g) => `${g.key}|${g.x.toFixed(9)},${g.y.toFixed(9)},${g.z.toFixed(9)}|${g.yaw.toFixed(9)},${g.pitch.toFixed(9)}|${g.squash.toFixed(9)}|${g.state}`).sort().join('\n')
   const slow = make(13); slow.place(0, 0)
   const fast = make(13); fast.place(0, 0)
   // 40 s apiece from the same world second, one at 24 fps and one at 144, with a stutter in the slow one.
@@ -436,7 +440,7 @@ const drive = (of, { from = 0, secs, dt = 1 / 72, x = 0, y = 11, z = 0, dayness 
   const near = () => alive(far).filter((g) => Math.hypot(g.x, g.y - 11, g.z) <= SHOW_M)
   far.update(0, 11, 0, 300)
   const listed = far.bodies([])
-  check(far.mesh.count === near().length && listed.length === near().length && listed.every((g) => Math.hypot(g.x, g.y - 11, g.z) <= SHOW_M), `only the ones within ${SHOW_M} m are written and listed`, `${far.mesh.count} of ${alive(far).length}`)
+  check(far.mesh.count >= near().length && far.mesh.count < alive(far).length && listed.length === near().length && listed.every((g) => Math.hypot(g.x, g.y - 11, g.z) <= SHOW_M), `only the ones within ${SHOW_M} m are listed, and only those that can come that near are drawn`, `${far.mesh.count} drawn, ${listed.length} listed of ${alive(far).length}`)
   // One past SHOW_M: a minute of world time later it has not moved and has planned nothing.
   const held = alive(far).find((g) => Math.hypot(g.x, g.z) > SHOW_M + 1)
   const was = { x: held.x, z: held.z }
@@ -496,7 +500,7 @@ const drive = (of, { from = 0, secs, dt = 1 / 72, x = 0, y = 11, z = 0, dayness 
   const rel = f.release(rec, 3, groundAt(3, 5), 5)
   const seated = alive(f).find((h) => h.homeX === 3 && h.homeZ === 5)
   check(rel === true && seated && seated.x === 3 && seated.z === 5 && seated.y === walk.heightAt(3, 5) && seated.len === rec.size && seated.tile === f.tiles.get(tileKey(Math.floor(3 / TILE), Math.floor(5 / TILE))), 'release seats it on the ground at the drop, in the tile under it')
-  check(seated && seated.r === rec.color[0] && seated.g === rec.color[1] && seated.b === rec.color[2] && seated.seg === null, 'in its own tint, with nothing planned yet')
+  check(seated && seated.r === rec.color[0] && seated.g === rec.color[1] && seated.b === rec.color[2] && seated.seg !== null, 'in its own tint, its plan already in the table')
   check(seated.key === dropKey(3, 5) && seated.offset === keyHash(seated.key) % GRID_S, 'its key is the drop point, so a peer told the same point plans the same life', seated.key)
   drive(f, { from: 700, secs: 2 * GRID_S, y: groundAt(0, 0) + 1.6 })
   check(seated.x !== 3 || seated.z !== 5, 'and it hops off')

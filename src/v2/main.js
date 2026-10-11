@@ -37,8 +37,8 @@ import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
 import { BuildScheduler } from './build-budget.js'
 
-// Every tile layer's builds share this much of a frame, nearest tile first (build-budget.js). Ms of Quest wall clock.
-const BUILD_MS = 1
+// Ms of a frame the tile layers' builds share, nearest tile first (build-budget.js). Infinity builds every queued tile the frame it is queued; a finite value spreads them.
+const BUILD_MS = Infinity
 const buildScheduler = new BuildScheduler(BUILD_MS)
 window.v2build = buildScheduler // console: `v2build.debt`, `v2build.lastMs`
 import { RecordTrace } from './record-trace.js'

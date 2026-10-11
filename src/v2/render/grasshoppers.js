@@ -77,6 +77,7 @@ import { GRID_S, keyHash, phraseRand } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tierTintSplice, tileKey, tileSeed, walkTiles } from './critters.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { PhraseTable, motionSplice } from './gpu-motion.js'
 
 export const TILE = 8
 // Within this of her head a grasshopper is stepped and drawn.
@@ -144,6 +145,13 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _basis = new THREE.Matrix4()
 
+// How far past SHOW_M + TETHER a home may be and still be posed, so the list of posed ones needs rebuilding only every SWEEP_M of her walking.
+const SWEEP_M = 1
+// The ambience hears the shown ones' poses this stale at most.
+const BODIES_GAP_S = 0.1
+// The phrase kinds in the plan table (gpu-motion.js).
+const KIND = { sit: 0, crouch: 1, land: 2, hop: 3 }
+
 const DRAG_NORM = 1 - Math.exp(-DRAG_K)
 /** The fraction of the hop's ground covered at fraction `s` of its flight: an ease-out, the launch speed bleeding away. */
 export const flightProgress = (s) => (1 - Math.exp(-DRAG_K * s)) / DRAG_NORM
@@ -156,6 +164,51 @@ export const flightLift = (s) => {
 }
 /** d flightLift / ds. */
 const flightLiftRate = (s) => (s < RISE_FRAC ? (2 * (RISE_FRAC - s)) / (RISE_FRAC * RISE_FRAC) : (-2 * (s - RISE_FRAC)) / ((1 - RISE_FRAC) * (1 - RISE_FRAC)))
+
+// The vertex shader's twin of _pose + _orient + the matrix compose: the matrix of the phrase playing, or a zero-scale one past SHOW_M of her head.
+export const MOTION_GLSL = `
+  const float DRAG_K = ${DRAG_K.toFixed(6)};
+  const float DRAG_NORM = ${DRAG_NORM.toFixed(6)};
+  const float RISE_FRAC = ${RISE_FRAC.toFixed(6)};
+  const float PITCH_K = ${PITCH_K.toFixed(6)};
+  const float CROUCH_SQUASH = ${CROUCH_SQUASH.toFixed(6)};
+  const float LAND_SQUASH = ${LAND_SQUASH.toFixed(6)};
+  const float SHOW2 = ${(SHOW_M * SHOW_M).toFixed(6)};
+  int p = phraseAt( row, n, e );
+  vec4 A = texel( row, 1 + 4 * p );
+  vec4 B = texel( row, 2 + 4 * p );
+  vec4 C = texel( row, 3 + 4 * p );
+  vec4 D = texel( row, 4 + 4 * p );
+  int kind = int( A.z + 0.5 );
+  float u = A.y > 0.0 ? clamp( ( e - A.x ) / A.y, 0.0, 1.0 ) : 1.0;
+  vec3 pos = B.xyz;
+  float yaw = B.w;
+  float squash = 1.0;
+  mat3 R;
+  if ( kind == 3 ) {
+    float prog = ( 1.0 - exp( -DRAG_K * u ) ) / DRAG_NORM;
+    float rise = u < RISE_FRAC ? ( RISE_FRAC - u ) / RISE_FRAC : ( u - RISE_FRAC ) / ( 1.0 - RISE_FRAC );
+    pos = mix( B.xyz, C.xyz, prog );
+    pos.y += A.w * ( 1.0 - rise * rise );
+    float progRate = DRAG_K * exp( -DRAG_K * u ) / DRAG_NORM;
+    float liftRate = u < RISE_FRAC ? 2.0 * ( RISE_FRAC - u ) / ( RISE_FRAC * RISE_FRAC ) : -2.0 * ( u - RISE_FRAC ) / ( ( 1.0 - RISE_FRAC ) * ( 1.0 - RISE_FRAC ) );
+    float vy = ( ( C.y - B.y ) * progRate + A.w * liftRate ) / A.y;
+    float vh = length( C.xz - B.xz ) * progRate / A.y;
+    float pitch = ( abs( vy ) + vh ) > 1e-9 ? atan( vy, vh ) * PITCH_K : 0.0;
+    float cy = cos( yaw ), sy = sin( yaw ), cp = cos( pitch ), sp = sin( pitch );
+    R = mat3( vec3( cy * cp, sp, -sy * cp ), vec3( -cy * sp, cp, sy * sp ), vec3( sy, 0.0, cy ) );
+  } else {
+    if ( kind == 1 ) squash = 1.0 - ( 1.0 - CROUCH_SQUASH ) * u * u;
+    else if ( kind == 2 ) squash = 1.0 - ( 1.0 - LAND_SQUASH ) * sin( u * 3.14159265 );
+    vec3 nn = D.xyz;
+    vec3 x = vec3( cos( yaw ), 0.0, -sin( yaw ) );
+    x = normalize( x - nn * dot( x, nn ) );
+    R = mat3( x, nn, cross( x, nn ) );
+  }
+  vec3 away = pos - uMotionHead;
+  float k = dot( away, away ) > SHOW2 ? 0.0 : head.z;
+  return mat4( vec4( R[ 0 ] * k, 0.0 ), vec4( R[ 1 ] * k * squash, 0.0 ), vec4( R[ 2 ] * k, 0.0 ), vec4( pos, 1.0 ) );
+`
 
 export class Grasshoppers {
   /**
@@ -179,7 +232,12 @@ export class Grasshoppers {
 
     // Dry chitin: Lambert, no glint. The tint rides three's own instanceColor.
     this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
-    this.material.onBeforeCompile = (shader) => tierTintSplice(shader, 0)
+    // The plan table: each shown grasshopper's segment, posed in the vertex shader (gpu-motion.js). The same material on a held copy is not instanced and compiles without it.
+    this.table = new PhraseTable(MAX)
+    this.material.onBeforeCompile = (shader) => {
+      tierTintSplice(shader, 0)
+      motionSplice(shader, this.table, MOTION_GLSL)
+    }
     this.material.customProgramCacheKey = () => 'grasshoppers'
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
     this.mesh.name = 'v2-grasshoppers'
@@ -187,7 +245,10 @@ export class Grasshoppers {
     // Hidden, not merely empty, until the asset lands: the boot's scene census throws on a visible mesh with no geometry.
     this.mesh.visible = false
     this.mesh.frustumCulled = false
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    // The row of the plan table each instance poses from.
+    this.rows = new THREE.InstancedBufferAttribute(new Float32Array(MAX), 1)
+    this.rows.setUsage(THREE.DynamicDrawUsage)
+    this.mesh.geometry.setAttribute('aRow', this.rows)
     // The tint, through three's own vColor; made here so the program is keyed with it from the first draw.
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
     this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
@@ -210,8 +271,8 @@ export class Grasshoppers {
         seg: null, phrase: null, elapsed: 0, state: 'sit', squash: 1,
         // The ground's normal where it sits.
         nx: 0, ny: 1, nz: 0,
-        // Its matrix, and whether the matrix trails the step.
-        m: new Float32Array(16), stale: true,
+        // The segment the plan table holds for it.
+        rowSeg: null,
       })
     }
     this.free = this.slots.slice()
@@ -232,8 +293,14 @@ export class Grasshoppers {
     // The asset's X extent (setCritterAsset); the instance scale is len / length.
     this.length = 1
     // The shown ones, for bodies(): rebuilt by update().
-    this.shown = []
-    this.written = []
+    this._shown = []
+    // The grasshoppers the draw lists, instance by instance, and the world second and place of her head the list was built for.
+    this.listed = []
+    this.next = []
+    this.listDirty = true
+    this.nextWake = -Infinity
+    this.sweptAt = { x: 0, z: 0 }
+    this.posedAt = -Infinity
 
     if (assets) {
       this.setAsset(assets)
@@ -252,6 +319,9 @@ export class Grasshoppers {
     const bounds = setCritterAsset(this.mesh, this.material, asset, 'grasshoppers')
     this.length = bounds.halfX * 2
     this.loaded = true
+    this.mesh.visible = false
+    this.listDirty = true
+    for (const g of this.slots) g.rowSeg = null
   }
 
   /** Whether a grasshopper may sit at (x, z): warm, dry, no steeper than grass grows. Returns the field height or null. */
@@ -283,6 +353,7 @@ export class Grasshoppers {
   _enter(tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const t = { tx, tz, flock: [] }
+    this.listDirty = true
     const want = DENSITY * TILE * TILE
     const n = Math.floor(want) + (rand() < want % 1 ? 1 : 0)
     for (let i = 0; i < n; i++) {
@@ -312,7 +383,6 @@ export class Grasshoppers {
       g.phrase = null
       g.state = 'sit'
       g.squash = 1
-      g.stale = true
       this._seat(g, this._spot(x, z, yaw))
       t.flock.push(g)
     }
@@ -320,6 +390,7 @@ export class Grasshoppers {
   }
 
   _leave(t) {
+    this.listDirty = true
     for (const g of t.flock) {
       g.tile = null
       this.free.push(g)
@@ -345,6 +416,7 @@ export class Grasshoppers {
    */
   pickAt(x, y, z, reach) {
     if (!this.loaded) return null
+    this._refresh(0)
     let best = null
     let bestD = reach
     for (const g of this.shown) {
@@ -372,6 +444,7 @@ export class Grasshoppers {
     taken.add('grasshopper', g.homeX, g.homeZ)
     t.flock.splice(i, 1)
     g.tile = null
+    this._sweep(this.now)
     const j = this.shown.indexOf(g)
     if (j >= 0) this.shown.splice(j, 1)
     this.free.push(g)
@@ -442,9 +515,9 @@ export class Grasshoppers {
     g.phrase = null
     g.state = 'sit'
     g.squash = 1
-    g.stale = true
     this._seat(g, this._spot(x, z, (keyHash(g.key) % 3600) * (Math.PI / 1800)))
     t.flock.push(g)
+    if (this.loaded) this._sweep(this.now)
     this._owe(g.key, now, x, y, z, g.len, g.r, g.g, g.b)
     return true
   }
@@ -491,6 +564,12 @@ export class Grasshoppers {
     return this.dayness < NIGHT_DAY
   }
 
+  /** The grasshoppers within SHOW_M of her head at the frame's world second, posed. */
+  get shown() {
+    this._refresh(0)
+    return this._shown
+  }
+
   get stats() {
     let hopping = 0
     for (const g of this.shown) if (g.state === 'hop') hopping++
@@ -499,7 +578,8 @@ export class Grasshoppers {
 
   /** The grasshoppers within SHOW_M of her head this frame, each with x, y, z, pushed onto `into`. */
   bodies(into) {
-    for (const g of this.shown) into.push(g)
+    this._refresh(BODIES_GAP_S)
+    for (const g of this._shown) into.push(g)
     return into
   }
 
@@ -718,12 +798,13 @@ export class Grasshoppers {
   }
 
   /**
-   * One frame: the tiles follow her head, and every grasshopper within SHOW_M
-   * is posed from its plan at world time `now` (the room's clock in seconds)
-   * and written. Nothing is integrated, so the frame's length does not enter
-   * into it and a client that joined a moment ago draws the same pose as one
-   * that has watched all along. `dayness` is the world's day scalar, which
-   * under NIGHT_DAY is what stills them where there is no clock to read it off.
+   * One frame: the tiles follow her head, the clock and her head go to the
+   * shader, and nothing else happens until a plan runs out or she has walked
+   * SWEEP_M: the GPU poses every grasshopper from the plan table at world time
+   * `now` (the room's clock in seconds). Nothing is integrated, so a client
+   * that joined a moment ago draws the same pose as one that has watched all
+   * along. `dayness` is the world's day scalar, which under NIGHT_DAY is what
+   * stills them where there is no clock to read it off.
    */
   update(hx, hy, hz, now, dayness = 1) {
     if (!Number.isFinite(now)) throw new Error(`Grasshoppers.update: bad world time ${now}`)
@@ -733,53 +814,96 @@ export class Grasshoppers {
     this.head.y = hy
     this.head.z = hz
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
-    const mat = this.mesh.instanceMatrix.array
-    const tint = this.mesh.instanceColor.array
-    const show2 = SHOW_M * SHOW_M
-    // A grasshopper's every post and landing is within TETHER of its home, so one whose home is further off than this cannot come within SHOW_M this segment and need not be posed. Which ones are posed is then a fact about their homes, not about where a stale pose left them: two clients show the same ones.
-    const plan2 = (SHOW_M + TETHER) * (SHOW_M + TETHER)
-    const shown = this.shown
-    shown.length = 0
-    const written = this.written
-    let n = 0
-    let dirty = false
+    this.table.setTime(now)
+    this.table.uniforms.uMotionHead.value.set(hx, hy, hz)
+    if (!this.loaded) return
+    const dx = hx - this.sweptAt.x, dz = hz - this.sweptAt.z
+    if (this.listDirty || now >= this.nextWake || dx * dx + dz * dz > SWEEP_M * SWEEP_M) this._sweep(now)
+  }
+
+  /**
+   * Plan every grasshopper that can be seen from here this segment, write the
+   * plans that changed into the table and list who is drawn. A grasshopper's
+   * every post and landing is within TETHER of its home, so one whose home is
+   * further off than SHOW_M + TETHER cannot come within SHOW_M and is not
+   * posed: which ones are is a fact about homes, not about where a stale pose
+   * left them, so two clients show the same ones.
+   */
+  _sweep(now) {
+    const hx = this.head.x, hz = this.head.z
+    const reach = SHOW_M + TETHER + SWEEP_M
+    const next = this.next
+    next.length = 0
+    let wake = Infinity
     for (const t of this.tiles.values()) {
       for (const g of t.flock) {
         const px = g.homeX - hx, pz = g.homeZ - hz
-        if (px * px + pz * pz > plan2) continue
-        // Home washed out from under it -- a lake risen, the snow come down: it holds where it sits.
-        if (!this._play(g, now)) continue
-        const dx = g.x - hx, dy = g.y - hy, dz = g.z - hz
-        if (dx * dx + dy * dy + dz * dz > show2) continue
-        shown.push(g)
-        // A seated body's matrix holds; a crouching, flying or landing one moves every frame.
-        let moved = false
-        if (g.stale || g.state !== 'sit') {
-          _pos.set(g.x, g.y, g.z)
-          this._orient(g)
-          const k = g.len / this.length
-          _scl.set(k, k * g.squash, k)
-          _mat.compose(_pos, _quat, _scl).toArray(g.m)
-          g.stale = g.state !== 'sit'
-          moved = true
+        if (px * px + pz * pz > reach * reach) continue
+        if (g.seg === null || now < g.seg.start || now >= g.seg.start + GRID_S) {
+          g.seg = this._segment(g, Math.floor((now - g.offset) / GRID_S))
+          if (g.seg !== null) this.segments++
         }
-        // A slot rewritten only when its body moved or a different grasshopper took it; a flock sat still uploads nothing.
-        if (moved || written[n] !== g) {
-          mat.set(g.m, n * 16)
-          tint[n * 3] = g.r; tint[n * 3 + 1] = g.g; tint[n * 3 + 2] = g.b
-          written[n] = g
-          dirty = true
+        // Home washed out from under it -- a lake risen, the snow come down: it is not drawn, and looks again soon.
+        if (g.seg === null) { wake = Math.min(wake, now + 1); continue }
+        if (g.rowSeg !== g.seg) {
+          this.table.write(g.id, g.seg.start, g.len / this.length, g.seg.phrases.map(Grasshoppers._row))
+          g.rowSeg = g.seg
         }
-        n++
+        wake = Math.min(wake, g.seg.start + GRID_S)
+        next.push(g)
       }
     }
-    if (n !== this.mesh.count) dirty = true
-    this.mesh.count = n
-    written.length = n
-    if (dirty) {
-      this.mesh.instanceMatrix.needsUpdate = true
+    this.table.flush()
+    this.nextWake = wake
+    this.listDirty = false
+    this.sweptAt.x = hx
+    this.sweptAt.z = hz
+    const prev = this.listed
+    let changed = next.length !== prev.length
+    for (let i = 0; !changed && i < next.length; i++) changed = next[i] !== prev[i]
+    if (changed) {
+      const rows = this.rows.array
+      const tint = this.mesh.instanceColor.array
+      for (let i = 0; i < next.length; i++) {
+        const g = next[i]
+        rows[i] = g.id
+        tint[i * 3] = g.r; tint[i * 3 + 1] = g.g; tint[i * 3 + 2] = g.b
+      }
+      this.rows.needsUpdate = true
       this.mesh.instanceColor.needsUpdate = true
+      this.mesh.count = next.length
+      this.listed = next
+      this.next = prev
     }
+    this.mesh.visible = this.mesh.count > 0
+  }
+
+  /** A phrase as the plan table's row takes it (gpu-motion.js). */
+  static _row(ph) {
+    const a = ph.kind === 'hop' ? ph.from : ph.at
+    return { kind: KIND[ph.kind], start: ph.start, dur: ph.dur, apex: ph.apex ?? 0, a, b: ph.kind === 'hop' ? ph.to : null, yaw: ph.kind === 'sit' || ph.kind === 'land' ? a.yaw : ph.yaw }
+  }
+
+  /** Pose the listed grasshoppers at the frame's world second and list those within SHOW_M of her head in `shown`: the CPU's view of what the GPU draws, for a hand and the ambience. At most every `gap` seconds. */
+  _refresh(gap) {
+    if (this.now === this.posedAt || (this.now > this.posedAt && this.now - this.posedAt < gap)) return
+    this.posedAt = this.now
+    const show2 = SHOW_M * SHOW_M
+    const shown = this._shown
+    shown.length = 0
+    for (const g of this.listed) {
+      this._play(g, this.now)
+      const dx = g.x - this.head.x, dy = g.y - this.head.y, dz = g.z - this.head.z
+      if (dx * dx + dy * dy + dz * dz <= show2) shown.push(g)
+    }
+  }
+
+  /** The matrix the GPU builds for `g` as posed (_play), into `out`: the JS twin of MOTION_GLSL, for the gates. */
+  matrixOf(g, out = new THREE.Matrix4()) {
+    _pos.set(g.x, g.y, g.z)
+    this._orient(g)
+    const k = g.len / this.length
+    return out.compose(_pos, _quat, _scl.set(k, k * g.squash, k))
   }
 
   dispose() {
@@ -787,5 +911,6 @@ export class Grasshoppers {
     this.mesh.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
+    this.table.dispose()
   }
 }

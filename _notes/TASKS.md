@@ -75,7 +75,9 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Cave ambient sounds. Ominous deep. Your footsteps scrabble and echo. Echoing water drops when you're near water.
   - [ ] DON'T have any overworld sounds, muffled or otherwise, when you're in a cave. The cave is a wholly different environs from the overworld, with no sound leakage through.
   - [ ] You can buy a pouch of colored glowing marbles. Drop them like a trail of breadcrumbs to lead you back to safety. Also is an alternate (limited) light source, especially useful in places where torches are.... not welcome. And they work underwater which is a plus.
-  - [ ] Some cave passages open up into the WALL of a massive chamber with no end in sight. You need to tie a rope to a stalagmite and climb down, either into the unknown dark, or to a semiglowing sporescape
+  - [ ] Some cave passages open up into the WALL of a massive chamber with no end in sight. You need to tie a rope to a stalagmite and climb down, either into the unknown dark, or to a semiglowing sporescape, or a settlement.
+- [ ] Think through w Claude: Traversing the world should feel genuinely dangerous. If you don't carefully plan and prepare, you aren't likely to make it to your destination.
+  - What should the dangers be? Food? Being out in unfamiliar unsafe regions at nighttime? Random creature encounters? Dragons?
 - [ ] Human villages
   - [ ] Experiment with giving each NPC combinatorial accoutrements: hats, helmets, beards, scarves, cloaks, etc.
     - Claude recommends I test out 2 approaches:
