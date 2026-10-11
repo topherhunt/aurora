@@ -35,10 +35,11 @@ import { PerfTrace, r2 } from './perf-trace.js'
 import { Census } from './perf-census.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
+import { installMultiviewShim, failedPrograms } from './render/multiview-shim.js'
 import { BuildScheduler } from './build-budget.js'
 
 // Ms of a frame the tile layers' builds share, nearest tile first (build-budget.js). Infinity builds every queued tile the frame it is queued; a finite value spreads them.
-const BUILD_MS = Infinity
+const BUILD_MS = 5
 const buildScheduler = new BuildScheduler(BUILD_MS)
 window.v2build = buildScheduler // console: `v2build.debt`, `v2build.lastMs`
 import { RecordTrace } from './record-trace.js'
@@ -511,6 +512,9 @@ sceneEl.setAttribute('xr-mode-ui', 'enabled: false')
 // something a desktop can reproduce.
 const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${FOVEATION}`]
 if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
+// `?multiview` draws both eyes in one pass (OVR_multiview2): every draw call, program switch and uniform refresh is paid once instead of twice. Opt-in until it has been looked at in the headset.
+const MULTIVIEW = new URLSearchParams(location.search).has('multiview')
+if (MULTIVIEW) { questRenderer.push('multiviewStereo: true'); installMultiviewShim() }
 sceneEl.setAttribute('renderer', questRenderer.join('; '))
 // No movement-controls/look-controls/blink-controls: locomotion is entirely
 // Player.update(dt, moveInput) + the manual mouse-drag look below. Only
@@ -3268,7 +3272,7 @@ const perfTrace = new PerfTrace({
       at: { x: Math.round(player.rig.position.x), y: Math.round(player.rig.position.y), z: Math.round(player.rig.position.z) },
       clock: clock.clockText, weather: weatherLabel(), puppets: puppetMode(), flying: player.flying,
       xr: renderer.xr.isPresenting, refreshHz: session ? session.frameRate ?? null : null, foveation: renderer.xr.getFoveation(),
-      fbScale: FB_SCALE, multiDraw: hasMultiDraw(), search: location.search, userAgent: navigator.userAgent,
+      fbScale: FB_SCALE, multiDraw: hasMultiDraw(), failedPrograms: MULTIVIEW ? failedPrograms(renderer) : undefined, search: location.search, userAgent: navigator.userAgent,
       toggles: { ...questToggles },
     }
   },

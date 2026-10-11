@@ -11,6 +11,10 @@
 //   matSw/progSw  draws whose material / compiled program differs from the previous main-pass draw anywhere in the frame
 //   upCalls    attribute uploads, counted as version bumps of the layer's geometry attributes and instance buffers
 //   upKbMax    those uploads at full buffer size (an upper bound: partial update ranges are not subtracted)
+//   gl         WebGL calls the layer's draws cause, from its onBeforeRender to the next object's (program setup, uniform uploads, binds, state, the draw itself); `glKinds` is the whole frame's calls by kind
+
+// Every context method that is not a getter; uniform1f ... uniformMatrix4fv count as one kind.
+const glKind = (name) => (name.startsWith('uniform') ? 'uniform*' : name)
 
 const isDepth = (m) => m.isMeshDepthMaterial || m.isMeshDistanceMaterial
 
@@ -60,6 +64,10 @@ export class Census {
     this.timed = []
     this.lastMat = null
     this.lastProg = null
+    this.gl = this.renderer.getContext()
+    this.glNow = null
+    this.glKinds = new Map()
+    this.wrapGl()
     for (const [name, obj] of this.layers()) {
       if (!obj || typeof obj.update !== 'function') continue
       const own = Object.prototype.hasOwnProperty.call(obj, 'update')
@@ -75,10 +83,27 @@ export class Census {
     this.scan()
   }
 
+  /** Counts the context's calls into the stat of the layer being drawn (`glNow`), and by kind. */
+  wrapGl() {
+    const gl = this.gl
+    this.glWrapped = []
+    for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(gl))) {
+      if (name.startsWith('get') || name.startsWith('is') || name === 'constructor' || typeof gl[name] !== 'function') continue
+      const f = gl[name]
+      const kind = glKind(name)
+      gl[name] = (...a) => {
+        if (this.glNow) this.glNow.gl++
+        this.glKinds.set(kind, (this.glKinds.get(kind) ?? 0) + 1)
+        return f.apply(gl, a)
+      }
+      this.glWrapped.push(name)
+    }
+  }
+
   stat(name) {
     let s = this.stats.get(name)
     if (!s) {
-      s = { draws: 0, emptyDraws: 0, offDraws: 0, shadowDraws: 0, inst: 0, tris: 0, matSw: 0, progSw: 0, upCalls: 0, upKbMax: 0, objects: 0 }
+      s = { gl: 0, draws: 0, emptyDraws: 0, offDraws: 0, shadowDraws: 0, inst: 0, tris: 0, matSw: 0, progSw: 0, upCalls: 0, upKbMax: 0, objects: 0 }
       this.stats.set(name, s)
     }
     return s
@@ -96,6 +121,7 @@ export class Census {
       const buffers = buffersOf(obj)
       this.hooked.set(obj, { own, orig, buffers, v0: buffers.map((b) => b.version) })
       obj.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+        this.glNow = st
         this.draw(st, obj, geometry, material, renderer, camera)
         orig.call(obj, renderer, scene, camera, geometry, material, group)
       }
@@ -125,6 +151,7 @@ export class Census {
 
   /** Call once a frame after the main render. */
   frame() {
+    this.glNow = null
     this.frames++
     this.scan()
   }
@@ -132,6 +159,8 @@ export class Census {
   /** Removes every hook and returns per-frame figures by layer name, costliest JS then draws first. */
   end() {
     this.active = false
+    for (const name of this.glWrapped) delete this.gl[name]
+    this.glWrapped = null
     const n = Math.max(1, this.frames)
     for (const [obj, h] of this.hooked) {
       if (h.own) obj.onBeforeRender = h.orig
@@ -153,6 +182,7 @@ export class Census {
     for (const name of names) {
       const s = this.stats.get(name)
       out[name] = {
+        gl: s ? r(s.gl / n) : 0,
         jsMs: this.js.has(name) ? r(this.js.get(name) / n) : null,
         draws: s ? r(s.draws / n) : 0, emptyDraws: s ? r(s.emptyDraws / n) : 0, offDraws: s ? r(s.offDraws / n) : 0, shadowDraws: s ? r(s.shadowDraws / n) : 0,
         inst: s ? Math.round(s.inst / n) : 0, tris: s ? Math.round(s.tris / n) : 0,
@@ -163,6 +193,7 @@ export class Census {
     }
     this.hooked = null
     this.timed = null
-    return { frames: this.frames, layers: out }
+    const glKinds = Object.fromEntries([...this.glKinds].sort((a, b) => b[1] - a[1]).slice(0, 24).map(([k, v]) => [k, r(v / n)]))
+    return { frames: this.frames, layers: out, glKinds }
   }
 }
