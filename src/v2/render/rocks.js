@@ -4650,10 +4650,10 @@ export class Rocks {
     this.updateMs = 0
   }
 
-  /** Hand every bed's tile builds to a BuildScheduler (build-budget.js); `opts.on` says whether the layer runs. */
+  /** Hand every bed's tile builds to a BuildScheduler (build-budget.js); `opts.on` says whether the layer runs, and each bed is named `${opts.name}.${bed}`. */
   schedule(scheduler, opts) {
     this.buildBudgetMs = 0
-    for (const bed of this.beds) scheduler.add(bed, undefined, opts)
+    for (const bed of this.beds) scheduler.add(bed, undefined, { ...opts, name: `${opts.name}.${bed.cfg.name}` })
   }
 
   /** Grow every bed at once, ignoring the frame budget. Boot only. */

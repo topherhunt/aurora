@@ -2,6 +2,7 @@ import THREE from './three-instance.js'
 import { WORLD_SIZE, WORLD_HALF } from './sim/terrain-height.js'
 import { AZIMUTHS, HORIZON_SOFT } from './sim/horizon.js'
 import { HEARTHS } from './v2/hearth-light.js'
+import { UniformBlock } from './uniform-block.js'
 
 // ---------------------------------------------------------------------------
 // World lighting: the render-side half of the horizon map (§8).
@@ -576,6 +577,25 @@ export class WorldLighting {
 
     this.horizonTex = null
     this.skyTex = null
+    this.block = null
+  }
+
+  /**
+   * Move every non-sampler uniform above into one shared UBO (uniform-block.js: a per-draw-call
+   * performance mandate). Call before any patched material compiles; pages that never call it keep plain uniforms.
+   */
+  useBlock(renderer) {
+    const u = this.uniforms
+    const f = (name, type, count) => ({ name, type, count, source: u[name] })
+    this.block = new UniformBlock('WorldLight', 20, [
+      f('uSunSky', 'vec3'), f('uSkyFloor', 'float'),
+      f('uNightLift', 'vec3'), f('uCausticT', 'float'),
+      f('uAirNear', 'vec3'), f('uAirFar', 'vec3'), f('uLampColor', 'vec3'), f('uLampGlow', 'vec3'), f('uTorchColor', 'vec3'),
+      f('uFarLight', 'vec2'), f('uLampY', 'vec2'),
+      f('uCaustic', 'vec4'), f('uLampRect', 'vec4'),
+      f('uTorch', 'vec4', TORCHES), f('uTorchInvReach', 'float', TORCHES), f('uHearthFar', 'vec4', HEARTHS / 4),
+    ])
+    this.block.attach(renderer)
   }
 
   // Called once, when the worker's Phase A result lands.
@@ -946,6 +966,7 @@ export class WorldLighting {
           // before the murk gets the last word.
           .replace('#include <fog_fragment>', caustics ? `${CAUSTIC_APPLY('vWlBed')}\n${AERIAL_GLSL}` : AERIAL_GLSL)
       }
+      if (self.block) self.block.patch(shader)
     }
 
     const prevKey = material.customProgramCacheKey

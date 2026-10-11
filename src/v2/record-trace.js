@@ -13,11 +13,19 @@ const MAX_MS = 10 * 60 * 1000
 const MAX_SPIKES = 40
 const MAX_FRAMES = 512
 const DONE_SHOWN_MS = 12000
+// Longer than this is a tab in the background, not a frame. In flight a frame can take over a second, so it is not Spikes' 1000.
+const GAP_MS = 5000
+// A part is kept in a window when its mean or its slowest frame reaches these.
+const PART_MEAN_MS = 0.05
+const PART_MAX_MS = 1
 
 /**
- * Frames folded into WINDOW_MS samples: frame ms quantiles, js/render/GPU ms, mean laps per stage, the
- * window's slowest frame with its laps, and host.layers() (what each layer drew) as the window closes.
+ * Frames folded into WINDOW_MS samples: frame ms quantiles, js/render/wait/GPU ms, uploads, mean laps per stage,
+ * each part's mean and slowest frame, the window's slowest frame with its laps and parts, and host.layers() (what
+ * each layer drew) as the window closes.
  * host: { spikes, gpuTake(), position() -> {x, y, z}, flying() -> bool, layers() -> object }
+ * A frame `f` is { jsMs, renderMs, calls, tris, uploadCalls, uploadBytes, parts }; `parts` is { group: { name: ms } },
+ * this frame's ms inside a stage by who spent it (the tile builds by layer, the animal steps by layer).
  */
 export class TraceWindows {
   constructor(host, originAt) {
@@ -30,14 +38,15 @@ export class TraceWindows {
   open(now) {
     this.windowAt = now
     this.n = 0
-    this.js = this.render = this.calls = this.tris = 0
+    this.js = this.render = this.calls = this.tris = this.upCalls = this.upBytes = 0
     this.stages = {}
+    this.parts = {}
     this.worst = null
     this.worstMs = SPIKES.ms
     this.host.gpuTake()
   }
 
-  /** One frame `ms` long; `f` is { jsMs, renderMs, calls, tris }. Returns the sum of its laps. */
+  /** One frame `ms` long. Returns the sum of its laps. */
   add(ms, f) {
     const { spikes } = this.host
     if (this.n < MAX_FRAMES) this.frameMs[this.n] = ms
@@ -46,6 +55,17 @@ export class TraceWindows {
     this.render += f.renderMs
     this.calls += f.calls
     this.tris += f.tris
+    this.upCalls += f.uploadCalls
+    this.upBytes += f.uploadBytes
+    for (const [group, byName] of Object.entries(f.parts)) {
+      const acc = (this.parts[group] ??= {})
+      for (const [name, v] of Object.entries(byName)) {
+        if (v === 0) continue
+        const a = (acc[name] ??= { sum: 0, max: 0 })
+        a.sum += v
+        if (v > a.max) a.max = v
+      }
+    }
     let sum = 0
     for (let i = 0; i < spikes.n; i++) {
       this.stages[spikes.names[i]] = (this.stages[spikes.names[i]] ?? 0) + spikes.ms[i]
@@ -53,7 +73,7 @@ export class TraceWindows {
     }
     if (ms > this.worstMs) {
       this.worstMs = ms
-      this.worst = { ms: r2(ms), stages: lapsOf(spikes, ms, sum) }
+      this.worst = { ms: r2(ms), stages: lapsOf(spikes, ms, sum), parts: partsOf(f.parts) }
     }
     return sum
   }
@@ -70,18 +90,35 @@ export class TraceWindows {
       const stages = {}
       for (const [k, v] of Object.entries(this.stages)) if (v / n >= SPIKES.floor) stages[k] = r2(v / n)
       const gpu = this.host.gpuTake()
+      const parts = {}
+      for (const [group, acc] of Object.entries(this.parts)) {
+        for (const [name, a] of Object.entries(acc)) {
+          if (a.sum / n < PART_MEAN_MS && a.max < PART_MAX_MS) continue
+          ;(parts[group] ??= {})[name] = { ms: r2(a.sum / n), max: r2(a.max) }
+        }
+      }
       sample = {
         t: r2((now - this.originAt) / 1000),
         x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), flying: this.host.flying(),
         frames: n, ms: r2(span / n), p50: r2(quantile(sorted, 0.5)), p95: r2(quantile(sorted, 0.95)), max: r2(sorted[kept - 1]),
-        jsMs: r2(this.js / n), renderMs: r2(this.render / n), gpuMs: gpu === null ? null : r2(gpu),
+        jsMs: r2(this.js / n), renderMs: r2(this.render / n), waitMs: r2(Math.max(0, (span - this.js - this.render) / n)), gpuMs: gpu === null ? null : r2(gpu),
         calls: Math.round(this.calls / n), tris: Math.round(this.tris / n),
-        stages, worst: this.worst, layers: this.host.layers(),
+        upCalls: r2(this.upCalls / n), upKb: r2(this.upBytes / n / 1024),
+        stages, parts, worst: this.worst, layers: this.host.layers(),
       }
     }
     this.open(now)
     return sample
   }
+}
+
+/** A frame's parts at SPIKES.floor or over, by group. */
+function partsOf(parts) {
+  const out = {}
+  for (const [group, byName] of Object.entries(parts)) {
+    for (const [name, v] of Object.entries(byName)) if (v >= SPIKES.floor) (out[group] ??= {})[name] = r2(v)
+  }
+  return out
 }
 
 /** A frame's laps, those under SPIKES.floor dropped; `other` is the part of the interval the laps did not cover. */
@@ -95,7 +132,8 @@ function lapsOf(spikes, ms, sum) {
 export class RecordTrace {
   /**
    * host: TraceWindows' host, plus {
-   *   camera, context(), hidePanel(), play(clip, rate, gain), pulse(intensity, ms), refresh()
+   *   camera, context(), hidePanel(), play(clip, rate, gain), pulse(intensity, ms), refresh(),
+   *   census,   a Census (perf-census.js), run over the first window only; that window is marked `census` because its hooks cost frame time
    * }
    */
   constructor(host) {
@@ -133,13 +171,14 @@ export class RecordTrace {
       spikes: [],
     }
     this.windows = new TraceWindows(this.host, now)
+    this.host.census.begin()
     this.state = 'recording'
     this.status = ''
     this.host.play('uiPop', 1, 0.4)
     this.host.refresh()
   }
 
-  /** Every frame, after the main render and before the overlay lap. `f` is { jsMs, renderMs, calls, tris }. */
+  /** Every frame, after the main render and before the overlay lap. `f` is TraceWindows' frame. */
   frame(f) {
     const now = performance.now()
     const ms = now - this.lastAt
@@ -150,27 +189,31 @@ export class RecordTrace {
     }
     if (this.state !== 'recording') return
     this.hud.show(`REC ${Math.round((now - this.startedAt) / 1000)}s  press the row again to stop`, '#ff9a9a')
-    // A gap past a second is a background tab, not a stutter (as in Spikes).
-    if (ms < 1000) {
+    if (this.host.census.active) this.host.census.frame()
+    if (ms < GAP_MS) {
       const sum = this.windows.add(ms, f)
-      if (ms > SPIKES.ms) this.keepSpike(now, ms, sum)
+      if (ms > SPIKES.ms) this.keepSpike(now, ms, sum, f)
     }
     if (now - this.windows.windowAt >= WINDOW_MS) this.bank(now)
     if (now - this.startedAt >= MAX_MS) this.stop(true)
   }
 
   /** The worst MAX_SPIKES frames of the recording. */
-  keepSpike(now, ms, sum) {
+  keepSpike(now, ms, sum, f) {
     const spikeList = this.trace.spikes
     if (spikeList.length >= MAX_SPIKES && ms <= spikeList[spikeList.length - 1].ms) return
     const p = this.host.position()
-    spikeList.push({ t: r2((now - this.startedAt) / 1000), ms: r2(ms), x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), flying: this.host.flying(), stages: lapsOf(this.host.spikes, ms, sum) })
+    spikeList.push({ t: r2((now - this.startedAt) / 1000), ms: r2(ms), x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z), flying: this.host.flying(), stages: lapsOf(this.host.spikes, ms, sum), parts: partsOf(f.parts) })
     spikeList.sort((a, b) => b.ms - a.ms)
     if (spikeList.length > MAX_SPIKES) spikeList.pop()
   }
 
   bank(now) {
     const sample = this.windows.bank(now)
+    if (this.host.census.active) {
+      this.trace.census = this.host.census.end()
+      if (sample !== null) sample.census = true
+    }
     if (sample !== null) this.trace.samples.push(sample)
   }
 

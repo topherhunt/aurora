@@ -23,13 +23,13 @@ function patch(shader) {
 export function installMultiviewShim() {
   const proto = THREE.Material.prototype
   const base = proto.onBeforeCompile
+  // One stable function per material: callers compare `onBeforeCompile` against the prototype's (cord.js refuses a material that is already patched).
+  const wrap = (own) => function (shader, renderer) { own.call(this, shader, renderer); patch(shader) }
+  const plain = wrap(base)
   Object.defineProperty(proto, 'onBeforeCompile', {
     configurable: true,
-    get() {
-      const own = this._mvObc ?? base
-      return (shader, renderer) => { own.call(this, shader, renderer); patch(shader) }
-    },
-    set(fn) { this._mvObc = fn },
+    get() { return this._mvWrapped ?? plain },
+    set(fn) { this._mvWrapped = wrap(fn) },
   })
 }
 

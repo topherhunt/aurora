@@ -28,17 +28,21 @@ export class BuildScheduler {
     this.built = 0
     this.camX = 0
     this.camZ = 0
+    // This frame's build ms by source name, for the trace windows; main.js zeroes it once they have read it.
+    this.spent = {}
   }
 
   /**
    * `owner` has `queue` (jobs with `tx`, `tz`) and a `tile` size in metres (or pass `tile`). `grow(job)` builds one
    * (default `owner._growTile`). `on()` says whether its layer runs. `rank` orders layers inside a ring: lower
-   * builds first (trees, then boulders, ferns, grass, litter).
+   * builds first (trees, then boulders, ferns, grass, litter). `name` keys the source's ms in `spent`.
    */
-  add(owner, grow = (job) => owner._growTile(job), { on = () => true, rank = 0, tile = owner.tile } = {}) {
+  add(owner, grow = (job) => owner._growTile(job), { name, on = () => true, rank = 0, tile = owner.tile } = {}) {
     if (!(tile > 0)) throw new Error('BuildScheduler.add: needs the layer\'s tile size')
+    if (typeof name !== 'string' || name in this.spent) throw new Error(`BuildScheduler.add: needs a unique name, got ${name}`)
     owner.buildBudgetMs = 0
-    this.sources.push({ owner, grow, on, rank, tile, cost: 0.1, at: -1, ring: Infinity, d2: Infinity })
+    this.spent[name] = 0
+    this.sources.push({ owner, grow, name, on, rank, tile, cost: 0.1, at: -1, ring: Infinity, d2: Infinity })
   }
 
   /** Squared distance from the player to the nearest point of a job's tile. */
@@ -87,6 +91,7 @@ export class BuildScheduler {
       best.grow(job)
       const took = performance.now() - t1
       best.cost += (took - best.cost) * 0.2
+      this.spent[best.name] += took
       built++
       this._look(best)
     }

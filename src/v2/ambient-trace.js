@@ -68,7 +68,7 @@ export class AmbientTrace {
     return { saved: this.saved, failed: this.failed, env: this.env.key, error: this.lastError }
   }
 
-  /** Every frame, after the main render. `f` is { jsMs, renderMs, calls, tris }. */
+  /** Every frame, after the main render. `f` is TraceWindows' frame (record-trace.js). */
   frame(f) {
     const now = performance.now()
     const ms = now - this.lastAt

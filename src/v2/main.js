@@ -35,6 +35,7 @@ import { PerfTrace, r2 } from './perf-trace.js'
 import { Census } from './perf-census.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
+import { UniformLatch } from '../uniform-latch.js'
 import { installMultiviewShim, failedPrograms } from './render/multiview-shim.js'
 import { BuildScheduler } from './build-budget.js'
 
@@ -599,6 +600,12 @@ if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: 
 sceneEl.systems.light.data.defaultLightsEnabled = false
 sceneEl.systems.light.removeDefaultLights()
 renderer = sceneEl.renderer
+// PERFORMANCE MANDATE: draw calls are the Quest's bottleneck (~6 us of main thread per WebGL call, _notes/perf-ledger.md). three's default opaque order groups by material id, which interleaves
+// programs (80 program switches in 86 draws); grouping by compiled program first makes each program's `useProgram`, camera and light refresh happen once a pass. Do not revert to material order.
+{
+  const programOf = (item) => renderer.properties.get(item.material).currentProgram?.id ?? 0
+  renderer.setOpaqueSort((a, b) => a.groupOrder - b.groupOrder || a.renderOrder - b.renderOrder || programOf(a) - programOf(b) || a.material.id - b.material.id || a.z - b.z || a.id - b.id)
+}
 // No shader program is linked twice in a page's life. three deletes a program when the last material using it is disposed, and keys a ShaderMaterial's program on ids it reissues once the last material with that source is disposed, so a room swap relinked what the next room shared with the last: seconds of getProgramInfoLog on a Quest. Every program is held once more than its materials hold it, from the moment three links it (bake materials live only for one render), and the first compiled ShaderMaterial of each source is never disposed, which holds its ids. Safe only because every patch site keys all the source it varies (lighting.js variantKey, the per-site customProgramCacheKey): a site that injected room-dependent GLSL under an unchanged key would be handed the stale program.
 {
   const programs = renderer.info.programs
@@ -744,6 +751,13 @@ const clock = new WorldClock({ seed: SEED })
 // --- sky, which needs nothing from the ground -------------------------------
 
 const lighting = new WorldLighting()
+lighting.useBlock(renderer)
+window.v2lighting = lighting
+// Sun, hemisphere and fog creep every frame and three re-sends them per program (uniform-latch.js): hold them still until the drift is visible.
+const latch = new UniformLatch(renderer)
+latch.number(scene.fog, 'density'); latch.color(scene.fog.color)
+latch.number(sun, 'intensity'); latch.color(sun.color); latch.vector(sun.position)
+latch.number(hemi, 'intensity'); latch.color(hemi.color); latch.color(hemi.groundColor)
 const sky = new Sky(scene)
 const precip = new Precip(scene)
 window.v2precip = precip
@@ -3281,45 +3295,22 @@ const perfTrace = new PerfTrace({
   refresh: () => refreshQuestRow('perfTrace'),
 })
 window.v2perfTrace = perfTrace // console: `v2perfTrace.start()` runs it on the desktop
-const perfTraceFrame = { jsMs: 0, renderMs: 0, calls: 0, tris: 0, uploadCalls: 0, uploadBytes: 0 }
-
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
 
-// Main-thread milliseconds each animal layer's step spent per frame, the mean
-// over the last ANIMAL_MS_WINDOW_S seconds, keyed by its toggle row. This is
-// the instrument that says whether the `animals` row's toll is CPU or draw: the
-// row switches every animal layer at once, and if the numbers here sum to a
-// fraction of the frame time the toggle moves, the rest of it is on the GPU and
-// no amount of bucketing the simulation will find it. A window, not a running
-// blend: performance.now() is coarsened to 100 us on this page, so a single
-// frame reads 0 or 0.1, and a step that bursts once a second (a tile row of
-// seats, a puppet pool refill) is only visible as its share of a long mean.
-const ANIMAL_MS_WINDOW_S = 5
+// Main-thread ms each animal layer's step spent this frame, keyed by its toggle row; the trace windows fold it into a
+// mean and a slowest frame per layer, and tock() zeroes it once they have read it. performance.now() is coarsened to
+// 100 us on this page, so one frame reads 0 or 0.1 for a cheap step: read the window mean, not a single frame.
 const ANIMAL_LAYERS = ['fish', 'frogs', 'crabs', 'butterflies', 'grasshoppers', 'fireflies', 'spiders', 'wildlife', 'snowmen', 'leafkin', 'dragons']
-const animalMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
-const animalMsAcc = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
-let animalMsFrames = 0
-let animalMsSince = 0
-/** Run `fn` if its layer's rows are on, and bank what it cost. A frozen layer banks nothing, so its next reading is zero. */
+const animalFrameMs = Object.fromEntries(ANIMAL_LAYERS.map((k) => [k, 0]))
+/** Run `fn` if its layer's rows are on, and bank what it cost. */
 function stepAnimal(key, fn) {
   if (!animalOn(key)) return
   const t0 = performance.now()
   fn()
-  animalMsAcc[key] += performance.now() - t0
+  animalFrameMs[key] += performance.now() - t0
 }
-/** Once a frame after every layer has stepped: close the window when it is full and publish each layer's mean. */
-function bankAnimalMs(dt) {
-  animalMsFrames++
-  animalMsSince += dt
-  if (animalMsSince < ANIMAL_MS_WINDOW_S) return
-  for (const k of ANIMAL_LAYERS) {
-    animalMs[k] = animalMsAcc[k] / animalMsFrames
-    animalMsAcc[k] = 0
-  }
-  animalMsFrames = 0
-  animalMsSince = 0
-}
+const perfTraceFrame = { jsMs: 0, renderMs: 0, calls: 0, tris: 0, uploadCalls: 0, uploadBytes: 0, parts: { builds: buildScheduler.spent, animals: animalFrameMs } }
 
 /**
  * The frogs', crabs', butterflies', grasshoppers', fireflies' and spiders' batches, off their rows. Not the fish's:
@@ -4881,11 +4872,11 @@ async function buildRoom(room, at) {
   window.v2mushrooms = mushrooms
   // Within a distance ring the big things build first: trees, boulders, ferns, grass, then the small litter. Grass is rebuilt by buildGrass, so its source reads the live bed.
   const grassView = { get queue() { return grass ? grass.queue : [] }, _growTile: (job) => grass._growTile(job) }
-  buildScheduler.add(trees, undefined, { on: () => questToggles.trees, rank: 0, tile: TREE_TILE })
-  buildScheduler.add(ferns, undefined, { on: () => questToggles.ferns, rank: 2, tile: FERN_TILE })
-  buildScheduler.add(grassView, undefined, { on: () => questToggles.grass, rank: 3, tile: GRASS_TILE })
-  rocks.schedule(buildScheduler, { on: () => questToggles.boulders, rank: 1 })
-  for (const [layer, tile] of [[litter, litter.tile], [mushrooms, MUSHROOM_TILE], [deadwood, DEADWOOD_TILE]]) buildScheduler.add(layer, undefined, { on: () => questToggles.litter, rank: 4, tile })
+  buildScheduler.add(trees, undefined, { name: 'trees', on: () => questToggles.trees, rank: 0, tile: TREE_TILE })
+  buildScheduler.add(ferns, undefined, { name: 'ferns', on: () => questToggles.ferns, rank: 2, tile: FERN_TILE })
+  buildScheduler.add(grassView, undefined, { name: 'grass', on: () => questToggles.grass, rank: 3, tile: GRASS_TILE })
+  rocks.schedule(buildScheduler, { name: 'rocks', on: () => questToggles.boulders, rank: 1 })
+  for (const [name, layer, tile] of [['litter', litter, litter.tile], ['mushrooms', mushrooms, MUSHROOM_TILE], ['deadwood', deadwood, DEADWOOD_TILE]]) buildScheduler.add(layer, undefined, { name, on: () => questToggles.litter, rank: 4, tile })
   grass.buildBudgetMs = 0
 
   // The bones: a rare find on any ground (render/bones.js), on the litter row
@@ -6480,9 +6471,6 @@ function traceLayers() {
   if (ferns !== null) scatter('ferns', questToggles.ferns, ferns.stats)
   rungs('wildlife', wildlife)
   rungs('dragons', dragons)
-  const animals = {}
-  for (const k of ANIMAL_LAYERS) if (animalMs[k] >= 0.05) animals[k] = r2(animalMs[k])
-  out.animalMs = animals
   return out
 }
 const traceHost = {
@@ -6495,6 +6483,7 @@ const traceHost = {
 const recordTrace = new RecordTrace({
   ...traceHost,
   camera,
+  get census() { return perfTrace.host.census },
   context: () => perfTrace.host.context(),
   hidePanel: () => perfTrace.host.hidePanel(),
   play: (clip, rate, gain) => perfTrace.host.play(clip, rate, gain),
@@ -7991,8 +7980,8 @@ function stepOverworld(dt, now) {
   // applySubmersion), one frame late on the dive and the surfacing, which the
   // eye cannot tell from the splash.
   //
-  // Each is timed through stepAnimal, whose readings the HUD's `animal ms` row
-  // shows: ten-odd layers behind one switch is exactly the shape where a guess at
+  // Each is timed through stepAnimal, which the trace windows record per layer:
+  // ten-odd layers behind one switch is exactly the shape where a guess at
   // which one costs what is worthless.
   const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
@@ -8038,7 +8027,6 @@ function stepOverworld(dt, now) {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
     dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, dragonQuarry())
   })
-  bankAnimalMs(dt)
   spikes.lap('animals')
 }
 
@@ -8104,6 +8092,7 @@ AFRAME.registerComponent('v2-quest-tick', {
     perfTrace.frame(perfTraceFrame)
     recordTrace.frame(perfTraceFrame)
     ambientTrace.frame(perfTraceFrame)
+    for (const part of Object.values(perfTraceFrame.parts)) for (const k in part) part[k] = 0
     renderOverlay()
     spikes.end()
   },
