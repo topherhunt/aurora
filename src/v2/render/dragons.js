@@ -144,13 +144,13 @@ const rollHue = tintRange(DRAGON_HUES)
 // The scales' roughness: a rough gleam at half the sun's lobe (puppet.js gloss), broader and duller than the egg's shell.
 export const SCALE_ROUGHNESS = 0.5
 
-// Flight, in metres and seconds.
-export const PATROL_MPS = 12
-export const HUNT_MPS = 16
-export const DIVE_MPS = 22
+// Flight, in metres and seconds. TURN_RATE sets the turning circle, PATROL_MPS / TURN_RATE: widen it and _legTime's clock no longer fits the turns, so legs end far off their ghost.
+export const PATROL_MPS = 24
+export const HUNT_MPS = 32
+export const DIVE_MPS = 44
 export const LAND_MPS = 5
-export const ACCEL = 4
-export const TURN_RATE = 0.6
+export const ACCEL = 6
+export const TURN_RATE = 1.2
 export const LAND_TURN_RATE = 1.5
 export const PITCH_MAX = 0.5
 export const DIVE_PITCH = 1.1
@@ -168,10 +168,10 @@ export const PATROL_M = 300
 export const CRUISE_AGL = [40, 80]
 export const MIN_AGL = 15
 export const LOOK_AHEAD_M = 40
-// How far from the nest a stag may be to be hunted; how far short of the stag and how high over it the hunt leg ends and the stoop begins, so the stoop is a dive and not a drop; how high over it the stoop ends (the talons at its back); and the seconds the stoop is given past its dive.
+// How far from the nest a stag may be to be hunted; how far short of the stag and how high over it the hunt leg ends and the stoop begins, so the stoop is a dive and not a drop; how high over it the stoop ends (the talons at its back); and the seconds the stoop is given past its dive. STOOP_M scales with HUNT_MPS: the body covers much of it pitching over at PITCH_RATE, and too short a run never dives.
 export const HUNT_M = 250
-export const STOOP_M = 40
-export const STOOP_AGL = 25
+export const STOOP_M = 80
+export const STOOP_AGL = 50
 export const STRIKE_AGL = 2
 export const STOOP_PAD_S = 1
 // A landing: the leg before it ends this far short of the floor's centre and this high over it, the glide hands over to the settle this near its touchdown, and the touchdown itself is this fraction of that short of the centre so the rest walks the last of it.
@@ -194,7 +194,7 @@ export const MIN_LEG_M = 80
 // How long before a rest's end the body starts walking back to its centre; the fastest the ease may pull the body and its heading onto a phrase's end, over what the flight itself does.
 export const HOMING_PAD_S = 4
 export const EASE_MPS = 8
-export const EASE_TURN = 1
+export const EASE_TURN = 1.5
 // The least a flight is given, in seconds of air time: a chapter with less left rests it out.
 export const FLIGHT_MIN_S = 60
 // How likely a chapter's flight is a hungry one (a patrol) rather than a fed one (an explore); how long a dragon rests on the nest between flights; how long a flight lasts in the air, not counting time perched; how long a visited spot holds it; how long it eats. A dragon lives in the air: the flights are long and the rests between them short, so one seen on its nest is soon seen off it.

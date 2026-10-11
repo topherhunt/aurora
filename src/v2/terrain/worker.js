@@ -255,6 +255,7 @@ self.onmessage = (e) => {
         normals: r.normals,
         colors: r.colors,
         stipple: r.stipple,
+        stipFloor: r.stipFloor,
         forest: r.forest,
         hearth: r.hearth,
         indices: r.indices,
@@ -263,7 +264,7 @@ self.onmessage = (e) => {
         skirtDepth: r.skirtDepth,
         ms: performance.now() - t0,
       },
-      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.forest.buffer, r.hearth.buffer, r.indices.buffer]
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.stipFloor.buffer, r.forest.buffer, r.hearth.buffer, r.indices.buffer]
     )
     return
   }

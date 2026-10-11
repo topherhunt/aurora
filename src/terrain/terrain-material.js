@@ -1750,7 +1750,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         attribute float forest;${stipple ? `
         attribute vec4 stipple;
         flat varying vec4 vStipFrame;
+        flat varying vec3 vStipAnchor;
         varying vec3 vStipPos;
+        varying float vStipK;
         varying float vStipSnow;` : ''}`)
       // AFTER project_vertex, NOT at color_vertex: three applies the BatchedMesh
       // per-chunk matrix (batching_vertex) between the two, so this is the first
@@ -1780,18 +1782,16 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       shader.vertexShader = shader.vertexShader.replace(
         '#include <project_vertex>',
         `#include <project_vertex>
-        // ---- THE STIPPLE FRAME, one per FACE. stipple is (tiles/m, offset u,
-        // offset v, plane), baked by the mesher from the vertex's distance
-        // from the camera at build time and its normal's dominant axis, with
-        // the offset placing the chunk on a WORLD tiling. The frame is FLAT:
-        // whichever vertex provokes the triangle, its frame is the triangle's,
-        // so a face is one scale and one plane end to end. Neighbours at the
-        // same scale and plane share the sheet and show no seam; the seams
-        // are the ring where the scale doubles and the contour where the
-        // plane flips. uv = offset + k * (two axes of chunk-local
-        // transformed, which is small at every depth).
+        // ---- THE STIPPLE FRAME (chunk-mesh-v2.js STIPPLE FRAME). stipple is
+        // (tiles/m, offset u, offset v, plane). Offset and plane are FLAT, the
+        // provoking vertex's, and so is the anchor, that vertex's position; the
+        // tile size is interpolated. uv = offset + k * (position - anchor):
+        // one world sheet where k is constant, and a stretch from the
+        // triangle's own corner where it is not.
         vStipFrame = stipple;
-        vStipPos = transformed;`
+        vStipAnchor = transformed;
+        vStipPos = transformed;
+        vStipK = stipple.x;`
       )
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
@@ -1801,7 +1801,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         uniform float uStippleSnow;
         uniform float uStippleWallBump;
         flat varying vec4 vStipFrame;
+        flat varying vec3 vStipAnchor;
         varying vec3 vStipPos;
+        varying float vStipK;
         varying float vStipSnow;
         // Filled at color_fragment, read at normal_fragment_begin.
         vec3 auroraStippleTilt;`)
@@ -1823,8 +1825,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // stipple swings the ground around it.
         // The plane, 0 xz / 1 zy / 2 xy, as selects on a flat value: uniform
         // flow, no branch.
-        vec2 auroraStipP = vStipFrame.w < 0.5 ? vStipPos.xz : vStipFrame.w < 1.5 ? vStipPos.zy : vStipPos.xy;
-        vec2 auroraStipUv = vStipFrame.yz + vStipFrame.x * auroraStipP;
+        vec3 auroraStipD = vStipPos - vStipAnchor;
+        vec2 auroraStipP = vStipFrame.w < 0.5 ? auroraStipD.xz : vStipFrame.w < 1.5 ? auroraStipD.zy : auroraStipD.xy;
+        vec2 auroraStipUv = vStipFrame.yz + vStipK * auroraStipP;
         vec4 auroraStippleG = texture( uStippleMap, auroraStipUv );
         float auroraStipGain = mix( 1.0, uStippleSnow, vStipSnow );
         diffuseColor.rgb *= 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit * auroraStipGain;

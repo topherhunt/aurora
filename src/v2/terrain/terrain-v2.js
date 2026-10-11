@@ -264,6 +264,8 @@ export class TerrainV2 {
     // the wireframe overlay (wire.js) can read it as a texture; each slot's
     // `heights` is a view of its row. 289 floats x 1024 slots is 1.18 MB, fixed.
     this.heightsArena = new Float32Array(SLOT_COUNT * GRID_VERTS)
+    // Each slot's stippleFloor grid, for the restipple. 1.18 MB, fixed.
+    this.stipFloorArena = new Float32Array(SLOT_COUNT * GRID_VERTS)
     this.heightsVersion = 0
     this._free = []
     for (let i = 0; i < SLOT_COUNT; i++) {
@@ -274,7 +276,7 @@ export class TerrainV2 {
       // restipple writes straight into.
       const { vertexStart } = this.batch.getGeometryRangeAt(geometryId)
       if (!Number.isInteger(vertexStart)) throw new Error(`v2 terrain: this three's getGeometryRangeAt gives no vertexStart (${vertexStart})`)
-      this._free.push({ geometryId, instanceId, row: i, vertexStart, heights: this.heightsArena.subarray(i * GRID_VERTS, (i + 1) * GRID_VERTS) })
+      this._free.push({ geometryId, instanceId, row: i, vertexStart, heights: this.heightsArena.subarray(i * GRID_VERTS, (i + 1) * GRID_VERTS), stipFloor: this.stipFloorArena.subarray(i * GRID_VERTS, (i + 1) * GRID_VERTS) })
     }
 
     this._mat = new THREE.Matrix4()
@@ -889,6 +891,7 @@ export class TerrainV2 {
     const heights = slot.heights
     for (let i = 0; i < GRID_VERTS; i++) heights[i] = msg.positions[i * 3 + 1]
     this.heightsVersion++
+    slot.stipFloor.set(msg.stipFloor)
 
     // Set the bounding sphere by hand rather than calling computeBoundingSphere,
     // which would walk every vertex on the main thread for every chunk load.
@@ -1344,7 +1347,7 @@ export class TerrainV2 {
       const entry = stale[i]
       const n = entry.node
       const at = entry.slot.vertexStart * 4
-      restippleChunk(attr.array.subarray(at, at + CHUNK_VERTS * 4), entry.slot.heights, n.x, n.z, n.size, CHUNK_RES, cam)
+      restippleChunk(attr.array.subarray(at, at + CHUNK_VERTS * 4), entry.slot.heights, entry.slot.stipFloor, n.x, n.z, n.size, CHUNK_RES, cam)
       attr.addUpdateRange(at, CHUNK_VERTS * 4)
       entry.stipCam = { x: cam.x, y: cam.y, z: cam.z }
     }

@@ -589,7 +589,8 @@ export function bakeCritterCard(renderer, subject, map, bounds, views) {
   const geometry = subject.isBufferGeometry ? subject : null
   if (geometry && !map) throw new Error('bakeCritterCard: the asset has no colour map to photograph')
   checkViews(views)
-  const material = geometry ? new THREE.MeshBasicMaterial({ map, toneMapped: false }) : null
+  // Without the cut an opaque material writes a cutout map's clear texels as alpha 1, baking them in as black.
+  const material = geometry ? new THREE.MeshBasicMaterial({ map, toneMapped: false, alphaTest: 0.5 }) : null
   const scene = new THREE.Scene()
   scene.add(geometry ? new THREE.Mesh(geometry, material) : subject)
   scene.updateMatrixWorld(true)

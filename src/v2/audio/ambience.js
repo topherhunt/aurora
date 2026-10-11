@@ -165,8 +165,8 @@ export const RULES = {
   songbirdNear: { interval: [8, 100], skew: 2, gain: [0.4, 0.8], range: [4, 15], elev: [10, 50], light: 0.4, forestSpeedup: 0.5, aloft: [20, 30] },
   // Which songbird sings, far or near: `bias` of the time one heard in the last `recent` seconds, so the same few voices come and go rather than all six chiming in at random; the rest of the time any of the six.
   songbirdVoice: { recent: 15, bias: 0.5 },
-  // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk. The ones beside her are the grasshoppers (chirp).
-  cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5 },
+  // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk. The crickets are in the grass, so it thins to nothing across the `aloft` band of metres her head is above the ground. The ones beside her are the grasshoppers (chirp).
+  cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5, aloft: [12, 20] },
   // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full.
   footstep: { interval: [0.4, 0.6], gain: [0.5, 1.0], minSpeed: 0.3, teleport: [1, 2] },
   // Her own strokes while swimming, in place of her feet: the swoosh every `interval` seconds while moving past footstep.minSpeed, and once on each teleport. Under the water it is on the water bus as recorded; at the surface on the near bus, bright (SoundEngine BRIGHT) since the clip is muffled, with the small splash at `splash` gain.
@@ -217,13 +217,14 @@ export const RULES = {
   tread: { reach: 60, near: 4, level: 0.7, jitter: 0.05, gain: [0.7, 1.0] },
   // A dragon landing to chase (dragons.js `aggro`) comes down with the tread slowed to `rate` and sent `echo` into the valley echo, heard within `reach`.
   stamp: { reach: 100, near: 10, level: 1.0, rate: 0.55, echo: 0.9, gain: [0.8, 1.0] },
-  // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field, and given its metres as the engine's far treatment, so it is dull and washed the way a slide across the scree is...
-  rockslideNear: { interval: [20, 60], gain: [0.025, 0.075], range: [10, 30], rise: [0, 10], near: 10, minBoulders: 6 },
+  // A rockslide off in the talus when there are this many loose rocks within the sense box: placed `range` metres out on the ground and up to `rise` above it, full volume within `near` metres of her head and falling as near/distance past it, so it fades as she climbs or flies above the field, and unheard past `reach`, and given its metres as the engine's far treatment, so it is dull and washed the way a slide across the scree is...
+  rockslideNear: { interval: [20, 60], gain: [0.025, 0.075], range: [10, 30], rise: [0, 10], near: 10, reach: 60, minBoulders: 6 },
   // ...and a scatter of stones under her own feet, `chance` per second while she moves across a boulder.
   rockslideFoot: { chance: 0.15, gain: [0.075, 0.175] },
   // Lake: a wave every so often from the shore while one is within `reach` of her, on land or wading, and her head within `height` of the water; open water with no shore in reach is silent, since waves lap on a shore. Full volume up to `near` metres off the shore or above the surface, fading to nothing at the reach or the height, and the shot is given its metres as the engine's far treatment, so a distant shore is dull and washed rather than quiet at her ear.
   wave: { interval: [2, 5], gain: [0.3, 0.8], reach: 20, near: 3, height: 20 },
   lakeBed: { level: 0.5, gain: [0.6, 1.0] },
+  // Brook: a loop from the river while her head is within `reach` metres of its shore, horizontally and up, full volume up to `near` and falling to `far` of it at the reach.
   brook: { reach: 10, near: 2, far: 0.2, level: 0.9, gain: [0.7, 1.0] },
   // Leaves: the wood's canopy, heard from the ground; it thins to nothing across the `aloft` band of metres her head is above the ground.
   leaves: { on: 0.5, off: 0.4, full: 0.8, level: 0.7, gain: [0.6, 1.0], aloft: [12, 20] },
@@ -514,7 +515,7 @@ export class Ambience {
 
     const below = s.aboveSnow < 0
     this._birds(dt, head, s, dayness, below)
-    this._crickets(dt, dayness, below && !hushed)
+    this._crickets(dt, dayness, below && !hushed, head.y - s.groundH)
     this._feet(dt, head, s, speed, afoot)
     this._herds(dt, head)
     this._dragons(dt, head, now)
@@ -572,11 +573,11 @@ export class Ambience {
   }
 
   /** The far cricket bed, unplaced: the near ones are _grasshoppers. */
-  _crickets(dt, dayness, below) {
+  _crickets(dt, dayness, below, up) {
     const B = RULES.cricketBed
-    const night = dayness < B.dusk && below
+    const night = dayness < B.dusk && below && up < B.aloft[1]
     if (this.due('cricketBed', night, B.interval, dt)) {
-      this.fire('cricket', { rate: this.rate(), gain: this.between(...B.gain) })
+      this.fire('cricket', { rate: this.rate(), gain: this.between(...B.gain) * (1 - smoothstep(B.aloft[0], B.aloft[1], up)) })
     }
   }
 
@@ -924,6 +925,7 @@ export class Ambience {
       const at = this.aroundHead(head, this.between(...R.range), 0)
       at.y = s.groundH + this.between(...R.rise)
       const d = Math.hypot(at.x - head.x, at.y - head.y, at.z - head.z)
+      if (d > R.reach) return
       this.fire(this.pick(ROCKSLIDES), { rate: this.rate(), gain: this.between(...R.gain) * (R.near / Math.max(R.near, d)), at, distance: d })
     }
   }
@@ -967,7 +969,7 @@ export class Ambience {
     this._loop('lakeBed', ear.on, L.level * ear.fade, ear.at)
 
     const B = RULES.brook
-    const rd = Math.abs(s.riverShore)
+    const rd = Math.hypot(s.riverShore, head.y - s.fieldH)
     const brookFade = 1 - smoothstep(B.near, B.reach, rd) * (1 - B.far)
     this._loop('brook', rd < B.reach, B.level * brookFade, this.shoreAt(head, s, s.riverShore, s.riverDirX, s.riverDirZ))
 

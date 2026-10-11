@@ -59,7 +59,7 @@ export const WILD = {
     swim: { draft: 1.3, speed: 2.8, stroke: [0.35, 1], back: -0.8, sway: [0.12, 0.3], weave: [2, 4], duck: [0.2, 0.5], paddle: [1.1, 1.9], splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40] },
   },
   // In the headset it hops where she lobs (main.js aimTeleport), keeping its heading: `reach` times her walking lob straight ahead, falling off as the square of the cosine off its way to `side` of that at a right angle and behind, grown `grow` a hop by hops within `line` rad of the last that used `full` of it, to `most`; a sharper turn sheds it in proportion to a right angle, and `rest` s standing sheds it over `fade` s. The lob stops `cap` m of her own under its feet: a hop there is a leap, and it falls. It treads `tread` s after a hop (by how far) and clucks after one in `cluck`; standing, it fidgets every `fidget` s, shifting her `shift` m and `sway` rad.
-  hop: { reach: 2, side: 0.1, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, cap: 3.5, tread: [0.5, 1.4], cluck: 0.35, fidget: [6, 16], shift: 0.03, sway: 0.04 },
+  hop: { reach: 2, side: 0.1, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, cap: 3.5, tread: [0.5, 1.4], cluck: 0.35, fidget: [12, 32], shift: 0.03, sway: 0.04 },
 }
 
 const MORE_CLIPS = ['peck', 'sit', 'attack']
@@ -69,7 +69,7 @@ const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'led'
 // The states her chanterelle turns to a charge: not one led, ridden, eating, fleeing after a strike, panicked or afloat.
 const MADDENS = new Set(['calm', 'wary', 'follow', 'meek', 'shy'])
 // What a calm one does at its spot, weighted, each played one to three times and then stood idle.
-const ACTS = [['peck', 0.45], ['idle', 0.45], ['fidget', 0.1]]
+const ACTS = [['peck', 0.45], ['idle', 0.5], ['fidget', 0.05]]
 const _calm = { x: 0, z: 0, heading: 0, speed: 0, act: 'idle', seg: 0 }
 /** Whether `hand` touches the saddle at `seat` (WILD.reach). */
 export const touchesSaddle = (seat, hand) => Math.hypot(hand.x - seat.x, hand.z - seat.z) < WILD.reach && hand.y > seat.y - WILD.below && hand.y < seat.y + 0.5

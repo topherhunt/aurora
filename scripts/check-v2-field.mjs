@@ -63,7 +63,7 @@ import { snowDefaults } from '../src/v2/layers/doc.js'
 import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { TerrainTint } from '../src/terrain/terrain-tint.js'
-import { buildChunkV2, restippleChunk, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN, STIPPLE_WALL_SCALE } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { buildChunkV2, restippleChunk, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN, STIPPLE_WALL_SCALE, stippleTilesForPlane, stippleFloor } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { HEARTH_LIGHT, HEARTHS } from '../src/v2/hearth-light.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
@@ -734,23 +734,29 @@ export async function run({ heightmap } = {}) {
       const k = r.stipple[v * 4]
       const plane = r.stipple[v * 4 + 3]
       const wall = plane === 0 ? 1 : STIPPLE_WALL_SCALE
-      if (k !== Math.fround(stippleTilesPerM(Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z)) / wall)) kBad++
-      const tileStep = Math.log2(1 / (k * wall * STIPPLE_TILE_MIN))
-      if (Math.abs(tileStep - Math.round(tileStep)) > 1e-6 || tileStep < 0) pow2Bad++
+      const kDist = stippleTilesPerM(Math.hypot(wx - CAM.x, wy - CAM.y, wz - CAM.z))
+      if (k !== stippleTilesForPlane(kDist, plane, r.stipFloor[v])) kBad++
+      const tileStep = Math.log2(1 / (k * STIPPLE_TILE_MIN))
+      const floored = k !== Math.fround(kDist / wall)
+      if (!floored && (Math.abs(tileStep - Math.round(tileStep)) > 1e-6 || tileStep < 0)) pow2Bad++
       if (!(plane === 0 || plane === 1 || plane === 2)) planeBad++
       const ou = r.stipple[v * 4 + 1]
       const ov = r.stipple[v * 4 + 2]
-      const wantU = plane === 1 ? frac(k * -1024) : frac(k * 512)
-      const wantV = plane === 0 ? frac(k * -1024) : 0
-      if (Math.abs(ou - wantU) > 1e-6 || Math.abs(ov - wantV) > 1e-6) offBad++
+      const wrap = (a, b) => { const d = Math.abs(a - b); return Math.min(d, 1 - d) }
+      if (wrap(ou, frac(k * (plane === 1 ? wz : wx))) > 1e-5 || wrap(ov, frac(k * (plane === 0 ? wz : wy))) > 1e-5) offBad++
       ks.add(k * wall)
       planes.add(plane)
     }
     check(kBad === 0, 'every vertex tiles the stipple at stippleTilesPerM(distance), a wall STIPPLE_WALL_SCALE times larger', `${kBad} of ${inner} off`)
-    check(pow2Bad === 0, 'every tile is the minimum times a power of two', `${pow2Bad} of ${inner} off`)
+    check(pow2Bad === 0, 'every tile the slope floor leaves alone is the minimum times a power of two', `${pow2Bad} of ${inner} off`)
     check(planeBad === 0, 'every vertex names one of the three planes', `${planeBad} of ${inner} off`)
-    check(offBad === 0, 'stipple offsets are frac(k * chunk origin) on the plane\'s axes', `${offBad} wrong`)
+    check(offBad === 0, 'stipple offsets are frac(k * the vertex\'s world position) on the plane\'s axes', `${offBad} wrong`)
     check(ks.size === 1, 'a chunk a kilometre out sits inside one tile step', `${ks.size} distinct scales`)
+    const s01 = (deg) => { const t = Math.tan((deg * Math.PI) / 180); return t / (1 + t) }
+    const floors = [40, 52.5, 60, 75].map((d) => stippleFloor(s01(d)).toFixed(3))
+    check(floors.join() === '0.000,0.500,1.000,2.000', 'the stipple floor rises continuously from 1x at 45 deg to 4x at 75 deg of macro slope', floors.join())
+    check(stippleTilesForPlane(stippleTilesPerM(0), 1, stippleFloor(s01(75))) === Math.fround(1 / (4 * STIPPLE_TILE_MIN)) && stippleTilesForPlane(stippleTilesPerM(0), 0, 0) === Math.fround(1 / STIPPLE_TILE_MIN), 'underfoot, a 75 deg face tiles at 4x the flat ground minimum')
+    check(stippleTilesForPlane(stippleTilesPerM(400), 2, 2) === Math.fround(stippleTilesPerM(400) / STIPPLE_WALL_SCALE), 'at 400 m the floor is idle and a wall tile is STIPPLE_WALL_SCALE times the ground tile')
     check(planes.has(0), 'the chunk has walkable ground on the xz plane', `planes ${[...planes].join(',')}`)
     // A chunk under the camera straddles several steps: the tile is the
     // minimum at the feet and doubles outward.
@@ -766,7 +772,7 @@ export async function run({ heightmap } = {}) {
       const heights = new Float32Array(inner)
       for (let v = 0; v < inner; v++) heights[v] = stale.positions[v * 3 + 1]
       const span = new Float32Array(stale.stipple)
-      restippleChunk(span, heights, -size / 2, -size / 2, size, CHUNK_RES, { x: 0, y: field.heightAt(0, 0) + 1.6, z: 0 })
+      restippleChunk(span, heights, stale.stipFloor, -size / 2, -size / 2, size, CHUNK_RES, { x: 0, y: field.heightAt(0, 0) + 1.6, z: 0 })
       let restipBad = 0
       for (let c = 0; c < span.length; c++) if (span[c] !== near.stipple[c]) restipBad++
       check(stale.stipple[((vpr >> 1) * vpr + (vpr >> 1)) * 4] < kMid, 'a chunk built from 30 m out is too coarse underfoot', `${(1 / stale.stipple[((vpr >> 1) * vpr + (vpr >> 1)) * 4]).toFixed(2)} m`)

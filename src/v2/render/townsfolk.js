@@ -147,7 +147,7 @@ export const TOWNSFOLK = {
   forge: 0.55,
   tools: { hammer: [0.36, 0.016, 0.15, 0.06, 0.06], axe: [0.62, 0.018, 0.1, 0.13, 0.025] },
   // The striders at the rails: spare mounts past a tether each for the chapter's arrivals, and guests to ride or walk them in; the share of tethers filled at a chapter's start; seconds tied between fidgets, at the knot, and in the hop up or down; the rein a led one keeps; the wander legs of a lead, and no lead within `clear` s of a departure's fetch or `late` s of the chapter's end. A departer fetches its strider `slack` s ahead of its own worst walk and ride to the port at `walk` m/s afoot.
-  strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [16, 60], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
+  strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [32, 120], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
   // Her within `m`: `ignore` of the time they carry on; otherwise they stop, face her and gesture (or just look, `idle`) for `s`, then catch up with themselves at `catchUp` times the pace. Either way `cool` seconds before the same one notices her again.
   greet: { m: 2, ignore: 0.5, s: [2.5, 4], cool: 20, catchUp: 1.5, clips: [['wave', 0.12], ['beckon', 0.08], ['idle', 0.8]] },
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.

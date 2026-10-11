@@ -11,9 +11,9 @@ import { hearthGlowAt, hearthsReach } from '../hearth-light.js'
 // at a tile size that grows with the triangle's distance from the camera AT
 // BUILD TIME, so the texel stays a roughly constant size on screen instead of
 // mipping out to flat past twenty metres. The frame is baked here as a vec4
-// attribute, (tiles per metre, offset u, offset v, plane), and the shader
-// reads it as a `flat` varying, so each triangle takes its provoking vertex's
-// frame whole: one fetch, no derivatives.
+// attribute, (tiles per metre, offset u, offset v, plane). The shader takes
+// offset and plane `flat` from the provoking vertex and interpolates the tile
+// size: one fetch, no derivatives.
 //
 // The plane is the DOMINANT AXIS of the geometric normal -- 0 for xz (the
 // walkable world), 1 for zy (a wall facing x), 2 for xy (a wall facing z) --
@@ -22,15 +22,16 @@ import { hearthGlowAt, hearthsReach } from '../hearth-light.js'
 // decided once per face at build time; where the pick flips along a contour
 // the pattern changes phase, not brightness.
 //
-// The tile size is QUANTISED to powers of two of STIPPLE_TILE_MIN. Two faces
-// with the same size then tile as one continuous sheet (uv = k * world xz for
-// both), so the only seams are the rings where the size doubles. Continuous
-// sizing would put a seam on every edge instead: uv = k * wxz jumps by
-// (k_a - k_b) * wxz between neighbours, and wxz is hundreds of metres.
+// The offset is frac(k * this vertex's world position) on the plane's axes,
+// and the shader adds k * (position - the provoking vertex's position). Where
+// k is constant that is k * world mod 1, one continuous sheet. Where k varies
+// the texture stretches across each triangle from its own corner; measured
+// from a world origin instead, a 4x size change over one 0.5 m edge would
+// squeeze hundreds of tiles into it. Such triangles break phase on every edge.
 //
-// The offset is frac(k * chunk origin) on the plane's axes: the shader adds
-// k * chunk-local position to it, which is k * world position mod 1 without
-// ever forming a world coordinate at float precision in the vertex stage.
+// By distance the size is QUANTISED to powers of two of STIPPLE_TILE_MIN, so
+// flat ground is one sheet with seams only on the rings where the size
+// doubles. On steep ground stippleFloor raises it continuously.
 //
 // The size is per VERTEX and not per chunk on purpose: the far edge of an 8 m
 // chunk is not the near edge, and a 128 m chunk spans a doubling of distance.
@@ -56,14 +57,31 @@ export function stippleTilesPerM(dist) {
 /** Wall planes (1, 2) tile the stipple this many times larger: the ground's size reads as gravel on a cliff. */
 export const STIPPLE_WALL_SCALE = 2
 
-// One vertex's frame at `s`, keeping the plane already at s + 3. `k` is the
-// ground's tiles per metre at that distance; a wall takes it / STIPPLE_WALL_SCALE.
-function writeStippleFrame(stipple, s, kGround, ox, oz) {
+/**
+ * The tile's floor on steep ground, as log2 over STIPPLE_TILE_MIN: 0 at 45 deg of MACRO slope,
+ * rising linearly to 2 (4x) at 75. The macro slope keeps it smooth where the jittered mesh's own
+ * would speckle.
+ */
+export function stippleFloor(slope01) {
+  const deg = (Math.atan(slope01 / (1 - slope01)) * 180) / Math.PI
+  return 2 * clamp01((deg - 45) / 30)
+}
+
+/** Tiles per metre on a face of `plane` with floor `floor`, whose ground size at that distance is `kGround`. */
+export function stippleTilesForPlane(kGround, plane, floor) {
+  return Math.fround(Math.min(plane === 0 ? kGround : kGround / STIPPLE_WALL_SCALE, 1 / (STIPPLE_TILE_MIN * 2 ** floor)))
+}
+
+const phase = (v) => ((v % 1) + 1) % 1
+
+// One vertex's frame at `s`, keeping the plane already at s + 3. (wx, wy, wz)
+// is its world position, wy as the float32 the GPU draws.
+function writeStippleFrame(stipple, s, kGround, floor, wx, wy, wz) {
   const plane = stipple[s + 3]
-  const k = plane === 0 ? kGround : kGround / STIPPLE_WALL_SCALE
+  const k = stippleTilesForPlane(kGround, plane, floor)
   stipple[s] = k
-  stipple[s + 1] = plane === 1 ? ((k * oz) % 1 + 1) % 1 : ((k * ox) % 1 + 1) % 1
-  stipple[s + 2] = plane === 0 ? ((k * oz) % 1 + 1) % 1 : 0
+  stipple[s + 1] = phase(k * (plane === 1 ? wz : wx))
+  stipple[s + 2] = phase(k * (plane === 0 ? wz : wy))
 }
 
 /** The four skirt edges as rows of interior vertex indices, in skirt-vertex order. */
@@ -83,18 +101,20 @@ export function skirtEdges(res) {
 
 /**
  * Re-size a built chunk's stipple frames for a new camera, in place. `stipple`
- * is the chunk's (CHUNK_VERTS * 4) span, planes intact; `heights` its interior
- * y grid. Matches what buildChunkV2 would bake from `cam`.
+ * is the chunk's (CHUNK_VERTS * 4) span, planes intact; `heights` and
+ * `stipFloor` its interior grids as built. Matches what buildChunkV2 would bake
+ * from `cam`.
  */
-export function restippleChunk(stipple, heights, ox, oz, size, res, cam) {
+export function restippleChunk(stipple, heights, stipFloor, ox, oz, size, res, cam) {
   const step = size / res
   const vpr = res + 1
   for (let j = 0; j <= res; j++) {
     const wz = oz + j * step
     for (let i = 0; i <= res; i++) {
       const vi = j * vpr + i
-      const k = stippleTilesPerM(Math.hypot(ox + i * step - cam.x, heights[vi] - cam.y, wz - cam.z))
-      writeStippleFrame(stipple, vi * 4, k, ox, oz)
+      const wx = ox + i * step
+      const k = stippleTilesPerM(Math.hypot(wx - cam.x, heights[vi] - cam.y, wz - cam.z))
+      writeStippleFrame(stipple, vi * 4, k, stipFloor[vi], wx, heights[vi], wz)
     }
   }
   let sv = vpr * vpr
@@ -581,7 +601,7 @@ function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, w
  *   the gates measure against. The shipped worker passes the real field.
  * @param ground GroundTint, or null for a world whose ground is grass everywhere; see layers/ground.js.
  * @param hearths town hearth flames `{x, y, z}` whose glow is baked per vertex; see v2/hearth-light.js.
- * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, forest:Float32Array, hearth:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
+ * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, stipFloor:Float32Array, forest:Float32Array, hearth:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
 export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null, hearths = []) {
   if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
@@ -716,6 +736,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   const normals = new Float32Array(total * 3)
   const colors = new Float32Array(total * 3)
   const stipple = new Float32Array(total * 4)
+  const stipFloor = new Float32Array(vpr * vpr)
   // The forest tint's weight, one float per vertex: the keep-probability
   // trees.js rolls against at this spot (layers/forest.js), from the same
   // fixed-band slope the colour classes on, so the ground reads as wood
@@ -836,7 +857,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       const adz = Math.abs(dz)
       const plane = adx > 1 && adx >= adz ? 1 : adz > 1 ? 2 : 0
       stipple[vi * 4 + 3] = plane
-      writeStippleFrame(stipple, vi * 4, k, ox, oz)
+      stipFloor[vi] = stippleFloor(field.slope01At(wx, wz))
+      writeStippleFrame(stipple, vi * 4, k, stipFloor[vi], wx, Math.fround(h), wz)
     }
   }
 
@@ -926,7 +948,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // `culled` travels with the mesh so the panel and the gate can report the
   // fraction of chunks that took the cheap path -- §18 puts a number on that
   // claim rather than asserting it.
-  return { positions, normals, colors, stipple, forest, hearth, indices, minY, maxY, skirtDepth, culled: !touched }
+  return { positions, normals, colors, stipple, stipFloor, forest, hearth, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
 // C_GRASS is exported because the quest flat-ground card has to paint itself the

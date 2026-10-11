@@ -620,6 +620,15 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
   check(count(sparse, 'owl') === 0 && count(sparse, 'woodpecker') === 0, 'no owl or woodpecker in sparse wood')
   check(!sparse.loops.leaves.active, 'no leaves loop in sparse wood')
   check(count(sparse, 'cricket') > 50, 'crickets still chirp in the sparse night')
+  // Aloft at night: the bed thins across its band and is silent past the top.
+  const C = RULES.cricketBed
+  const mid = fakeEngine()
+  run(new Ambience({ engine: mid, sense, rand: mulberry32(5) }), 60, { dayness: NIGHT, head: { x: 0, y: sense.s.groundH + (C.aloft[0] + C.aloft[1]) / 2, z: 0 } })
+  const thinned = mid.plays.filter((p) => p.name === 'cricket')
+  check(thinned.length > 15 && thinned.every((p) => within(p.gain, ...C.gain.map((g) => g / 2))), 'halfway up the cricket band the bed chirps at half its gain', `${thinned.length}`)
+  const flying = fakeEngine()
+  run(new Ambience({ engine: flying, sense, rand: mulberry32(5) }), 120, { dayness: NIGHT, head: { x: 0, y: sense.s.groundH + C.aloft[1] + 1, z: 0 } })
+  check(count(flying, 'cricket') === 0, 'flying past the top of the band no cricket is heard')
 }
 {
   // Hushed (a chanterelle): no bird, cricket, grasshopper or rustle, by day or night, and the wood comes back when it lifts.
@@ -1267,6 +1276,9 @@ for (const rule of ['voice', 'villagerVoice']) {
   run(new Ambience({ engine: aloft, sense, rand: mulberry32(10) }), 600, { head: up })
   const high = aloft.plays.filter((p) => p.name.startsWith('rockslide'))
   check(high.length >= 8 && high.every((p) => within(rolled(up)(p), ...R.gain) && p.gain <= R.gain[1] * R.near / (40 - R.rise[1])), 'high over the field the slides are heard from far below', `${high.length}, loudest ${Math.max(...high.map((p) => p.gain)).toFixed(3)}`)
+  const beyond = fakeEngine()
+  run(new Ambience({ engine: beyond, sense, rand: mulberry32(10) }), 600, { head: { x: 0, y: sense.s.groundH + R.rise[1] + R.reach + 1, z: 0 } })
+  check(count(beyond, 'rockslide1', 'rockslide2') === 0, 'flying higher than the reach over the field, no slide is heard')
   const few = fakeEngine()
   sense.s.boulders = 3
   run(new Ambience({ engine: few, sense, rand: mulberry32(10) }), 600, {})
@@ -1342,6 +1354,7 @@ for (const rule of ['voice', 'villagerVoice']) {
   // The brook loops within 10 m of a river, from its bearing, fading with distance.
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
+  sense.s.fieldH = GROUND
   sense.s.riverShore = 1
   sense.s.riverDirZ = -1
   const amb = new Ambience({ engine, sense, rand: mulberry32(13) })
@@ -1355,6 +1368,11 @@ for (const rule of ['voice', 'villagerVoice']) {
   sense.s.riverShore = SHORE_REACH
   run(amb, 2, {})
   check(!brook.active && brook.stops === 1, 'past 10 m the brook stops')
+  sense.s.riverShore = -1
+  run(amb, 2, {})
+  check(brook.active && brook.starts === 2, 'over the river at head height the brook loops')
+  run(amb, 2, { head: { x: 0, y: GROUND + RULES.brook.reach + 1, z: 0 } })
+  check(!brook.active && brook.stops === 2, 'flying more than 10 m over the river the brook stops')
   check(brook.opts.directional === true && engine.loops.leaves.opts.directional !== true, 'the brook is directional, the leaves are not')
   check(engine.loops.underwater.opts.bus === 'water', 'the underwater loop sits on the water bus')
 }
