@@ -62,7 +62,7 @@ import { keyHash, phraseRand } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 import { PropArena } from './prop-arena.js'
 import {
-  CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, critterCardExtents, glint, hueVary, loadCritterGlb, makeHueAttribute,
+  CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, critterCardExtents, glint, hueTurnTint, hueVary, loadCritterGlb, makeHueAttribute,
   setCritterAsset, tierTintSplice, tileKey, walkTiles,
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
@@ -129,6 +129,7 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _flat = new THREE.Matrix4()
 const _lay = new THREE.Matrix4().makeRotationX(-Math.PI / 2)
+const _tint = new THREE.Color()
 
 // A perch's identity and its seed come from its quantised origin: the same rock, the same crabs.
 const perchKey = (x, z) => Math.round(x * 8) * 0x100000 + Math.round(z * 8)
@@ -303,8 +304,21 @@ export class Crabs {
     this.setCard()
   }
 
-  /** Start drawing the far crabs (the picture is in the pool). */
+  /** Start drawing the far crabs (the picture is in the pool). Each card's hue turn is a tint on the picture's mean linear colour, so it is exact for that colour and approximate across the picture. */
   setCard() {
+    const px = this.litterCards.pixels(this.cardPicture)
+    const mean = { r: 0, g: 0, b: 0 }
+    let n = 0
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 128) continue
+      _tint.setRGB(px[i] / 255, px[i + 1] / 255, px[i + 2] / 255, THREE.SRGBColorSpace)
+      mean.r += _tint.r
+      mean.g += _tint.g
+      mean.b += _tint.b
+      n++
+    }
+    if (n === 0) throw new Error('Crabs.setCard: the card picture is empty')
+    this.cardMean = { r: mean.r / n, g: mean.g / n, b: mean.b / n }
     this.cardReady = true
   }
 
@@ -961,7 +975,7 @@ export class Crabs {
     if (c.cardOn && !c.cardDirty) return
     _mat.fromArray(c.m).multiply(_flat.makeTranslation(0, this.cardLift, 0).multiply(_lay))
     this.cards.setMatrixAt(c.id, _mat)
-    this.cards.setHueAt(c.id, c.hue)
+    this.cards.setColorAt(c.id, hueTurnTint(this.cardMean, c.hue, _tint))
     c.cardDirty = false
     if (!c.cardOn) {
       this.cards.setVisibleAt(c.id, true)

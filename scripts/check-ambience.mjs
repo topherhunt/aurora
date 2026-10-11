@@ -1393,6 +1393,67 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(engine.wet === false && !engine.loops.underwater.active, 'surfacing: buses back, underwater loop stopped')
   check(engine.plays.length > 40, 'the world comes back the moment she surfaces', `${engine.plays.length} plays in 30 s`)
   check(engine.loops.underwater.starts === 1 && engine.loops.underwater.stops === 1, 'the underwater loop started and stopped once')
+  check(RULES.underwater.level === 0.5, 'the underwater loop plays at half volume')
+}
+{
+  // A cave: the bed loops with a take swapped in every 30-60 s, a drop near water every 10-15 s, and none of it under the water.
+  const C = RULES.cave, D = RULES.caveDrip
+  const engine = fakeEngine(), sense = scripted()
+  const amb = new Ambience({ engine, sense, rand: mulberry32(21) })
+  const bed = engine.loops.caveBed
+  run(amb, 5, {})
+  check(!bed.active, 'above ground the cave bed is silent')
+  // The loop asks next() once a pass; a 12 s pass is polled here every 2 s, so every take swapped in is seen.
+  const takes = []
+  const drive = (seconds, ctx) => {
+    for (let t = 0; t < seconds; t += 2) {
+      run(amb, 2, ctx)
+      const take = bed.opts.next()
+      if (take !== null) takes.push({ take, t })
+    }
+  }
+  const water = { x: 6, y: HEAD.y - 1, z: 8 }
+  drive(300, { cave: { water } })
+  const drips = engine.plays.filter((p) => p.name === 'caveDrip')
+  check(bed.active && bed.level === C.level && bed.opts.bus === 'near', 'underground the cave bed loops on the near bus')
+  check(takes.length >= 300 / C.swap[1] - 1 && takes.length <= 300 / C.swap[0] + 1 && takes.every((k) => ['cave1', 'cave2', 'cave3'].includes(k.take)), 'every 30-60 s one pass of the bed is one of the three takes', takes.map((k) => k.take).join(' '))
+  check(bed.opts.next() === null, 'a take is played once, then the bed again')
+  const near = D.level * (D.near / Math.hypot(6, 1, 8))
+  check(drips.length >= 300 / D.interval[1] - 1 && drips.length <= 300 / D.interval[0] + 1 && drips.every((p) => p.at.x === 6 && p.at.z === 8 && p.bus === 'near' && p.gain <= near && p.gain >= near * D.gain[0]), 'with water within reach a drop falls every 10-15 s from it, faded by its distance', `${drips.length} in 300 s`)
+  engine.plays.length = 0
+  run(amb, 60, { cave: { water: null } })
+  check(count(engine, 'caveDrip') === 0 && bed.active, 'with no water in reach the bed loops and no drop falls')
+  run(amb, 120, { cave: { water }, submerged: true })
+  check(!bed.active && count(engine, 'caveDrip') === 0 && bed.opts.next() === null && engine.loops.underwater.active, 'under the cave\'s water only the underwater loop plays')
+  run(amb, 1, {})
+  check(!bed.active && !engine.loops.underwater.active, 'out of the cave the bed stops')
+}
+{
+  // A cave under a lively overworld: the lake, wood, frogs, talus and fires over her head are not heard, and come back as she climbs out.
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -200
+  sense.s.forest = 0.9
+  sense.s.frogCount = 1
+  sense.s.frogs.set([1, GROUND, 0])
+  sense.s.lakeShore = 2
+  sense.s.lakeLevel = GROUND
+  sense.s.boulders = 40
+  sense.s.onBoulder = true
+  const fire = { x: 1, y: GROUND, z: 0 }
+  const amb = new Ambience({ engine, sense, rand: mulberry32(22), campfires: [fire] })
+  run(amb, 10, { dayness: DAY })
+  check(amb.loops.lakeBed.active && amb.loops.leaves.active && amb.loops.campfire0.active, 'above ground the lake, the leaves and the fire are heard')
+  engine.plays.length = 0
+  const samples = sense.samples
+  run(amb, 120, { dayness: DAY, speed: 1.4, cave: { water: null } })
+  const heard = [...new Set(engine.plays.map((p) => p.name))]
+  check(heard.length === 1 && heard[0] === 'footstep', 'underground only her own footsteps fire, nothing from the overworld', heard.join(' '))
+  const looping = Object.entries(amb.loops).filter(([, v]) => v.active).map(([k]) => k)
+  check(looping.length === 1 && looping[0] === 'cave', 'underground only the cave bed loops', looping.join(' '))
+  check(sense.samples === samples, 'underground the overworld is not sensed', `${sense.samples - samples} samples`)
+  engine.plays.length = 0
+  run(amb, 30, { dayness: DAY, speed: 1.4 })
+  check(!amb.loops.cave.active && amb.loops.lakeBed.active && amb.loops.campfire0.active && count(engine, 'wave') > 0, 'out of the cave the bed stops and the lake is heard again')
 }
 {
   // A fiddle inside a house: its own muffled loop, off out of reach, quiet and dull at the edge, loud and clearer at the wall, never clear.

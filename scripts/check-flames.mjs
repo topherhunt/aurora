@@ -5,7 +5,8 @@
 // What can go wrong without throwing: a billboard that went back to the per-eye `cameraPosition` (double vision in a headset, invisible on a monitor); a host that never sets the head and gets a card turned toward the origin; a flame shader that lost its discard or its highp noise clock (a flame that steps after an hour of play, only on a phone GPU).
 
 import { Flames } from '../src/v2/render/fire.js'
-import { billboardVertex, createCritterCardMaterial } from '../src/v2/render/critters.js'
+import { billboardVertex } from '../src/v2/render/critters.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { HEAD_EYE, setHeadEye, bindHeadEye, HEAD_EYE_GLSL } from '../src/head-eye.js'
 
 let failures = 0
@@ -30,13 +31,9 @@ console.log('the billboards')
     const glsl = billboardVertex(mixed)
     check(glsl.includes('uHeadEyeOn') && !/cameraPosition\.xz/.test(glsl), `a critter card turns toward the head${mixed ? ' (mixed)' : ''}`)
   }
-  const material = createCritterCardMaterial('check-head', { billboard: true })
-  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <normal_fragment_begin>' }
-  material.onBeforeCompile(shader)
-  check(shader.uniforms.uHeadEye === HEAD_EYE.uHeadEye && /uniform vec3 uHeadEye;/.test(shader.vertexShader), 'a spun critter card declares and binds the head')
-  const flat = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <normal_fragment_begin>' }
-  createCritterCardMaterial('check-head-flat', { billboard: false }).onBeforeCompile(flat)
-  check(!('uHeadEye' in flat.uniforms), 'a card that does not turn carries no head uniform')
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <normal_fragment_begin>\n#include <dithering_fragment>' }
+  new LitterCards(8).material.onBeforeCompile(shader)
+  check(shader.uniforms.uHeadEye === HEAD_EYE.uHeadEye && /uniform vec3 uHeadEye;/.test(shader.vertexShader), 'the shared card pool declares and binds the head')
 }
 
 console.log('the flame shader')

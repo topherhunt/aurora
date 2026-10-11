@@ -1669,11 +1669,33 @@ function noThreeInWorkers() {
   }
 }
 
+// Every `from 'three'` in a page bundle -- src and three's own addons (TransformControls, BufferGeometryUtils) alike -- binds to three-instance.js, so on the world page they run on A-Frame's three and npm three is never fetched; only three-instance.js reaches the package, on a page without A-Frame. Build only: dev serves the addons pre-bundled against npm three.
+function threeIsTheInstance() {
+  const SHIM = '\0three-is-the-instance'
+  const instance = resolve(__dirname, 'src/three-instance.js')
+  return {
+    name: 'three-is-the-instance',
+    apply: 'build',
+    enforce: 'pre',
+    resolveId: (id, importer) => (id === 'three' && importer !== instance ? SHIM : null),
+    async load(id) {
+      if (id !== SHIM) return null
+      const names = Object.keys(await import('three'))
+      return [
+        `import THREE from ${JSON.stringify(instance)}`,
+        `const missing = ${JSON.stringify(names)}.filter((k) => !(k in THREE))`,
+        "if (missing.length) throw new Error(`three-instance lacks npm three's ${missing.join(', ')} (vite.config.js threeIsTheInstance)`)",
+        ...names.map((k) => `export const ${k} = THREE.${k}`),
+      ].join('\n')
+    },
+  }
+}
+
 // index.html is the world; every other root .html file is a bench, and the
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard()],
+  plugins: [basicSsl(), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard(), threeIsTheInstance()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -1707,6 +1729,8 @@ export default defineConfig({
   server: { host: true, port: 5173, hmr: false },
   worker: { format: 'es', plugins: () => [noThreeInWorkers()] },
   build: {
+    // es2022 for three-instance.js's top-level await.
+    target: 'es2022',
     // Every root .html file is an entry -- the same disk question bareRoutes()
     // asks, so a bench reachable in dev is in the build with no second edit.
     // What each bench is for, and why it is a page rather than a mode inside

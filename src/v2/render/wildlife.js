@@ -103,7 +103,7 @@
 // its own skeleton (a clone of the shipped one) with a mixer on it, drawn as
 // whichever of the file's four skinned tiers the ladder's rungs call for
 // (critters.js critterTier). Under those four is one more rung, twice as far,
-// where it is one spun quad in its species' InstancedMesh instead: at 100 m a
+// where it is one spun quad in the shared card pool instead: at 100 m a
 // stag is a dozen pixels tall and a photograph of it is the mesh, and what the
 // rung buys is that she sees the herd she is walking toward rather than watching
 // it appear. The card still walks, turns, grazes and goes home -- it is the same
@@ -113,8 +113,8 @@
 // NOTHING POPS, at any of those edges. Every step of the ladder is a dissolve
 // (render/puppet.js), and so is the handover between the last mesh rung and the
 // card: the two read the same pixel hash and keep opposite halves of it, the
-// mesh through the puppet's uCut and the card through its `aCardFade`
-// attribute, driven from the same ramp on the same frame. A TILE UNLOAD is a
+// mesh through the puppet's uCut and the card through its pool fade slot
+// (critters.js setCardFadeAt), driven from the same ramp on the same frame. A TILE UNLOAD is a
 // dissolve too, so an animal whose tile goes while it is still in sight leaves
 // its puppet behind to fade where it stood (`fading`); a card's tile cannot go
 // while it is drawn, because RADIUS is set past the furthest card range. The
@@ -123,8 +123,8 @@
 //
 // THE PRICE is a draw call and a skeleton for each animal in MESH range -- a
 // dozen in the live world, twenty at the pool's cap, doubled per eye in XR while
-// the skeletons are not -- plus one instanced draw call a species for every card
-// behind them. Each of those draws is a bone texture re-uploaded, so the mesh
+// the skeletons are not -- plus nothing for the cards behind them, which ride
+// the litter's one card draw. Each of those draws is a bone texture re-uploaded, so the mesh
 // range and not the herd is what the layer costs; the settled ones at least
 // share one material a species (puppet.js makePuppetMaterials).
 // design/27-creature-pipeline.md has the
@@ -138,12 +138,14 @@ import {
   CATCH_UP_TICKS, TICK_HZ, TICK_S, Score, chapterOf, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
 } from '../../sim/score.js'
 import {
-  CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, SPUN_VIEWS, bakeCritterCard, createCritterCardMaterial, critterTier,
-  cullRange, forgetRange, makeCardFadeAttribute, setCritterCard, spunBounds, tileKey, tileSeed, walkTiles,
+  CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, critterTier, cullRange, forgetRange, setCardFadeAt, tileKey, tileSeed, walkTiles,
 } from './critters.js'
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { EAT, atMost } from '../eating.js'
+import { setPropSolidAt } from '../../material.js'
+import { cardPicture } from './litter-cards.js'
+import { PropArena } from './prop-arena.js'
 
 export const TILE = 32
 // The tallest body the placement is sized to hold, in metres. Nothing here is
@@ -164,6 +166,8 @@ export const DENSITY = 1 / 3000
 // thing and are sized for the MESH range alone: a starved animal is not drawn.
 export const MAX = 64
 export const PUPPETS = 20
+// Card ids past one a slot, for dropped kills still dissolving after their slot has gone back: a dragon drops one at a time.
+const KILL_CARDS = 8
 
 // Ground an animal will not stand on: steeper than this, or this close under the snow line.
 export const MAX_SLOPE = (35 * Math.PI) / 180
@@ -341,6 +345,7 @@ const _mat = new THREE.Matrix4()
 // A quarter roll about the body's own forward axis: a standing body laid on its flank.
 const _lay = new THREE.Matrix4().makeRotationX(Math.PI / 2)
 const _hang = new THREE.Matrix4()
+const _dim = new THREE.Color()
 const _norm = { x: 0, y: 1, z: 0 }
 const _tickPose = { x: 0, z: 0, heading: 0 }
 
@@ -384,8 +389,10 @@ export class Wildlife {
    * @param opts.species the SPECIES keys this room holds; every one when absent
    * @param opts.eat  (lure, species key) => true once her hand holding it has lost it (hands.js eatLure); a wary animal with her carrot at its face calls it
    * @param opts.harm  (n, why) => her hurt by a maddened animal's strike (MAD)
+   * @param opts.cards  the shared LitterCards the card rung is drawn by
    */
-  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null, harm = null } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null, harm = null, cards } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Wildlife needs the LitterCards its card rung is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.normalAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Wildlife needs a height field with heightAt, normalAt and snowLineAt')
     }
@@ -433,12 +440,6 @@ export class Wildlife {
         materials.push(mats)
         this.materials.push(mats.in, mats.out)
       }
-      // Built here and not with the asset, because the world patches every
-      // material with its lighting the moment the layer exists and the GLBs
-      // land long after. The quad and the picture arrive in setAssets and
-      // bakeCards; until the picture does, the mesh draws nothing.
-      const cardMaterial = createCritterCardMaterial(`wildlife-${sp.key}`, { billboard: true, heading: true, fade: true, hue: false })
-      this.materials.push(cardMaterial)
       const slots = []
       for (let i = 0; i < MAX; i++) {
         slots.push({
@@ -462,13 +463,16 @@ export class Wildlife {
           // Whether the card is the thing this animal should be drawing, and how
           // far through the dissolve into or out of that it is (1 is settled).
           cardWant: false, cardP: 1,
-          // Where its card was last drawn: pushed again on the frames a card animal is not stepped, and the dissolve on a seized one's drop.
+          // Where its card was last drawn: drawn again on the frames a card animal is not stepped, and the dissolve on a seized one's drop.
           cardMat: new THREE.Matrix4(),
+          // Its id in the card pool while a card is drawn (-1 otherwise), and the frame it was last drawn on.
+          card: -1, cardDrawn: -1,
           // Where the ground under it was last read: a probe frame re-reads it only once the body has moved off that spot.
           px: NaN, pz: NaN,
         })
       }
-      return { ...sp, plain, materials, cardMaterial, cardMesh: null, cardFade: null, cardN: 0, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
+      // `picture`: the species' card in the pool, -1 until bakeCards, and the rung draws nothing until then.
+      return { ...sp, plain, materials, picture: -1, slots, free: slots.slice(), puppets: [], freePuppets: [], asset: null }
     })
 
     this.tiles = new Map()
@@ -492,7 +496,20 @@ export class Wildlife {
     this.behind = 0
     // Puppets outliving the animal they were: whatever unloaded with its tile, dissolving on the spot.
     this.fading = []
+    // The card rung: ids in the shared pool, enough for every slot plus the dropped kills still dissolving ({ id, p }); the animals holding one.
+    const cardIds = this.species.length * MAX + KILL_CARDS
+    cards.claim('wildlife', cardIds)
+    this.litterCards = cards
+    this.cardView = PropArena.over(cards.meshes, cardIds, 'v2-wildlife-card')
+    for (let i = 0; i < cardIds; i++) {
+      this.cardView.addInstance(0)
+      this.cardView.setVisibleAt(i, false)
+    }
+    this.cardIds = Array.from({ length: cardIds }, (_, i) => i)
+    this.carded = new Set()
     this.fadingCards = []
+    // Her chanterelle's dark (madden), which the pooled cards take as a colour.
+    this.dark = 0
     this.lures = NO_LURES
     // Her head this frame, what a wary animal flees and a tame one follows.
     this.head = { x: Infinity, y: Infinity, z: Infinity }
@@ -536,23 +553,6 @@ export class Wildlife {
       }
       sp.freePuppets = sp.puppets.slice()
 
-      // The card rung's quad, in the same unit frame the puppet's meshes are in
-      // and sized by the shipper's own measurements of the turned body, so one
-      // `k` scales both and the handover is the same animal at the same size.
-      // As wide as the body's longest side (spunBounds), since the one picture
-      // stands in for every side of it.
-      const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), sp.cardMaterial, MAX)
-      mesh.name = `v2-wildlife-${sp.key}-cards`
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-      // The instances move every frame and a bounding sphere over them would have to be rebuilt every frame to say anything true.
-      mesh.frustumCulled = false
-      mesh.count = 0
-      // Nothing to draw until bakeCards has photographed the body: an unbaked card is a white quad, which is worse than no card.
-      mesh.visible = false
-      setCritterCard(mesh, spunBounds({ halfX: asset.span / 2, halfZ: asset.width / 2, height: asset.height }), SPUN_VIEWS)
-      sp.cardFade = makeCardFadeAttribute(mesh, MAX)
-      sp.cardMesh = mesh
-      this.batch.add(mesh)
     }
     this.loaded = true
   }
@@ -574,10 +574,10 @@ export class Wildlife {
       p.play('idle')
       p.step(0)
       p.group.updateMatrixWorld(true)
-      const bounds = spunBounds({ halfX: asset.span / 2, halfZ: asset.width / 2, height: asset.height })
-      sp.cardMaterial.map = bakeCritterCard(renderer, p.group, asset.map, bounds, SPUN_VIEWS)
-      sp.cardMaterial.needsUpdate = true
-      sp.cardMesh.visible = true
+      // In the unit frame the puppet's meshes are in, so one `k` scales both and the handover is the same animal at the same size; as wide as the body's longest side, since the one picture stands in for every side of it.
+      const bounds = { halfX: asset.span / 2, halfZ: asset.width / 2, height: asset.height }
+      sp.picture = this.litterCards.addPicture(cardPicture('heading', bounds))
+      this.litterCards.bake(renderer, sp.picture, p.group, asset.map, bounds, 'heading')
       p.release()
       p.skeleton.dispose()
       flat.dispose()
@@ -711,6 +711,7 @@ export class Wildlife {
     } else {
       this._releasePuppet(c)
     }
+    this._uncard(c)
     this.byKey.delete(c.key)
     this.score.forget(c.key)
     c.spawn = null
@@ -729,13 +730,12 @@ export class Wildlife {
     for (const t of this.tiles.values()) this._leave(t, false)
     for (const f of this.fading) this._park(f.puppet, f.sp)
     this.fading.length = 0
+    for (const f of this.fadingCards) this._freeCard(f.id)
     this.fadingCards.length = 0
     this.tiles.clear()
     this.rolled.clear()
     this.overflow = 0
     if (!this.loaded) return
-    // The cards go with them: the buffers hold last frame's animals, and the next frame refills them from the tiles this line is about to grow.
-    for (const sp of this.species) { sp.cardN = 0; sp.cardMesh.count = 0 }
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._grow(tx, tz), (t) => this._leave(t))
     this.walkedX = cx
     this.walkedZ = cz
@@ -746,11 +746,10 @@ export class Wildlife {
     const puppets = {}
     // Drawn animals and the triangles they cost, split by MESH rung, so which rung a creature is on is a number to read and not a thing to squint at. The card rung has no tier and is counted on its own.
     const lod = Array.from({ length: LOD_RUNGS }, () => ({ n: 0, tris: 0 }))
-    let cards = 0
+    const cards = this.carded.size + this.fadingCards.length
     for (const sp of this.species) {
       alive[sp.key] = MAX - sp.free.length
       puppets[sp.key] = sp.puppets.length - sp.freePuppets.length
-      cards += sp.cardN
       for (const c of sp.slots) {
         if (c.spawn === null || c.lod >= LOD_RUNGS) continue
         lod[c.lod].n++
@@ -889,7 +888,7 @@ export class Wildlife {
    * dragon she can see carrying nothing is the wrong picture at any range.
    * Hanging, the body's back is at the matrix and the rest of it sags below;
    * `lain`, the mesh is rolled onto its flank with the flank on the matrix.
-   * Called after update() has filled the card buffers, so it appends to them.
+   * Called after update(), whose sweep would otherwise take the card back.
    */
   carry(c, matrix, dist, dt, lain = false, shown = true) {
     if (c.spawn !== null || c.act !== 'dead') throw new Error('Wildlife.carry: that animal was not seized')
@@ -898,15 +897,11 @@ export class Wildlife {
     matrix.decompose(_pos, _quat, _scl)
     c.x = _pos.x; c.y = _pos.y; c.z = _pos.z
     const { width, height } = c.sp.asset
-    // Only while the layer is stepped: with it hidden update() has not emptied the buffer this frame, and a card appended every frame would fill it.
-    if (this.batch.visible) {
-      this._wantCard(c, tier === LOD_RUNGS && shown)
-      if (c.cardP < 1) c.cardP = stepLodFade(c.cardP, dt)
-      if (c.cardWant || c.cardP < 1) {
-        // Upright on the nest spot, or its feet GRIP of its height under the talons, where the mesh's would be.
-        this._cardAt(c, lain ? c.cardMat.copy(matrix) : c.cardMat.multiplyMatrices(matrix, _hang.makeTranslation(0, -GRIP * height, 0)))
-        this._commitCards(c.sp)
-      }
+    this._wantCard(c, tier === LOD_RUNGS && shown)
+    if (c.cardP < 1) c.cardP = stepLodFade(c.cardP, dt)
+    if (c.cardWant || c.cardP < 1) {
+      // Upright on the nest spot, or its feet GRIP of its height under the talons, where the mesh's would be.
+      this._cardAt(c, lain ? c.cardMat.copy(matrix) : c.cardMat.multiplyMatrices(matrix, _hang.makeTranslation(0, -GRIP * height, 0)))
     }
     if (tier >= LOD_RUNGS) {
       if (!c.puppet) return
@@ -940,10 +935,14 @@ export class Wildlife {
     } else {
       this._releasePuppet(c)
     }
-    if (fade && (c.cardWant || c.cardP < 1)) {
+    if (fade && c.card >= 0) {
       // Where carry() last drew it; a card still arriving is sent out from as far as it got.
       this._wantCard(c, false)
-      this.fadingCards.push({ sp: c.sp, mat: c.cardMat.clone(), p: c.cardP })
+      this.fadingCards.push({ id: c.card, p: c.cardP })
+      this.carded.delete(c)
+      c.card = -1
+    } else {
+      this._uncard(c)
     }
     c.cardWant = false
     c.cardP = 1
@@ -1640,6 +1639,7 @@ export class Wildlife {
   /** Her chanterelle (eating.js): `on`, the animals within MAD.m come for her; `dark` 0..1, every body and card drawn that much toward black. */
   madden(on, dark) {
     this.maddened = on
+    this.dark = dark
     for (const m of this.materials) m.color.setScalar(1 - dark)
   }
 
@@ -1741,12 +1741,12 @@ export class Wildlife {
   }
 
   /**
-   * This animal into its species' card buffer for this frame: where it stands,
+   * This animal's card for this frame: where it stands,
    * which way it faces (the card keeps that heading and turns toward her only
    * to stay within 45 degrees of face-on: critters.js HEADING_CARD_VERTEX), how big it is and its turn round the colour wheel.
    * On the world vertical, as the mesh it stands in for is.
    *
-   * `aCardFade` is the dissolve, in material.js's FADE_FRAGMENT terms: positive
+   * The fade is the dissolve, in material.js's FADE_FRAGMENT terms: positive
    * keeps the low side of the pixel hash and negative the high side. The card
    * arrives on the LOW side because the mesh it is replacing leaves through the
    * puppet's `out`, which keeps the high one, and it leaves on the high side
@@ -1760,25 +1760,42 @@ export class Wildlife {
     this._cardAt(c, c.cardMat.compose(_pos, _quat, _scl))
   }
 
-  /** The card on `mat` -- a carried kill's is the carrier's matrix, not the slot's place and heading -- with the slot's dissolve. */
+  /** The card on `mat` -- a carried kill's is the carrier's matrix, not the slot's place and heading -- with the slot's dissolve, taking a pool id if it has none. Nothing until the species' picture is baked. */
   _cardAt(c, mat) {
-    this._pushCard(c.sp, mat, c.cardWant ? c.cardP : -(1 - c.cardP))
+    const picture = c.sp.picture
+    if (picture < 0) return
+    const V = this.cardView
+    if (c.card < 0) {
+      if (!this.cardIds.length) throw new Error(`Wildlife: all ${this.species.length * MAX + KILL_CARDS} card ids are out`)
+      c.card = this.cardIds.pop()
+      V.setLayerShiftAt(c.card, picture)
+      this.carded.add(c)
+    }
+    c.cardDrawn = this.frame
+    V.setMatrixAt(c.card, mat)
+    setCardFadeAt(V, c.card, c.cardWant ? c.cardP : -(1 - c.cardP))
+    V.setColorAt(c.card, _dim.setScalar(1 - this.dark))
+    V.setVisibleAt(c.card, true)
   }
 
-  _pushCard(sp, mat, fade) {
-    const i = sp.cardN++
-    if (i >= MAX) throw new Error(`Wildlife: ${sp.key} has more cards this frame than the ${MAX} its buffer holds`)
-    sp.cardMesh.setMatrixAt(i, mat)
-    sp.cardFade.array[i] = fade
+  /** `c`'s card id back to the pool at once. */
+  _uncard(c) {
+    if (c.card < 0) return
+    this._freeCard(c.card)
+    this.carded.delete(c)
+    c.card = -1
   }
 
-  /** The card buffer's count and upload flags set to what has been pushed this frame. */
-  _commitCards(sp) {
-    sp.cardMesh.count = sp.cardN
-    sp.cardMesh.visible = sp.cardN > 0 && sp.cardMaterial.map !== null
-    if (!sp.cardN) return
-    sp.cardMesh.instanceMatrix.needsUpdate = true
-    sp.cardFade.needsUpdate = true
+  _freeCard(id) {
+    this.cardView.setVisibleAt(id, false)
+    setPropSolidAt(this.cardView, id)
+    this.cardIds.push(id)
+  }
+
+  /** Draw the whole layer or none of it; the cards are shared instances, so the batch's `visible` alone would leave them. */
+  setShown(shown) {
+    this.batch.visible = shown
+    this.cardView.setShown(shown)
   }
 
   /**
@@ -1801,11 +1818,11 @@ export class Wildlife {
       this.walkedX = hx
       this.walkedZ = hz
     }
+    // A card not drawn last frame (update or carry) is an animal no longer on the card rung.
+    for (const c of this.carded) if (c.cardDrawn !== this.frame) this._uncard(c)
     this.frame++
     this.replayed = 0
     this.behind = 0
-    // The card buffers are refilled from nothing every frame: an instance in one is an animal on the card rung THIS frame, and the count is the whole of what is drawn.
-    for (const sp of this.species) sp.cardN = 0
 
     // The bodies of animals that unloaded, finishing their dissolve where they stood. They do not walk, turn or pick anything: they are a fade.
     for (let i = this.fading.length - 1; i >= 0; i--) {
@@ -1889,7 +1906,7 @@ export class Wildlife {
           c.y -= (c.nx * (c.x - wasX) + c.nz * (c.z - wasZ)) / c.ny
         }
 
-        // The card rung: one quad in the species' instanced buffer, and whatever
+        // The card rung: one quad in the card pool, and whatever
         // puppet it still has finishing its dissolve out against it.
         this._wantCard(c, tier === LOD_RUNGS)
         if (c.cardP < 1) c.cardP = stepLodFade(c.cardP, dt)
@@ -1926,12 +1943,11 @@ export class Wildlife {
     for (let i = this.fadingCards.length - 1; i >= 0; i--) {
       const f = this.fadingCards[i]
       f.p = stepLodFade(f.p, dt)
-      if (f.p < 1) { this._pushCard(f.sp, f.mat, -(1 - f.p)); continue }
+      if (f.p < 1) { setCardFadeAt(this.cardView, f.id, -(1 - f.p)); continue }
+      this._freeCard(f.id)
       this.fadingCards[i] = this.fadingCards[this.fadingCards.length - 1]
       this.fadingCards.pop()
     }
-
-    for (const sp of this.species) this._commitCards(sp)
   }
 
   dispose() {
@@ -1939,9 +1955,6 @@ export class Wildlife {
     for (const sp of this.species) {
       sp.plain.dispose()
       for (const mats of sp.materials) for (const m of [mats.in, mats.out]) m.dispose()
-      sp.cardMaterial.map?.dispose()
-      sp.cardMaterial.dispose()
-      sp.cardMesh?.geometry.dispose()
       sp.asset?.map?.dispose()
       for (const geo of sp.asset?.tiers ?? []) geo.dispose()
     }

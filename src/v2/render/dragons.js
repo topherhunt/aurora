@@ -97,7 +97,8 @@
 // (render/puppet.js), then the card rung, then nothing.
 //
 // THE CARD IS TWO QUADS FIXED IN THE BODY'S FRAME, not one quad spun to her: a
-// side view and a top view, crossed, carrying the full instance matrix -- yaw,
+// side view and a top view, crossed, two instances of the shared litter-card
+// pool (litter-cards.js 'fixed' pictures) carrying the full matrix -- yaw,
 // pitch, roll. A dragon seen from below is a wingspan and from beside it a
 // neck and a tail, and which of those she sees is exactly what a spun card
 // cannot say. The two pictures are photographed from the FLY pose (bakeCards),
@@ -112,9 +113,11 @@ import {
   CATCH_UP_TICKS, CHAPTER_S, EASE_S, TICK_S, Score, chapterOf, easeWeight, hash32, keyHash, phraseRand, stepTo, swing, tickAfter, tickOf,
 } from '../../sim/score.js'
 import {
-  CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, bakeCritterCard, createCritterCardMaterial, critterTier, makeCardFadeAttribute,
-  setCritterCard, tileSeed,
+  CARD_RUNGS, CRITTER_GLB, LOD_RUNGS, bakeCritterCard, critterCardExtents, critterTier, setCardFadeAt, tileSeed,
 } from './critters.js'
+import { cardPicture } from './litter-cards.js'
+import { PropArena } from './prop-arena.js'
+import { setPropSolidAt } from '../../material.js'
 import { stepLodFade, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, puppetMode, solverStub, tintRange } from './baked-puppet.js'
 import { TailLag } from './tail-lag.js'
@@ -126,7 +129,7 @@ const KEY_RE = /^dr:(-?\d+),(-?\d+)(:g)?$/
 
 export const CLIPS = ['idle', 'alert', 'walk', 'run', 'sit', 'lie', 'fly', 'eat']
 const ONE_SHOT = new Set(['sit', 'lie'])
-// The two pictures of a far dragon, and the order they sit in the texture.
+// The two pictures of a far dragon; a slot's pool ids are 2 * slot + the view's index here.
 export const DRAGON_VIEWS = ['side', 'top']
 
 // Dragons at once, and puppets. A roost is one to a summit's territory, so the
@@ -295,6 +298,7 @@ let _heading = 0
 let _pitch = 0
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
+const _card = new THREE.Matrix4()
 const _cargoPos = new THREE.Vector3()
 const _cargoQuat = new THREE.Quaternion()
 const _cargoMat = new THREE.Matrix4()
@@ -386,8 +390,9 @@ export class Dragons {
    * @param ground    what they stand and land on, stone included (walk.js's WalkSurface): heightAt; the field when omitted
    * @param roosts    Roosts: sites(), siteAt(tx, tz)
    * @param wildlife  Wildlife: roster, spawnAt, poseAt, kill, carry, drop; its `hunter` is set here (strikeOn)
+   * @param cards     LitterCards: the shared pool the card rung draws in
    */
-  constructor(scene, field, { seed = 1, ground = field, roosts, wildlife, water, harm, fright, asset = null } = {}) {
+  constructor(scene, field, { seed = 1, ground = field, roosts, wildlife, water, harm, fright, cards, asset = null } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') throw new Error('Dragons needs a height field with heightAt and heightAndSlopeAt')
     if (!ground || typeof ground.heightAt !== 'function') throw new Error('Dragons needs a ground with heightAt')
     if (!roosts || typeof roosts.sites !== 'function' || typeof roosts.siteAt !== 'function') throw new Error('Dragons needs the Roosts, for sites and siteAt')
@@ -396,6 +401,7 @@ export class Dragons {
     }
     if (!water || typeof water.isSubmerged !== 'function') throw new Error('Dragons needs the WaterSurfaces, for isSubmerged, so no dragon alights in a lake')
     if (typeof harm !== 'function' || typeof fright !== 'function') throw new Error('Dragons needs harm(n, why) for a bite on her and fright(key, x, z) for one on a strider')
+    if (!cards) throw new Error('Dragons needs the shared LitterCards pool, for its cards')
     this.harm = harm
     this.fright = fright
     // Whether an encounter is eyed: a field so a gate can load the dice. Rolled on the quarry's own client only, which then owes the room the chase.
@@ -419,7 +425,7 @@ export class Dragons {
     this.batch = new THREE.Group()
     this.batch.name = 'v2-dragons'
     scene.add(this.batch)
-    // Every material the world's lighting patches: one settled, a fade pair a puppet, and the card's. The body gleams (puppet.js gloss); the card, a photograph of it, does not.
+    // Every material the world's lighting patches: one settled and a fade pair a puppet. The body gleams (puppet.js gloss); its card, in the pool, does not.
     this.plain = makeSettledMaterial('dragons', { gloss: SCALE_ROUGHNESS })
     this.materials = [this.plain]
     this.puppetMats = []
@@ -428,9 +434,6 @@ export class Dragons {
       this.puppetMats.push(mats)
       this.materials.push(mats.in, mats.out)
     }
-    // Fixed in the body's frame, not spun: the instance matrix is the whole orientation.
-    this.cardMaterial = createCritterCardMaterial('dragons', { billboard: false, fade: true, hue: false })
-    this.materials.push(this.cardMaterial)
 
     this.slots = []
     for (let i = 0; i < MAX; i++) {
@@ -456,7 +459,8 @@ export class Dragons {
         // The clip playing, its playback rate, how long the rest step holds it, and one cycle of it in seconds, for the ear's clocks; `cue` counts steps, as the wildlife's does; the ear's cues for an aggro dragon's roar, its thud down and its growl.
         clip: 'idle', rate: 1, cue: 0, left: 0, cycle: 0, roarCue: 0, thudCue: 0, growlCue: 0,
         size: 1, k: 1, lodSize: 1,
-        lod: CARD_RUNGS, puppet: null, cardWant: false, cardP: 1,
+        // `cardDrawn`: the frame its pool cards were last drawn, so a frame that does not redraw them hides them.
+        lod: CARD_RUNGS, puppet: null, cardWant: false, cardP: 1, carded: false, cardDrawn: -1,
       })
     }
     this.free = this.slots.slice()
@@ -466,9 +470,16 @@ export class Dragons {
     this.freePuppets = []
     this.fading = []
     this.lures = NO_LURES
-    this.cardMesh = null
-    this.cardFade = null
-    this.cardN = 0
+    this.litterCards = cards
+    cards.claim('dragons', MAX * DRAGON_VIEWS.length)
+    this.cardView = PropArena.over(cards.meshes, MAX * DRAGON_VIEWS.length, 'v2-dragons-card')
+    for (let i = 0; i < MAX * DRAGON_VIEWS.length; i++) {
+      this.cardView.addInstance(0)
+      this.cardView.setVisibleAt(i, false)
+    }
+    // Pool pictures by view, and each view's quad frame in the body's: set when the asset lands.
+    this.pictures = null
+    this.cardFrames = null
     this.frame = 0
     this.last = null
     this.loaded = false
@@ -512,23 +523,21 @@ export class Dragons {
     }
     this.freePuppets = this.puppets.slice()
 
-    // The card's two quads, in the unit frame the puppet's meshes are in and
-    // bounded by the fly pose, dropped to where that pose actually hangs (a
-    // flying body's lowest point is not its feet on the ground).
-    const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.cardMaterial, MAX)
-    mesh.name = 'v2-dragons-cards'
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    mesh.frustumCulled = false
-    mesh.count = 0
-    mesh.visible = false
-    setCritterCard(mesh, this._cardBounds(), DRAGON_VIEWS)
-    mesh.geometry.translate(0, this.fly.minY, 0)
-    this.cardFade = makeCardFadeAttribute(mesh, MAX)
+    // The card's two pictures, bounded by the fly pose and dropped to where that pose actually hangs (a flying body's lowest point is not its feet on the ground).
+    // The side stands in the body's XY plane as a fixed picture does; the top is a fixed picture laid flat at the body's middle, its picture's up along -Z.
+    const bounds = this._cardBounds()
+    const ext = critterCardExtents(bounds)
+    this.pictures = [
+      this.litterCards.addPicture(cardPicture('fixed', bounds)),
+      this.litterCards.addPicture({ kind: 'fixed', cx: 0, cy: 0, hw: ext.hx, hh: ext.hz }),
+    ]
+    this.cardFrames = [
+      new THREE.Matrix4().makeTranslation(0, this.fly.minY, 0),
+      new THREE.Matrix4().makeTranslation(0, this.fly.minY + (ext.y0 + ext.y1) / 2, 0).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2)),
+    ]
+    for (let i = 0; i < MAX * DRAGON_VIEWS.length; i++) this.cardView.setLayerShiftAt(i, this.pictures[i % DRAGON_VIEWS.length])
     // The card wears the dragon's colour only where the mesh it hands over to does: a skinned puppet is left white (baked-puppet.js tintFor).
-    mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3).setUsage(THREE.DynamicDrawUsage)
     this.tinted = puppetMode() === 'baked'
-    this.cardMesh = mesh
-    this.batch.add(mesh)
     this.loaded = true
   }
 
@@ -536,7 +545,7 @@ export class Dragons {
     return { halfX: this.fly.halfX, halfZ: this.fly.halfZ, height: this.fly.maxY - this.fly.minY }
   }
 
-  /** Photograph the body at the widest frame of `fly` for the card's two views, lifted so its lowest point sits on the picture's floor as the quads expect. */
+  /** Photograph the body at the widest frame of `fly` into the card's two pool pictures, lifted so its lowest point sits on the picture's floor as the quads expect. Until then the pictures are clear and the cards draw nothing. */
   bakeCards(renderer) {
     if (!this.loaded) throw new Error('Dragons.bakeCards: the GLB has not landed')
     const asset = this.asset
@@ -544,9 +553,11 @@ export class Dragons {
     const p = new Puppet(asset, { plain: flat, in: flat, out: flat, uCut: { value: 1 } }, { clipFade: FADE_S, oneShot: ONE_SHOT })
     p.group.matrix.makeTranslation(0, -this.fly.minY, 0)
     poseFly(p, this.fly.spreadAt)
-    this.cardMaterial.map = bakeCritterCard(renderer, p.group, asset.map, this._cardBounds(), DRAGON_VIEWS)
-    this.cardMaterial.needsUpdate = true
-    this.cardMesh.visible = true
+    DRAGON_VIEWS.forEach((view, v) => {
+      const texture = bakeCritterCard(renderer, p.group, asset.map, this._cardBounds(), [view])
+      this.litterCards.setCritterPixels(this.pictures[v], texture.image.data)
+      texture.dispose()
+    })
     p.release()
     p.skeleton.dispose()
     flat.dispose()
@@ -654,6 +665,7 @@ export class Dragons {
       this.fading.push(d.puppet)
       d.puppet = null
     }
+    this._uncard(d)
     this.byKey.delete(d.key)
     this.score.forget(d.key)
     d.site = null
@@ -666,6 +678,7 @@ export class Dragons {
     for (const d of this.byKey.values()) {
       if (d.cargo) { this.wildlife.drop(d.cargo, false); d.cargo = null }
       this._releasePuppet(d)
+      this._uncard(d)
       this.score.forget(d.key)
       d.site = null
       d.live = d.rejoin = null
@@ -675,7 +688,6 @@ export class Dragons {
     for (const p of this.fading) this._park(p)
     this.fading.length = 0
     this.overflow = 0
-    if (this.cardMesh) { this.cardN = 0; this.cardMesh.count = 0 }
   }
 
   _takePuppet(d) {
@@ -1685,12 +1697,35 @@ export class Dragons {
     d.cardP = 1 - d.cardP
   }
 
-  /** This dragon's two quads into the card buffer, on the body's whole matrix, with the dissolve's side as wildlife.js sets it. */
+  /** This dragon's two pool cards on the body's whole matrix, with the dissolve's side as wildlife.js sets it. */
   _drawCard(d) {
-    const i = this.cardN++
-    this.cardMesh.setMatrixAt(i, _mat)
-    this.cardMesh.setColorAt(i, this.tinted ? d.tint : WHITE)
-    this.cardFade.array[i] = d.cardWant ? d.cardP : -(1 - d.cardP)
+    const V = this.cardView
+    const fade = d.cardWant ? d.cardP : -(1 - d.cardP)
+    for (let v = 0; v < DRAGON_VIEWS.length; v++) {
+      const id = d.id * DRAGON_VIEWS.length + v
+      V.setMatrixAt(id, _card.multiplyMatrices(_mat, this.cardFrames[v]))
+      setCardFadeAt(V, id, fade)
+      V.setColorAt(id, this.tinted ? d.tint : WHITE)
+      V.setVisibleAt(id, true)
+    }
+    d.carded = true
+    d.cardDrawn = this.frame
+  }
+
+  _uncard(d) {
+    if (!d.carded) return
+    for (let v = 0; v < DRAGON_VIEWS.length; v++) {
+      const id = d.id * DRAGON_VIEWS.length + v
+      this.cardView.setVisibleAt(id, false)
+      setPropSolidAt(this.cardView, id)
+    }
+    d.carded = false
+  }
+
+  /** Draw the whole layer or none of it; the cards are shared instances, so the batch's `visible` alone would leave them. */
+  setShown(shown) {
+    this.batch.visible = shown
+    this.cardView.setShown(shown)
   }
 
   /** The kill drawn where the dragon has it: hanging by its back from the talons in the air, lying on its flank at its fixed spot on the nest floor, tilted with the floor; `shown` is whether this dragon is on a drawn rung, which is how long the kill's card holds. _pose(d) must have run. */
@@ -1762,7 +1797,6 @@ export class Dragons {
     const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
     this.last = now
     this.frame++
-    this.cardN = 0
     this.replayed = 0
     this.behind = 0
     this.lures = lures
@@ -1789,14 +1823,7 @@ export class Dragons {
       }
     }
     for (const d of this.byKey.values()) if (d.seen !== this.frame) this._retire(d)
-
-    this.cardMesh.count = this.cardN
-    this.cardMesh.visible = this.cardN > 0 && this.cardMaterial.map !== null
-    if (this.cardN) {
-      this.cardMesh.instanceMatrix.needsUpdate = true
-      this.cardMesh.instanceColor.needsUpdate = true
-      this.cardFade.needsUpdate = true
-    }
+    for (const d of this.byKey.values()) if (d.cardDrawn !== this.frame) this._uncard(d)
   }
 
   get stats() {
@@ -1809,7 +1836,7 @@ export class Dragons {
       lod[d.lod].tris += this.asset.tiers[d.lod].index.count / 3
     }
     return {
-      alive: this.byKey.size, puppets: this.puppets.length - this.freePuppets.length, lod, cards: this.cardN, states,
+      alive: this.byKey.size, puppets: this.puppets.length - this.freePuppets.length, lod, cards: this.slots.filter((d) => d.carded).length, states,
       carrying: Array.from(this.byKey.values()).filter((d) => d.cargo).length,
       live: Array.from(this.byKey.values()).filter((d) => d.live).length,
       overflow: this.overflow, starved: this.starved, replayed: this.replayed, behind: this.behind,
@@ -1828,9 +1855,6 @@ export class Dragons {
     this.batch.parent?.remove(this.batch)
     this.plain.dispose()
     for (const mats of this.puppetMats) for (const m of [mats.in, mats.out]) m.dispose()
-    this.cardMaterial.map?.dispose()
-    this.cardMaterial.dispose()
-    this.cardMesh?.geometry.dispose()
     this.asset?.map?.dispose()
     for (const geo of this.asset?.tiers ?? []) geo.dispose()
   }

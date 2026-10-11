@@ -31,7 +31,7 @@ import * as persist from './edit/persist.js'
 import { installLogShip, reportLog, reportWarning } from './log-ship.js'
 import { cardStats, loadBakedCards, packCards, recordCards } from '../props/card-cache.js'
 import { lazyLoad, openLoads } from './lazy-load.js'
-import { PerfTrace, r2 } from './perf-trace.js'
+import { PerfTrace, postTrace, r2 } from './perf-trace.js'
 import { Census } from './perf-census.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
@@ -141,7 +141,7 @@ import { PeerAvatars, loadOwnHand, ownHand } from './render/avatar.js'
 import { EYE_LINE, FIT_MIN, FIT_MAX } from './render/avatar-rig.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
-import { Ambience, RATE, SOUNDS } from './audio/ambience.js'
+import { Ambience, RATE, RULES as SOUND_RULES, SOUNDS } from './audio/ambience.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 import { WarnMark } from './render/warn-mark.js'
@@ -1491,6 +1491,8 @@ const QUEST_TOGGLE_ROWS = [
   { key: 'skip5h', text: '+5h', action: () => skipTime() },
   // The whole debug grid as a one-press battery, uploaded to the dev server; see perf-trace.js.
   { key: 'perfTrace', text: 'perf trace', action: () => { if (!recordTrace.recording) perfTrace.start() }, value: () => `${perfTrace.label()} >` },
+  // Uploads the failed-programs list at once (a one-second stand-in for a full battery when only shader compile errors matter).
+  { key: 'programCheck', text: 'program check', action: () => sendProgramCheck(), value: () => `${programCheckLabel} >` },
   { key: 'perfRecord', text: 'record trace', action: () => { if (!perfTrace.running) recordTrace.toggle() }, value: () => `${recordTrace.label()} >` },
   // Holds the weather channel (§10) at one of WEATHER.presets, this client
   // only; peers stay under the room's live sky. See cycleWeather.
@@ -3294,6 +3296,21 @@ const perfTrace = new PerfTrace({
   pulse: (intensity, ms) => { questPulse('left', intensity, ms); questPulse('right', intensity, ms) },
   refresh: () => refreshQuestRow('perfTrace'),
 })
+let programCheckLabel = 'idle'
+async function sendProgramCheck() {
+  programCheckLabel = 'sending'
+  refreshQuestRow('programCheck')
+  try {
+    const context = { ...perfTrace.host.context(), failedPrograms: failedPrograms(renderer), programCount: renderer.info.programs.length }
+    const id = await postTrace({ mode: 'programs', startedAt: new Date().toISOString(), seconds: 0, samples: [], context })
+    programCheckLabel = `${context.failedPrograms.length} bad`
+    console.log('program check filed as', id)
+  } catch (e) {
+    programCheckLabel = 'failed'
+    console.error(e)
+  }
+  refreshQuestRow('programCheck')
+}
 window.v2perfTrace = perfTrace // console: `v2perfTrace.start()` runs it on the desktop
 /** Whether an animal layer runs this frame: its own row and the `animals` row both on. */
 const animalOn = (key) => questToggles.animals && questToggles[key]
@@ -3324,13 +3341,13 @@ function applyAnimalVisibility() {
   grasshoppers.batch.visible = animalOn('grasshoppers')
   fireflies.batch.visible = animalOn('fireflies')
   spiders.setShown(animalOn('spiders'))
-  wildlife.batch.visible = animalOn('wildlife')
+  wildlife.setShown(animalOn('wildlife'))
   snowmen.batch.visible = animalOn('snowmen')
   if (leafkin) leafkin.batch.visible = animalOn('leafkin')
   if (villagers) villagers.batch.visible = animalOn('leafkin')
   if (hobs) hobs.batch.visible = animalOn('leafkin')
   // The roosts go with their dragons: a nest is where a dragon lives, not litter. Neither in a village.
-  if (dragons) dragons.batch.visible = animalOn('dragons')
+  if (dragons) dragons.setShown(animalOn('dragons'))
   if (roosts) roosts.group.visible = animalOn('dragons')
 }
 
@@ -5004,7 +5021,7 @@ async function buildRoom(room, at) {
   // the first frame after they land fills the tiles around her. A village holds
   // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, eat: (lure, sp) => hands.eatLure(lure, sp), harm })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, eat: (lure, sp) => hands.eatLure(lure, sp), harm })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -5108,7 +5125,7 @@ async function buildRoom(room, at) {
   if (!room.village) {
     walk.addStone(roosts)
     hands.addSource(roosts, 'egg')
-    dragons = new Dragons(scene, height, { seed, ground: walk, roosts, wildlife, water: waterSurfaces, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
+    dragons = new Dragons(scene, height, { seed, ground: walk, roosts, wildlife, water: waterSurfaces, cards: litterCards, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
     for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
     dragons.ready.then(() => {
       if (build !== roomBuild) return
@@ -6286,6 +6303,7 @@ const OUTSIDE = [
   { clips: ['owl'], glade: false, bird: true, when: (day) => day < 0.3, every: [25, 70], range: [10, 25], gain: 0.5 },
 ]
 const outsideLeft = OUTSIDE.map(() => 10)
+const caveDripAt = { x: 0, y: 0, z: 0 }
 
 function updateAmbience(dt, state) {
   if (!ambience) return
@@ -6317,6 +6335,7 @@ function updateAmbience(dt, state) {
     precip: state.precip,
     indoors: !!indoors || cave !== null,
     hushed: effects.maddened,
+    cave: cave === null ? null : { water: cave.walk.nearestWater(ears.x, ears.y, ears.z, SOUND_RULES.caveDrip.reach, caveDripAt) },
   })
 }
 

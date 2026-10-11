@@ -68,12 +68,12 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [ ] Chunk border vertices need to line up with the closer chunk. So the chunk's nearer hem needs 2x more vertices than the rest of the chunk has.
   - [ ] The cave entrance, rather than visibly being a rounded-off dead end, should "fold outward" and then be faced by a colored 2-tri plane that's white if it's daytime and dark blue if it's nighttime (blended between those depending on time of day) and the rock walls' lighting around. Or if the entrance leads into a house/building, it should be a door plane and there should be 1-2 torches anchored into the rock wall within 5-20m of it.
   - [ ] The rock walls should look 2x as jagged, less rounded. Currently they're too rounded.
-  - [ ] Double the frequency of glowy mushrooms.
-  - [ ] There should also be larger caverns: irregularly-shaped rooms 30-200m in length, with many offbranching tunnels, ceiling out of sight, rough uneven floor with higher regions and lower regions, populated by forests of giant glowing mushrooms of various sizes, interspersed with varying-sized boulders and rivers and pools of water.
-  - [ ] If you dip a lit torch into water, extinguishing it, it should hiss.
-  - [ ] There should be more stalactites and stalagmites. Make 1 stalagmite model - it should be lumpy and irregular, lopsided, ~200 tris, they often show up in bunches of varying sizes.
-  - [ ] Cave ambient sounds. Ominous deep. Your footsteps scrabble and echo. Echoing water drops when you're near water.
-  - [ ] DON'T have any overworld sounds, muffled or otherwise, when you're in a cave. The cave is a wholly different environs from the overworld, with no sound leakage through.
+  - [x] Double the frequency of glowy mushrooms.
+  - [x] There should also be some larger caverns: irregularly-shaped rooms 30-200m in length, with many offbranching tunnels, ceiling out of sight, rough uneven floor with higher regions and lower regions, populated by forests of giant glowing mushrooms of various sizes, interspersed with varying-sized boulders and rivers and pools of water.
+  - [x] If you dip a lit torch into water, extinguishing it, it should hiss.
+  - [x] DON'T have any overworld sounds, muffled or otherwise, when you're in a cave. The cave is a wholly different environs from the overworld, with no sound leakage through.
+  - [x] There should be more stalactites and stalagmites. Make 1 standard stalagmite model which can be used either pointed up or pointed down - it should be lumpy and irregular, lopsided, ~100 tris, standard rock texture. They often show up in bunches of varying sizes. Give me a page /gen-stalagmite to see it please.
+  - [ ] Your footsteps scrabble and echo.
   - [ ] You can buy a pouch of colored glowing marbles. Drop them like a trail of breadcrumbs to lead you back to safety. Also is an alternate (limited) light source, especially useful in places where torches are.... not welcome. And they work underwater which is a plus.
   - [ ] Some cave passages open up into the WALL of a massive chamber with no end in sight. You need to tie a rope to a stalagmite and climb down, either into the unknown dark, or to a semiglowing sporescape, or a settlement.
 - [ ] Think through w Claude: Traversing the world should feel genuinely dangerous. If you don't carefully plan and prepare, you aren't likely to make it to your destination.

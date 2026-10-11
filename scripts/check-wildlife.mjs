@@ -44,6 +44,8 @@ import { CREATURES, shipTexPx } from '../tools/creatures/creature-roster.mjs'
 import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
+import { LitterCards, cardPicture } from '../src/v2/render/litter-cards.js'
+import { PROP_FADE_SECONDS, getPropClock } from '../src/material.js'
 
 // These gates read the skinned Puppet's own parts (its bones, its IK, its tier meshes); check-baked-puppet.mjs covers the baked body.
 setPuppetMode('skinned')
@@ -221,17 +223,30 @@ const assets = () => Object.fromEntries(SPECIES.map((sp) => [sp.key, makeAsset(s
 // --- construction ---------------------------------------------------------------
 const scene = new THREE.Scene()
 // `eat` is hands.js eatLure: whether her carrot was hers to give.
-const make = (seed, world = { walk, water, height }, dayness = null, eat = () => true) =>
-  new Wildlife(scene, world.height ?? fieldOf(world.walk), world.water, { seed, walk: world.walk, dayness, eat, assets: assets() })
+// Each species gets a stand-in pool picture, as bakeCards() would, so its cards are drawn without a renderer.
+const make = (seed, world = { walk, water, height }, dayness = null, eat = () => true) => {
+  const w = new Wildlife(scene, world.height ?? fieldOf(world.walk), world.water, { seed, walk: world.walk, dayness, eat, assets: assets(), cards: new LitterCards(4096) })
+  for (const sp of w.species) sp.picture = w.litterCards.addPicture(cardPicture('heading', { halfX: sp.asset.span / 2, halfZ: sp.asset.width / 2, height: sp.asset.height }))
+  return w
+}
+// The animals of `sp` drawn as a pool card this frame; one not redrawn keeps its id until the next update() sweeps it.
+const drawnCards = (w, sp) => [...w.carded].filter((a) => a.sp === sp && a.cardDrawn === w.frame)
+// A pool card's fade slot read back the way material.js FADE_DECODE reads it this frame: 1 settled, positive arriving on the low side of the hash, negative leaving on the high side.
+const fadeOf = (v) => {
+  if (v >= 0) return v
+  const fadeIn = -v > 2560
+  const p = Math.min(Math.max((getPropClock() - (-v - (fadeIn ? 4096 : 1))) / PROP_FADE_SECONDS, 0), 1)
+  return fadeIn ? -p * (2 - p) : 1 - p * (2 - p)
+}
 // For a gate about something else: her head on top of a wary animal without it bolting.
 const calm = (of) => { of._startled = () => false; return of }
 const w = make(7)
 check(w.loaded && w.species.length === 3 && w.species.map((s) => s.key).join(',') === 'stag,fox,hare', 'the three of them are loaded')
 check(w.species.every((sp) => sp.puppets.length === PUPPETS && sp.freePuppets.length === PUPPETS && sp.slots.length === MAX && sp.free.length === MAX), `${PUPPETS} puppets and ${MAX} slots a species, all free`)
-check(w.materials.length === 3 * (PUPPETS * 2 + 2), 'ONE settled material a species and a dissolving pair a puppet, plus the one card material a species, all offered to the lighting')
-check(w.species.every((sp) => sp.materials.every((m) => m.plain.customProgramCacheKey() === `wildlife-${sp.key}` && m.in.customProgramCacheKey() === `wildlife-${sp.key}-fade` && m.out.customProgramCacheKey() === `wildlife-${sp.key}-fade`)) && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 9, 'three programs a species and not one a puppet: a settled one with no discard in it at all, the dissolve both halves of a fade share, and the card')
-check(w.species.every((sp) => sp.cardMaterial.customProgramCacheKey() === `wildlife-${sp.key}-card-heading-fade-flat`), 'and the card is its own program: turned to its heading, dithered like everything else that arrives or leaves, and flat, wearing no hue its mesh could not wear back')
-check(w.batch.children.length === 3 && w.species.every((sp) => w.batch.children.includes(sp.cardMesh) && sp.cardMesh.count === 0 && !sp.cardMesh.visible), 'the batch holds one card mesh a species -- empty, and not drawn at all until the cards are photographed -- and otherwise only the puppets it lends out')
+check(w.materials.length === 3 * (PUPPETS * 2 + 1), 'ONE settled material a species and a dissolving pair a puppet, all offered to the lighting')
+check(w.species.every((sp) => sp.materials.every((m) => m.plain.customProgramCacheKey() === `wildlife-${sp.key}` && m.in.customProgramCacheKey() === `wildlife-${sp.key}-fade` && m.out.customProgramCacheKey() === `wildlife-${sp.key}-fade`)) && new Set(w.materials.map((m) => m.customProgramCacheKey())).size === 6, 'two programs a species and not one a puppet: a settled one with no discard in it at all, and the dissolve both halves of a fade share')
+check(new Set(w.species.map((sp) => sp.picture)).size === 3 && w.species.every((sp) => sp.picture >= 0) && w.litterCards.owners.includes(`wildlife:${3 * MAX + 8}`), 'the cards are pictures in the shared litter-card pool, one a species, and the layer has claimed its ids there')
+check(w.batch.children.length === 0 && w.carded.size === 0 && w.cardIds.length === 3 * MAX + 8, 'the batch holds only the puppets it lends out, none yet, and no pool card is taken until an animal is drawn as one')
 check(w.species.every((sp) => sp.puppets.every((p) => p.skeleton !== sp.asset.skeleton && p.skeleton.bones.length === STAND_IN_BONES && p.meshes.length === LOD_RUNGS && p.meshes.every((m) => m.skeleton === p.skeleton && !m.visible) && !p.group.matrixAutoUpdate && p.actions.size === CLIPS.length)), 'each puppet has its own copy of the skeleton, every shared tier bound to it, none shown, and an action per clip')
 check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([name, a]) => (ONE_SHOT.has(name) ? a.loop === THREE.LoopOnce && a.clampWhenFinished : a.loop === THREE.LoopRepeat)))), `${[...ONE_SHOT].join(', ')} play once and hold, the rest cycle`)
 {
@@ -244,8 +259,7 @@ check(w.species.every((sp) => sp.puppets.every((p) => [...p.actions].every(([nam
   const mats = sp0.materials[0]
   const plain = compile(mats.plain)
   check(sp0.materials.every((m) => m.plain === sp0.plain) && sp0.materials.length === PUPPETS, 'every puppet of a species draws its settled tiers through THE ONE material, so a drawn herd is one material change a frame and not one an animal')
-  const card = compile(sp0.cardMaterial)
-  check(!plain.fragmentShader.includes('uHue') && !plain.vertexShader.includes('aHue') && !card.vertexShader.includes('aHue') && !card.fragmentShader.includes('vHue'), 'and nothing in it is per-animal: no puppet and no card wears a hue, a skinned body having nowhere but a uniform to keep one and a uniform costing a material an animal')
+  check(!plain.fragmentShader.includes('uHue') && !plain.vertexShader.includes('aHue'), 'and nothing in it is per-animal: no puppet wears a hue, a skinned body having nowhere but a uniform to keep one and a uniform costing a material an animal')
   check(!plain.fragmentShader.includes('discard'), 'a settled puppet draws through a shader with no discard in it, so it does not cost a tiled GPU its early-Z')
   const [a, b] = [compile(mats.in), compile(mats.out)]
   check(a.uniforms.uCut === mats.uCut && b.uniforms.uCut === mats.uCut && a.uniforms.uSide.value === -b.uniforms.uSide.value, 'both halves of a fade read the one cut and compare it the opposite way round')
@@ -1135,12 +1149,11 @@ const differ = (p, q) => {
   check(mid === expect(out) && mid === LOD_RUNGS - 1 && c.puppet, `and ${out.toFixed(0)} metres off, just inside the mesh cull, it is still its own animated puppet on the last rung, not a photograph of one`)
   {
     const inSight = alive(w).filter((a) => a.lod < LOD_RUNGS)
-    const cardMeshes = w.species.map((s) => s.cardMesh)
-    const lent = w.batch.children.filter((o) => !cardMeshes.includes(o))
+    const lent = w.batch.children
     // Everything else in the batch is a body on its way out: one an animal still holds while it dissolves, or one left behind when its tile unloaded.
     const owned = new Set([...alive(w).filter((a) => a.puppet).map((a) => a.puppet.group), ...w.fading.map((f) => f.puppet.group)])
-    check(inSight.length > 0 && inSight.every((a) => a.puppet) && cardMeshes.every((m) => w.batch.children.includes(m)) && lent.length === owned.size && lent.every((g) => owned.has(g)),
-      'every animal on a mesh rung wears a puppet, and the batch draws those, the bodies still dissolving, and the three card meshes', `${inSight.length} on a mesh of ${alive(w).length} alive, ${lent.length} puppets out, ${w.starved} starved`)
+    check(inSight.length > 0 && inSight.every((a) => a.puppet) && lent.length === owned.size && lent.every((g) => owned.has(g)),
+      'every animal on a mesh rung wears a puppet, and the batch draws those and the bodies still dissolving', `${inSight.length} on a mesh of ${alive(w).length} alive, ${lent.length} puppets out, ${w.starved} starved`)
   }
   // Out past the meshes and onto the card: one more rung, reaching twice as far.
   const card = reach(LOD_RUNGS) * 0.9
@@ -1148,14 +1161,16 @@ const differ = (p, q) => {
   {
     const sp = w.species.find((s) => s.key === 'stag')
     const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3()
+    check(c.card >= 0 && w.carded.has(c) && c.cardDrawn === w.frame, 'and taken a pool card instead, drawn this frame', `${drawnCards(w, sp).length} stag cards drawn`)
+    w.cardView.getMatrixAt(c.card, m)
+    m.decompose(p, q, s)
     // The instance matrix is a Float32Array, so a world coordinate in the hundreds comes back rounded.
-    const i = [...Array(sp.cardN).keys()].find((n) => { sp.cardMesh.getMatrixAt(n, m); m.decompose(p, q, s); return p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-3 })
-    check(i !== undefined && sp.cardMesh.count === sp.cardN && sp.cardN > 0, 'and taken an instance in its species card mesh instead, standing where the animal stands', `${sp.cardN} cards drawn`)
+    check(p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-3 && w.cardView.layer[c.card] === sp.picture && w.cardView.getVisibleAt(c.card), 'standing where the animal stands, shown, wearing its species\' picture')
     check(Math.abs(s.x - c.k) < 1e-6, 'at its own size, so a herd of cards is as varied as the herd of meshes was')
-    check(sp.cardFade.array[i] === 1, 'and settled: the whole card is drawn, with no dither left in it', `fade ${sp.cardFade.array[i]}`)
+    check(w.cardView.fade[c.card] === 1, 'and settled: the whole card is drawn, with no dither left in it', `fade ${w.cardView.fade[c.card]}`)
   }
   const far = reach(LOD_RUNGS) * 4
-  check(settle(far) === CARD_RUNGS && expect(far) === CARD_RUNGS && !c.puppet && w.species.find((s) => s.key === 'stag').cardN === 0, `${far.toFixed(0)} metres off, four times the card's reach, it is not drawn at all`)
+  check(settle(far) === CARD_RUNGS && expect(far) === CARD_RUNGS && !c.puppet && drawnCards(w, w.species.find((s) => s.key === 'stag')).length === 0, `${far.toFixed(0)} metres off, four times the card's reach, it is not drawn at all`)
   check(w.species.every((sp) => sp.freePuppets.length + sp.puppets.filter((p) => p.group.parent === w.batch).length === PUPPETS), 'the pools balance')
   at(close, 4)
   const t = c.puppet.mixer.time
@@ -1378,7 +1393,7 @@ const differ = (p, q) => {
   const onCard = { x: at.x + spawn.cull * 1.3, y: at.y + 1.6, z: at.z }
   for (let f = 0; f < 120; f++) step(k, onCard.x, onCard.y, onCard.z, dt)
   const sp = k.species.find((s) => s.key === 'hare')
-  check(c.spawn === spawn && c.lod === LOD_RUNGS && !c.puppet && c.cardWant && c.cardP === 1 && sp.cardN > 0, `${(spawn.cull * 1.3).toFixed(0)} m off, past the last mesh rung, the hare has given its puppet back and is a card`)
+  check(c.spawn === spawn && c.lod === LOD_RUNGS && !c.puppet && c.cardWant && c.cardP === 1 && c.card >= 0 && c.cardDrawn === k.frame, `${(spawn.cull * 1.3).toFixed(0)} m off, past the last mesh rung, the hare has given its puppet back and is a card`)
   check(Math.hypot(c.x - at.x, c.z - at.z) > 0.1 || c.act !== 'roam', 'and it is a card that is still living its life out there, not a photograph parked where it was last seen', `${Math.hypot(c.x - at.x, c.z - at.z).toFixed(2)} m on, doing ${c.act}`)
 
   // Out past the card too, but not past where the placement is worth keeping.
@@ -1456,19 +1471,9 @@ const differ = (p, q) => {
   const c = alive(w).find((a) => a.sp.key === 'stag')
   const sp = w.species.find((s) => s.key === 'stag')
   const run = (d, frames = 1, dt = 1 / 60) => { for (let f = 0; f < frames; f++) step(w, c.x, c.y + d, c.z, dt) }
-  // Which instance of the card mesh is this animal's, by where it stands.
-  const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3()
-  // The attribute is a Float32Array, so nothing read back out of it compares exact against a double.
-  const near = (a, b) => a !== null && Math.abs(a - b) < 1e-6
-  const cardOf = () => {
-    for (let i = 0; i < sp.cardN; i++) {
-      sp.cardMesh.getMatrixAt(i, _m)
-      _m.decompose(_p, _q, _s)
-      // The instance matrix is a Float32Array, so a world coordinate in the hundreds comes back rounded.
-      if (_p.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 1e-3) return sp.cardFade.array[i]
-    }
-    return null
-  }
+  // The slot is a Float32 clock stamp, and a fade-in's is biased by 4096 s, so its decode is good to about half a percent of coverage.
+  const near = (a, b) => a !== null && Math.abs(a - b) < 0.01
+  const cardOf = () => (c.card >= 0 && c.cardDrawn === w.frame ? fadeOf(w.cardView.fade[c.card]) : null)
   const last = lodReach(c.spawn.lodSize, LOD_RUNGS - 1) * 0.9
   const onCard = lodReach(c.spawn.lodSize, LOD_RUNGS) * 0.9
   run(last, Math.ceil(LOD_FADE_S * 60) + 4)
@@ -1481,7 +1486,7 @@ const differ = (p, q) => {
     'stepping out onto the card, the mesh is not switched off but dissolved out, holding its puppet while it goes')
   check(half > 0 && near(half, p.mats.uCut.value), 'and the card is dithered in against that very same cut, so the two masks partition the pixels rather than overlap', `card ${half?.toFixed(3)} against cut ${p.mats.uCut.value.toFixed(3)}`)
   run(onCard, Math.ceil(LOD_FADE_S * 60) + 4)
-  check(!c.puppet && cardOf() === 1, 'and once it is over the puppet is back in the pool and the card is whole', `${sp.cardN} cards drawn`)
+  check(!c.puppet && cardOf() === 1, 'and once it is over the puppet is back in the pool and the card is whole', `card ${cardOf()}`)
 
   // Back in again: the card dissolves out under a mesh dissolving in. The card's
   // coverage and the mesh's cut now sum to one, which is the same partition read
@@ -1490,7 +1495,7 @@ const differ = (p, q) => {
   check(c.lod === LOD_RUNGS - 1 && c.puppet && c.puppet.mats.uCut.value < 1 && near(cardOf(), -(1 - c.puppet.mats.uCut.value)),
     'and coming back the other way the card dissolves out under the mesh dissolving in, off the same cut again', `card ${cardOf()?.toFixed(3)} against cut ${c.puppet.mats.uCut.value.toFixed(3)}`)
   run(last, Math.ceil(LOD_FADE_S * 60) + 4)
-  check(c.puppet && c.puppet.mats.uCut.value === 1 && cardOf() === null, 'until the card is gone and only the animal is left', `${sp.cardN} cards still drawn, for the stags further out`)
+  check(c.puppet && c.puppet.mats.uCut.value === 1 && cardOf() === null, 'until the card is gone and only the animal is left', `card ${cardOf()}`)
 
   // A REVERSAL MID-FADE REWINDS THE ONE RUNNING rather than starting a second: she turns back after four frames, and the card has four frames' worth left to take out, not a whole one.
   run(onCard, 4)
@@ -1625,39 +1630,40 @@ const differ = (p, q) => {
 
   // Far: past the mesh rungs the puppet dissolves and goes back to the pool, the slot stays cargo -- and its CARD takes over, under the talons, held as far as the carrier is drawn, which is past the stag's own card reach.
   const sp = k.species[0]
-  const cards = () => sp.cardN
-  // Each carry is a frame after an update() that has emptied and refilled the card buffer; here the refill is nothing.
-  const carry = (...args) => { sp.cardN = 0; sp.cardMesh.count = 0; k.carry(c, ...args) }
-  const uploads = sp.cardMesh.instanceMatrix.version
+  // Each carry is a frame after an update() whose step here is nothing but its sweep of the cards last frame did not redraw.
+  const carry = (...args) => { for (const a of k.carded) if (a.cardDrawn !== k.frame) k._uncard(a); k.frame++; k.carry(c, ...args) }
+  const drawn = () => c.card >= 0 && c.cardDrawn === k.frame && k.cardView.getVisibleAt(c.card)
+  const fade = () => fadeOf(k.cardView.fade[c.card])
   carry(M, 1e4, dt)
   check(c.lod === LOD_RUNGS && p.to === -1, 'carried out past the last mesh rung, its puppet is sent out', `lod ${c.lod}`)
-  check(c.cardWant && c.cardP < 1 && cards() === 1 && sp.cardMesh.count === 1 && sp.cardMesh.instanceMatrix.version === uploads + 1 && Math.abs(sp.cardFade.array[0] - c.cardP) < 1e-6, 'and its card comes in on the same dissolve, appended to the species\' buffer with the count and the upload flags set, since update() has already run this frame', `fade ${sp.cardFade.array[0].toFixed(3)}`)
+  check(c.cardWant && c.cardP < 1 && drawn() && k.cardView.layer[c.card] === sp.picture && Math.abs(fade() - c.cardP) < 0.01, 'and its card comes in on the same dissolve, a pool card wearing its species\' picture, drawn since update() has already run this frame', `fade ${fade().toFixed(3)}`)
   const cm = new THREE.Matrix4()
-  sp.cardMesh.getMatrixAt(cards() - 1, cm)
+  k.cardView.getMatrixAt(c.card, cm)
   const cardGrip = new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(cm)
   const cardUp = new THREE.Vector3(0, 1, 0).transformDirection(cm)
   const cardScl = new THREE.Vector3().setFromMatrixScale(cm)
-  check(cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(cardUp.y - 1) < 1e-9 && Math.abs(cardScl.x - c.k) < 1e-6, `the card stands upright at the body's size with the point ${GRIP} of its height up at the matrix, exactly where the mesh hung`, `grip ${cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)).toExponential(1)} m off`)
+  check(cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(cardUp.y - 1) < 1e-6 && Math.abs(cardScl.x - c.k) < 1e-6, `the card stands upright at the body's size with the point ${GRIP} of its height up at the matrix, exactly where the mesh hung`, `grip ${cardGrip.distanceTo(new THREE.Vector3(12, 30, -7)).toExponential(1)} m off`)
   for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) carry(M, 1e4, dt)
   check(c.puppet === null && sp.freePuppets.includes(p) && c.act === 'dead' && c.spawn === null, 'and once it has dissolved the puppet is back in the pool while the slot is still the dragon\'s')
-  check(c.cardP === 1 && c.cardWant && cards() === 1 && sp.cardFade.array[0] === 1 && 1e4 > cullRange(c.lodSize, CARD_RUNGS), `while the card is settled and whole, ${(1e4 / cullRange(c.lodSize, CARD_RUNGS)).toFixed(0)} times the stag's own card reach out: a kill in sight under a dragon is never dropped from the picture`)
-  sp.cardMesh.getMatrixAt(0, cm)
+  check(c.cardP === 1 && c.cardWant && drawn() && k.cardView.fade[c.card] === 1 && 1e4 > cullRange(c.lodSize, CARD_RUNGS), `while the card is settled and whole, ${(1e4 / cullRange(c.lodSize, CARD_RUNGS)).toFixed(0)} times the stag's own card reach out: a kill in sight under a dragon is never dropped from the picture`)
+  k.cardView.getMatrixAt(c.card, cm)
   check(new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'still under the talons')
   carry(M, 1e4, dt, true)
-  sp.cardMesh.getMatrixAt(0, cm)
-  check(new THREE.Vector3().setFromMatrixPosition(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(new THREE.Vector3(0, 1, 0).transformDirection(cm).y - 1) < 1e-9, 'lain, the card stands upright on the matrix -- a spun quad has no flank to roll onto')
+  k.cardView.getMatrixAt(c.card, cm)
+  check(new THREE.Vector3().setFromMatrixPosition(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5 && Math.abs(new THREE.Vector3(0, 1, 0).transformDirection(cm).y - 1) < 1e-6, 'lain, the card stands upright on the matrix -- a spun quad has no flank to roll onto')
   // The carrier out of sight: the card goes with it, on the dissolve.
   carry(M, 1e4, dt, false, false)
-  check(!c.cardWant && c.cardP < 1 && cards() === 1 && sp.cardFade.array[0] < 0, 'told its carrier is not drawn, the card is sent out through the dissolve rather than dropped', `fade ${sp.cardFade.array[0].toFixed(3)}`)
+  check(!c.cardWant && c.cardP < 1 && drawn() && fade() < 0, 'told its carrier is not drawn, the card is sent out through the dissolve rather than dropped', `fade ${fade().toFixed(3)}`)
   for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) carry(M, 1e4, dt, false, false)
-  check(!c.cardWant && c.cardP === 1 && cards() === 0 && sp.cardMesh.count === 0, 'and once out it is not in the buffer at all')
+  carry(M, 1e4, dt, false, false)
+  check(!c.cardWant && c.cardP === 1 && c.card < 0 && !k.carded.has(c), 'and once out its pool card is given back')
   carry(M, 1e4, dt, false, true)
-  check(c.cardWant && c.cardP < 1 && cards() === 1, 'the carrier back in sight, the card comes back in')
-  const hidden = k.batch.visible
-  k.batch.visible = false
-  k.carry(c, M, 1e4, dt)
-  check(cards() === 1 && c.cardWant, 'a hidden layer, which update() is not stepping, has nothing appended to its buffer', `${cards()} cards`)
-  k.batch.visible = hidden
+  check(c.cardWant && c.cardP < 1 && drawn(), 'the carrier back in sight, the card comes back in')
+  k.setShown(false)
+  carry(M, 1e4, dt)
+  check(c.card >= 0 && c.cardDrawn === k.frame && !k.cardView.getVisibleAt(c.card) && !k.batch.visible, 'a hidden layer keeps the card it is handed but the pool does not draw it')
+  k.setShown(true)
+  check(k.cardView.getVisibleAt(c.card) && k.batch.visible, 'and shown again, draws it')
   carry(M, 10, dt)
   check(c.puppet !== null && c.puppet.actions.get('dead').isRunning(), 'brought back within reach it takes a puppet again, on the dead clip')
 
@@ -1666,26 +1672,29 @@ const differ = (p, q) => {
   const drop = c.puppet
   k.drop(c)
   check(c.puppet === null && k.fading.length === fadingBefore + 1 && k.fading[k.fading.length - 1].puppet === drop && drop.to === -1, 'drop() leaves the body dissolving where it was let go')
-  check(k.species[0].free.includes(c) && c.act === 'stand' && c.lod === CARD_RUNGS && c.spawn === null && !c.cardWant && c.cardP === 1, 'and the slot is back in the pool, empty, its card state cleared')
+  check(k.species[0].free.includes(c) && c.act === 'stand' && c.lod === CARD_RUNGS && c.spawn === null && !c.cardWant && c.cardP === 1 && c.card < 0, 'and the slot is back in the pool, empty, its card state cleared')
 
-  // Drop at card range: the card dissolves where it was let go, on the buffer for LOD_FADE_S, without the slot.
+  // Drop at card range: the card dissolves where it was let go, its pool card held for LOD_FADE_S, without the slot.
   {
     k.place(0, 0)
     const c3 = beside(k, 'stag')
     k.kill(c3.key, timeOf(k))
-    for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) { sp.cardN = 0; k.carry(c3, M, 1e4, dt) }
-    check(c3.cardWant && c3.cardP === 1 && !c3.puppet, 'a kill carried at card range is a settled card')
+    for (let f = 0; f < Math.ceil(LOD_FADE_S * 60) + 2; f++) { k.frame++; k.carry(c3, M, 1e4, dt) }
+    check(c3.cardWant && c3.cardP === 1 && !c3.puppet && c3.card >= 0, 'a kill carried at card range is a settled card')
+    const id = c3.card
     k.drop(c3)
-    check(k.fadingCards.length === 1 && k.fadingCards[0].sp === sp && k.fadingCards[0].p === 0 && !c3.cardWant && c3.cardP === 1, 'dropped there, its card is left dissolving where it hung, from the start of the ramp, and the slot\'s own card state is cleared')
-    check(new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(k.fadingCards[0].mat).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'under the talons that let it go')
+    check(k.fadingCards.length === 1 && k.fadingCards[0].id === id && k.fadingCards[0].p === 0 && !c3.cardWant && c3.cardP === 1 && c3.card < 0 && !k.carded.has(c3), 'dropped there, its card is left dissolving where it hung, from the start of the ramp, and the slot\'s own card state is cleared')
+    k.cardView.getMatrixAt(id, cm)
+    check(new THREE.Vector3(0, GRIP * bodyH, 0).applyMatrix4(cm).distanceTo(new THREE.Vector3(12, 30, -7)) < 1e-5, 'under the talons that let it go')
     let frames = 0
     let seen = 0
     while (k.fadingCards.length && frames < 100) {
       step(k, 1e5, 0, 1e5, dt)
       frames++
-      if (sp.cardN === 1 && sp.cardFade.array[0] < 0 && sp.cardMesh.count === 1) seen++
+      // A fade-in stamp is the high side; its last frame's sliver is under the stamp's float32 resolution, so read the kind, not the decoded sign.
+      if (k.fadingCards.length && k.cardView.getVisibleAt(id) && k.cardView.fade[id] < -2560) seen++
     }
-    check(Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60 && seen === frames - 1 && sp.cardN === 0 && sp.cardMesh.count === 0, 'the card fades out over LOD_FADE_S on the high side of the hash, drawn every frame of it with the count set, and is gone from the buffer the frame the ramp ends', `${frames} frames, ${seen} drawn leaving`)
+    check(Math.abs(frames / 60 - LOD_FADE_S) < 3 / 60 && seen === frames - 1 && !k.cardView.getVisibleAt(id) && k.cardView.fade[id] === 1 && k.cardIds.includes(id), 'the card fades out over LOD_FADE_S on the high side of the hash, drawn every frame of it, and its id is hidden, solid and back in the free list the frame the ramp ends', `${frames} frames, ${seen} drawn leaving`)
   }
   threw = ''
   try { k.carry(c, M, 10, dt) } catch (e) { threw = e.message }

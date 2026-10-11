@@ -11,11 +11,20 @@ function resolveIncludes(src) {
   })
 }
 
+// The declarations go after the shader's last `#extension` line: a directive after any token is an error in ESSL3.
+function declare(src, decl) {
+  const at = [...src.matchAll(/^[ \t]*#extension[^\n]*\n/gm)].pop()
+  const i = at ? at.index + at[0].length : 0
+  return src.slice(0, i) + decl + src.slice(i)
+}
+
+const VARYINGS = 'flat varying vec4 vGVM0;\nflat varying vec4 vGVM1;\nflat varying vec4 vGVM2;\nflat varying vec4 vGVM3;\n'
+
 function patch(shader) {
-  if (!/\bviewMatrix\b/.test(resolveIncludes(shader.fragmentShader))) return
-  shader.fragmentShader = resolveIncludes(shader.fragmentShader).replace(/\bviewMatrix\b/g, 'gViewMatrix')
-  shader.fragmentShader = `flat varying vec4 vGVM0;\nflat varying vec4 vGVM1;\nflat varying vec4 vGVM2;\nflat varying vec4 vGVM3;\n#define gViewMatrix mat4( vGVM0, vGVM1, vGVM2, vGVM3 )\n${shader.fragmentShader}`
-  shader.vertexShader = `flat varying vec4 vGVM0;\nflat varying vec4 vGVM1;\nflat varying vec4 vGVM2;\nflat varying vec4 vGVM3;\n${shader.vertexShader}`
+  const fs = resolveIncludes(shader.fragmentShader)
+  if (!/\bviewMatrix\b/.test(fs)) return
+  shader.fragmentShader = declare(fs.replace(/\bviewMatrix\b/g, 'gViewMatrix'), `${VARYINGS}#define gViewMatrix mat4( vGVM0, vGVM1, vGVM2, vGVM3 )\n`)
+  shader.vertexShader = declare(shader.vertexShader, VARYINGS)
     .replace(/void main\(\s*\)\s*\{/, 'void main() {\n vGVM0 = viewMatrix[ 0 ]; vGVM1 = viewMatrix[ 1 ]; vGVM2 = viewMatrix[ 2 ]; vGVM3 = viewMatrix[ 3 ];')
 }
 
@@ -23,8 +32,14 @@ function patch(shader) {
 export function installMultiviewShim() {
   const proto = THREE.Material.prototype
   const base = proto.onBeforeCompile
+  // Materials chain their handlers (`prev = material.onBeforeCompile`), so only the outermost call may patch: an inner one would resolve the includes the outer handlers still splice into.
+  let depth = 0
   // One stable function per material: callers compare `onBeforeCompile` against the prototype's (cord.js refuses a material that is already patched).
-  const wrap = (own) => function (shader, renderer) { own.call(this, shader, renderer); patch(shader) }
+  const wrap = (own) => function (shader, renderer) {
+    depth++
+    try { own.call(this, shader, renderer) } finally { depth-- }
+    if (depth === 0) patch(shader)
+  }
   const plain = wrap(base)
   Object.defineProperty(proto, 'onBeforeCompile', {
     configurable: true,

@@ -9,8 +9,8 @@
 // rule holds and is re-rolled when the rule first becomes true, so crossing a
 // snowline never lands a raptor on the exact step; every one-shot is pitched
 // 0.9x-1.1x and given its own volume so the same clip twice is not a machine
-// gun. LOOPS (brook, leaves, lake bed, wind, rain, underwater, a fiddle a
-// house, a campfire a hearth, a crackle a lit torch) are held by _loop():
+// gun. LOOPS (brook, leaves, lake bed, wind, rain, underwater, the cave bed, a
+// fiddle a house, a campfire a hearth, a crackle a lit torch) are held by _loop():
 // started when their rule turns on, stopped when it turns off, level and
 // bearing refreshed every update.
 //
@@ -112,6 +112,11 @@ export const SOUNDS = {
   campfire3: 'sounds/ambience-campfire-3.mp3',
   campfire4: 'sounds/ambience-campfire-4.mp3',
   door: 'sounds/building-door-opening.mp3',
+  caveBed: 'sounds/ambience-cave-default.mp3',
+  cave1: 'sounds/ambience-cave-1.mp3',
+  cave2: 'sounds/ambience-cave-2.mp3',
+  cave3: 'sounds/ambience-cave-3.mp3',
+  caveDrip: 'sounds/ambience-cave-droplet.mp3',
   // The menu's and the hand's, played by main.js; the ambience never fires them.
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
@@ -128,6 +133,12 @@ const SONGBIRDS = ['songbird1', 'songbird2', 'songbird3', 'songbird4', 'songbird
 const CROAKS = ['croak1', 'croak2']
 const ROCKSLIDES = ['rockslide1', 'rockslide2']
 const CAMPFIRES = ['campfire1', 'campfire2', 'campfire3', 'campfire4']
+const CAVE_TAKES = ['cave1', 'cave2', 'cave3']
+// What still sounds underground (Ambience._underground); everything else is the overworld's.
+const CAVE_LOOPS = new Set(['underwater', 'cave', 'blaze'])
+const CAVE_TIMERS = new Set(['footstep', 'stroke', 'caveSwap', 'caveDrip'])
+// No boulders under her feet: the rockslide scatter is the overworld's talus.
+const CAVE_SENSE = WorldSense.blank()
 
 /** Every one-shot's pitch range; a clip never plays at exactly its recorded speed twice. */
 export const RATE = [0.9, 1.1]
@@ -232,7 +243,11 @@ export const RULES = {
   wind: { snow: [-30, 30], height: [10, 30], on: 0.05, off: 0.02, level: 0.35, gain: [0.5, 1.0], cover: 0.6 },
   // Rain: a loop at `level` times the share of the fall that is rain, precip times how far she is under the snow line's `sleet` band (the precip draw's band, check-ambience pins them equal); snow is silent, so on a summit the loop is off (§10). The patter is the drops on the ground and the leaves, so it thins to nothing across the `aloft` band of metres her head is above the ground and is off above it.
   rain: { on: 0.02, off: 0.01, level: 0.35, sleet: [-60, 60], aloft: [2, 20], gain: [0.7, 1.0] },
-  underwater: { level: 1.0, gain: [0.8, 1.0] },
+  underwater: { level: 0.5, gain: [0.8, 1.0] },
+  // Underground, dry: the cave bed loops on the near bus (the house walls are not the rock), and every `swap` seconds one pass of it is one of CAVE_TAKES instead. The clips are mastered ~18 dB hotter than the brook, which is why the level is low.
+  cave: { level: 0.3, gain: [0.8, 1.0], swap: [30, 60] },
+  // A drop into the cave's water every `interval` seconds while a pool, sump or river is within `reach` metres of her head (CaveWalk.nearestWater), from that nearest point: `level` up to `near` metres off, falling as near/distance past it.
+  caveDrip: { interval: [10, 15], reach: 15, near: 3, level: 0.4, gain: [0.7, 1.0] },
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
@@ -333,7 +348,7 @@ export class Ambience {
     this.sang = {}
     // One-shot timers by rule name: { armed, left }.
     this.timers = {}
-    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'footstep', 'stroke', 'rockslideNear', 'wave']) {
+    for (const k of ['raptor', 'owl', 'woodpecker', 'songbirdFar', 'songbirdNear', 'cricketBed', 'footstep', 'stroke', 'rockslideNear', 'wave', 'caveSwap', 'caveDrip']) {
       this.timers[k] = { armed: false, left: 0 }
     }
     this.loops = {
@@ -344,7 +359,10 @@ export class Ambience {
       wind: engine.loop('wind', { gain: RULES.wind.gain }),
       rain: engine.loop('rain', { gain: RULES.rain.gain }),
       crawl: engine.loop('crawl', { directional: true, gain: RULES.crawl.gain }),
+      cave: engine.loop('caveBed', { bus: 'near', gain: RULES.cave.gain, next: () => { const take = this.caveTake; this.caveTake = null; return take } }),
     }
+    // The take the cave bed plays for its next pass in place of itself, or null (RULES.cave.swap).
+    this.caveTake = null
     // One muffled loop a fiddler, under its own key in `loops` so _loop and dispose hold it like the rest.
     this.fiddlers = fiddlers.map((h, i) => {
       this.loops[`fiddle${i}`] = engine.loop('fiddle', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: RULES.fiddle.gain })
@@ -473,11 +491,20 @@ export class Ambience {
    * @param now       the room's world clock in seconds (clock.js), which the dragons' roars are scored against
    * @param indoors   she is inside a house: the fiddles are silent
    * @param hushed    the birds, crickets and rustling leaves are silent (a chanterelle, design/33-vitals.md §Eating)
+   * @param cave      null above ground; underground `{ water }`, the nearest point {x, y, z} of the cave's water within RULES.caveDrip.reach, or null
    */
-  update(dt, { head, dayness, submerged, speed, afoot, swimming = false, cover = 0, precip = 0, now, indoors = false, hushed = false }) {
+  update(dt, { head, dayness, submerged, speed, afoot, swimming = false, cover = 0, precip = 0, now, indoors = false, hushed = false, cave = null }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
     if (!Number.isFinite(now)) throw new Error(`Ambience.update: needs the room's world seconds, got ${now}`)
     this.frame++
+    if (submerged !== this.wet) {
+      this.wet = submerged
+      this.engine.setSubmerged(submerged)
+    }
+    if (cave !== null) {
+      this._underground(dt, head, cave, submerged, speed, afoot, swimming)
+      return
+    }
     // Accumulated, not reset, so the cadence does not drift by a frame per sample.
     this.senseLeft -= dt
     if (!this.sensed || this.senseLeft <= 0) {
@@ -491,10 +518,10 @@ export class Ambience {
     }
     const s = this.s
 
-    if (submerged !== this.wet) {
-      this.wet = submerged
-      this.engine.setSubmerged(submerged)
-    }
+    this._loop('cave', false)
+    this.caveTake = null
+    this.timers.caveSwap.armed = false
+    this.timers.caveDrip.armed = false
     this.hushed = hushed
     this._loop('underwater', submerged, RULES.underwater.level)
     this._loops(head, s, cover, precip)
@@ -578,6 +605,44 @@ export class Ambience {
     const night = dayness < B.dusk && below && up < B.aloft[1]
     if (this.due('cricketBed', night, B.interval, dt)) {
       this.fire('cricket', { rate: this.rate(), gain: this.between(...B.gain) * (1 - smoothstep(B.aloft[0], B.aloft[1], up)) })
+    }
+  }
+
+  /**
+   * In a cave nothing of the overworld is heard: the sense would read the
+   * ground over her head (a lake's waves, dulled as if far off), so it is not
+   * sampled, and every overworld loop is stopped and every overworld timer and
+   * body record dropped, so surfacing starts them fresh. Left are the cave's
+   * own (_cave), the flames she and her peers carry (_blaze), and her own feet
+   * and strokes.
+   */
+  _underground(dt, head, cave, submerged, speed, afoot, swimming) {
+    for (const key in this.loops) if (!CAVE_LOOPS.has(key)) this._loop(key, false)
+    for (const key in this.timers) if (!CAVE_TIMERS.has(key)) this.timers[key].armed = false
+    this.bodies.clear()
+    this.wings.clear()
+    this.sensed = false
+    this._loop('underwater', submerged, RULES.underwater.level)
+    this._blaze(head)
+    this._cave(dt, head, cave, submerged)
+    this._strokes(dt, speed, swimming, submerged)
+    if (submerged) this.teleportCredit = Math.max(0, this.teleportCredit - dt)
+    else this._feet(dt, head, CAVE_SENSE, speed, afoot)
+    this.engine.update()
+  }
+
+  /** Underground and dry: the cave bed with a take swapped in now and then, and a drop into the nearest water within reach. All off under the water. */
+  _cave(dt, head, cave, submerged) {
+    const dry = !submerged
+    const C = RULES.cave
+    this._loop('cave', dry, C.level)
+    if (!dry) this.caveTake = null
+    if (this.due('caveSwap', dry, C.swap, dt)) this.caveTake = this.pick(CAVE_TAKES)
+    const D = RULES.caveDrip
+    const w = dry ? cave.water : null
+    if (this.due('caveDrip', w !== null, D.interval, dt)) {
+      const d = Math.hypot(w.x - head.x, w.y - head.y, w.z - head.z)
+      this.fire('caveDrip', { rate: this.rate(), gain: D.level * (D.near / Math.max(D.near, d)) * this.between(...D.gain), at: { x: w.x, y: w.y, z: w.z }, bus: 'near' })
     }
   }
 

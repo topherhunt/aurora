@@ -28,7 +28,8 @@ import { WorldProbe } from '../src/world-probe.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { createBladeMaterial } from '../src/props/grass-blades.js'
 import { Fish } from '../src/v2/render/fish.js'
-import { GLINT, createCritterCardMaterial, glint, hueVary } from '../src/v2/render/critters.js'
+import { GLINT, glint, hueVary } from '../src/v2/render/critters.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Wreaths } from '../src/v2/render/wreaths.js'
@@ -936,10 +937,10 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   if (!frag.includes('cross( hueK, diffuseColor.rgb )')) MISSING_MARKS.push(`${label} frag: the hue turn`)
 }
 
-// The critter card: a Lambert cutout with the hue turn again, and the double-sided normal flip undone.
+// The shared card pool (litter-cards.js): every card kind in one program, a Lambert cutout over the picture array, patched as main.js patches it.
 {
-  const material = createCritterCardMaterial('check-card')
-  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-card' })
+  const material = new LitterCards(8).material
+  new WorldLighting().patch(material, { mode: 'vertex', cacheKey: 'check-litter-card', liftAlbedo: { mix: 1, gain: 7, weight: 'vCardCanopy' } })
   const lib = THREE.ShaderLib.lambert
   const shader = {
     uniforms: THREE.UniformsUtils.clone(lib.uniforms),
@@ -948,16 +949,16 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     defines: {},
   }
   material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
-  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']
-  const label = 'critters card        '
+  const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_ALPHATEST', '#define DOUBLE_SIDED', '#define USE_FOG', '#define FOG_EXP2']
+  const label = 'litter card pool     '
   const vert = finish(shader.vertexShader)
   const frag = finish(shader.fragmentShader)
   SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
   SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
   CROSS_STAGE.push([label, vert, frag])
-  if (!frag.includes('cross( hueK, diffuseColor.rgb )')) MISSING_MARKS.push(`${label} frag: the hue turn`)
-  if (!frag.includes('normal *= faceDirection;')) MISSING_MARKS.push(`${label} frag: the flip undone`)
-  if (frag.includes('gl_FragCoord.x + gl_FragCoord.y')) MISSING_MARKS.push(`${label} frag: a dither the card no longer wears`)
+  if (!frag.includes('texture( uCardPics, vec3( vCardUv, vCardLayer ) )')) MISSING_MARKS.push(`${label} frag: the picture`)
+  if (!frag.includes('uTierTint.w > 0.5')) MISSING_MARKS.push(`${label} frag: the tier tint`)
+  if (frag.includes('hueK')) MISSING_MARKS.push(`${label} frag: a hue turn the pool no longer carries`)
 }
 
 // The grasshoppers (grasshoppers.js): a plain Lambert under a per-instance

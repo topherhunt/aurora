@@ -147,6 +147,11 @@ for (const sys of SYSTEMS) {
     const level = walk.trueWaterAt(mid.x, mid.z, mid.y + 1)
     const roof = walk.ceilingAt(mid.x, mid.z, mid.y + 0.5)
     check(level !== null && roof < level, `${tag}: sump ${e.i} is flooded to the roof at its dip`, `level ${level === null ? 'none' : level.toFixed(1)} roof ${roof.toFixed(1)}`)
+    if (level === null) continue
+    // The ambience's drip (RULES.caveDrip) is placed by nearestWater, in the sunk cave's world heights.
+    const near = deep.nearestWater(mid.x, level + OY + 3, mid.z, 15, {})
+    const far = deep.nearestWater(mid.x, level + OY + 3, mid.z, 2, {})
+    check(near !== null && Math.abs(Math.hypot(near.x - mid.x, near.y - level - OY - 3, near.z - mid.z) - 3) < 0.01 && far === null, `${tag}: 3 m over sump ${e.i}'s water, nearestWater finds it 3 m off, and nothing within 2 m`, near === null ? 'none' : `${near.x.toFixed(1)},${near.y.toFixed(1)},${near.z.toFixed(1)}`)
   }
 
   // The mesh: every chunk at every LOD, timed; then the triangles CaveRoom draws standing at each node, within a budget.

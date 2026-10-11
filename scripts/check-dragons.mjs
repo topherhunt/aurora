@@ -48,6 +48,7 @@ import { readAccessor, readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 import { BEND_MAX, TailLag } from '../src/v2/render/tail-lag.js'
 import { taken } from '../src/v2/taken.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -589,7 +590,7 @@ const dry = { isSubmerged: () => false }
 class Solo extends Dragons { _spawn(site, guard, now) { return guard ? null : super._spawn(site, guard, now) } }
 const dragonsOn = (field, sites, herd, seed = 3, water = dry, Kind = Solo, ground = field) => {
   const hurt = [], frights = []
-  const d = new Kind(new THREE.Scene(), field, { seed, ground, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), asset: makeAsset() })
+  const d = new Kind(new THREE.Scene(), field, { seed, ground, roosts: roostOf(sites), wildlife: herd, water, harm: (n, why) => hurt.push([n, why]), fright: (key, x, z) => frights.push([key, x, z]), cards: new LitterCards(4096), asset: makeAsset() })
   return Object.assign(d, { hurt, frights })
 }
 const DT = 1 / 60
@@ -603,6 +604,7 @@ console.log('\ndragons')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: {}, wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /sites/.test(e.message) } })(), 'so is a roost layer with no sites()')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), asset: makeAsset() }); return false } catch (e) { return /isSubmerged/.test(e.message) } })(), 'and a world with no water to ask, since a dragon must not alight in a lake')
   check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), water: dry, asset: makeAsset() }); return false } catch (e) { return /harm\(n, why\)/.test(e.message) } })(), 'and one with no harm or fright, since its bite must land on someone')
+  check((() => { try { new Dragons(new THREE.Scene(), flat, { roosts: roostOf([]), wildlife: makeHerd([]), water: dry, harm: () => {}, fright: () => {}, asset: makeAsset() }); return false } catch (e) { return /LitterCards/.test(e.message) } })(), 'and one with no card pool to draw its far bodies in')
 
   const d = dragonsOn(flat, [], makeHerd([]))
   const fly = measureFly(makeAsset())
@@ -611,24 +613,27 @@ console.log('\ndragons')
   check(Number.isFinite(fly.talons.x + fly.talons.y + fly.talons.z) && Math.abs(fly.talons.y - fly.minY) < 1e-6, 'the talons are the mean of the feet\'s vertices over the fly, here the slab\'s underside', `(${fmt(fly.talons.x)}, ${fmt(fly.talons.y)}, ${fmt(fly.talons.z)})`)
   check((() => { try { measureFly({ ...makeAsset(), legs: [] }); return false } catch (e) { return /talons/.test(e.message) } })(), 'an asset naming no legs is refused: nothing to hang a kill from')
   check(d.bulk > 1 && Math.abs(d.bulk - Math.max(2 * fly.halfX, 2 * fly.halfZ, fly.maxY - fly.minY) / wyvern.span) < 1e-9, 'the ladder is sized by the flying body\'s largest extent over the shipped span, and so reaches farther than the standing body would', `bulk ${d.bulk.toFixed(3)}`)
-  check(d.materials.length === 2 * PUPPETS + 2 && d.materials[0] === d.plain && d.materials[d.materials.length - 1] === d.cardMaterial, 'one settled material, a dissolving pair a puppet, and the card, all offered to the lighting', `${d.materials.length}`)
+  check(d.materials.length === 2 * PUPPETS + 1 && d.materials[0] === d.plain, 'one settled material and a dissolving pair a puppet, all offered to the lighting', `${d.materials.length}`)
   check(d.plain.customProgramCacheKey() === 'dragons' && d.puppetMats.every((m) => m.plain === d.plain && m.in.customProgramCacheKey() === 'dragons-fade'), 'every puppet draws its settled tiers through THE ONE material and dissolves through the one fade program')
   // The gleam: settled and fading alike a Standard at SCALE_ROUGHNESS, no metalness, the lobe scaled by GLINT; the card stays a photograph.
   const body = [d.plain, ...d.puppetMats.flatMap((m) => [m.in, m.out])]
-  check(body.every((m) => m.isMeshStandardMaterial && m.roughness === SCALE_ROUGHNESS && m.metalness === 0) && SCALE_ROUGHNESS > 0 && SCALE_ROUGHNESS < 1 && !d.cardMaterial.isMeshStandardMaterial, 'the body is a Standard material at SCALE_ROUGHNESS, settled or dissolving, and the card is not', `${d.plain.type} roughness ${d.plain.roughness}`)
+  check(body.every((m) => m.isMeshStandardMaterial && m.roughness === SCALE_ROUGHNESS && m.metalness === 0) && SCALE_ROUGHNESS > 0 && SCALE_ROUGHNESS < 1, 'the body is a Standard material at SCALE_ROUGHNESS, settled or dissolving', `${d.plain.type} roughness ${d.plain.roughness}`)
   {
     const compile = (m) => { const sh = { uniforms: {}, vertexShader: '#include <common>\n', fragmentShader: '#include <common>\n#include <clipping_planes_fragment>\n#include <lights_fragment_end>\n' }; m.onBeforeCompile(sh); return sh.fragmentShader }
     const settled = compile(d.plain), fading = compile(d.puppetMats[0].in)
     check(settled.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && fading.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && fading.includes('uCut') && !settled.includes('uCut'), 'the glint is spliced into the settled program and the fade program, which keeps its cut')
   }
-  check(d.cardMaterial.customProgramCacheKey() === 'dragons-card-fade-flat', 'the card is its own program: NOT spun to her, dithered, and flat', d.cardMaterial.customProgramCacheKey())
   check(d.puppets.length === PUPPETS && d.freePuppets.length === PUPPETS && d.slots.length === MAX && d.free.length === MAX, `${PUPPETS} puppets and ${MAX} slots, all free`)
-  const geo = d.cardMesh.geometry
-  geo.computeBoundingBox()
-  const bb = geo.boundingBox
-  check(geo.index.count === 12 && geo.getAttribute('position').count === 8 && !geo.getAttribute('aSpin'), 'the card is two quads, four triangles, with no spin attribute: the instance matrix is the whole orientation', `${geo.index.count / 3} tris`)
+  // The two pictures' quads, laid in the body's frame by their card frames: the pool's fixed quad stands in its XY plane at (cx, cy) with half extents (hw, hh).
+  const bb = new THREE.Box3()
+  const ups = d.pictures.map((pic, v) => {
+    const b = d.litterCards.box[pic]
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) bb.expandByPoint(new THREE.Vector3(b.x + sx * b.z, b.y + sy * b.w, 0).applyMatrix4(d.cardFrames[v]))
+    return new THREE.Vector3(0, 1, 0).transformDirection(d.cardFrames[v])
+  })
+  check(d.pictures.length === 2 && d.pictures.every((pic) => d.litterCards.mode[pic].x === 2) && ups[0].distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-9 && ups[1].distanceTo(new THREE.Vector3(0, 0, -1)) < 1e-9, 'the card is two fixed pool pictures, the side standing and the top laid flat with its picture\'s up along -Z: the instance matrix is the whole orientation')
   check(bb.max.x >= fly.halfX && bb.min.x <= -fly.halfX && bb.max.z >= fly.halfZ && bb.min.z <= -fly.halfZ && bb.min.y <= fly.minY && bb.max.y >= fly.maxY && bb.min.y < 0, 'the quads bound the fly pose where it hangs, below the body\'s origin as a flying body does', `y ${fmt(bb.min.y)} to ${fmt(bb.max.y)}`)
-  check(d.cardMesh.name === 'v2-dragons-cards' && d.cardMesh.count === 0 && !d.cardMesh.visible && !d.cardMesh.frustumCulled && d.cardMesh.instanceMatrix.usage === THREE.DynamicDrawUsage && d.batch.children.includes(d.cardMesh) && d.batch.children.length === 1, 'the batch holds the card mesh -- empty, not drawn until the cards are photographed -- and otherwise only the puppets it lends out')
+  check(d.batch.children.length === 0 && d.litterCards.owners.includes(`dragons:${MAX * 2}`) && Array.from({ length: MAX * 2 }, (_, i) => i).every((i) => !d.cardView.getVisibleAt(i) && d.cardView.layer[i] === d.pictures[i % 2]), 'the batch holds only the puppets it lends out, none yet; two pool ids a slot are claimed, each wearing its view\'s picture and none drawn')
   check(DRAGON_VIEWS.join(',') === 'side,top', 'the two pictures are the side and the top', DRAGON_VIEWS.join(' '))
   d.dispose()
 }
@@ -1492,7 +1497,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   both()
   check(dr.phrase.kind === 'fly' && stags[0].carried === 1, 'a dragon in the air with a kill in its talons')
   d.place()
-  check(stags[0].drops.join() === 'false' && d.byKey.size === 0 && d.free.length === MAX && d.freePuppets.length === PUPPETS && d.fading.length === 0 && d.cardMesh.count === 0, 'a relief edit puts every dragon away at once: the kill dropped with NO fade, every slot and puppet free, nothing dissolving')
+  check(stags[0].drops.join() === 'false' && d.byKey.size === 0 && d.free.length === MAX && d.freePuppets.length === PUPPETS && d.fading.length === 0 && d.slots.every((s) => !s.carded) && Array.from({ length: MAX * 2 }, (_, i) => i).every((i) => !d.cardView.getVisibleAt(i)), 'a relief edit puts every dragon away at once: the kill dropped with NO fade, every slot, puppet and pool card free, nothing dissolving')
   both()
   dr = d.byKey.get(keyOf(site))
   check(d.byKey.size === 1 && dr.phrase.kind === 'fly', 'and the next frame the roost has its dragon again, in the air on the same leg')
@@ -1563,17 +1568,18 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   // A kill in its talons for the rest of the walk out, to see what it is told about the dragon's own rung.
   const kill = stag(0, 0)
   dr.cargo = kill
-  check(at(reach(LOD_RUNGS) * 0.9) === LOD_RUNGS && !dr.puppet && d.cardN === 1 && d.cardMesh.count === 1 && d.freePuppets.length === PUPPETS, `at ${(reach(LOD_RUNGS) * 0.9).toFixed(0)} m the puppet is given back and the two cards drawn instead`)
+  check(at(reach(LOD_RUNGS) * 0.9) === LOD_RUNGS && !dr.puppet && dr.carded && dr.cardDrawn === d.frame && d.slots.filter((s) => s.carded).length === 1 && [0, 1].every((v) => d.cardView.getVisibleAt(dr.id * 2 + v)) && d.freePuppets.length === PUPPETS, `at ${(reach(LOD_RUNGS) * 0.9).toFixed(0)} m the puppet is given back and the two cards drawn instead`)
   check(kill.carried > 0 && kill.shown === true, 'and the kill it carries is told the dragon is drawn, so its card holds under the dragon\'s')
-  d.cardMesh.getMatrixAt(0, m)
+  // The side picture's frame only drops the quad to the fly pose's floor; undone, the instance is the body's matrix.
+  d.cardView.getMatrixAt(dr.id * 2, m).multiply(d.cardFrames[0].clone().invert())
   m.decompose(p, q, s)
   const e = new THREE.Euler().setFromQuaternion(q, 'YZX')
   const al = dr.rec.alpha
   const blend = (a, b) => a + (b - a) * al
   check(Math.abs(p.x - blend(dr.px, dr.x)) < 1e-6 && Math.abs(p.y - blend(dr.py, dr.y)) < 1e-6 && Math.abs(p.z - blend(dr.pz, dr.z)) < 1e-6 && Math.abs(s.x - dr.k) < 1e-6, 'the card instance stands where the dragon is between its ticks, at its size')
   check(Math.abs(swing(e.y, dr.pheading + swing(dr.pheading, dr.heading) * al)) < 1e-6 && Math.abs(e.z - blend(dr.ppitch, dr.pitch)) < 1e-6 && Math.abs(e.x - blend(dr.proll, dr.roll)) < 1e-6, 'and carries its whole orientation -- heading, pitch AND roll -- since a fixed pair of quads is turned by its matrix and by nothing else', `yaw ${fmt(e.y)} pitch ${fmt(e.z)} roll ${fmt(e.x)}`)
-  check(d.cardFade.array[0] === 1, 'settled: the whole card is drawn, no dither left', `fade ${d.cardFade.array[0]}`)
-  check(at(reach(LOD_RUNGS) * 4) === CARD_RUNGS && d.cardN === 0 && d.cardMesh.count === 0 && !dr.puppet && d.byKey.size === 1, `four times the card's reach, it is drawn as nothing at all -- and is still alive`)
+  check(d.cardView.fade[dr.id * 2] === 1 && d.cardView.fade[dr.id * 2 + 1] === 1, 'settled: both quads whole, no dither left', `fade ${d.cardView.fade[dr.id * 2]}`)
+  check(at(reach(LOD_RUNGS) * 4) === CARD_RUNGS && !dr.carded && !d.cardView.getVisibleAt(dr.id * 2) && !d.cardView.getVisibleAt(dr.id * 2 + 1) && !dr.puppet && d.byKey.size === 1, `four times the card's reach, it is drawn as nothing at all -- and is still alive`)
   check(kill.shown === false, 'and the kill is told so, and goes with it')
   dr.cargo = null
   const before = { x: dr.x, z: dr.z, state: dr.state, tick: dr.rec.tick }
@@ -1628,7 +1634,7 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   const flat = flatField(GROUND)
   const sites = [{ key: 1, tx: 1, tz: 0, x: 0, y: GROUND, z: 0, r: 4, gx: 0, gz: 0 }]
   const roosts = roostOf(sites)
-  const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), water: dry, harm: () => {}, fright: () => {}, asset: makeAsset() })
+  const d = new Dragons(new THREE.Scene(), flat, { seed: 2, roosts, wildlife: makeHerd([]), water: dry, harm: () => {}, fright: () => {}, cards: new LitterCards(4096), asset: makeAsset() })
   let now = chapterOf(1000, keyOf(sites[0])).start
   const step = () => { now += DT; d.update(HER.x, HER.y, HER.z, now) }
   step()

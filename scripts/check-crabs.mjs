@@ -35,7 +35,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS, HUNT } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
-import { CARD_M, CRITTER_GLB, GLINT, setTierTint } from '../src/v2/render/critters.js'
+import { CARD_M, CRITTER_GLB, GLINT, hueTurnTint, setTierTint } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -181,8 +181,8 @@ check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'as
   check(mt.w === 0, 'and off again')
   check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
   check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
-  // The hue turn: read per instance on the mesh and on the pool's card, and applied to the sampled map before it is lit.
-  check(crabs.mesh.geometry.getAttribute('aHue') === crabs.hue && crabs.hue.isInstancedBufferAttribute && crabs.litterCards.meshes.meshes[0].geometry.getAttribute('aHue').isInstancedBufferAttribute, 'hue rides in aHue on the mesh and on the pool\'s card')
+  // The hue turn: read per instance on the mesh and applied to the sampled map before it is lit; the pool's card carries no aHue and takes it as an instanceColor tint.
+  check(crabs.mesh.geometry.getAttribute('aHue') === crabs.hue && crabs.hue.isInstancedBufferAttribute && !crabs.litterCards.meshes.meshes[0].geometry.getAttribute('aHue'), 'hue rides in aHue on the mesh and not on the pool\'s card')
   check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\s*\{[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
   // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
   check(crabs.material.isMeshStandardMaterial && crabs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && crabs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${crabs.material.type} roughness ${crabs.material.roughness}`)
@@ -245,7 +245,7 @@ check(alive().length === 0, 'nothing away from the lake')
 {
   // The first frame empties the buffers; after that a frame with no crab uploads nothing.
   for (let i = 0; i < 2; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
-  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.litterCards.meshes.meshes[0].instanceMatrix.version, crabs.litterCards.meshes.meshes[0].geometry.getAttribute('aHue').version].join(',')
+  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.litterCards.meshes.meshes[0].instanceMatrix.version, crabs.litterCards.meshes.meshes[0].instanceColor.version].join(',')
   const v0 = versions()
   for (let i = 0; i < 72; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
   check(versions() === v0 && crabs.mesh.count === 0, 'and a second of frames there re-uploads no buffer', `versions ${v0}`)
@@ -375,9 +375,13 @@ const sinkOf = (c) => SINK * 0.3 * c.size
   const HEAD = [15, LEVEL + 1.6, 0]
   const dist = (e, i) => Math.hypot(e[i * 16 + 12] - HEAD[0], e[i * 16 + 13] - HEAD[1], e[i * 16 + 14] - HEAD[2])
   let meshN = 0, cardN = 0, liveN = 0, matched = 0
+  const tintNear = (p, q) => Math.abs(p.r - q.r) < 1e-6 && Math.abs(p.g - q.g) < 1e-6 && Math.abs(p.b - q.b) < 1e-6
   const near = [], far = []
   for (let seed = 1; seed <= SEEDS; seed++) {
     const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+    // A sandy picture of opaque texels, standing in for the bake.
+    const px = k.litterCards.pixels(k.cardPicture)
+    for (let i = 0; i < px.length; i += 4) px.set([200, 150, 90, 255], i)
     k.setCard()
     k.place(15, 0)
     k.update(...HEAD, T)
@@ -396,7 +400,7 @@ const sinkOf = (c) => SINK * 0.3 * c.size
       const bz = new THREE.Vector3(-b0[8], -b0[9], -b0[10]).normalize()
       const right = new THREE.Vector3(e0[0], e0[1], e0[2]).normalize()
       const bx = new THREE.Vector3(b0[0], b0[1], b0[2]).normalize()
-      if (up.distanceTo(bz) < 1e-5 && right.distanceTo(bx) < 1e-5 && Math.abs(e0[12] - mid.x) < 1e-5 && Math.abs(e0[13] - mid.y) < 1e-5 && Math.abs(e0[14] - mid.z) < 1e-5 && Math.abs(k.litterCards.meshes.meshes[0].geometry.getAttribute('aHue').array[k.cards.slot[c.id]] - c.hue) < 1e-6) matched++
+      if (up.distanceTo(bz) < 1e-5 && right.distanceTo(bx) < 1e-5 && Math.abs(e0[12] - mid.x) < 1e-5 && Math.abs(e0[13] - mid.y) < 1e-5 && Math.abs(e0[14] - mid.z) < 1e-5 && tintNear(k.cards.getColorAt(c.id, new THREE.Color()), hueTurnTint(k.cardMean, c.hue, new THREE.Color()))) matched++
     }
     meshN += k.mesh.count; cardN += k.cardCount; liveN += alive(k).length
     k.dispose()

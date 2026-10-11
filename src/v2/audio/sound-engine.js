@@ -454,15 +454,17 @@ export class SoundEngine {
  * A tune is not a brook: `rate` narrows the walk's range and `drift` its step
  * (0 holds the rate rolled at construction), and `muffle` puts a low-pass
  * after the level, its cutoff the caller's (setCutoff), for a sound heard
- * through a wall.
+ * through a wall. `next`, if given, is asked before each cycle and may name the
+ * clip to play in place of the draw (null for the draw): one take swapped into a bed.
  */
 export const LOOP_XFADE_S = [0.1, 1.0]
 export const LOOP_RATE = [0.9, 1.1]
 export const LOOP_STEP = 0.05
 
 export class LoopVoice {
-  constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rate = LOOP_RATE, drift = LOOP_STEP, muffle = false, rand = Math.random } = {}) {
+  constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rate = LOOP_RATE, drift = LOOP_STEP, muffle = false, next = null, rand = Math.random } = {}) {
     this.engine = engine
+    this.next = next
     this.names = Array.isArray(name) ? name : [name]
     if (this.names.length === 0) throw new Error('LoopVoice: no clip named')
     this.name = this.names.join('|')
@@ -555,7 +557,8 @@ export class LoopVoice {
 
   _cycle() {
     const ctx = this.engine.ctx
-    const buffer = this.engine.buffer(this.names.length === 1 ? this.names[0] : this.names[Math.floor(this.rand() * this.names.length)])
+    const asked = this.next ? this.next() : null
+    const buffer = this.engine.buffer(asked ?? (this.names.length === 1 ? this.names[0] : this.names[Math.floor(this.rand() * this.names.length)]))
     const start = this.nextAt
     const dur = buffer.duration / this.rate
     const fadeIn = this.nextFadeIn

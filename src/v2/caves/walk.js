@@ -169,6 +169,36 @@ export class CaveWalk {
     return null
   }
 
+  /** The nearest point of any water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null: a pool or sump by its shore grid's box, a river along its line wherever it carries water. */
+  nearestWater(x, y, z, reach, out) {
+    let best = reach
+    let found = false
+    const take = (px, py, pz) => {
+      const d = Math.hypot(px - x, py - y, pz - z)
+      if (d >= best) return
+      best = d
+      out.x = px; out.y = py; out.z = pz
+      found = true
+    }
+    for (const b of this._waters) {
+      if (x < b.x0 - reach || x > b.x1 + reach || z < b.z0 - reach || z > b.z1 + reach) continue
+      if (b.kind !== 'river') {
+        take(Math.min(b.x1, Math.max(b.x0, x)), b.level + this.oy, Math.min(b.z1, Math.max(b.z0, z)))
+        continue
+      }
+      const q = { y: 0, w: 0, cut: 0 }
+      for (let k = 0; k + 1 < b.pts.length; k++) {
+        const a = b.pts[k], c = b.pts[k + 1]
+        const ex = c.x - a.x, ez = c.z - a.z
+        const u = Math.min(1, Math.max(0, ((x - a.x) * ex + (z - a.z) * ez) / (ex * ex + ez * ez)))
+        q.y = a.y + (c.y - a.y) * u; q.w = a.w + (c.w - a.w) * u; q.cut = a.cut + (c.cut - a.cut) * u
+        const level = b.levelOf(q)
+        if (level !== null) take(a.x + u * ex, level + this.oy, a.z + u * ez)
+      }
+    }
+    return found ? out : null
+  }
+
   /** The water bodies (for the renderer): { kind, levelAt, x0..z1, ... }. */
   get waters() {
     return this._waters

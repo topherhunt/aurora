@@ -7,10 +7,10 @@
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
-import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
+import { HEAD_EYE_GLSL } from '../../head-eye.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { TEX_SIZE } from '../../textures.js'
-import { FADE_FRAGMENT, IGN_GLSL } from '../../material.js'
+import { PROP_FADE_SECONDS, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { SUPERSAMPLE, downsample, dilate } from '../../props/impostor.js'
 import { CardHash, bakedCard, cardsOn, keepCard } from '../../props/card-cache.js'
 
@@ -136,6 +136,19 @@ export const HUE_FRAGMENT = /* glsl */ `
     float hueS = sin( vHue );
     diffuseColor.rgb = max( vec3( 0.0 ), diffuseColor.rgb * hueC + cross( hueK, diffuseColor.rgb ) * hueS + hueK * dot( hueK, diffuseColor.rgb ) * ( 1.0 - hueC ) );
   }`
+
+/** The per-channel multiply that takes linear `mean` where HUE_FRAGMENT's turn by `radians` would: exact for that one colour, near it for a picture of one hue. For a card in a pool that carries instanceColor and no aHue. */
+export function hueTurnTint(mean, radians, out) {
+  if (!(mean.r > 0 && mean.g > 0 && mean.b > 0)) throw new Error(`hueTurnTint: a mean channel is 0 (${mean.r}, ${mean.g}, ${mean.b})`)
+  const c = Math.cos(radians)
+  const s = Math.sin(radians) * 0.57735027
+  const grey = ((mean.r + mean.g + mean.b) / 3) * (1 - c)
+  return out.setRGB(
+    Math.max(0, mean.r * c + (mean.b - mean.g) * s + grey) / mean.r,
+    Math.max(0, mean.g * c + (mean.r - mean.b) * s + grey) / mean.g,
+    Math.max(0, mean.b * c + (mean.g - mean.r) * s + grey) / mean.b
+  )
+}
 
 /**
  * Splice the hue turn into a material's shaders, from its onBeforeCompile. The
@@ -385,7 +398,6 @@ export const billboardVertex = (mixed, uv = 'vMapUv', tilt = null) => /* glsl */
     // The yaw the spin threw away picks which way the picture reads: two silhouettes from one bake, stable per instance.
     if ( bbA.x < 0.0 ${mixed ? '&& aSpin > 0.5' : ''}) ${uv}.x = 1.0 - ${uv}.x;
   }`
-export const BILLBOARD_VERTEX = billboardVertex(false)
 
 // A card that keeps the side view along the body's own heading, so the animal reads as facing the way it walks from
 // every side. It turns about Y only as far as keeps its normal within 45 degrees of her (no edge-on sliver), choosing
@@ -413,61 +425,14 @@ export const HEADING_CARD_VERTEX = /* glsl */ `
 // What a `mixed` material declares at <common>, ahead of the body at <begin_vertex>.
 export const SPIN_ATTRIBUTE = 'attribute float aSpin;'
 
-// The dissolve a `fade` card carries: one signed number an instance, in
-// material.js's FADE_FRAGMENT terms -- POSITIVE keeps the low side of the pixel
-// hash and NEGATIVE the high side, the magnitude being the share kept either
-// way. It is written straight rather than decoded from a clock stamp (the
-// props' FADE_VERTEX) because the thing this card cross-dissolves against is a
-// puppet, whose own cut the layer is already driving frame by frame; the two
-// must read the same number on the same frame or the silhouette thins.
-const CARD_FADE_COMMON = /* glsl */ `
-  attribute float aCardFade;
-  varying float vPropFade;`
-
 /**
- * The material a creature's card draws through: Lambert over the baked picture,
- * a cutout (alphaTest), double-sided with three's double-sided normal flip
- * undone so both faces of every quad take the authored up-normal and a cross's
- * seam is not a step in brightness, and the per-instance hue turn so a card
- * keeps the colour its mesh had.
- *
- * `billboard` spins the one quad about the instance's Y to face her in the
- * vertex shader; `fade` gives it the per-instance dissolve above. `hue: false`
- * drops the turn, for a layer whose MESH cannot wear one either -- a skinned
- * body has no instances (puppet.js makePuppetMaterials) -- so the two agree
- * across the handover instead of the body changing colour as it swaps. `label`
- * keys the program, and the flags key it further: two materials differing only
- * in these are two programs.
+ * A pooled card's dissolve as one signed number, in FADE_FRAGMENT's terms: POSITIVE keeps that share of the pixel hash's low side, NEGATIVE of its high side, 1 is whole. The card cross-dissolves against a puppet whose cut the layer drives frame by frame, so the two must read the same number on the same frame or the silhouette thins: the pool only decodes clock stamps (material.js FADE_DECODE), so the stamp is back-dated to decode to `fade` this frame, and is rewritten every frame the dissolve runs.
  */
-export function createCritterCardMaterial(label, { billboard = false, fade = false, hue = true, heading = false } = {}) {
-  const material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
-  material.onBeforeCompile = (shader) => {
-    if (hue) hueVary(shader)
-    if (billboard) bindHeadEye(shader.uniforms)
-    if (billboard || fade) {
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>\n${fade ? CARD_FADE_COMMON : ''}\n${billboard ? HEAD_EYE_DECL : ''}`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${billboard ? (heading ? HEADING_CARD_VERTEX : BILLBOARD_VERTEX) : ''}\n${fade ? 'vPropFade = aCardFade;' : ''}`)
-    }
-    // three flips a double-sided normal toward the viewer; twice is the identity, and the authored up-normal lights both faces alike.
-    shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\nnormal *= faceDirection;')
-    if (fade) {
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>\nvarying float vPropFade;\n${IGN_GLSL}`)
-        .replace('#include <map_fragment>', `#include <map_fragment>\n${FADE_FRAGMENT}`)
-    }
-    tierTintSplice(shader, CARD_TIER)
-  }
-  material.customProgramCacheKey = () => `${label}-card${billboard ? (heading ? '-heading' : '-spun') : ''}${fade ? '-fade' : ''}${hue ? '' : '-flat'}`
-  return material
-}
-
-/** The `aCardFade` attribute for `n` instances, set on the mesh's geometry and returned for the caller to write. */
-export function makeCardFadeAttribute(mesh, n) {
-  const fade = new THREE.InstancedBufferAttribute(new Float32Array(n), 1)
-  fade.setUsage(THREE.DynamicDrawUsage)
-  mesh.geometry.setAttribute('aCardFade', fade)
-  return fade
+export function setCardFadeAt(view, id, fade) {
+  if (fade === 1) return setPropSolidAt(view, id)
+  // FADE_DECODE eases p to p * (2 - p): a fade-out stamp decodes to 1 - eased, a fade-in to -eased.
+  const p = 1 - Math.sqrt(1 - (fade >= 0 ? 1 - fade : -fade))
+  setPropFadeTimerAt(view, id, getPropClock() - p * PROP_FADE_SECONDS, fade < 0)
 }
 
 /** The picture's extents in the unit mesh's frame: the body's box grown by CARD_MARGIN, feet a little below y = 0. */
