@@ -38,6 +38,7 @@ export function placeProps(graph, field, seed) {
   for (const e of graph.edges) { lines[e.a].push(e.pts); lines[e.b].push(e.pts) }
   const clear = (n, x, z, pad) => lines[n.i].every((pts) => pts.every((p, k) => k + 1 >= pts.length || segDist(x, z, p, pts[k + 1]) > CLEAR + pad))
   const block = (x, z, r, y0, y1) => out.obstacles.push({ x, z, r: r + 0.3, y0, y1 })
+  const stone = (x, y, z, r) => out.boulders.push({ x, y, z, r, yaw: rand() * 6.28, seed: rand() })
   // Each region's mushrooms glow one colour: its first glow's, so they match the light on its walls.
   const regionGlow = graph.regions.map((r) => GLOWS[(r.i * 7 + seed) % GLOWS.length])
   for (const g of [...graph.glows].reverse()) regionGlow[graph.nodes[g.node].region] = g.color
@@ -123,23 +124,26 @@ export function placeProps(graph, field, seed) {
     const area = n.rx * n.rz
     const big = n.kind === 'cavern'
 
-    // Dripstone in bunches: a lead stalactite and up to seven smaller round it, each with a stalagmite under it now and then.
-    const bunches = Math.round(area * 0.1 * pal.tites)
+    // Dripstone in bunches: a lead stalactite and up to seven round it, sized over a tenfold range so a bunch never reads as a row of equals. A stalagmite stands under one now and then, likelier the bigger it is, and a few stand alone where their stalactite fell.
+    const bunches = Math.round(area * 0.2 * pal.tites)
     for (let k = 0; k < bunches; k++) {
       const p = spot(n, 0.15, 0.95)
       if (p === null) continue
-      const count = 1 + Math.floor(rand() ** 1.6 * 8), spread = rr(0.4, big ? 3 : 1.6)
+      const count = 1 + Math.floor(rand() ** 1.6 * 8), spread = rr(0.4, big ? 3 : 1.6), lead = rr(0.6, 1)
       for (let j = 0; j < count; j++) {
         const a = rand() * Math.PI * 2, d = j === 0 ? 0 : spread * Math.sqrt(rand())
         const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d
         const roof = j === 0 ? p.roof : surface(field, x, z, p.roof - 0.8, 1, 2.5)
         const floor = j === 0 ? p.y : surface(field, x, z, p.y + 0.8, -1, 2.5)
         if (roof === null || floor === null || roof - floor < 2) continue
-        const room = roof - floor, size = j === 0 ? 1 : rr(0.3, 0.9)
-        const tl = Math.min(room * 0.35, size * rr(0.3, big ? 6 : 2.2))
-        out.tites.push({ x, y: roof, z, len: tl, r: tl * rr(0.1, 0.16), seed: rand() })
-        if (rand() >= 0.55) continue
-        let ml = Math.min(room * 0.3, size * rr(0.2, big ? 4 : 1.8))
+        const room = roof - floor, size = j === 0 ? 1 : 0.1 * 10 ** rand()
+        const lone = j > 0 && rand() < 0.12
+        if (!lone) {
+          const tl = Math.min(room * 0.35, lead * size * rr(0.7, 1.3) * (big ? 5 : 2))
+          out.tites.push({ x, y: roof, z, len: tl, r: tl * rr(0.1, 0.16), seed: rand() })
+          if (rand() >= 0.25 + 0.4 * size) continue
+        }
+        let ml = Math.min(room * 0.3, lead * size * rr(0.5, 1.2) * (big ? 3.5 : 1.6))
         const r = ml * rr(0.18, 0.26)
         if (ml > MITE_BLOCKS && !clear(n, x, z, r)) ml = rr(0.2, 0.8)
         out.mites.push({ x, y: floor, z, len: ml, r: Math.max(0.06, ml * 0.22), seed: rand() })
@@ -232,6 +236,51 @@ export function placeProps(graph, field, seed) {
     for (let k = 0; k < lumps; k++) {
       const p = spot(n, 0.1, 0.8)
       if (p !== null) out.chalk.push({ x: p.x, y: p.y, z: p.z, yaw: rand() * 6.28 })
+    }
+
+    // Boulders: strewn on the floor, small ones heaped in rubble, now and then a big one jutting from the floor or a wall. Heaps and big ones are obstacles, so they keep clear of the passage lines.
+    if (!n.great) {
+      for (let k = Math.round(rr(1, 3) + area * 0.012); k > 0; k--) {
+        const p = spot(n, 0.2, 0.95)
+        if (p === null) continue
+        const r = 0.12 + (big ? 1.4 : 0.8) * rand() ** 3
+        if (r > 0.5 && !clear(n, p.x, p.z, r)) continue
+        stone(p.x, p.y - 0.3 * r, p.z, r)
+        if (r > 0.5) block(p.x, p.z, r * 0.9, p.y, p.y + r)
+      }
+    }
+    for (let k = rand() < 0.6 ? Math.floor(rr(1, big ? 4 : 3)) : 0; k > 0; k--) {
+      const c = spot(n, 0.3, 0.9)
+      if (c === null) continue
+      const spread = clear(n, c.x, c.z, 1.6) ? rr(0.8, 1.6) : rr(0.4, 0.7), H = spread * 0.45
+      for (let j = 6 + Math.floor(rand() * 14); j > 0; j--) {
+        const a = rand() * 6.28, d = spread * Math.sqrt(rand())
+        const x = c.x + Math.cos(a) * d, z = c.z + Math.sin(a) * d
+        const floor = surface(field, x, z, c.y + 0.8, -1, 2.5)
+        if (floor === null) continue
+        const r = rr(0.1, 0.32) * (1.2 - 0.6 * d / spread)
+        stone(x, floor + H * (1 - (d / spread) ** 2) - 0.3 * r, z, r)
+      }
+      if (spread > 0.75) block(c.x, c.z, spread * 0.7, c.y, c.y + H)
+    }
+    if (rand() < (big ? 0.6 : 0.3)) {
+      const p = spot(n, 0.3, 0.85), r = rr(1, big ? 3 : 1.8)
+      if (p !== null && p.roof - p.y > r + 1 && clear(n, p.x, p.z, r)) {
+        stone(p.x, p.y - 0.25 * r, p.z, r)
+        block(p.x, p.z, r * 0.85, p.y, p.y + r)
+      }
+    }
+    if (rand() < (big ? 0.7 : 0.4)) {
+      const a = rand() * Math.PI * 2, y0 = n.y + reliefAt(n, n.x, n.z) + rr(0.4, 2.4)
+      if (field.at(n.x, y0, n.z) < -0.3 && rayRock(field, n.x, y0, n.z, Math.cos(a), 0, Math.sin(a), Math.max(n.rx, n.rz) * 1.5 + 2, hit)) {
+        outward(field, hit, nrm)
+        const r = rr(0.8, big ? 2.5 : 1.6)
+        const x = hit[0] - nrm[0] * 0.3 * r, y = hit[1] - nrm[1] * 0.3 * r, z = hit[2] - nrm[2] * 0.3 * r
+        if (Math.abs(nrm[1]) < 0.5 && clear(n, x, z, r)) {
+          stone(x, y, z, r)
+          block(x, z, r * 0.8, y - r, y + r)
+        }
+      }
     }
 
     // Crabs round a pool's shore (its fish are the rivers' own, render/fish.js).
@@ -339,6 +388,41 @@ export function placeProps(graph, field, seed) {
     }
     if (h > MITE_BLOCKS) block(g.x, g.z, h * 0.07, col.floor, col.floor + h)
     out.lights.push({ x: g.x, y: col.floor + h, z: g.z, color: g.color, reach: g.reach * 1.4, power: 0.6 })
+  }
+
+  // Along the passages: a few small stones against the walls, and at a braid's `choke` (graph.js) a rockfall filling it wall to wall and floor to roof, an obstacle she cannot pass.
+  for (const e of graph.edges) {
+    const len = e.pts[e.pts.length - 1].s
+    for (let k = Math.round((len / 10) * rand()); k > 0; k--) {
+      const p = alongPts(e.pts, rr(3, Math.max(3, len - 3))), side = rand() < 0.5 ? 1 : -1
+      if (p === null || !rayRock(field, p.x, p.y + 0.4, p.z, -p.dz * side, 0, p.dx * side, 5, hit)) continue
+      const r = rr(0.12, 0.4)
+      const y = surface(field, hit[0] + p.dz * side * r, hit[2] - p.dx * side * r, p.y + 0.8, -1, 2.5)
+      if (y !== null) stone(hit[0] + p.dz * side * r, y - 0.3 * r, hit[2] - p.dx * side * r, r)
+    }
+    if (e.choke === null) continue
+    const p = alongPts(e.pts, e.choke)
+    const col = columnAt(field, p.x, p.z, p.y + 1)
+    if (col === null) throw new Error(`caves/props: choke on edge ${e.i} is in rock`)
+    const reach = 2 * e.pts.reduce((m, q) => (Math.abs(q.s - e.choke) < Math.abs(m.s - e.choke) ? q : m)).w + 1
+    const wide = [0, 0]
+    for (let y = col.floor + 0.3; y < col.roof; y += 0.65) {
+      const half = [-1, 1].map((sd) => (rayRock(field, p.x, y, p.z, -p.dz * sd, 0, p.dx * sd, reach, hit) ? Math.hypot(hit[0] - p.x, hit[2] - p.z) : reach))
+      wide[0] = Math.max(wide[0], half[0]); wide[1] = Math.max(wide[1], half[1])
+      for (const along of [-0.45, 0.45]) {
+        for (let u = -half[0]; u < half[1] + 0.3; u += 0.85) {
+          const v = along + rr(-0.2, 0.2)
+          stone(p.x + p.dx * v - p.dz * u, y + rr(-0.15, 0.15), p.z + p.dz * v + p.dx * u, rr(0.5, 0.85))
+        }
+      }
+    }
+    for (let k = 0; k < 12; k++) {
+      const v = (k % 2 === 0 ? 1 : -1) * rr(0.9, 2.6), u = rr(-0.8, 0.8)
+      const x = p.x + p.dx * v - p.dz * u, z = p.z + p.dz * v + p.dx * u
+      const y = surface(field, x, z, p.y + 1, -1, 3)
+      if (y !== null) stone(x, y - 0.1, z, rr(0.15, 0.45))
+    }
+    for (let u = -wide[0]; u <= wide[1]; u += 0.5) block(p.x - p.dz * u, p.z + p.dx * u, 0.4, col.floor - 1, col.roof + 1)
   }
   return out
 }

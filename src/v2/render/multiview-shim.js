@@ -70,16 +70,20 @@ export function failedPrograms(renderer) {
 }
 
 const SELF_VS = (mv, fetch) => `#version 300 es
-${mv ? '#extension GL_OVR_multiview2 : require\nlayout( num_views = 2 ) in;\n' : ''}precision highp float; precision highp sampler2D;
+${mv ? '#extension GL_OVR_multiview2 : require\nlayout( num_views = 2 ) in;\n' : ''}precision highp float; precision highp sampler2D; precision highp usampler2D;
 uniform sampler2D d;
+uniform usampler2D u;
 out vec4 c;
-void main() { c = ${fetch === 'vertex' ? 'texelFetch( d, ivec2( 0, 0 ), 0 )' : 'vec4( 0.0 )'}; gl_Position = vec4( 0.0, 0.0, 0.0, 1.0 ); gl_PointSize = 4.0; }`
+out float l;
+void main() { l = 1.0; c = ${fetch === 'vertex' ? 'texelFetch( d, ivec2( 0, 0 ), 0 )' : fetch === 'uint' ? 'vec4( vec3( float( texelFetch( u, ivec2( 0, 0 ), 0 ).r ) / 255.0 ), 1.0 )' : 'vec4( 0.0 )'}; gl_Position = vec4( 0.0, 0.0, 0.0, 1.0 ); gl_PointSize = 4.0; }`
 const SELF_FS = (mv, fetch) => `#version 300 es
-${mv ? '#extension GL_OVR_multiview2 : require\n' : ''}precision highp float; precision highp sampler2D;
+${mv ? '#extension GL_OVR_multiview2 : require\n' : ''}precision highp float; precision highp sampler2D; precision highp sampler2DArray;
 uniform sampler2D d;
+uniform sampler2DArray a;
 in vec4 c;
+in float l;
 out vec4 o;
-void main() { o = ${fetch === 'fragment' ? 'texelFetch( d, ivec2( 0, 0 ), 0 )' : 'c'}; }`
+void main() { o = ${fetch === 'fragment' ? 'texelFetch( d, ivec2( 0, 0 ), 0 )' : fetch === 'array' ? 'texture( a, vec3( 0.5, 0.5, l ) )' : 'c'}; }`
 
 /** Whether reading a data texture in each stage survives multiview on this device: draws one point per case and reads pixel (2,2) back, per eye. Expect 64,128,191,255. */
 export function multiviewSelfTest() {
@@ -105,8 +109,17 @@ export function multiviewSelfTest() {
     else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([64, 128, 191, 255, 0, 0, 0, 0]))
     return t
   }
+  // Layer 1 of a two-layer sampler2DArray holds 191, layer 0 holds 64; the layer arrives as a smooth varying, as vTexLayer does.
+  const layered = () => {
+    const t = gl.createTexture()
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, t)
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, 1, 1, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([64, 64, 64, 255, 191, 191, 191, 255]))
+    return t
+  }
   for (const mv of [false, true]) {
-    for (const [fetch, type] of [['vertex', 'float'], ['vertex', 'byte'], ['fragment', 'float'], ['fragment', 'byte']]) {
+    for (const [fetch, type] of [['vertex', 'float'], ['vertex', 'byte'], ['fragment', 'float'], ['fragment', 'byte'], ['array', 'byte'], ['uint', 'byte']]) {
       const key = `${mv ? 'multiview' : 'mono'} ${fetch} ${type}`
       try {
         const prog = gl.createProgram()
@@ -132,6 +145,16 @@ export function multiviewSelfTest() {
         gl.activeTexture(gl.TEXTURE0)
         gl.bindTexture(gl.TEXTURE_2D, texel(type))
         gl.uniform1i(gl.getUniformLocation(prog, 'd'), 0)
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, layered())
+        gl.uniform1i(gl.getUniformLocation(prog, 'a'), 1)
+        gl.activeTexture(gl.TEXTURE2)
+        const ut = gl.createTexture()
+        gl.bindTexture(gl.TEXTURE_2D, ut)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32UI, 1, 1, 0, gl.RED_INTEGER, gl.UNSIGNED_INT, new Uint32Array([191]))
+        gl.uniform1i(gl.getUniformLocation(prog, 'u'), 2)
         gl.drawArrays(gl.POINTS, 0, 1)
         const read = gl.createFramebuffer()
         gl.bindFramebuffer(gl.FRAMEBUFFER, read)
@@ -151,4 +174,69 @@ export function multiviewSelfTest() {
     }
   }
   return out
+}
+
+/** Per data texture of every BatchedMesh and every material uniform: whether the GPU copy matches the CPU array, read back from the live context. */
+export function textureAudit(renderer, scene) {
+  const gl = renderer.getContext()
+  const seen = new Set()
+  const found = []
+  const add = (tex, name) => { if (tex?.isDataTexture && !seen.has(tex)) { seen.add(tex); found.push([name, tex]) } }
+  scene.traverse((o) => {
+    const label = o.name || o.type
+    if (o.isBatchedMesh) { add(o._matricesTexture, `${label} matrices`); add(o._indirectTexture, `${label} indirect`); add(o._colorsTexture, `${label} colors`) }
+    for (const m of [o.material].flat()) {
+      if (!m) continue
+      for (const u of [m.uniforms, m.userData?.shader?.uniforms]) if (u) for (const [k, v] of Object.entries(u)) add(v?.value, `${label} ${k}`)
+    }
+  })
+  const prev = gl.getParameter(gl.FRAMEBUFFER_BINDING)
+  const fb = gl.createFramebuffer()
+  const out = []
+  for (const [name, tex] of found) {
+    const handle = renderer.properties.get(tex).__webglTexture
+    const { width, height, data } = tex.image
+    const row = { name, size: `${width}x${height}`, version: `${tex.version}/${renderer.properties.get(tex).__version}` }
+    if (!handle || !data) { out.push({ ...row, note: handle ? 'no cpu data' : 'never uploaded' }); continue }
+    const uint = data instanceof Uint32Array || data instanceof Uint16Array
+    const rows = Math.min(height, 8)
+    const gpu = uint ? new Uint32Array(width * rows) : new Float32Array(width * rows * 4)
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, handle, 0)
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) { out.push({ ...row, note: 'not readable' }); continue }
+      if (uint) gl.readPixels(0, 0, width, rows, gl.RED_INTEGER, gl.UNSIGNED_INT, gpu)
+      else if (data instanceof Float32Array) gl.readPixels(0, 0, width, rows, gl.RGBA, gl.FLOAT, gpu)
+      else { out.push({ ...row, note: `skipped ${data.constructor.name}` }); continue }
+    } catch (e) { out.push({ ...row, note: String(e.message).slice(0, 80) }); continue }
+    let bad = 0, first = null
+    for (let i = 0; i < gpu.length; i++) if (gpu[i] !== data[i]) { bad++; first ??= `[${i}] cpu ${data[i]} gpu ${gpu[i]}` }
+    out.push({ ...row, compared: gpu.length, bad, first })
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, prev)
+  gl.deleteFramebuffer(fb)
+  return out
+}
+
+/**
+ * A-Frame 1.8.0's three calls `textures.setDeferTextureUploads(true)` before every multiview scene draw and nothing ever calls `runDeferredUploads`, so once the first
+ * multiview frame renders, no texture is uploaded or re-uploaded again: data textures freeze at their last pre-session version (stale terrain IDs, black or
+ * invisible props), and a texture first used in-session never loads. Uploading inline, as plain mode does, is the fix.
+ * The texture manager is private to WebGLRenderer, so a one-shot setter on Object.prototype catches its constructor assigning the method and installs a no-op on that
+ * instance; `installUploadFix` must run before the renderer is created and `assertUploadFix` after.
+ */
+let uploadFixHits = 0
+export function installUploadFix() {
+  Object.defineProperty(Object.prototype, 'setDeferTextureUploads', {
+    configurable: true,
+    set(fn) {
+      uploadFixHits++
+      Object.defineProperty(this, 'setDeferTextureUploads', { value: () => {}, writable: true, configurable: true, enumerable: true })
+    },
+  })
+}
+
+export function assertUploadFix() {
+  delete Object.prototype.setDeferTextureUploads
+  if (uploadFixHits !== 1) throw new Error(`multiview upload fix caught ${uploadFixHits} texture managers, expected 1: the bundled three changed or the renderer predates the fix`)
 }

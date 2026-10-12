@@ -179,16 +179,16 @@ export const RULES = {
   songbirdVoice: { recent: 15, bias: 0.5 },
   // The cricket bed: a steady low chirp on a cadence, everywhere below the snow after dusk. The crickets are in the grass, so it thins to nothing across the `aloft` band of metres her head is above the ground. The ones beside her are the grasshoppers (chirp).
   cricketBed: { interval: [1.5, 3], gain: [0.08, 0.2], dusk: 0.5, aloft: [12, 20] },
-  // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full.
-  footstep: { interval: [0.4, 0.6], gain: [0.5, 1.0], minSpeed: 0.3, teleport: [1, 2] },
+  // Her own feet. A teleport is worth `teleport[0]` seconds of walking at zero range, `teleport[1]` at full. Underground each step sends `cave` of itself into the cave's echo (SoundEngine CAVE_TAPS).
+  footstep: { interval: [0.4, 0.6], gain: [0.5, 1.0], minSpeed: 0.3, teleport: [1, 2], cave: 0.6 },
   // Her own strokes while swimming, in place of her feet: the swoosh every `interval` seconds while moving past footstep.minSpeed, and once on each teleport. Under the water it is on the water bus as recorded; at the surface on the near bus, bright (SoundEngine BRIGHT) since the clip is muffled, with the small splash at `splash` gain.
   stroke: { interval: [2, 6], gain: [0.4, 0.7], splash: [0.3, 0.5] },
-  // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top.
+  // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top. A rule with `air` (here and on a voice rule) gets the engine's far treatment at its true distance, dulled and wetted as though `air` times as far, so a far one reads as far and not as quiet and near. A rule with `edge` fades its steps out over the last `edge` metres to nothing at the reach, as a voice rule's do, rather than stopping at a level still heard.
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A villager's or a townsman's feet on the same clock, her own footstep clip: at `level` and rate 1 for a `size`-metre body at `near` m, so a leafkin's step is lighter and higher than a man's.
-  villagerStep: { reach: 20, near: 1, size: 1.7, level: 0.5, max: 0.6, deep: 0.3, jitter: 0.1, gain: [0.7, 1.0] },
+  villagerStep: { reach: 20, edge: 10, near: 1, size: 1.7, level: 0.5, max: 0.6, deep: 0.3, jitter: 0.1, gain: [0.7, 1.0], air: 3 },
   // A strider's feet on the same clock, the large animal's step: at `level` and rate 1 for a `size`-metre body at `near` m.
-  stride: { reach: 80, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  stride: { reach: 80, edge: 40, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0], air: 3 },
   // A stag's hooves: the strider's tread quieter, given the far treatment as though `far` metres further off (dulled and wetted, and that much late at the speed of sound).
   hoof: { reach: 40, near: 2, size: 2.2, level: 0.25, max: 0.3, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0], far: 15 },
   // A snowman's: the same tread deeper and louder, carrying farther, so a 2-6 m body thuds where a strider steps.
@@ -206,13 +206,13 @@ export const RULES = {
   // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A strider's chirp or fidget flutter, heard across a town's rails.
-  striderCall: { reach: 60, near: 3, edge: 16, level: 0.6, gain: [0.8, 1.0] },
+  striderCall: { reach: 60, near: 3, edge: 30, level: 0.6, gain: [0.8, 1.0], air: 3 },
   // A tamed stag's or hare's contented grunt as it eats from her hand (wildlife.js voices()), pitched up; the grunt is mastered hot.
   contented: { reach: 15, near: 2, edge: 5, level: 0.25, gain: [0.8, 1.0] },
   // A stag's cry as it bolts from her (wildlife.js voices()): its grunt, heard as the herd's grunt is.
   alarm: { reach: 25, near: 4, edge: 8, level: 0.25, gain: [0.7, 1.0] },
   // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
-  door: { reach: 30, near: 2, edge: 12, level: 0.3, gain: [0.8, 1.0] },
+  door: { reach: 30, near: 2, edge: 15, level: 0.3, gain: [0.8, 1.0], air: 3 },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // A frog's hop (frogs.js voices()), heard only within arm's reach or so and quietly: the clip is mastered 8 dB hotter than the chatter.
@@ -255,8 +255,8 @@ export const RULES = {
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
   campfire: { reach: 16, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
-  // The flames a spark lit and the torches she and peers carry (wildfire.js): ONE loop over CAMPFIRES, placed at the nearest flame, each flame within `reach` metres adding its share of `level` (falling as near/distance, to nothing over the last `edge` metres) so more flames are louder, the sum's square root held under `cap`: a torch in the hand is faint, a blaze of dozens reaches level * cap.
-  blaze: { reach: 25, near: 1.5, edge: 5, level: 0.0375, cap: 8, gain: [0.8, 1.0] },
+  // The flames a spark lit and the torches she and peers carry (wildfire.js): ONE loop over CAMPFIRES, placed at the nearest flame, each flame within `reach` metres adding its share of `level` (falling as near/distance, to nothing over the last `edge` metres) so more flames are louder, the sum's square root held under `cap`: a torch in the hand is faint, a blaze of dozens reaches level * cap. On the near bus, so the walls a house or a cave stands her behind (SoundEngine.setIndoors) do not smother the torch in her hand.
+  blaze: { reach: 25, near: 1.5, edge: 5, level: 0.01875, cap: 8, gain: [0.8, 1.0] },
   // A torch (lamps.js, the room's lamps, a wick in a dish): the campfire's takes again, a loop a torch placed at its flame, quieter and low-passed at `cutoff` Hz so the pops are gone and a soft crackle is left, the level scaled by how lit the torches are (0..1, off by day) and by her distance as a campfire's.
   torch: { reach: 4, near: 0.8, edge: 1.5, level: 0.08, cutoff: 1800, gain: [0.8, 1.0] },
   // A fish setting off fast (the fish layer's startled()) within `reach` of her head swooshes once, on the water bus, from where it is: a `size`-metre fish at `near` metres or closer plays at `level` and at rate 1, the level growing with its length up to `max` and falling off as near/distance, the rate falling as (size/length)^deep, so a pike is a slow deep rush and a glimmerfin a flick. `gain` is the roll on top.
@@ -264,6 +264,9 @@ export const RULES = {
 }
 
 const DEG = Math.PI / 180
+
+/** A rule's far treatment for a shot `d` metres off: `far` metres more than it is, or `air` times as dull at its true metres, or none. */
+const farOf = (R, d) => R.far !== undefined ? { distance: d + R.far } : R.air !== undefined ? { distance: d, air: R.air } : {}
 
 export class Ambience {
   /**
@@ -384,7 +387,7 @@ export class Ambience {
       return { key: `torch${i}`, x: f.x, y: f.y, z: f.z }
     })
     this.blaze = blaze
-    this.loops.blaze = engine.loop(CAMPFIRES, { directional: true, gain: RULES.blaze.gain })
+    this.loops.blaze = engine.loop(CAMPFIRES, { bus: 'near', directional: true, gain: RULES.blaze.gain })
     // On the near bus: it burns in the room she is in, not through the walls.
     this.hearth = hearth
     this.loops.hearth = engine.loop(CAMPFIRES, { directional: true, bus: 'near', gain: RULES.campfire.gain })
@@ -630,7 +633,7 @@ export class Ambience {
     this._cave(dt, head, cave, submerged)
     this._strokes(dt, speed, swimming, submerged)
     if (submerged) this.teleportCredit = Math.max(0, this.teleportCredit - dt)
-    else this._feet(dt, head, CAVE_SENSE, speed, afoot)
+    else this._feet(dt, head, CAVE_SENSE, speed, afoot, true)
     this.engine.update()
   }
 
@@ -663,12 +666,12 @@ export class Ambience {
     this.fire('splash', { rate: this.rate(), gain: this.between(...S.splash), bus: 'near' })
   }
 
-  _feet(dt, head, s, speed, afoot) {
+  _feet(dt, head, s, speed, afoot, underground = false) {
     const F = RULES.footstep
     const moving = afoot && (speed > F.minSpeed || this.teleportCredit > 0)
     this.teleportCredit = Math.max(0, this.teleportCredit - dt)
     if (this.due('footstep', moving, F.interval, dt)) {
-      this.fire('footstep', { rate: this.rate(), gain: this.between(...F.gain), bus: 'near' })
+      this.fire('footstep', { rate: this.rate(), gain: this.between(...F.gain), bus: 'near', cave: underground ? F.cave : 0 })
     }
     const K = RULES.rockslideFoot
     if (moving && s.onBoulder && this.rand() < K.chance * dt) {
@@ -721,10 +724,10 @@ export class Ambience {
             f.at = this.between(-F.jitter, F.jitter)
           }
           f.phase += dt / c.cycle
-          const level = Math.min(F.max, F.level * (c.size / F.size)) * (F.near / Math.max(F.near, d))
+          const level = Math.min(F.max, F.level * (c.size / F.size)) * (F.near / Math.max(F.near, d)) * (F.edge === undefined ? 1 : clamp((F.reach - d) / F.edge, 0, 1))
           const rate = Math.pow(F.size / c.size, F.deep)
           while (f.phase >= f.at) {
-            this.fire(sound, { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus, distance: F.far === undefined ? 0 : d + F.far })
+            this.fire(sound, { rate: rate * this.rate(), gain: level * this.between(...F.gain), at: { x: c.x, y: c.y, z: c.z }, bus: h.bus, ...farOf(F, d) })
             if (++f.beat === beats.length) {
               f.beat = 0
               f.phase -= 1
@@ -929,7 +932,7 @@ export class Ambience {
         const d = Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z)
         if (d > V.reach) continue
         const level = V.level * (V.near / Math.max(V.near, d)) * clamp((V.reach - d) / V.edge, 0, 1)
-        this.fire(v.sound, { rate: this.rate() * (v.rate === undefined ? 1 : v.rate), gain: level * this.between(...V.gain) * (v.gain === undefined ? 1 : v.gain), at: { x: v.x, y: v.y, z: v.z }, bus, walled: V.walled === true && bus !== 'near' })
+        this.fire(v.sound, { rate: this.rate() * (v.rate === undefined ? 1 : v.rate), gain: level * this.between(...V.gain) * (v.gain === undefined ? 1 : v.gain), at: { x: v.x, y: v.y, z: v.z }, bus, walled: V.walled === true && bus !== 'near', ...farOf(V, d) })
       }
     }
   }

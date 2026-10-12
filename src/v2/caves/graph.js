@@ -26,11 +26,14 @@ export const RIVER_DEPTH = 0.6
 export const RIVER_FREEBOARD = 0.15
 // Steepest flank of a sump's dip: a swimmer stands up out of it and climbs on.
 const SUMP_GRADE = 0.75
-// A drowned passage: out of a pool at least DROWN_DISH deep, DROWN_H high with its roof DROWN_ROOF under the surface until it is DROWN_OUT of the cavern's radius out, under the dry rim.
+// A drowned passage: out of a pool at least DROWN_DISH deep, DROWN_H high with its roof DROWN_ROOF under the surface until it is DROWN_OUT of the cavern's radius out, under the dry rim; it swims up at DROWN_RISE to the surface, then walks.
 const DROWN_DISH = 6
 const DROWN_H = 2.3
 const DROWN_ROOF = 1
 const DROWN_OUT = 1.15
+const DROWN_RISE = 0.6
+// Odds a plain braid is choked by a rockfall.
+const CHOKE_ODDS = 0.4
 const drownedFloor = (A) => A.y - 0.25 - DROWN_ROOF - DROWN_H
 // Passage profile samples, metres apart.
 const SAMPLE = 2
@@ -130,7 +133,7 @@ export function buildGraph({ seed, entries }) {
   const find = (i) => (up[i] === i ? i : (up[i] = find(up[i])))
   const edges = []
   const link = (a, b, tree) => {
-    const e = { i: edges.length, a, b, kind: 'walk', tree, squeeze: false, river: false, sump: null, drop: 0, pts: null }
+    const e = { i: edges.length, a, b, kind: 'walk', tree, squeeze: false, river: false, sump: null, drop: 0, choke: null, pts: null }
     edges.push(e)
     return e
   }
@@ -307,8 +310,8 @@ export function buildGraph({ seed, entries }) {
       if (c.a !== A.i && c.b !== A.i) continue
       const B = nodes[c.a === A.i ? c.b : c.a]
       if (B.kind === 'mouth' || B.y < A.y + 0.5 || degree[B.i] >= cap(B) || edges.some((e) => (e.a === A.i && e.b === B.i) || (e.a === B.i && e.b === A.i)) || tangles(A.i, B.i)) continue
-      const climb = Math.hypot(B.x - A.x, B.z - A.z) - (DROWN_OUT * flatOf(A, B.x, B.z)) / FLAT_IN - flatOf(B, A.x, A.z)
-      if (climb * GRADE_MAX * 0.8 < B.y - yd) continue
+      const climb = Math.hypot(B.x - A.x, B.z - A.z) - (DROWN_OUT * flatOf(A, B.x, B.z)) / FLAT_IN - flatOf(B, A.x, A.z) - (A.y - 0.25 - yd) / DROWN_RISE
+      if (climb * GRADE_MAX * 0.8 < B.y - A.y + 0.25) continue
       link(A.i, B.i, false).kind = 'drowned'
       degree[A.i]++; degree[B.i]++
       break
@@ -341,6 +344,15 @@ export function buildGraph({ seed, entries }) {
     glows.push({ node: n.i, x: n.x + Math.cos(a) * r, z: n.z + Math.sin(a) * r, color: GLOWS[Math.floor(rand() * GLOWS.length)], reach: n.kind === 'cavern' ? 16 : 9 })
   }
 
+  // Rockfalls: a plain braid choked partway by a pile of boulders (props.js), its `choke` the metres along it, at a spot no other passage runs near. Never a tree passage, so every node keeps its way out.
+  for (const e of edges) {
+    if (e.tree || e.kind !== 'walk' || e.river || nodes[e.a].kind === 'mouth' || nodes[e.b].kind === 'mouth' || rand() >= CHOKE_ODDS) continue
+    for (let k = 0; k < 5 && e.choke === null; k++) {
+      const c = e.pts[Math.floor(e.pts.length * rr(0.35, 0.65))]
+      const near = edges.some((f) => f !== e && f.pts.some((q) => Math.abs(q.y - c.y) < 6 && Math.hypot(q.x - c.x, q.z - c.z) < 2 * (c.w + q.w) + 3))
+      if (!near) e.choke = c.s
+    }
+  }
   return { nodes, edges, pools, rivers, glows, regions, lobes, nooks }
 }
 
@@ -722,13 +734,16 @@ function profile(e, nodes, rand, plain) {
   const short = e.kind === 'walk' ? Math.abs(yB - A.y) / GRADE_MAX - (total - flatA - flatB) : 0
   if (short > 0 && A.y > yB) flatA = Math.max(0, flatA - short)
   else if (short > 0) flatB = Math.max(0, flatB - short)
-  // A drowned passage holds its pool's depth from the bowl out past the rim, then climbs.
+  // A drowned passage holds its pool's depth from the bowl out past the rim, swims up to the surface at `wet`, then climbs.
   const drowned = e.kind === 'drowned'
   const lo = drowned ? pts.find((p) => rhoOf(A, p) >= DROWN_OUT).s : flatA, hi = total - flatB
   const yA = drowned ? drownedFloor(A) : A.y
+  const wet = drowned ? lo + (A.y - 0.25 - yA) / DROWN_RISE : lo
   for (const p of pts) {
     const t = p.s <= lo ? 0 : p.s >= hi ? 1 : (p.s - lo) / (hi - lo)
-    p.y = yA + (yB - yA) * t
+    p.y = !drowned ? yA + (yB - yA) * t
+      : p.s < wet ? yA + Math.max(0, p.s - lo) * DROWN_RISE
+      : A.y - 0.25 + (yB - A.y + 0.25) * Math.min(1, (p.s - wet) / (hi - wet))
     if (e.kind === 'drop' && p.s >= hi) p.y = yB
     // A river's channel fades out over 3 m before each node's floor, so it never ends in a step.
     p.cut = e.river ? RIVER_DEPTH * Math.min(1, Math.max(0, Math.min(p.s - lo, hi - p.s) / 3)) : 0

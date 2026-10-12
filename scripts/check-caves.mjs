@@ -65,9 +65,10 @@ for (const sys of SYSTEMS) {
   const again = planCave(sys)
   check(JSON.stringify(again.graph) === JSON.stringify(graph) && JSON.stringify(again.props) === JSON.stringify(props), `${tag}: the same seed plans the same graph and props`)
 
-  // The graph: every node reaches a mouth over two-way edges and downhill drops.
+  // The graph: every node reaches a mouth over two-way edges and downhill drops, none of them choked by a rockfall.
   const back = graph.nodes.map(() => [])
   for (const e of graph.edges) {
+    if (e.choke !== null) continue
     if (e.kind === 'drop') back[e.b].push(e.a)
     else { back[e.a].push(e.b); back[e.b].push(e.a) }
   }
@@ -77,12 +78,14 @@ for (const sys of SYSTEMS) {
   check(out.size === graph.nodes.length, `${tag}: every node reaches a mouth without climbing a drop`, `${graph.nodes.length - out.size} trapped`)
   const treeBad = graph.edges.filter((e) => e.tree && e.kind === 'drop')
   check(treeBad.length === 0, `${tag}: the spanning tree is all walks and sumps`)
+  const chokes = graph.edges.filter((e) => e.choke !== null)
+  check(chokes.every((e) => !e.tree && e.kind === 'walk'), `${tag}: only braid walks are choked`, `${chokes.length} chokes`)
   const drops = graph.edges.filter((e) => e.kind === 'drop')
   check(drops.every((e) => e.drop >= DROP_MIN), `${tag}: every drop is over her reach`, drops.map((e) => e.drop.toFixed(1)).join(' '))
 
-  // The built surface: walk every two-way passage both ways along its line.
+  // The built surface: walk every two-way passage both ways along its line; a choked one must stop her.
   const walk = new CaveWalk(field, graph, props.obstacles)
-  const stuck = []
+  const stuck = [], unchoked = []
   let swum = 0
   const t1 = performance.now()
   let queries = 0
@@ -91,19 +94,30 @@ for (const sys of SYSTEMS) {
     for (const dir of [1, -1]) {
       const pts = dir > 0 ? e.pts : [...e.pts].reverse()
       let y = pts[0].y, surface = null
-      let x = pts[0].x, z = pts[0].z
-      for (let k = 1; k < pts.length && stuck.length < 20; k++) {
+      let x = pts[0].x, z = pts[0].z, jam = null
+      for (let k = 1; k < pts.length && jam === null; k++) {
         const p = pts[k]
         const n = Math.ceil(Math.hypot(p.x - x, p.z - z) / STEP)
         const sx = (p.x - x) / n, sz = (p.z - z) / n
         for (let s = 0; s < n; s++) {
           x += sx; z += sz
+          // A drowned passage is dived (swimDiveDeg): under water she follows its line, needing a swimmer's room over any bed that rises to it.
+          const py = pts[k - 1].y + ((p.y - pts[k - 1].y) * (s + 1)) / n
+          if (e.kind === 'drowned' && walk.trueWaterAt(x, z, py + 1) !== null) {
+            const bed = walk.heightAt(x, z, py + 1)
+            queries++
+            if (bed - py > walk.reach || walk.ceilingAt(x, z, bed + 0.3) - bed < 1) { jam = `edge ${e.i}${dir > 0 ? '+' : '-'} dive at (${x.toFixed(1)}, ${bed.toFixed(1)}, ${z.toFixed(1)})`; break }
+            swum++
+            y = bed
+            continue
+          }
           walk.hintY = y
           const h = walk.heightAt(x, z, y)
           queries++
           // Player._swim: afloat with her feet FLOAT under the surface (or the roof), she stands once the bed rises to her feet, and mantles onto a bank within her reach of her feet, or of the surface by half that.
           const water = walk.waterAt(x, z)
           if (water !== null && h < water - FLOAT) {
+            if (walk.obstacleAt(x, z, {}) !== null) { jam = `edge ${e.i}${dir > 0 ? '+' : '-'} swims into an obstacle at (${x.toFixed(1)}, ${z.toFixed(1)})`; break }
             swum++
             y = water - FLOAT
             surface = water
@@ -116,14 +130,17 @@ for (const sys of SYSTEMS) {
           const len = Math.hypot(sx, sz)
           const climbs = rise <= MAX_TAN * STEP || walk.heightAt(x + (sx / len) * (STRIDE - STEP), z + (sz / len) * (STRIDE - STEP), y) - y <= MAX_TAN * STRIDE
           const ok = climbs && walk.fits(x, z, h) && walk.obstacleAt(x, z, {}) === null
-          if (!ok) { stuck.push(`edge ${e.i}${dir > 0 ? '+' : '-'} at (${x.toFixed(1)}, ${h.toFixed(1)}, ${z.toFixed(1)}) rise ${rise.toFixed(2)} fits ${walk.fits(x, z, h)}`); break }
+          if (!ok) { jam = `edge ${e.i}${dir > 0 ? '+' : '-'} at (${x.toFixed(1)}, ${h.toFixed(1)}, ${z.toFixed(1)}) rise ${rise.toFixed(2)} fits ${walk.fits(x, z, h)}`; break }
           y = h
         }
       }
+      if (e.choke === null && jam !== null) stuck.push(jam)
+      if (e.choke !== null && jam === null) unchoked.push(`edge ${e.i}${dir > 0 ? '+' : '-'}`)
     }
   }
   const walkMs = performance.now() - t1
   check(stuck.length === 0, `${tag}: every walk and sump passes both ways on the built surface (${swum} steps swum)`, stuck.slice(0, 3).join('; '))
+  check(unchoked.length === 0, `${tag}: every rockfall stops her both ways`, unchoked.join(' '))
   check(walkMs / queries < 0.05, `${tag}: a walk step costs under 50 us`, `${((walkMs / queries) * 1000).toFixed(1)} us`)
 
   // The doors: arrival on dry floor with room to stand, and the exit within reach of it.
@@ -212,7 +229,7 @@ for (const sys of SYSTEMS) {
   check(worst < DRAWN_MAX, `${tag}: under ${DRAWN_MAX / 1000}k triangles drawn from any node`, `${(worst / 1000).toFixed(0)}k at node ${at}, ${(tris / 1000).toFixed(0)}k near-LOD in ${chunks.length} chunks, plan ${planMs.toFixed(0)} ms, mesh ${(meshMs / 1000).toFixed(1)} s`)
   const kinds = {}
   for (const n of graph.nodes) kinds[n.kind] = (kinds[n.kind] || 0) + 1
-  console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.edges.filter((q) => q.kind === 'drowned').length} drowned, ${graph.rivers.length} rivers) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} lights ${cave.lights.length}`)
+  console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.edges.filter((q) => q.kind === 'drowned').length} drowned, ${graph.rivers.length} rivers, ${chokes.length} chokes) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} boulders ${props.boulders.length} (${props.boulders.filter((b) => b.r >= 0.4).length} big) lights ${cave.lights.length}`)
 }
 
 // Chalk: the codec, the store, the pen, and the ribbon on real rock.

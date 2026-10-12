@@ -196,7 +196,7 @@ function roll(c) {
  * then down its `n` treads (parts.js steps, the first at the floor) to `ground`, `hw` to
  * either side of the door's middle.
  */
-function doorSill(b) {
+export function doorSill(b) {
   const { door: d, porch, steps, floorY } = b.plan
   const c = Math.cos(b.yaw), s = Math.sin(b.yaw)
   const fx = b.x + d.x * c + d.z * s, fz = b.z - d.x * s + d.z * c
@@ -207,7 +207,7 @@ function doorSill(b) {
   return { x: fx + s * TOWNSFOLK.sill, y, z: fz + c * TOWNSFOLK.sill, nx: s, nz: c, fx, fz, hw, top, n, ground: steps ? b.y + steps.groundY : y }
 }
 
-/** The height of `sill`'s stoop at (x, z), which the walker's stone leaves out (towns.js _span); -Infinity off it. */
+/** The height of `sill`'s stoop at (x, z), which is also her walk's stone there (towns.js _span); -Infinity off it. */
 export function stoopY(sill, x, z) {
   const { fx, fz, nx, nz, hw, top, n, y, ground } = sill
   const u = (x - fx) * nx + (z - fz) * nz

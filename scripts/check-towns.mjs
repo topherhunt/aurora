@@ -12,7 +12,7 @@ import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { serialize } from '../src/v2/layers/doc.js'
-import { TOWN, planTowns, boxesOverlap } from '../src/v2/layers/towns.js'
+import { TOWN, TREAD, planTowns, boxesOverlap } from '../src/v2/layers/towns.js'
 import { TOWN_BANDS, Towns } from '../src/v2/render/towns.js'
 import { buildTextureArray } from '../src/textures.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
@@ -247,7 +247,7 @@ const top = layer.blockTopAt(b0.x, b0.z)
 check(top > b0.y + 2, 'a building blocks her walk up to its roof', `top ${top.toFixed(1)} over its base ${b0.y.toFixed(1)}`)
 check(layer.blockTopAt(t.x, t.z) === -Infinity, 'the clearing does not block')
 {
-  // Where townsfolk go in and come out: the floor's height on the stoop (stoopY), which the walker's stone leaves out.
+  // Where townsfolk go in and come out: the floor's height on the stoop (stoopY).
   const off = []
   for (const town of towns) {
     const g = townGraph(town)
@@ -257,6 +257,22 @@ check(layer.blockTopAt(t.x, t.z) === -Infinity, 'the clearing does not block')
     })
   }
   check(off.length === 0, 'every door\'s sill stands at its floor', off.slice(0, 6).join(', '))
+  // Her walk on each stoop: the porch deck at the floor, the last tread down the steps over its ground and under the floor, so she stands on them and the door (main.js houseTest, within HOUSE_DOOR.rise of the floor) takes her in.
+  const sunk = []
+  let porches = 0
+  for (const b of layer.buildings) {
+    const { fx, fz, nx, nz, top, n, y, ground } = b.sill
+    const at = (u) => layer.blockTopAt(fx + nx * u, fz + nz * u)
+    if (b.plan.porch) {
+      porches++
+      if (Math.abs(at(top / 2) - y) > 1e-3) sunk.push(`${b.id} porch ${(at(top / 2) - y).toFixed(2)}`)
+    }
+    if (n > 1) {
+      const last = at(top + TREAD * (n - 0.5))
+      if (!(last > ground && last < y)) sunk.push(`${b.id} tread ${(last - ground).toFixed(2)} over ground`)
+    }
+  }
+  check(porches > 50 && sunk.length === 0, 'her walk stands on every porch deck at its floor and on the steps below it', `${porches} porches; ${sunk.slice(0, 6).join(', ')}`)
 }
 check(layer.occupiesAt(b0.x, b0.z, 0), 'trees keep off the buildings')
 const behind = t.buildings.map((b) => [b.box.x - b.box.s * (b.box.hz + 2), b.box.z - b.box.c * (b.box.hz + 2)])

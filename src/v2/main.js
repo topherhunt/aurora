@@ -36,7 +36,7 @@ import { Census } from './perf-census.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
 import { UniformLatch } from '../uniform-latch.js'
-import { installMultiviewShim, failedPrograms, multiviewSelfTest } from './render/multiview-shim.js'
+import { installMultiviewShim, installUploadFix, assertUploadFix, failedPrograms, multiviewSelfTest, textureAudit } from './render/multiview-shim.js'
 import { BuildScheduler } from './build-budget.js'
 
 // Ms of a frame the tile layers' builds share, nearest tile first (build-budget.js). Infinity builds every queued tile the frame it is queued; a finite value spreads them.
@@ -515,7 +515,7 @@ const questRenderer = ['toneMapping: no', 'antialias: true', `foveationLevel: ${
 if (new URLSearchParams(location.search).has('logdepth')) questRenderer.push('logarithmicDepthBuffer: true')
 // `?multiview` draws both eyes in one pass (OVR_multiview2): every draw call, program switch and uniform refresh is paid once instead of twice. Opt-in until it has been looked at in the headset.
 const MULTIVIEW = new URLSearchParams(location.search).has('multiview')
-if (MULTIVIEW) { questRenderer.push('multiviewStereo: true'); installMultiviewShim() }
+if (MULTIVIEW) { questRenderer.push('multiviewStereo: true'); installMultiviewShim(); installUploadFix() }
 sceneEl.setAttribute('renderer', questRenderer.join('; '))
 // No movement-controls/look-controls/blink-controls: locomotion is entirely
 // Player.update(dt, moveInput) + the manual mouse-drag look below. Only
@@ -600,6 +600,7 @@ if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: 
 sceneEl.systems.light.data.defaultLightsEnabled = false
 sceneEl.systems.light.removeDefaultLights()
 renderer = sceneEl.renderer
+if (MULTIVIEW) assertUploadFix()
 // `?multiview&nomdraw`: three falls back to one draw per BatchedMesh chunk with a `_gl_DrawID` uniform instead of gl_DrawID, to test whether multi-draw misreads the draw index under multiview.
 if (MULTIVIEW && new URLSearchParams(location.search).has('nomdraw')) {
   const ext = renderer.extensions
@@ -3335,11 +3336,13 @@ function captureDrawErrors() {
       renderer.render = render
       try { return render.apply(this, args) } finally {
         for (const undo of patched) undo()
+        inRenderAudit = textureAudit(renderer, scene)
         done(found)
       }
     }
   })
 }
+let inRenderAudit = null
 let programCheckLabel = 'idle'
 async function sendProgramCheck() {
   programCheckLabel = 'sending'
@@ -3348,7 +3351,7 @@ async function sendProgramCheck() {
     const drawErrors = await captureDrawErrors()
     const views = {}
     for (const p of renderer.info.programs) views[p.numMultiviewViews] = (views[p.numMultiviewViews] ?? 0) + 1
-    const context = { ...perfTrace.host.context(), failedPrograms: failedPrograms(renderer), programCount: renderer.info.programs.length, programViews: views, drawErrors, selfTest: multiviewSelfTest() }
+    const context = { ...perfTrace.host.context(), failedPrograms: failedPrograms(renderer), programCount: renderer.info.programs.length, programViews: views, drawErrors, selfTest: multiviewSelfTest(), textureAudit: textureAudit(renderer, scene), inRenderAudit }
     const id = await postTrace({ mode: 'programs', startedAt: new Date().toISOString(), seconds: 0, samples: [], context })
     programCheckLabel = `${context.failedPrograms.length} bad`
     console.log('program check filed as', id)
@@ -4055,13 +4058,10 @@ window.v2house = (k, i) => (k === null ? leaveHouse() : enterHouse(i === undefin
 // --- caves (design/39-caves.md) ----------------------------------------------
 // Every cave is built CAVE_OY under the overworld at its plan's own x, z, so a peer in the same cave stands where she does with nothing new on the wire.
 const CAVE_OY = -2000
-// A system is meshed once she comes this near one of its mouths, and dropped once she is CAVE_DROP_M from all of them.
-const CAVE_WARM_M = 90
-const CAVE_DROP_M = 250
 // The overworld's mouths and systems (caves/sites.js), and their arches; null in a village.
 let caveSites = null
 let caveMouths = null
-// The one system meshed ahead of her or around her: { sys, plan, room, near (resolves once the chunks round her arrival are in) }.
+// The system she is in or going into, planned and meshed only under the entry fade (planCave holds the main thread 0.25-1 s): { sys, plan, room, near (resolves once the chunks round her arrival are in) }.
 let caveBuild = null
 // The cave she is in: { sys, door (her way in), back (the apron before its mouth), walk, outside }, or null.
 let cave = null
@@ -4135,19 +4135,6 @@ function dropCaveBuild() {
   chalkStones.setRoom(null)
   caveBuild.room.dispose()
   caveBuild = null
-}
-
-/** In the overworld, each frame: the system of a mouth she nears, or of the cellar under the house she is in, meshed ahead of her, and one she has left behind let go. */
-function warmCave(feet) {
-  if (caveMouths === null || cave !== null || doorBusy) return
-  const m = caveMouths.near(feet.x, feet.z, CAVE_WARM_M)
-  if (indoors !== null && indoors.cellar !== null) {
-    const sys = caveSites.systems[indoors.cellar.system]
-    buildCave(sys, sys.mouths.length + sys.cellars.indexOf(indoors.cellar.id))
-  } else if (m !== null) {
-    const sys = caveSites.systems[m.system]
-    buildCave(sys, sys.mouths.indexOf(m.id))
-  } else if (caveBuild !== null && caveEntries(caveBuild.sys, caveSites.mouths, caveSites.cellars).every((e) => Math.hypot(feet.x - e.x, feet.z - e.z) > CAVE_DROP_M)) dropCaveBuild()
 }
 
 /** After the step: into the mouth her feet just walked into, or underground, out by the door she walked back to. True while she is in a cave or going in. */
@@ -4287,7 +4274,7 @@ function stepCave(head, t) {
   keepUnderRoof(caveKeep).add(caveBuild.room.group).add(fish.batch)
   hideOutside(caveKeep, caveHidden)
   caveBuild.room.setDay(dayness)
-  caveBuild.room.update(head, submerged, t)
+  caveBuild.room.update(head, submerged, t, player.flying)
   if (questToggles.reflections && !submerged) caveBuild.room.reflect(renderer, scene, head)
   stepChalk()
 }
@@ -7849,7 +7836,6 @@ function tick() {
     harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
   }
   if (boats) boats.settle()
-  if (caveMouths !== null && cave === null) warmCave(player.rig.position)
   portalTest()
   spikes.lap('player')
   // A mouth she stepped into has just torn the room down under this frame.

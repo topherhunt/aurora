@@ -29,7 +29,7 @@
 import fs from 'node:fs'
 import {
   SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES,
-  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, INDOORS, WALLED,
+  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, CAVE_TAPS, CAVE_LP, CAVE_LEVEL, INDOORS, WALLED,
 } from '../src/v2/audio/sound-engine.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
 import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
@@ -306,12 +306,17 @@ console.log('far')
   check(early > 0 && late / early < 0.01 && late / early > 0.0001, `it decays by about 60 dB over RT60 ${REVERB_RT60} s`, `${(20 * Math.log10(late / early)).toFixed(0)} dB`)
   check(L.slice(pre, pre + 1000).some((v, i) => v !== R[pre + i]), 'the two channels are different noise')
   check(engine.reverb.outs.length === 1 && engine.reverb.outs[0].outs.includes(engine.air), 'the reverb returns onto air')
-  check(ctx.delays.length === ECHO_TAPS.length && ctx.delays.every((d, i) => d.delayTime.value === ECHO_TAPS[i][0] && d.max >= ECHO_TAPS[i][0]), `${ECHO_TAPS.length} echo taps at ${ECHO_TAPS.map((t) => t[0]).join(' and ')} s`)
+  const caveDelays = ctx.delays.splice(ECHO_TAPS.length)
+  check(ctx.delays.every((d, i) => d.delayTime.value === ECHO_TAPS[i][0] && d.max >= ECHO_TAPS[i][0]), `${ECHO_TAPS.length} echo taps at ${ECHO_TAPS.map((t) => t[0]).join(' and ')} s`)
   check(ctx.delays.every((d) => engine.echo.outs.includes(d)), 'the echo send feeds every tap')
   const loops = ctx.delays.map((d) => { const dull = d.outs[0]; const back = dull.outs.find((n) => n.gain && n.outs.includes(d)); return { dull, back } })
   check(loops.every((l, i) => l.dull.type === 'lowpass' && l.back && l.back.gain.value === ECHO_TAPS[i][1]), 'each tap loops back through a low-pass at its feedback')
   const echoOut = loops[0].dull.outs.find((n) => n.gain && !n.outs.includes(ctx.delays[0]))
   check(echoOut && echoOut.outs.includes(engine.air) && echoOut.outs.includes(engine.reverb), 'the returns go onto air and into the reverb')
+  // The cave's echo: its own taps, returned onto near, which the walls a cave stands her behind (setIndoors) do not dull.
+  check(caveDelays.length === CAVE_TAPS.length && caveDelays.every((d, i) => d.delayTime.value === CAVE_TAPS[i][0] && engine.cave.outs.includes(d) && d.outs[0].frequency.value === CAVE_LP), `${CAVE_TAPS.length} cave taps at ${CAVE_TAPS.map((t) => t[0]).join(', ')} s, fed by the cave send`)
+  const caveOut = caveDelays[0].outs[0].outs.find((n) => n.gain && !n.outs.includes(caveDelays[0]))
+  check(caveOut && caveOut.gain.value === CAVE_LEVEL && caveOut.outs.length === 1 && caveOut.outs[0] === engine.near, 'the cave echo returns onto near, not air')
 
   // A shot with no distance is the plain chain; one with a distance is low-passed, sent to the reverb, and started late by the speed of sound.
   const plain = engine.play('clip', { gain: 0.5, at: { x: 1, y: 0, z: 0 } })
@@ -327,17 +332,22 @@ console.log('far')
   check(Math.abs(farSend.gain.value - (WET_MAX * 250) / (250 + WET_M)) < 1e-6, 'the send is WET_MAX * d / (d + WET_M)')
   check(Math.abs(far.startAt - ctx.currentTime - 250 / SPEED_OF_SOUND) < 1e-9 && far.startAt > near.startAt, `a shot 250 m off starts ${(250 / SPEED_OF_SOUND).toFixed(2)} s late`)
   check(!sends(far).some((n) => n.outs.includes(engine.echo)), 'no echo unless asked')
+  const hazy = engine.play('clip', { gain: 0.5, at: { x: 30, y: 0, z: 0 }, distance: 30, air: 3 }), as90 = engine.play('clip', { gain: 0.5, distance: 90 })
+  check(hazy.lp.frequency.value === as90.lp.frequency.value && Math.abs(sends(hazy)[0].gain.value - sends(as90)[0].gain.value) < 1e-9 && Math.abs(hazy.startAt - ctx.currentTime - 30 / SPEED_OF_SOUND) < 1e-9, 'with air 3, a shot 30 m off is dulled and wetted as one 90 m off, and late by its own 30 m')
   const roar = engine.play('clip', { gain: 0.5, distance: 100, echo: 0.8 })
   const echoSend = sends(roar).find((n) => n.outs.includes(engine.echo))
   check(echoSend && echoSend.gain.value === 0.8 && sends(roar).some((n) => n.outs.includes(engine.reverb)), 'asked for, the echo send is the amount given, beside the reverb send')
   check(engine.play('clip', { gain: 0.5, echo: 0.5 }).lp === null, 'an echo alone does not filter')
+  const step = engine.play('clip', { gain: 0.5, cave: 0.6 })
+  check(sends(step).length === 1 && sends(step)[0].gain.value === 0.6 && sends(step)[0].outs[0] === engine.cave && !sends(roar).some((n) => n.outs.includes(engine.cave)), 'a cave send is the amount given, and only when asked')
   const nodes = [roar, roar.lp, roar.env, ...sends(roar)]
   roar.onended()
   check(nodes.every((n) => n.outs.length === 0), 'a far voice ending takes its filter and sends off the graph')
   let threw = 0
   try { engine.play('clip', { distance: -1 }) } catch { threw++ }
   try { engine.play('clip', { echo: 2 }) } catch { threw++ }
-  check(threw === 2, 'a negative distance or an echo past 1 throws')
+  try { engine.play('clip', { distance: 5, air: 0.5 }) } catch { threw++ }
+  check(threw === 3, 'a negative distance, an echo past 1 or air under 1 throws')
 }
 
 // --- the sense, against a synthetic world -------------------------------------
@@ -1021,6 +1031,20 @@ for (const rule of ['voice', 'villagerVoice']) {
   const mans = of(1), kins = of(-1)
   const rate = (ps) => ps.reduce((a, p) => a + p.rate, 0) / ps.length, gain = (ps) => ps.reduce((a, p) => a + p.gain, 0) / ps.length
   check(mans.length >= 6 && kins.length >= 6 && within(rate(mans), 0.9, 1.1) && rate(kins) > rate(mans) && gain(kins) < gain(mans), 'a walking villager steps on her own footstep clip, a man at its pitch, a leafkin lighter and higher', `${mans.length} man at ${rate(mans).toFixed(2)}, ${kins.length} leafkin at ${rate(kins).toFixed(2)}`)
+  check(mans.every((p) => p.distance > 0 && p.air === RULES.villagerStep.air), 'each step has the far treatment at its distance, dulled by its air')
+}
+{
+  // A strider walking out to the edge of its steps' reach: the level tapers to nothing over the last `edge` metres rather than stopping at one still heard.
+  const S = RULES.stride
+  const gainAt = (d) => {
+    const strider = { x: HEAD.x + d, y: HEAD.y, z: HEAD.z, size: S.size, clip: 'walk', cycle: 1, speed: 1 }
+    const engine = fakeEngine()
+    run(new Ambience({ engine, sense: scripted(), rand: mulberry32(39), herds: [{ layer: { bodies: (into) => { into.push(strider); return into } }, clips: 'bird', sound: 'tread', rule: 'stride' }] }), 2, {})
+    const ps = engine.plays.filter((p) => p.name === 'tread')
+    return ps.length ? Math.max(...ps.map((p) => p.gain)) : 0
+  }
+  const mid = gainAt(S.reach - S.edge), edge = gainAt(S.reach - 2)
+  check(within(mid, S.level * (S.near / (S.reach - S.edge)) * S.gain[0], S.level * (S.near / (S.reach - S.edge)) * S.gain[1]) && edge < mid * 0.1 * S.near * 1.1, 'a strider\'s steps are at full level where the taper starts and nearly nothing at the reach', `${mid.toFixed(4)} at ${S.reach - S.edge} m, ${edge.toFixed(5)} at ${S.reach - 2} m`)
 }
 {
   // A snowman's feet beside a strider's, each as main.js herds them, the same distance off: the tread, deeper and louder.
@@ -1044,7 +1068,7 @@ for (const rule of ['voice', 'villagerVoice']) {
   const of = (z) => engine.plays.filter((p) => p.name === 'tread' && Math.sign(p.at.z - HEAD.z) === Math.sign(z))
   const hooves = of(1), strides = of(-1)
   const most = (ps, k) => Math.max(...ps.map((p) => p[k])), least = (ps, k) => Math.min(...ps.map((p) => p[k]))
-  check(hooves.length > 0 && strides.length > 0 && most(hooves, 'gain') < least(strides, 'gain') && hooves.every((p) => p.distance > 10) && strides.every((p) => !p.distance), 'a stag steps on the strider\'s tread, quieter, and heard as further off than it is', `${hooves.length} hooves at ${least(hooves, 'distance').toFixed(1)} m, ${strides.length} strides`)
+  check(hooves.length > 0 && strides.length > 0 && most(hooves, 'gain') < least(strides, 'gain') && hooves.every((p) => p.distance > 10 && p.air === undefined) && strides.every((p) => p.distance < 10.1 && p.air === RULES.stride.air), 'a stag steps on the strider\'s tread, quieter, and heard as further off than it is; a strider\'s at its own distance, dulled by its air', `${hooves.length} hooves at ${least(hooves, 'distance').toFixed(1)} m, ${strides.length} strides`)
   check(engine.plays.some((p) => p.name === 'footfall') && !engine.plays.some((p) => p.name === 'footfall' && p.distance), 'and the hare in the same herd keeps the herd\'s footfall')
 }
 {
@@ -1437,8 +1461,15 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(count(engine, 'caveDrip') === 0 && bed.active, 'with no water in reach the bed loops and no drop falls')
   run(amb, 120, { cave: { water }, submerged: true })
   check(!bed.active && count(engine, 'caveDrip') === 0 && bed.opts.next() === null && engine.loops.underwater.active, 'under the cave\'s water only the underwater loop plays')
+  engine.plays.length = 0
+  run(amb, 10, { cave: { water: null }, speed: 1.4 })
+  const cavern = engine.plays.filter((p) => p.name === 'footstep')
   run(amb, 1, {})
   check(!bed.active && !engine.loops.underwater.active, 'out of the cave the bed stops')
+  engine.plays.length = 0
+  run(amb, 10, { speed: 1.4 })
+  const open = engine.plays.filter((p) => p.name === 'footstep')
+  check(cavern.length > 10 && cavern.every((p) => p.cave === RULES.footstep.cave) && open.length > 10 && open.every((p) => p.cave === 0), 'her footsteps echo in a cave and not above it', `${cavern.length} underground, ${open.length} above`)
 }
 {
   // A cave under a lively overworld: the lake, wood, frogs, talus and fires over her head are not heard, and come back as she climbs out.
@@ -1565,7 +1596,7 @@ for (const rule of ['voice', 'villagerVoice']) {
     run(amb, 1, { head })
     const one = loop.level
     check(one <= 0.05, 'one flame is faint', `level ${one?.toFixed(3)}`)
-    check(loop.active && one > 0 && loop.at.x === 5, 'a flame in reach starts the blaze, placed at it', `level ${one?.toFixed(3)}`)
+    check(loop.active && one > 0 && loop.at.x === 5 && loop.opts.bus === 'near', 'a flame in reach starts the blaze on the near bus, placed at it', `level ${one?.toFixed(3)}`)
     flames = [{ x: 5, y: GROUND + 1, z: 0 }, { x: 5, y: GROUND + 1, z: 1 }, { x: 4, y: GROUND + 1, z: 0 }, { x: 6, y: GROUND + 1, z: 0 }]
     run(amb, 1, { head })
     check(loop.level > one && loop.level <= B.level * B.cap + 1e-9, 'more flames are louder, to a cap', `level ${loop.level?.toFixed(3)}`)

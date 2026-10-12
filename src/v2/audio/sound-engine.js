@@ -81,6 +81,10 @@ export const REVERB_LEVEL = 0.6
 export const ECHO_TAPS = [[0.47, 0.32], [1.05, 0.25]]
 export const ECHO_LP = 1500
 export const ECHO_LEVEL = 0.7
+// The cave's echo (`cave` on a shot): taps as the echo's but short and bright, a rock room's slap and ring. Returned onto `near`, not `air`, which a cave puts behind the house's walls (setIndoors).
+export const CAVE_TAPS = [[0.07, 0.5], [0.13, 0.45], [0.23, 0.4]]
+export const CAVE_LP = 3000
+export const CAVE_LEVEL = 0.5
 // The world outside heard through a house's walls: `air`'s low-pass cutoff (Hz) and level indoors, eased over `tau` seconds. Crickets and songbirds are nearly all above 2.5 kHz: a cutoff much lower than this silences them outright.
 export const INDOORS = { lp: 1100, gain: 0.25, tau: 0.3 }
 // `walled` on a shot, while indoors: a further low-pass and level on top of INDOORS, so a voice outside (leafkin chatter) comes dark and low where the walls' own cutoff stays up for the crickets.
@@ -128,6 +132,24 @@ function valleyImpulse(ctx) {
   return buffer
 }
 
+/** A delay per [seconds, feedback] tap fed from `send`, each looped back through a low-pass at `lp`, so every return is duller than the last, and all returned into `out`. */
+function feedbackTaps(ctx, send, taps, lp, out) {
+  for (const [seconds, feedback] of taps) {
+    const delay = ctx.createDelay(seconds)
+    delay.delayTime.value = seconds
+    const dull = ctx.createBiquadFilter()
+    dull.type = 'lowpass'
+    dull.frequency.value = lp
+    const back = ctx.createGain()
+    back.gain.value = feedback
+    send.connect(delay)
+    delay.connect(dull)
+    dull.connect(back)
+    back.connect(delay)
+    dull.connect(out)
+  }
+}
+
 export class SoundEngine {
   /** @param ctx  an AudioContext; built here when not given, suspended until unlock(). */
   constructor({ ctx = null } = {}) {
@@ -164,20 +186,12 @@ export class SoundEngine {
     echoOut.gain.value = ECHO_LEVEL
     echoOut.connect(this.air)
     echoOut.connect(this.reverb)
-    for (const [seconds, feedback] of ECHO_TAPS) {
-      const delay = ctx.createDelay(seconds)
-      delay.delayTime.value = seconds
-      const dull = ctx.createBiquadFilter()
-      dull.type = 'lowpass'
-      dull.frequency.value = ECHO_LP
-      const back = ctx.createGain()
-      back.gain.value = feedback
-      this.echo.connect(delay)
-      delay.connect(dull)
-      dull.connect(back)
-      back.connect(delay)
-      dull.connect(echoOut)
-    }
+    feedbackTaps(ctx, this.echo, ECHO_TAPS, ECHO_LP, echoOut)
+    this.cave = ctx.createGain()
+    const caveOut = ctx.createGain()
+    caveOut.gain.value = CAVE_LEVEL
+    caveOut.connect(this.near)
+    feedbackTaps(ctx, this.cave, CAVE_TAPS, CAVE_LP, caveOut)
     this.buffers = new Map()
     this.loops = new Set()
     // The one-shots playing, { src, g, nodes, gain }, and the shots lost: under the floor, or to the cap (dropped at it, or displaced by a louder one).
@@ -301,17 +315,20 @@ export class SoundEngine {
    * Fire a clip once. `at` is a world position {x, y, z} for a directional
    * sound, or null for one with no bearing (her own footsteps, the cricket bed).
    * `distance` in metres gives the shot the far treatment (dulled, wetted,
-   * late; see the top), and `echo` is its send, 0-1 of its gain, into the
-   * valley echo. Returns the source, or null when the shot is not started:
+   * late; see the top), `air` times that for the dulling and wetting alone
+   * (a sound small at the source, lost in the air faster), and `echo` is its send, 0-1 of its gain, into the
+   * valley echo, `cave` the same into the cave's. Returns the source, or null when the shot is not started:
    * under the floor, over the cap, or while the context is still suspended --
    * its clock is frozen then, so every shot started would queue on the same
    * instant and the lot would fire together the moment unlock() lands.
    */
-  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, echo = 0, bright = false, walled = false } = {}) {
+  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, air = 1, echo = 0, cave = 0, bright = false, walled = false } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
     if (!(distance >= 0)) throw new Error(`SoundEngine.play(${name}): distance must be non-negative, got ${distance}`)
+    if (!(air >= 1)) throw new Error(`SoundEngine.play(${name}): air must be at least 1, got ${air}`)
     if (!(echo >= 0 && echo <= 1)) throw new Error(`SoundEngine.play(${name}): echo must be 0-1, got ${echo}`)
+    if (!(cave >= 0 && cave <= 1)) throw new Error(`SoundEngine.play(${name}): cave must be 0-1, got ${cave}`)
     if (!this.running) return null
     if (walled && this.inside) gain *= WALLED.gain
     if (gain < VOICE_FLOOR) {
@@ -338,7 +355,7 @@ export class SoundEngine {
     if (distance > 0) {
       const lp = ctx.createBiquadFilter()
       lp.type = 'lowpass'
-      lp.frequency.value = Math.max(LP_MIN, (LP_MAX * AIR_M) / (AIR_M + distance))
+      lp.frequency.value = Math.max(LP_MIN, (LP_MAX * AIR_M) / (AIR_M + air * distance))
       src.connect(lp)
       head = lp
       nodes.push(lp)
@@ -383,16 +400,17 @@ export class SoundEngine {
     // The sends leave before the panner: a wash and a hillside's return have no one bearing.
     if (distance > 0) {
       const send = ctx.createGain()
-      send.gain.value = (WET_MAX * distance) / (distance + WET_M)
+      send.gain.value = (WET_MAX * air * distance) / (air * distance + WET_M)
       g.connect(send)
       send.connect(this.reverb)
       nodes.push(send)
     }
-    if (echo > 0) {
+    for (const [amount, into] of [[echo, this.echo], [cave, this.cave]]) {
+      if (amount === 0) continue
       const send = ctx.createGain()
-      send.gain.value = echo
+      send.gain.value = amount
       g.connect(send)
-      send.connect(this.echo)
+      send.connect(into)
       nodes.push(send)
     }
     const voice = { src, g, nodes, gain }

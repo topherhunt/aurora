@@ -10,7 +10,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
-import { CHUNK, LODS, drawnLod, drawnRegions, chunkGap, lightsIn, rockAt, ROCK_AT } from '../caves/mesh.js'
+import { CHUNK, LODS, CULL_M, drawnLod, drawnRegions, chunkGap, lightsIn, rockAt, ROCK_AT } from '../caves/mesh.js'
 import { shoreMesh } from '../caves/water.js'
 import { WATER, RIPPLE_GLSL } from '../../water.js'
 import { stalagmite, stalagmiteCard } from '../caves/stalagmite.js'
@@ -25,6 +25,8 @@ const TORCH_GAIN = 2.6
 const GLOW_GAIN = 3.2
 // Fog in the air, and in the water: density per metre, linear colour.
 export const CAVE_AIR = { density: 0.022, color: [0, 0, 0] }
+// While she flies (update's `flying`), the light every surface gets at least, with no fog and every chunk drawn, so she can see the whole layout she is crossing.
+const FLY_LIT = 0.1
 export const CAVE_MURK = { density: 0.32, color: [0.004, 0.012, 0.014] }
 
 // Metres the boulders' stone tile covers on the cave rock.
@@ -35,6 +37,7 @@ uniform vec4 uTorch[4];
 uniform vec3 uTorchColor;
 uniform float uFogDensity;
 uniform vec3 uFogColor;
+uniform float uLitFloor;
 uniform sampler2D uStone;
 // The stone tile triplanar, its own mean divided out, so the albedo it multiplies stays the tint.
 vec3 caveStone(vec3 p, vec3 n) {
@@ -175,7 +178,7 @@ void main() {
 #else
   vec3 albedo = vCol;
 #endif
-  vec3 c = albedo * (caveTorch(vPos, n) + vGlow * ${GLOW_GAIN.toFixed(2)});
+  vec3 c = albedo * max(caveTorch(vPos, n) + vGlow * ${GLOW_GAIN.toFixed(2)}, vec3(uLitFloor));
 #ifdef MUSH
   c += vEmit * (0.2 + 1.6 * dot(tex, vec3(0.2126, 0.7152, 0.0722)));
 #elif defined(INSTANCED)
@@ -209,7 +212,7 @@ void main() {
   vec3 v = normalize(vPos - cameraPosition);
   bool under = v.y > 0.0;
   if (under) n.y = -n.y;
-  vec3 body = uTint * caveTorch(vPos, n);
+  vec3 body = uTint * max(caveTorch(vPos, n), vec3(uLitFloor));
   if (under) {
     gl_FragColor = vec4(caveFog(body, vPos), 1.0);
     #include <tonemapping_fragment>
@@ -257,7 +260,7 @@ void main() {
   vec2 cell = floor(vec2(vGrain.x * 260.0, vGrain.y * 6.0) + vGrain.z);
   float edge = abs(vGrain.y);
   if (hash(cell) < 0.25 + 0.6 * edge * edge) discard;
-  vec3 c = vec3(0.78, 0.77, 0.72) * (0.75 + 0.25 * hash(cell + 7.0)) * caveTorch(vPos, normalize(vNrm));
+  vec3 c = vec3(0.78, 0.77, 0.72) * (0.75 + 0.25 * hash(cell + 7.0)) * max(caveTorch(vPos, normalize(vNrm)), vec3(uLitFloor));
   gl_FragColor = vec4(caveFog(c, vPos), 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -289,6 +292,7 @@ function caveUniforms(lighting, stone) {
     uTorchColor: lighting.uniforms.uTorchColor,
     uFogDensity: { value: CAVE_AIR.density },
     uFogColor: { value: new THREE.Color(...CAVE_AIR.color) },
+    uLitFloor: { value: 0 },
     uTime: { value: 0 },
     uDay: { value: new THREE.Color() },
   }
@@ -373,9 +377,11 @@ const ROW_ATTRS = { iColor: 3, iEmit: 3, iGlow: 3, iDay: 1 }
 const NO_LIGHT = new Float32Array(ROCK_AT)
 
 const BOULDER_VARIANTS = 3
-// A unit icosphere (80 triangles) with each vertex pushed in or out, so it reads as a rock rather than a ball. The push hashes the vertex's position: the sphere is unindexed, and its copies of one corner must move together or it cracks.
-function boulderGeometry(seed) {
-  const g = new THREE.IcosahedronGeometry(1, 1)
+// Boulders under this radius are rubble, drawn as the 20-triangle stone: they are most of them.
+const RUBBLE_R = 0.4
+// A unit icosphere (80 triangles, 20 at `detail` 0) with each vertex pushed in or out, so it reads as a rock rather than a ball. The push hashes the vertex's position: the sphere is unindexed, and its copies of one corner must move together or it cracks.
+function boulderGeometry(seed, detail) {
+  const g = new THREE.IcosahedronGeometry(1, detail)
   const pos = g.getAttribute('position')
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
@@ -406,6 +412,7 @@ export class CaveRoom {
     if (!(atlas instanceof THREE.DataArrayTexture)) throw new Error('CaveRoom: needs the props\' texture array')
     if (!sky || !sky.uZenith) throw new Error('CaveRoom: needs the sky\'s uniforms')
     this.plan = plan
+    this.everyRegion = new Set(plan.graph.regions.map((_, i) => i))
     this.sky = sky
     // CHUNK cell key -> the lights reaching it, for rockAt at the props.
     this.lightBins = new Map()
@@ -676,9 +683,10 @@ export class CaveRoom {
       return { color: [0.13, 0.12, 0.105], lit: this._rock(b.x, b.y, b.z) }
     })
 
-    // Boulders: a few lumpy rocks in BOULDER_VARIANTS shapes, squat and half sunk, of the floor they lie on.
-    for (let k = 0; k < BOULDER_VARIANTS; k++) {
-      this._instanced(boulderGeometry(0xb01 + k), props.boulders.filter((b) => Math.floor(b.seed * BOULDER_VARIANTS) === k), (b) => {
+    // Boulders: lumpy rocks in BOULDER_VARIANTS shapes at two details, squat, of the rock they lie on.
+    for (let k = 0; k < 2 * BOULDER_VARIANTS; k++) {
+      const rubble = k >= BOULDER_VARIANTS
+      this._instanced(boulderGeometry(0xb01 + k, rubble ? 0 : 1), props.boulders.filter((b) => (b.r < RUBBLE_R) === rubble && Math.floor(b.seed * BOULDER_VARIANTS) === k % BOULDER_VARIANTS), (b) => {
         set(b.x, b.y, b.z, b.yaw, 0, 0, b.r, b.r * (0.6 + 0.3 * b.seed), b.r * (0.8 + 0.3 * b.seed))
         return wall(b)
       })
@@ -788,17 +796,18 @@ export class CaveRoom {
     return m
   }
 
-  /** Each frame: her eye in world metres, whether it is under water, and the clock. */
-  update(eye, submerged, t) {
+  /** Each frame: her eye in world metres, whether it is under water, the clock, and whether she is flying (FLY_LIT). */
+  update(eye, submerged, t, flying) {
     const fog = submerged ? CAVE_MURK : CAVE_AIR
-    this.uniforms.uFogDensity.value = fog.density
+    this.uniforms.uFogDensity.value = flying && !submerged ? 0 : fog.density
     this.uniforms.uFogColor.value.setRGB(...fog.color)
+    this.uniforms.uLitFloor.value = flying ? FLY_LIT : 0
     this.uniforms.uTime.value = t % 1024
     const ly = eye.y - this.oy
-    const shown = drawnRegions(this.plan.graph, this._regionAt(eye.x, ly, eye.z))
+    const shown = flying ? this.everyRegion : drawnRegions(this.plan.graph, this._regionAt(eye.x, ly, eye.z))
     for (const c of this.chunks.values()) {
       const d = chunkGap(c, eye.x, ly, eye.z)
-      const lod = drawnLod(c.lods, d)
+      const lod = drawnLod(c.lods, flying ? Math.min(d, CULL_M - 1) : d)
       for (let l = 0; l < LODS.length; l++) {
         if (c.lods[l] === null) continue
         for (const mesh of c.lods[l]) mesh.visible = l === lod && shown.has(mesh.userData.region)

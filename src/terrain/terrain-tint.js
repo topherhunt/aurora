@@ -45,7 +45,7 @@ import { shade } from '../v2/terrain/chunk-mesh-v2.js'
 // ground photograph is divided by its own mean and so is mean-preserving by
 // construction; the grit layers are 11.7 m and 2.3 m per tile, which is finer
 // than a clump of grass and averages out under one; and the snow and rock mixes
-// are skipped because every caller so far rejects placement near the snow line.
+// are skipped because every caller so far either rejects placement near the snow line or asks for the ground without its snow.
 //
 // It is a handful of array reads and a dozen multiplies per call -- 3.1 ms per
 // 20,000 -- which is noise next to the two path queries a scatter already runs.

@@ -6,6 +6,7 @@ import { buildBuilding2 } from '../../buildings/v2/building.js'
 import { roofHeightAt } from '../../buildings/plan.js'
 import { townsOccupyAt } from '../layers/towns.js'
 import { tradeArrays, tradeSolids } from './trades.js'
+import { doorSill, stoopY } from './townsfolk.js'
 
 export const TOWN_BANDS = { near: 60, mid: 140, far: 1500, hysteresis: 4, prebuild: 300, evict: 420 }
 // Frame budget for building geometry: a detail-2 building runs about 1.6 ms on desktop and several times that on the Quest, so no more than one of those a frame.
@@ -236,7 +237,7 @@ export class Towns {
     this.towns = towns
     this.shown = true
     this.ground = (x, z) => field.heightAt(x, z)
-    this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t })))
+    this.buildings = towns.flatMap((t) => t.buildings.map((b) => ({ ...b, town: t, sill: doorSill(b) })))
     // Per town: the tier shown and wanted, each tier's merged geometry once built, the placed buildings of a tier still being built, and its far boxes.
     this.sites = towns.map((town) => ({ town, tier: 0, want: 0, farShown: false, geo: [null, null, null], parts: [null, [], []], mesh: null, masses: [] }))
 
@@ -413,7 +414,7 @@ export class Towns {
     return this.grid.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`)
   }
 
-  // The building's or work's solid over (x, z): [bottom, top] into out at span `at`, or false. Inside a mass's walls only, up to its roof there; eaves and porches are open to walk under.
+  // The building's or work's solid over (x, z): [bottom, top] into out at span `at`, or false. Inside a mass's walls up to its roof there, and on the door's stoop (porch deck and steps, townsfolk.js stoopY) up to its tread; eaves and porch canopies are open to walk under.
   _span(b, x, z, out, at) {
     if (b.solid !== undefined) {
       const w = b.solid
@@ -435,6 +436,7 @@ export class Towns {
       if (Math.abs(lx - m.cx) > m.w / 2 || Math.abs(lz - m.cz) > m.d / 2) continue
       top = Math.max(top, roofHeightAt(m.roof, lx, lz))
     }
+    if (top === -Infinity) top = stoopY(b.sill, x, z) - b.y
     if (top === -Infinity) return false
     out[at * 2] = b.y + b.plan.plinthBottom
     out[at * 2 + 1] = b.y + top

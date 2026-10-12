@@ -32,16 +32,6 @@ export class CaveMouths {
     return null
   }
 
-  /** The nearest mouth within r metres of (x, z), or null: when to start meshing its cave. */
-  near(x, z, r) {
-    let best = null, bd = r
-    for (const m of this.mouths) {
-      const d = Math.hypot(x - m.x, z - m.z)
-      if (d < bd) { bd = d; best = m }
-    }
-    return best
-  }
-
   /** The step before mouth m's arch, on its notch's floor, facing out. */
   apron(m) {
     const s = MOUTH.wall - MOUTH.floorOut + 0.5

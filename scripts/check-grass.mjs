@@ -54,6 +54,7 @@ import {
 } from '../src/props/grass-bank.js'
 import { Grass, GRASS_TUNING, shoreClumpAt } from '../src/v2/render/grass.js'
 import { RIM_AT, RIM_HYST, RIM_HYST_FRAC } from '../src/v2/render/rim.js'
+import { TREELINE } from '../src/v2/layers/forest.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
   shapeImageLayer, GRASS_FRAY_TUNING,
@@ -997,7 +998,9 @@ console.log('\n-- placement --')
 {
   const wet = { isSubmerged: (x, z, y) => y < 61, shoreDistAt: (x, z, reach) => reach }
   const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null) }
-  const snowy = { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 60 }
+  // Snow lines at, part-way past, and a full TREELINE.fade past the ground.
+  const snowAt = (line) => ({ heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => line })
+  const snowy = snowAt(60 - TREELINE.fade)
   const cliff = { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 9, gx: 9, gz: 0 }), snowLineAt: () => 9999 }
   const sunk = { heightAt: () => 1, heightAndSlopeAt: () => ({ h: 1, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 9999 }
 
@@ -1010,7 +1013,14 @@ console.log('\n-- placement --')
   }
   check(one(flat, wet, clear).placed === 0, 'no grass in a lake')
   check(one(flat, dry, roaded).placed === 0, 'no grass down the middle of a road')
-  check(one(snowy, dry, clear).placed === 0, 'no grass in a snowfield')
+  check(one(snowy, dry, clear).placed === 0, 'no grass where the trees have thinned to scattered stunted ones')
+  {
+    const atLine = one(snowAt(60), dry, clear).placed
+    const below = one(flat, dry, clear).placed
+    const partway = one(snowAt(60 - TREELINE.fade / 2), dry, clear).placed
+    check(atLine === below, 'grass at the snow line is at full density', `${atLine} vs ${below}`)
+    check(partway > 0.3 * below && partway < 0.7 * below, 'grass halfway up the tree thinning is at about half density', `${partway} of ${below}`)
+  }
   check(one(cliff, dry, clear).placed === 0, 'no grass on a cliff')
   check(one(sunk, dry, clear).placed === 0, 'no grass below the minimum elevation')
 

@@ -16,6 +16,8 @@ import {
 } from '../../material.js'
 import { RimFade, RIM_PHASES } from './rim.js'
 import { InstancedArena } from './instanced-arena.js'
+import { TREELINE } from '../layers/forest.js'
+import { smoothstep } from '../../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
 // The grass undercarpet on the /v2 route.
@@ -153,8 +155,8 @@ import { InstancedArena } from './instanced-arena.js'
 // PLACEMENT IS LOOSER THAN A FERN'S, ON PURPOSE. Grass is what the world is made
 // of when nothing more interesting grows there: it goes lower, holds steeper
 // ground, and comes closer to a road's edge. The exclusions it keeps are the
-// ones where grass would read as a bug -- standing in a lake, buried in a
-// snowfield, growing up the middle of a track.
+// ones where grass would read as a bug -- standing in a lake, out on a bare
+// summit, growing up the middle of a track.
 // ---------------------------------------------------------------------------
 
 // Tufts per square metre at full density. Twice the brief's 3, and the pairing
@@ -309,10 +311,12 @@ const PLACEMENT = {
   // water's edge; the water test below is what actually keeps it dry, and this
   // only stops the carpet walking out to sea.
   minElev: 20,
-  // NOT IN SNOW. A tighter margin than the fern's 4 m, so the meadow runs
-  // further up the mountain before it gives out -- grass is the last green
-  // thing on a hillside, which is exactly the look this is for.
-  snowMargin: 3,
+  // THINNING INTO THE SNOW. Past the snow line a tuft's keep-probability eases
+  // from 1 to 0 over the same TREELINE.fade metres the forest thins over, so
+  // grass is the last green thing on a hillside and gives out where the trees
+  // have dwindled to scattered stunted ones. The roll is a position hash, not a
+  // `rand()`, so it leaves the tile's draw stream alone.
+  snowFade: TREELINE.fade,
   // NOT ON CLIFFS, but a steeper limit than the 32 degrees trees and ferns
   // share. Grass really does hold ground that will not carry a tree, and the
   // failure mode is asymmetric: bare rock where there should be grass reads as
@@ -755,6 +759,14 @@ export function shoreClumpAt(x, z, seed) {
   const cx = Math.floor(x / SHORE.clump)
   const cz = Math.floor(z / SHORE.clump)
   return tileSeed(cx, cz, (seed | 0) ^ 0x5bd1e995) / 4294967296 < SHORE.clumpFrac
+}
+
+// A snow line no ground reaches, for asking the tint what the turf under the snow looks like.
+const NO_SNOW = 1e9
+
+/** A uniform [0, 1) roll for the snow thinning, hashed from position at 1/64 m so it is fixed per tuft. */
+function snowKeepRoll(x, z, seed) {
+  return tileSeed(Math.floor(x * 64), Math.floor(z * 64), (seed | 0) ^ 0x68e31da4) / 4294967296
 }
 
 /**
@@ -1777,7 +1789,7 @@ export class Grass {
       // API. Covers lakes and river channels alike.
       if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
-      if (h > snowLine - PLACEMENT.snowMargin) { rej.snow++; continue }
+      if (h > snowLine && snowKeepRoll(x, z, this.seed) >= 1 - smoothstep(0, PLACEMENT.snowFade, h - snowLine)) { rej.snow++; continue }
       // NOT ON SAND. Cheap inland: a height test against whatever lake plane
       // covers the point and a river index lookup that misses; the sand noise is
       // only asked once a band is found.
@@ -1924,8 +1936,10 @@ export class Grass {
         // look: the instance colour lands on the base vertices unmodified (they
         // are (1,1,1)) and the tip ramp lifts or drops it from there. Anything
         // drawn from a palette instead reads as a green carpet laid over the
-        // terrain rather than as the terrain growing.
-        this.tint.groundAt(this._rgb, x, z, h, 1 / Math.hypot(tan, 1), snowLine)
+        // terrain rather than as the terrain growing. The ground is asked for
+        // WITHOUT its snow, so a blade past the snow line is green poking
+        // through white rather than white itself.
+        this.tint.groundAt(this._rgb, x, z, h, 1 / Math.hypot(tan, 1), NO_SNOW)
         this._c.setRGB(this._rgb[0], this._rgb[1], this._rgb[2], THREE.LinearSRGBColorSpace)
         this.batch.setAttrAt(this.tipMul, id, tipRoll)
       } else {
