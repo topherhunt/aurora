@@ -68,7 +68,7 @@ let tiles = null
 // The forest tint's biome, seeded from the same module constant main.js seeds
 // the trees' from, for the reason V2Height's seed is: a seed in the message
 // could drift from the scatter's and the ground would go green where no wood
-// stands. Built with the field, which its mazes are sited on.
+// stands. Built with the field, which its labyrinths are sited on.
 let biome = null
 
 function onInit(msg) {

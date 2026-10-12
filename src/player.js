@@ -120,6 +120,11 @@ export const LOCOMOTION = {
   // would put her feet; afloat, she stands once it reaches that. The gap stops
   // a lap flipping her between the two at the shelf's edge.
   swimEnterHyst: 0.1,
+  // A fall into water at least this deep (her metres) is free, and plunges her feet under the surface by this fraction of the drop to it, no deeper than the bed.
+  fallWaterDeep: 4,
+  fallPlunge: 0.25,
+  // A fall lands, and is priced, once her damped eye is within this of where it stops (her metres).
+  fallArrive: 0.1,
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -166,7 +171,7 @@ export class Player {
     this.blocked = false // true when the slope limiter refused a move, for the HUD
     // A drop steeper than she could climb is a fall: `_fallTop` is where it began,
     // and `fell` is how far she landed below it, in her own metres, for the one
-    // frame she lands (v2/vitals.js). Only a step can start one: the ground
+    // frame her damped eye arrives (v2/vitals.js). Only a step can start one: the ground
     // sinking under her as a room builds, or arriving any way but walking, never counts.
     this._fallTop = null
     this.fell = 0
@@ -554,19 +559,22 @@ export class Player {
       : this.th.heightAt(origin.x, origin.z, this.standY)
     this.standY = ground
     const run = Math.hypot(origin.x - fromX, origin.z - fromZ)
-    if (fromY !== null && fromY - ground > this._maxTan * run + 0.01 * this.scale) {
-      if (this._fallTop === null && run > 0) this._fallTop = fromY
-    } else if (this._fallTop !== null) {
-      this.fell = (this._fallTop - ground) / this.scale
+    const level = this._waterAt(origin.x, origin.z)
+    const steep = fromY !== null && fromY - ground > this._maxTan * run + 0.01 * this.scale
+    if (steep && this._fallTop === null && run > 0) this._fallTop = fromY
+    // Falling, her eye drops to the bed, or in deep water to her plunge.
+    const deep = this._fallTop !== null && level !== null && level - ground >= L.fallWaterDeep * this.scale
+    const bottom = deep ? Math.max(ground, level - (this._fallTop - level) * L.fallPlunge) : ground
+    if (this.smoothY === null) this.smoothY = ground
+    this.smoothY += (bottom - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
+    this.rig.position.y = this.smoothY
+    if (!steep && this._fallTop !== null && this.smoothY - bottom < L.fallArrive * this.scale) {
+      if (!deep) this.fell = (this._fallTop - ground) / this.scale
       this._fallTop = null
     }
-    if (this.smoothY === null) this.smoothY = ground
-    this.smoothY += (ground - this.smoothY) * (1 - Math.exp(-dt / L.vertTau))
-    this.rig.position.y = this.smoothY
 
     // Walked (or fell) into water over her head: she floats from here.
-    const level = this._waterAt(origin.x, origin.z)
-    if (level !== null) {
+    if (level !== null && this._fallTop === null) {
       const float = this._floatY(level, headUp)
       if (ground < float - L.swimEnterHyst * this.scale) this._startSwim(headUp, Math.min(this.smoothY, float))
     }

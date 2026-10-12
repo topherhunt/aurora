@@ -64,6 +64,7 @@ export const LP_MIN = 800
 export const AIR_M = 40
 // `bright` on a shot: the lows under `hp` Hz cut and a `db` shelf over `shelf` Hz, for a clip recorded muffled heard in the open air.
 export const BRIGHT = { hp: 300, shelf: 1500, db: 9 }
+export const TILT_HZ = 1200
 export const WET_M = 30
 export const WET_MAX = 0.8
 // The valley reverb's impulse: seconds long, its -60 dB point, the pre-delay
@@ -317,12 +318,13 @@ export class SoundEngine {
    * `distance` in metres gives the shot the far treatment (dulled, wetted,
    * late; see the top), `air` times that for the dulling and wetting alone
    * (a sound small at the source, lost in the air faster), and `echo` is its send, 0-1 of its gain, into the
-   * valley echo, `cave` the same into the cave's. Returns the source, or null when the shot is not started:
+   * valley echo, `cave` the same into the cave's. `tilt` in dB lifts (or, negative, dulls) everything over TILT_HZ: a
+   * speaker's own timbre (audio/voices.js). Returns the source, or null when the shot is not started:
    * under the floor, over the cap, or while the context is still suspended --
    * its clock is frozen then, so every shot started would queue on the same
    * instant and the lot would fire together the moment unlock() lands.
    */
-  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, air = 1, echo = 0, cave = 0, bright = false, walled = false } = {}) {
+  play(name, { rate = 1, gain = 1, at = null, bus = 'air', distance = 0, air = 1, echo = 0, cave = 0, bright = false, walled = false, tilt = 0 } = {}) {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
     if (!(distance >= 0)) throw new Error(`SoundEngine.play(${name}): distance must be non-negative, got ${distance}`)
@@ -372,6 +374,15 @@ export class SoundEngine {
       hp.connect(shelf)
       head = shelf
       nodes.push(hp, shelf)
+    }
+    if (tilt !== 0) {
+      const shelf = ctx.createBiquadFilter()
+      shelf.type = 'highshelf'
+      shelf.frequency.value = TILT_HZ
+      shelf.gain.value = tilt
+      head.connect(shelf)
+      head = shelf
+      nodes.push(shelf)
     }
     if (walled && this.inside) {
       const lp = ctx.createBiquadFilter()

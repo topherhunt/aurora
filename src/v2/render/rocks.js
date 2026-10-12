@@ -15,7 +15,6 @@ import { ROCK_TILE_MEAN } from '../../textures.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 import { BiomeField } from '../layers/biome.js'
 import { forestKeepAt } from '../layers/forest.js'
-import { MAZE, OPEN, WALL_X } from '../layers/mazes.js'
 
 // ---------------------------------------------------------------------------
 // The stone on the /v2 route: boulders through the wood and across the
@@ -775,43 +774,6 @@ const BEDS = [
     // No rock inside another rock, and cheap: 17 candidates a tile.
     minGap: 0.5,
   },
-  {
-    // THE BOULDER MAZES (DESIGN.md §41): one boulder on every wall block of a
-    // maze (layers/mazes.js), its long axis turned down the wall. The
-    // candidates are the maze's block grid, so the tile is a whole number of
-    // blocks and the lattice pitch IS the block; a tile no maze touches draws
-    // nothing. Long axis 10.5..12.5 m against a 7 m pitch, so neighbours overlap
-    // by 3.5 m or more at the ground line and leave no gap to slip through.
-    name: 'maze',
-    maze: true,
-    field: 10,
-    lattice: true,
-    tile: 8 * MAZE.block,
-    density: 1 / (MAZE.block * MAZE.block),
-    // A wall breaks on a cliff or in water rather than standing in either.
-    envDensity: { river: 0, forest: 1, cliff: 1, peak: 1 },
-    fullRadius: 270,
-    radius: 1250,
-    // Peak 484 of 11840 over a 100 m maze-only probe flight.
-    siteFrac: 0.062,
-    minElev: 0,
-    maxSlopeDeg: 30,
-    allowSubmerged: false,
-    // Upright, NOT `lie`: a quarter turn swings the shape's bed face, and the
-    // origin on it, onto a flank, so the stone stands half its height off the
-    // origin and the block it was put on.
-    roll: false,
-    tilt: 0.3,
-    tiltJitter: 0.3,
-    sinkVary: false,
-    // About a third under, for the look: the wall holds at any sink from 0.2 to 0.5, since the span is sheer (_columnAt).
-    sinkRange: [0.3, 0.35],
-    anchor: true,
-    blocks: true,
-    sizeByEnv: { forest: [10.5, 12.5], cliff: [10.5, 12.5], peak: [10.5, 12.5] },
-    // Overlap is the point.
-    minGap: 0,
-  },
 ]
 
 // Where the four environments cut. All read off the same field sample the
@@ -1153,11 +1115,6 @@ const PLACEMENT_CELL = 4.0
 const DEEP = { step: 15, keep: 0.6, inset: 60, jitter: 7, roll: 1 }
 // The clear ring every other bed keeps past an entrance boulder's hull, and the rungs one no mouth fits climbs: DESIGN.md §30 Siting.
 const HOLLOW_CLEAR_M = 2
-// Metres a maze boulder strays from its block's centre, and radians from square down its wall.
-const MAZE_JITTER = 0.8
-const MAZE_TWIST = 0.25
-// Metres a wall's end boulder is drawn back along it, out of the opening (mazes.js tipAt).
-const MAZE_TIP_PULL = 1.5
 const HOLLOW_LADDER = ['sink', 1.25, 1.5, 2]
 
 // THE TILE WALK IS BUCKETED BY PHASE AND A BUCKET IS WALKED ONLY WHEN ITS ANSWER
@@ -1435,14 +1392,6 @@ class RockBed {
       throw new Error(`RockBed ${cfg.name}: \`deep\` ${this.deep} m needs one candidate per tile and under half of ${tile} m`)
     }
     this.biome = biome
-    // A `maze` bed's candidates are the maze's wall blocks; see `_mazeSpot`.
-    this.mazes = cfg.maze ? biome?.mazes : null
-    if (cfg.maze && !this.mazes) throw new Error(`RockBed ${cfg.name}: \`maze\` needs the BiomeField, which carries the mazes`)
-    if (cfg.maze && (!cfg.lattice || Math.abs(tile / Math.round(Math.sqrt(tile * tile * cfg.density)) - MAZE.block) > 1e-9)) {
-      throw new Error(`RockBed ${cfg.name}: a maze bed is a lattice whose pitch is the ${MAZE.block} m block`)
-    }
-    this._mazeSites = []
-    this._spot = new Float64Array(2)
     this._deepN = this.deep > 0 ? Math.round(tile / DEEP.step) + 1 : 0
     this._deepDist = this.deep > 0 ? new Float32Array(this._deepN * this._deepN) : null
     // A `stand` bed takes the quarter turn that puts the shape's longest
@@ -2091,7 +2040,7 @@ class RockBed {
     this.regrows = 0
     this.regrounds = 0
     this.sited = { foot: 0, brow: 0 }
-    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, deep: 0, maze: 0, gap: 0, road: 0, fit: 0, pool: 0 }
+    this.rejected = { elev: 0, slope: 0, flat: 0, water: 0, env: 0, clump: 0, foot: 0, shore: 0, deep: 0, gap: 0, road: 0, fit: 0, pool: 0 }
     this.poolDry = false
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -2336,8 +2285,8 @@ class RockBed {
         this.field.scatterAt(x, z, PLACEMENT_CELL, g)
         const level = this.water.levelAt(x, z)
         const wet = level !== null && g.h < level + SHORE_RISE
-        // A maze's wood counts as open: a hollow's keep-out inside one would hole its walls.
-        const wood = !wet && this.layers.flattenAt(x, z) === 0 && this.biome.mazes.woodAt(x, z) === 0 &&
+        // A labyrinth's wood counts as open: a hollow inside one would stop its corridors.
+        const wood = !wet && this.layers.flattenAt(x, z) === 0 && this.biome.labyrinths.woodAt(x, z) === 0 &&
           forestKeepAt(g.h, g.tan, g.h - this.field.snowLineAt(x, z), this.biome, x, z) >= DEEP.keep
         dist[j * n + i] = wood ? Infinity : 0
         if (!wood) open++
@@ -3276,25 +3225,6 @@ class RockBed {
     return b
   }
 
-  /** Whether this is a maze bed and no maze touches tile (tx, tz), so the tile draws nothing; its draws are its own, so skipping them moves no other tile. */
-  _mazeless(tx, tz) {
-    if (this.mazes === null) return false
-    const t = this.tile
-    return this.mazes.sitesIn(tx * t, tz * t, (tx + 1) * t, (tz + 1) * t, this._mazeSites).length === 0
-  }
-
-  /** What a maze bed's lattice cell k of tile (tx, tz) is (layers/mazes.js), with the block's centre jittered by the position draws, and a wall's end drawn back, into `_spot`. */
-  _mazeSpot(k, tx, tz, ux, uz) {
-    const cell = this.latticePitch, gN = this.latticeN
-    const bx = tx * this.tile + ((k % gN) + 0.5) * cell
-    const bz = tz * this.tile + (((k / gN) | 0) + 0.5) * cell
-    const wall = this.mazes.blockAt(bx, bz)
-    const pull = wall === OPEN ? 0 : this.mazes.tipAt(bx, bz) * MAZE_TIP_PULL
-    this._spot[0] = bx + (ux - 0.5) * MAZE_JITTER + (wall === WALL_X ? pull : 0)
-    this._spot[1] = bz + (uz - 0.5) * MAZE_JITTER + (wall === WALL_X ? 0 : pull)
-    return wall
-  }
-
   /**
    * Every rock of `minSize` or more tile (tx, tz) might stand, as [x, z, reach] triples appended to `out`: pass one's stream and `_pureSite`, at full density, each at its unfitted scale and inside the road's clearance test, the hull's circle about its origin -- skipping the dart, `taken`, the pool and the drawn ground, so it is a superset of what `_growTile` places and the same on every client. For the leafkin (leafkin-ground.js); check-leafkin holds it to containing every rock placed. Not on a `deep` or `fitSlope` bed.
    */
@@ -3306,23 +3236,17 @@ class RockBed {
     if (this.probesRelief) this.reliefMemo.fill(0)
     const asks = this.reliefAsks, reliefs = this.reliefs
     const gN = this.latticeN, cell = this.latticePitch
-    const count = this._mazeless(tx, tz) ? 0 : this.perTile
-    for (let k = 0; k < count; k++) {
+    for (let k = 0; k < this.perTile; k++) {
       // Pass one's thirteen draws: ux, uz, env, yaw, scale, tone, warm, tint, sink, roll, lean dir, lean mag, the burned rank.
       const ux = rand(), uz = rand()
-      let x = this.lattice ? tx * tile + ((k % gN) + ux) * cell : (tx + ux) * tile
-      let z = this.lattice ? tz * tile + (((k / gN) | 0) + uz) * cell : (tz + uz) * tile
+      const x = this.lattice ? tx * tile + ((k % gN) + ux) * cell : (tx + ux) * tile
+      const z = this.lattice ? tz * tile + (((k / gN) | 0) + uz) * cell : (tz + uz) * tile
       const envRoll = rand()
       rand()
       const scaleRoll = rand()
       rand(); rand(); rand(); rand()
       const rollRoll = rand()
       rand(); rand(); rand()
-      if (this.mazes !== null) {
-        if (this._mazeSpot(k, tx, tz, ux, uz) === OPEN) continue
-        x = this._spot[0]
-        z = this._spot[1]
-      }
       if (this._pureSite(x, z, envRoll, tx, tz, false) !== null) continue
       const { h, snowLine, env } = this._ps
       const scale = this._scaleAt(x, z, h, snowLine, env, this._sizeRoll(scaleRoll))
@@ -3400,8 +3324,7 @@ class RockBed {
     let m = 0
     const gN = this.latticeN
     const cell = this.latticePitch
-    const count = this._mazeless(tx, tz) ? 0 : this.perTile
-    for (let k = 0; k < count; k++) {
+    for (let k = 0; k < this.perTile; k++) {
       // TWO DRAWS EITHER WAY, so the stream is the same length whichever bed this
       // is. On a `lattice` bed they jitter a CELL rather than choose a point: the
       // candidate sits anywhere inside its own square of the tile's grid, which
@@ -3414,7 +3337,7 @@ class RockBed {
       let x = this.lattice ? tx * tile + ((k % gN) + ux) * cell : (tx + ux) * tile
       let z = this.lattice ? tz * tile + (((k / gN) | 0) + uz) * cell : (tz + uz) * tile
       const envRoll = rand()
-      let yaw = rand() * Math.PI * 2
+      const yaw = rand() * Math.PI * 2
       // Drawn here and RESOLVED against the environment in pass two, which keeps
       // the stream fixed while still letting the size depend on where the rock
       // turned out to be.
@@ -3459,18 +3382,6 @@ class RockBed {
         }
         x = site.x + (ux * 2 - 1) * DEEP.jitter
         z = site.z + (uz * 2 - 1) * DEEP.jitter
-      }
-      // A maze bed stands only on a wall block, long axis down the wall either way round.
-      if (this.mazes !== null) {
-        const wall = this._mazeSpot(k, tx, tz, ux, uz)
-        if (wall === OPEN) {
-          this.rejected.maze++
-          continue
-        }
-        x = this._spot[0]
-        z = this._spot[1]
-        const half = yaw >= Math.PI ? Math.PI : 0
-        yaw = (wall === WALL_X ? 0 : Math.PI / 2) + half + ((yaw - half) / Math.PI - 0.5) * MAZE_TWIST
       }
 
       c.x[m] = x
@@ -4362,7 +4273,7 @@ class RockBed {
    * the 3x3 tile block, the size gate, the circle reject -- and the same ray; the
    * only difference is that both ends of it are kept.
    */
-  _columnAt(x, z, minSize, out, w, cap, sheer = false) {
+  _columnAt(x, z, minSize, out, w, cap) {
     const tile = this.tile
     const gx = Math.floor(x / tile)
     const gz = Math.floor(z / tile)
@@ -4380,7 +4291,7 @@ class RockBed {
           if (ex * ex + ez * ez >= r * r) continue
           if (!this._spanAt(id, ex, ez)) continue
           out[w * SPAN_STRIDE] = span[0]
-          out[w * SPAN_STRIDE + 1] = sheer && this.mazes !== null ? Infinity : span[1]
+          out[w * SPAN_STRIDE + 1] = span[1]
           w++
         }
       }
@@ -4749,19 +4660,18 @@ export class Rocks {
     })
 
     // A room (DESIGN.md §30) has no hollow bed: no village inside a village.
-    // Nor a maze: a room's forest is its own (main.js villageBiome), not the field the mazes lift.
-    const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow && !cfg.maze)
-    // The world's own biome field, for the beds that gate on cover (the hollow bed) or stand in its mazes.
-    const biome = beds.some((cfg) => cfg.deep > 0 || cfg.maze) ? new BiomeField({ seed, ground: field }) : null
+    const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
+    // The world's own biome field, for the hollow bed's cover and the labyrinths. A room has neither: its forest is its own (main.js villageBiome).
+    const biome = hollows ? new BiomeField({ seed, ground: field }) : null
     // Every other bed keeps clear of the entrance boulders' ground: see HOLLOW_CLEAR_M.
     let hollow = null
     const clear = (x, z, r) => (keepOut !== null && keepOut(x, z, r)) || hollow.crowdsHollow(x, z, r)
-    // And every other blocking bed keeps off a maze's ground, where a stone could stop a corridor.
-    const mazes = beds.some((cfg) => cfg.maze) ? biome.mazes : null
+    // And every blocking bed keeps off a labyrinth's ground, where a stone could stop a corridor.
+    const labyrinths = biome === null ? null : biome.labyrinths
     const guard = (cfg) => {
       const own = hollows && !cfg.hollow ? clear : keepOut
-      if (mazes === null || cfg.maze || !cfg.blocks) return own
-      return (x, z, r) => mazes.reaches(x, z, r) || (own !== null && own(x, z, r))
+      if (labyrinths === null || !cfg.blocks) return own
+      return (x, z, r) => labyrinths.reaches(x, z, r) || (own !== null && own(x, z, r))
     }
     this.field = field
     this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds, keepOut: guard(cfg) }))
@@ -5027,17 +4937,12 @@ export class Rocks {
    * SATURATES like anchorsInto -- nothing is written past `out`, and a caller
    * handed back its own capacity should treat the answer as truncated. Same
    * `minSize` gate and the same `blocks` flag as blockTopAt.
-   *
-   * `sheer` runs a maze wall's span to Infinity, for the walker's own questions
-   * (what is ground, does she fit): never ground, so no gentle end or low seam
-   * lets her up onto the wall tops (DESIGN.md §41). Not for a ceiling or a
-   * teleport arc, which would find her in stone at any height over a wall.
    */
-  columnAt(x, z, minSize, out, sheer = false) {
+  columnAt(x, z, minSize, out) {
     const cap = (out.length / SPAN_STRIDE) | 0
     let w = 0
     for (const bed of this.beds) {
-      if (bed.blocks) w = bed._columnAt(x, z, minSize, out, w, cap, sheer)
+      if (bed.blocks) w = bed._columnAt(x, z, minSize, out, w, cap)
     }
     return w
   }

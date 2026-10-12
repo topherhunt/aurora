@@ -27,7 +27,7 @@ const noStone = { columnAt: () => 0, blockTopAt: () => -Infinity }
 const trees = { trunkAt: () => null }
 console.warn = () => {}
 
-// She walks +x (yaw -PI/2) from x = 8 for `seconds` over `ground`; what she lands from, summed over every landing.
+// She walks +x (yaw -PI/2) from x = 8 for `seconds` over `ground`; what she lands from, summed over every landing, where her feet were when she last did, and the lowest they went.
 function walkOff(ground, { scale = 1, level, seconds = 5, input = INPUT } = {}) {
   const rig = new THREE.Group()
   const camera = new THREE.PerspectiveCamera()
@@ -41,12 +41,16 @@ function walkOff(ground, { scale = 1, level, seconds = 5, input = INPUT } = {}) 
   p.spawnAt(8, 0)
   rig.updateMatrixWorld(true)
   let fell = 0
+  let landY = null
+  let lowY = Infinity
   for (let f = 0; f < Math.round(seconds / DT); f++) {
     p.update(DT, input)
     rig.updateMatrixWorld(true)
     fell += p.fell
+    if (p.fell > 0) landY = rig.position.y
+    lowY = Math.min(lowY, rig.position.y)
   }
-  return { p, fell }
+  return { p, fell, landY, lowY }
 }
 const cliff = (drop) => ({ heightAt: (x) => (x < 10 ? GROUND : GROUND - drop) })
 
@@ -69,8 +73,9 @@ check(FALL.riddenM === 2 * FALL.safeM && fallDamage(8, FALL.riddenM) === 0 && fa
   check(m.pose.y === 0 && hurts.length === 1 && hurts[0] === fallDamage(12, FALL.riddenM), 'a 12 m leap on a strider is priced from its feet, not where the leap starts', `hurt ${hurts}`)
 }
 {
-  const { p, fell } = walkOff(cliff(9))
+  const { p, fell, landY } = walkOff(cliff(9))
   check(p.standY === GROUND - 9 && Math.abs(fell - 9) < 1e-6, 'walking off a 9 m cliff is a fall of 9 m', `fell ${fell.toFixed(3)}, feet at ${p.standY}`)
+  check(landY - (GROUND - 9) < LOCOMOTION.fallArrive, 'priced once her eye has come down, not as she steps off', `feet at ${landY?.toFixed(2)} as it lands`)
   check(fallDamage(fell) === 25, 'which costs her 25 HP', `${fallDamage(fell)}`)
 }
 {
@@ -88,7 +93,19 @@ check(FALL.riddenM === 2 * FALL.safeM && fallDamage(8, FALL.riddenM) === 0 && fa
 }
 {
   const { p, fell } = walkOff(cliff(9), { level: GROUND - 2 })
-  check(p.swimming && fell === 0, 'a 9 m drop into water over her head is no fall', `swimming ${p.swimming}, fell ${fell}`)
+  check(p.swimming && fell === 0, 'a 9 m drop into water 7 m deep is no fall', `swimming ${p.swimming}, fell ${fell}`)
+}
+{
+  const { p, fell } = walkOff(cliff(9), { level: GROUND - 6 })
+  check(p.swimming && Math.abs(fell - 9) < 1e-6, 'a 9 m drop into water 3 m deep is a fall of 9 m to its bed', `swimming ${p.swimming}, fell ${fell.toFixed(3)}`)
+}
+{
+  const { p, fell, lowY } = walkOff(cliff(30), { level: GROUND - 10, seconds: 3 })
+  check(p.swimming && fell === 0 && Math.abs(lowY - (GROUND - 12.5)) < LOCOMOTION.fallArrive, 'a 10 m drop to deep water plunges her feet 2.5 m under', `swimming ${p.swimming}, fell ${fell}, feet down to ${lowY.toFixed(2)}`)
+}
+{
+  const { fell, lowY } = walkOff(cliff(30), { level: GROUND - 25, seconds: 3 })
+  check(fell === 0 && Math.abs(lowY - (GROUND - 30)) < LOCOMOTION.fallArrive, 'a 25 m drop into water 5 m deep plunges only to its bed, free', `fell ${fell}, feet down to ${lowY.toFixed(2)}`)
 }
 {
   const { p } = walkOff(cliff(9), { seconds: 0.1 })

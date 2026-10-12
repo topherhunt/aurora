@@ -533,8 +533,11 @@ export class Villagers {
     this.freePuppets = []
     this.asset = null
     this.durations = null
-    // One-shots for the ear, drained by voices(): { sound, x, y, z }.
+    // One-shots for the ear, drained by voices(): { sound, x, y, z }; the talkers' turns, drained by chatter(), for conversations.js to voice.
     this.calls = []
+    this.turns = []
+    // Those held in a conversation with her (hold()), by id: `{ x, y, z, heading, clip, at, cue }`, drawn there turned to her while the sim goes on.
+    this.talking = new Map()
     this.feet = { x: 0, y: 0, z: 0 }
     this.head = { x: 0, y: 0, z: 0 }
     this.frame = 0
@@ -1805,7 +1808,9 @@ export class Villagers {
         c.voice -= dt
         if (c.voice <= 0) {
           c.voice = between(c.rand, CHATTER_S)
-          this._voice(c, this._chatter(c))
+          // conversations.js voices the turn; the roll that picked a chatter clip stays, or every later draw of the sim shifts.
+          c.rand()
+          if (this.voicing) this.turns.push({ id: c.id, partner: c.partner.id, x: c.x, y: c.y + c.size * CHEST, z: c.z })
           const gesture = TALKS[(c.rand() * TALKS.length) | 0]
           this._play(c, gesture, this.durations[gesture])
         }
@@ -1903,7 +1908,32 @@ export class Villagers {
     for (const c of this.all) this._draw(c, dt, seconds)
     this.claims.clear()
     for (const c of this.all) if (c.frog !== null && !c.hidden) this.claims.set(frogKey(...c.frog), this._claim(c))
-    if (tick - live > SILENT_TICKS) this.calls.length = 0
+    if (tick - live > SILENT_TICKS) this.calls.length = this.turns.length = 0
+  }
+
+  /** The talkers' turns since the last call, each `{ id, partner, x, y, z }`, drained. */
+  chatter(into) {
+    for (const v of this.turns) into.push(v)
+    this.turns.length = 0
+    return into
+  }
+
+  /** Villager `id` held in a conversation with her: drawn where it stands now, turned to her, until release(). */
+  hold(id, seconds) {
+    const p = this.all[id].pose
+    this.talking.set(id, { x: p.x, y: p.y, z: p.z, heading: p.heading, clip: 'idle', at: seconds, cue: 0 })
+  }
+
+  /** A held one's `clip` played once from `seconds`, then idle. */
+  gesture(id, clip, seconds) {
+    const h = this.talking.get(id)
+    if (h === undefined) throw new Error(`Villagers.gesture: ${id} is not held`)
+    Object.assign(h, { clip, at: seconds, cue: h.cue + 1 })
+  }
+
+  /** Let go: eased back onto its sim (net-ease.js). */
+  release(id) {
+    this.talking.delete(id)
   }
 
   /** Tick `t` for the whole village, `target` the frame's: the chapter's turn puts everyone indoors; a live tick near the frame's looks for her feet first. */
@@ -2040,28 +2070,40 @@ export class Villagers {
     const a = this.alpha
     const pose = c.pose
     const wasX = pose.x, wasY = pose.y, wasZ = pose.z
-    ease(c, pose, c.px + (c.x - c.px) * a, c.py + (c.y - c.py) * a, c.pz + (c.z - c.pz) * a, c.ph + swing(c.ph, c.heading) * a, this.rolled, dt)
+    const sx = c.px + (c.x - c.px) * a, sy = c.py + (c.y - c.py) * a, sz = c.pz + (c.z - c.pz) * a, sh = c.ph + swing(c.ph, c.heading) * a
+    ease(c, pose, sx, sy, sz, sh, this.rolled, dt)
+    const held = this.talking.get(c.id)
+    if (held !== undefined) {
+      // Held, its offset from the sim is the ease's, so a release eases it back.
+      const s = swing(held.heading, Math.atan2(-(this.feet.z - held.z), this.feet.x - held.x))
+      held.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
+      c.ox = held.x - sx; c.oy = held.y - sy; c.oz = held.z - sz; c.oh = swing(sh, held.heading)
+      pose.x = held.x; pose.y = held.y; pose.z = held.z; pose.heading = held.heading
+    }
     const m = c.shown ? popM(pose, wasX, wasY, wasZ, dt) : 0
     if (m > 0) warnPop(this, seconds, { id: c.id, state: c.state, m: +m.toFixed(2), dy: +(pose.y - wasY).toFixed(2), rewound: this.rewound })
-    c.shown = !c.hidden
+    c.shown = !c.hidden || held !== undefined
     pose.k = c.k
     pose.size = c.size
-    pose.speed = c.speed
-    pose.clip = c.clip
+    const clip = held === undefined ? c.clip : seconds - held.at < this.durations[held.clip] ? held.clip : 'idle'
+    pose.speed = held === undefined ? c.speed : 0
+    pose.clip = clip
     pose.cycle = c.cycle
 
     const dist = Math.hypot(pose.x - this.head.x, pose.y - this.head.y, pose.z - this.head.z)
     c.lod = critterTier(c.size, dist, c.lod, LOD_TIERS)
-    const want = c.hidden || c.lod === LOD_TIERS ? -1 : c.lod
+    const gone = c.hidden && held === undefined
+    const want = gone || c.lod === LOD_TIERS ? -1 : c.lod
     const puppet = want === -1 && !c.puppet ? null : this._takePuppet(c)
     if (puppet) {
       // Through its door it dithers out where it stands, over DOOR_FADE_S.
-      puppet.show(want, c.hidden ? DOOR_FADE_S : lodFadeS())
+      puppet.show(want, gone ? DOOR_FADE_S : lodFadeS())
       _pos.set(pose.x, pose.y, pose.z)
       _quat.setFromAxisAngle(UP, pose.heading)
       _scl.setScalar(c.k)
       _mat.compose(_pos, _quat, _scl)
-      puppet.play(c.clip, c.cue, c.from)
+      if (held === undefined) puppet.play(c.clip, c.cue, c.from)
+      else puppet.play(clip, 1e6 + held.cue * 2 + (clip === 'idle' ? 1 : 0), -1)
       groundFeet(puppet, pose, this.walk, PLANTED, (this.frame + c.id) % 6 === 0)
       puppet.step(dt)
       puppet.group.matrix.copy(_mat)

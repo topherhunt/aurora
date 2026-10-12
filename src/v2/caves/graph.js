@@ -158,13 +158,13 @@ export function buildGraph({ seed, entries }) {
     }
     return false
   }
-  // Within 40 degrees of each other out of node i, toward j and toward e's other end.
-  const alongside = (e, i, j) => {
+  // Within 40 degrees (or acos `near`) of each other out of node i, toward j and toward e's other end.
+  const alongside = (e, i, j, near = 0.766) => {
     if (e.a !== i && e.b !== i) return false
     const N = nodes[i], J = nodes[j], K = nodes[e.a === i ? e.b : e.a]
     if (K === J) return false
     const ax = J.x - N.x, az = J.z - N.z, bx = K.x - N.x, bz = K.z - N.z
-    return (ax * bx + az * bz) / Math.hypot(ax, az) / Math.hypot(bx, bz) > 0.766
+    return (ax * bx + az * bz) / Math.hypot(ax, az) / Math.hypot(bx, bz) > near
   }
   const extra = []
   for (const c of cands) {
@@ -219,27 +219,32 @@ export function buildGraph({ seed, entries }) {
   // Braids: walks where the grade allows, and drops into any chamber that can take the lip, the passage graded up or down to it, so some open high in the wall near the roof. A great cavern takes every braid it can: its many branching tunnels.
   const degree = nodes.map((n) => adj[n.i].length)
   const cap = (n) => (n.great ? 16 : 4)
-  let braids = 0
-  for (const c of extra) {
-    const A = nodes[c.a], B = nodes[c.b], great = A.great || B.great
-    if (!great && braids >= Math.ceil(nodes.length * 0.3)) continue
-    if (degree[c.a] >= cap(A) || degree[c.b] >= cap(B) || rand() > (great ? 0.95 : 0.5) || edges.some((e) => alongside(e, c.a, c.b) || alongside(e, c.b, c.a))) continue
+  // A braid from candidate c, laid at odds `odds` unless within acos `near` of a passage at either end, a walk where the grade allows (at odds 1 always) and else a drop: whether it was laid.
+  const braid = (c, odds, near) => {
+    const A = nodes[c.a], B = nodes[c.b]
+    if (degree[c.a] >= cap(A) || degree[c.b] >= cap(B) || (odds < 1 && rand() > odds) || edges.some((e) => alongside(e, c.a, c.b, near) || alongside(e, c.b, c.a, near))) return false
     const hi = A.y >= B.y ? A : B
     const lo = hi === A ? B : A
     const run = between(hi, lo)
     const dy = hi.y - lo.y
-    if (dy <= run * GRADE_MAX && (lo.kind === 'junction' || rand() < 0.6)) {
+    if (dy <= run * GRADE_MAX && (odds === 1 || lo.kind === 'junction' || rand() < 0.6)) {
       link(c.a, c.b, false)
     } else {
-      if (lo.kind === 'junction') continue
+      if (lo.kind === 'junction') return false
       const bottom = Math.max(DROP_MIN, dy - run * GRADE_MAX * 0.8), top = Math.min(DROP_MAX, lo.h - DROP_ROOM, dy + run * GRADE_MAX * 0.8)
-      if (bottom > top) continue
+      if (bottom > top) return false
       const e = link(hi.i, lo.i, false)
       e.kind = 'drop'
       e.drop = bottom + (top - bottom) * rand() ** 0.7
     }
     degree[c.a]++; degree[c.b]++
-    if (!great) braids++
+    return true
+  }
+  let braids = 0
+  for (const c of extra) {
+    const great = nodes[c.a].great || nodes[c.b].great
+    if (!great && braids >= Math.ceil(nodes.length * 0.3)) continue
+    if (braid(c, great ? 0.95 : 0.5) && !great) braids++
   }
 
   // Regions: grown along the tree from scattered seeds, 3-8 nodes each, then coloured so neighbours differ.
@@ -327,6 +332,18 @@ export function buildGraph({ seed, entries }) {
     built.push(e)
   }
   for (let k = edges.length - 1; k >= 0; k--) if (edges[k].pts === null) edges.splice(k, 1)
+  // A great cavern is never a dead end: one left with a single passage takes the first braid that can be laid without a clash, 20 degrees off its others being far apart at its rim.
+  degree.fill(0)
+  for (const e of edges) { degree[e.a]++; degree[e.b]++ }
+  for (const n of nodes) {
+    for (const c of extra) {
+      if (!n.great || degree[n.i] >= 2) break
+      if ((c.a !== n.i && c.b !== n.i) || edges.some((q) => (q.a === c.a && q.b === c.b) || (q.a === c.b && q.b === c.a)) || !braid(c, 1, 0.94)) continue
+      const e = edges[edges.length - 1]
+      for (let k = 0; k < 16 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand, k >= 8)
+      if (clashes(e, built, nodes)) { edges.pop(); degree[c.a]--; degree[c.b]-- } else built.push(e)
+    }
+  }
   edges.forEach((e, i) => { e.i = i })
   for (const p of pools) p.drowned = edges.filter((e) => e.kind === 'drowned' && e.a === p.node).map((e) => e.i)
   for (const e of edges) if (e.kind === 'sump') pools.push({ edge: e.i, level: e.sump.level, depth: e.sump.dip })

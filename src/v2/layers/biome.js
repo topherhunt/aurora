@@ -3,13 +3,13 @@
 //
 // Three-free. 0 is open meadow, 1 is dense towering forest, and the middle is the sparser, lower wood between them. It reaches the forest through layers/forest.js as a keep-probability and a height multiplier.
 //
-// It is value noise on a coarse lattice, three octaves, off the same mulberry32 the scatters run on -- a pure function of position and the world seed, four hashes per octave, no storage. The octaves under the coarsest fray the edge so the treeline is not a contour. Over the noise go GLADES, small round clearings the noise is too coarse to make, and the boulder mazes (layers/mazes.js), which hold the cover up so every maze stands in the wood.
+// It is value noise on a coarse lattice, three octaves, off the same mulberry32 the scatters run on -- a pure function of position and the world seed, four hashes per octave, no storage. The octaves under the coarsest fray the edge so the treeline is not a contour. Over the noise go GLADES, small round clearings the noise is too coarse to make, and the palisade labyrinths (layers/labyrinths.js), which hold the cover up so every labyrinth stands in the wood.
 //
-// THE SEAM FOR AUTHORED OVERRIDES: `coverAt` is the one function every reader calls (the trees, the terrain tint, the rocks' hollow and maze beds), each from its own instance off the seed. Anything that moves the forest composes here and they all agree.
+// THE SEAM FOR AUTHORED OVERRIDES: `coverAt` is the one function every reader calls (the trees, the terrain tint, the rocks' hollow bed), each from its own instance off the seed. Anything that moves the forest composes here and they all agree.
 // ---------------------------------------------------------------------------
 
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
-import { BoulderMazes } from './mazes.js'
+import { Labyrinths } from './labyrinths.js'
 
 // Metres per lattice cell of the coarsest octave. A meadow or a dense stand is a fraction of this across.
 const CELL = 90
@@ -34,11 +34,11 @@ function latticeHash(ix, iz, seed, octave) {
 }
 
 export class BiomeField {
-  /** `ground` is the world's height field, which the mazes are sited on. */
+  /** `ground` is the world's height field, which the labyrinths are sited on. */
   constructor({ seed, ground }) {
     if (typeof seed !== 'number' || !Number.isFinite(seed)) throw new Error(`BiomeField: seed must be a finite number, got ${seed}`)
     this.seed = seed
-    this.mazes = new BoulderMazes({ seed, ground })
+    this.labyrinths = new Labyrinths({ seed, ground })
   }
 
   /** 0 open meadow .. 1 dense forest at (x, z). */
@@ -63,7 +63,7 @@ export class BiomeField {
       cell *= 0.5
     }
     const cover = smoothstep(CONTRAST[0], CONTRAST[1], sum / norm) * this._gladeAt(x, z)
-    const wood = this.mazes.woodAt(x, z)
+    const wood = this.labyrinths.woodAt(x, z)
     return wood > 0 ? cover + (1 - cover) * wood : cover
   }
 

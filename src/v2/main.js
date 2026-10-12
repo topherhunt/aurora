@@ -15,6 +15,7 @@ import { WILD, WildStriders } from './render/wild-striders.js'
 import { Journeys } from './render/journeys.js'
 import { Signposts } from './render/signposts.js'
 import { Bridges } from './render/bridges.js'
+import { Palisades, PALISADE_CARDS } from './render/palisades.js'
 import { loadStoneBridge } from '../bridges/stone-bridge.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
@@ -82,6 +83,10 @@ import { Leafkin } from './render/leafkin.js'
 import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
 import { Trust } from './trust.js'
+import { Conversations } from './conversations.js'
+import { Mic } from './audio/mic.js'
+import { Rapport } from './talk/rapport.js'
+import { QuestLog } from './talk/quests.js'
 import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
@@ -926,6 +931,14 @@ const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw 
 const trust = new Trust()
 // Every chalk stroke on every cave's walls she knows of, hers by trust.player (caves/chalk.js).
 const chalk = new Chalk(() => trust.player)
+// What the talk has given her (conversations.js): the topics she has heard of, saved; how each person stands with her and the quests she has taken, for the session.
+const talkKnown = new Set()
+const talkRapport = new Rapport()
+const talkLog = new QuestLog()
+// Her voice as the hail (audio/mic.js), asked for on the first gesture once the sound is open.
+let talkMic = null
+const talkGaze = new THREE.Vector3()
+const talkHead = new THREE.Vector3()
 
 function saveGame() {
   // The rig only ever turns about Y (snap turns, recenter), so its quaternion
@@ -954,6 +967,7 @@ function saveGame() {
     chalk: chalk.save(),
     // Her size, as the mushrooms left it; their timed effects are not saved.
     size: effects.size,
+    talk: { topics: [...talkKnown] },
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -986,6 +1000,9 @@ function applySave(doc) {
   if (doc.chalk !== undefined) chalk.load(doc.chalk)
   // A save from before eating has no `size`: she is her own.
   effects.setSize(doc.size ?? 1)
+  // A save from before talk has heard of nothing.
+  talkKnown.clear()
+  if (doc.talk !== undefined) for (const t of doc.talk.topics) talkKnown.add(t)
 }
 
 /** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
@@ -1077,6 +1094,9 @@ function newGame() {
   flares.clear()
   chalk.clear()
   trust.clear()
+  talkKnown.clear()
+  talkRapport.of.clear()
+  talkLog.of.clear()
   giveFlareGun()
   giveFlint()
   paintBackpack()
@@ -2292,6 +2312,7 @@ function updateFire(dt) {
   player.headPosition(headTmp)
   torchSorted.length = 0
   for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), reach: TORCH_REACH, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
+  if (palisades) palisades.torchLights(headTmp, now, TORCH_REACH, torchSorted)
   const night = lampNight()
   const hearthGain = HEARTH_LIGHT.gain * (HEARTH_LIGHT.day + (1 - HEARTH_LIGHT.day) * night)
   const far = lighting.uniforms.uHearthFar.value
@@ -2558,6 +2579,10 @@ function buildQuestPanel() {
         const act = questActionAt(questPointer.hit)
         if (act) { act(); return }
         if (el.components.raycaster && questPanelBlocks(el.components.raycaster.raycaster)) return
+      } else if (conversations !== null && conversations.open) {
+        questPointerHand = el
+        updateQuestPointer()
+        if (questPointer.hit !== null && conversations.press(questPointer.hit, handsHead())) return
       }
       if (!hands) return
       const key = el === leftHandEl ? 'left' : 'right'
@@ -2619,6 +2644,9 @@ function buildQuestPanel() {
       const act = questActionAt(raycaster.intersectObjects(questHitMeshes)[0])
       if (act) act()
       if (act || questPanelBlocks(raycaster)) return
+    } else if (conversations !== null && conversations.open) {
+      const hit = raycaster.intersectObject(conversations.panel.mesh)[0]
+      if (hit !== undefined && conversations.press(hit, handsHead())) return
     }
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
@@ -2678,7 +2706,9 @@ function questPointerEl() {
 function updateQuestPointer() {
   // Dead in the headset, the pointer is for the death card's buttons alone, and drawn over its black.
   const dying = vitalsHud !== null && vitalsHud.deathTargets.length > 0
-  const open = questPanelGroup.visible || dying
+  // With the menu closed, an open conversation's grid takes the pointer.
+  const talking = !questPanelGroup.visible && conversations !== null && conversations.open
+  const open = questPanelGroup.visible || dying || talking
   for (const el of [leftHandEl, rightHandEl]) {
     // The controller model is never drawn: it loads only to set the pointer's origin and direction.
     const model = el.getObject3D('mesh')
@@ -2698,7 +2728,7 @@ function updateQuestPointer() {
   // disabled and casts nothing.
   const rc = el.components.raycaster
   rc.updateOriginDirection()
-  const hit = rc.raycaster.intersectObjects(dying ? vitalsHud.deathTargets : questHitMeshes)[0] || null
+  const hit = rc.raycaster.intersectObjects(dying ? vitalsHud.deathTargets : talking ? [conversations.panel.mesh] : questHitMeshes)[0] || null
   p.hit = hit
   p.line.renderOrder = p.dot.renderOrder = dying ? vitalsHud.pointerOrder : QUEST_POINTER_ORDER
   if (p.line.parent !== el.object3D) el.object3D.add(p.line)
@@ -3119,6 +3149,8 @@ let wildlife = null
 let snowmen = null
 let leafkin = null
 let villagers = null
+// Talk with the room's townsfolk or villagers (conversations.js), null in a room with neither.
+let conversations = null
 let hobs = null
 let hands = null
 let handsNet = null
@@ -3174,6 +3206,7 @@ let overworld = null
 let baked = null
 let signposts = null
 let bridges = null
+let palisades = null
 let roadLines = null
 // Every laid way and bridge of the road plan as blue line segments 2 m over the road, each used stub carried on to its town's centre, and a dot on each centre, drawn without depth test or fog so the whole web reads from any height.
 function buildRoadLines(plan, towns) {
@@ -3737,6 +3770,7 @@ function bakeImpostors() {
   // NOT on that list: the hearth builds a card MESH of its own each time, so its
   // bake is per-hearth and not per-atlas; the bridges' picture lives in this room's card pool.
   if (bridges) bridges.bakeCard(renderer)
+  if (palisades) palisades.bakeCard(renderer)
   if (hearth) {
     const h = hearth.bakeCard(renderer)
     console.log(`hearth impostor baked: luma ${h.meanLuma.toFixed(3)} cover ${h.coverage.toFixed(3)} ${h.width.toFixed(2)} x ${h.height.toFixed(2)} m`)
@@ -3788,11 +3822,13 @@ function disposeRoom() {
     if (Array.isArray(layer.meshes)) for (const m of layer.meshes) m.removeFromParent()
   }
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
+  if (conversations) { conversations.dispose(); conversations = null }
   if (towns) { towns.dispose(); towns = null }
   if (townsfolk) { townsfolk.dispose(); townsfolk = null; townHearths = null }
   if (wildStriders) { wildStriders.dispose(); wildStriders = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
+  if (palisades) { palisades.dispose(); palisades = null; window.v2palisades = null }
   if (roadLines) { roadLines.removeFromParent(); for (const part of roadLines.children) { part.geometry.dispose(); part.material.dispose() } roadLines = null }
   townPlan = null
   roadPlan = null
@@ -4649,7 +4685,7 @@ async function buildRoom(room, at) {
     : townPlan ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ x: w.x, z: w.z, r: Math.max(...w.outline.map(([lx, lz]) => Math.hypot(lx, lz))), spots: fieldSpots(w) })))
     : []
   // One quad mesh draws every far litter card (stumps, logs, bones, mushrooms); 2048 is the most it draws at once (the beds' worst cases run near 550 deadwood and 500 mushrooms); a full mesh warns and shows nothing more.
-  litterCards = new LitterCards(12288)
+  litterCards = new LitterCards(12288 + PALISADE_CARDS)
   scene.add(litterCards.group)
   window.v2cards = litterCards // console: `v2cards.stats`
   window.v2treeFacing = (k) => { cardFacing.value = k } // console: tree cards' sun-facing, 0 flat to 1 CARD_NORMAL
@@ -4727,6 +4763,11 @@ async function buildRoom(room, at) {
     roadLines.visible = questToggles.roadLines
     scene.add(roadLines)
     window.v2roads = { plan: roadPlan, signposts, bridges, lines: roadLines } // console: `v2roads.plan.signs`, `v2roads.bridges.items`
+  }
+  if (biome.labyrinths) {
+    palisades = new Palisades(scene, { labyrinths: biome.labyrinths, field: height, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), cards: litterCards })
+    palisades.update(spawn, fireNow())
+    window.v2palisades = palisades // console: `v2palisades.stats`
   }
 
   // Trees. The atlas was built up ahead of the terrain, because the terrain
@@ -4806,6 +4847,7 @@ async function buildRoom(room, at) {
     townHearths = townsfolk.hearths
   }
   if (bridges) walk.addStone(bridges)
+  if (palisades) walk.addStone(palisades)
   if (boulders) walk.addStone(boulders)
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
@@ -5089,7 +5131,9 @@ async function buildRoom(room, at) {
   // the first frame after they land fills the tiles around her. A village holds
   // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, eat: (lure, sp) => hands.eatLure(lure, sp), harm })
+  // Nothing wild spawns by a town's buildings or in a labyrinth (DESIGN.md §41).
+  const wildAvoid = towns || palisades ? (x, z) => (towns !== null && towns.nearBuildingAt(x, z, 20)) || (palisades !== null && palisades.labyrinths.keepOutAt(x, z, 2)) : null
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: wildAvoid, eat: (lure, sp) => hands.eatLure(lure, sp), harm })
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -5100,7 +5144,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, cards: litterCards, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: towns ? (x, z) => towns.nearBuildingAt(x, z, 20) : null, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, cards: litterCards, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: wildAvoid, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
@@ -5249,6 +5293,10 @@ async function buildRoom(room, at) {
   }
   window.v2villagers = villagers
   window.v2hobs = hobs
+  if (townsfolk || villagers) {
+    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic })
+  }
+  window.v2conversations = conversations
 
   // The ambient sound over this room's layers, once the clips are in.
   await bootStep('sound')
@@ -5807,6 +5855,7 @@ const CODE_ACTIONS = {
   KeyN: 'timeSkip',
   KeyP: 'auroraPattern',
   KeyM: 'grassStyle',
+  KeyC: 'hail',
   BracketLeft: 'coarser',
   BracketRight: 'finer',
 }
@@ -5851,6 +5900,7 @@ const HOTKEYS = [
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
       { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
       { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed; A / X in the headset' },
+      { keys: 'c', what: 'speak up to the townsperson or leafkin you face, within a few metres -- in the headset (or with a mic allowed), just say something aloud; click the grid that opens to talk' },
     ],
   },
   {
@@ -6056,6 +6106,7 @@ addEventListener('keydown', (e) => {
   if (fresh.includes('stow') && hands) hands.stowPress('desk')
   if (fresh.includes('flareColor') && hands && holdsGun('desk')) cycleFlareColor('desk')
   if (fresh.includes('auroraPattern')) cycleAurora()
+  if (fresh.includes('hail') && conversations) conversations.hail()
   // M cycles the three grass beds in place, under the player's feet, so they can
   // be judged against the same hillside in the same light. Rebuilding a bed is
   // ~100 ms of one frame; a swap is not something a player does.
@@ -6418,7 +6469,12 @@ function updateAmbience(dt, state) {
 // can be refused and the first gesture the page ever sees is a trigger pull.
 // A WebXR select is a user activation, so the session's own events unlock too.
 function unlockSound() {
-  if (sound) sound.unlock()
+  if (!sound) return
+  sound.unlock()
+  if (talkMic === null) {
+    talkMic = new Mic(sound.ctx)
+    talkMic.start()
+  }
 }
 for (const ev of ['pointerdown', 'keydown', 'touchend', 'click']) addEventListener(ev, unlockSound, { passive: true })
 renderer.xr.addEventListener('sessionstart', () => {
@@ -7880,6 +7936,14 @@ function tick() {
   else if (indoors && !indoors.town && villagers) stepAnimal('leafkin', () => villagers.settle(clock.seconds, dt))
   // In a town's house the town goes on without her too, so its folk come home and go out (TownResidents.sync).
   else if (indoors && indoors.town && townsfolk && questToggles.townsfolk) townsfolk.settle(clock.seconds)
+  // After the townsfolk and villagers, whose chatter of this frame it voices; indoors or in a cave, it only ends her conversation.
+  if (conversations) {
+    player.headPosition(talkHead)
+    camera.getWorldDirection(talkGaze)
+    talkGaze.y = 0
+    talkGaze.normalize()
+    conversations.update(dt, { seconds: clock.seconds, head: talkHead, gaze: talkGaze, scale: herScale(), hour: clock.hour, trusts: villagers ? trustsHer : () => true, indoors: !!indoors || cave !== null })
+  }
   stepEating(dt)
   stepSize()
   // After the layers, so a creature let go of this frame is stepped by its own layer next frame from where the hand left it.
@@ -8023,6 +8087,7 @@ function stepOverworld(dt, now) {
   if (signposts) signposts.update(headTmp)
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
+  if (palisades) palisades.update(headTmp, fireNow())
   if (townsfolk && questToggles.townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
   spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)

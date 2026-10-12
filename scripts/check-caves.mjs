@@ -5,7 +5,7 @@
 // Plans a spread of systems from fixed seeds and checks the promises: the same cave from the same seed, a way back to a mouth from everywhere (on the graph, then by walking the built walk surface), water where the sumps and pools say, and a mesh within budget. What this can NOT check: how dark or how lost it feels. That needs a headset.
 
 import { planCave, EXIT_R } from '../src/v2/caves/build.js'
-import { DROP_MIN, reliefAt } from '../src/v2/caves/graph.js'
+import { DROP_MIN, reliefAt, buildGraph } from '../src/v2/caves/graph.js'
 import { columnAt, MUSH_FOOT } from '../src/v2/caves/props.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
 import { WalkSurface } from '../src/v2/walk.js'
@@ -58,6 +58,15 @@ const SYSTEMS = [
   // A cliff mouth and a cellar under a house.
   { seed: 17, entries: [{ x: 0, z: 0, dx: 1, dz: 0 }, { x: 140, z: 70, dx: 0.6, dz: -0.8, cellar: true }] },
 ]
+
+{
+  const dead = []
+  for (let seed = 1; seed <= 60; seed++) {
+    const g = buildGraph({ seed, entries: [{ x: 0, z: 0, dx: 1, dz: 0 }].concat(seed % 3 ? [{ x: 120, z: 60, dx: -1, dz: 0 }] : []) })
+    for (const n of g.nodes.filter((q) => q.great)) if (g.edges.filter((e) => e.a === n.i || e.b === n.i).length < 2) dead.push(`seed ${seed} node ${n.i}`)
+  }
+  check(dead.length === 0, 'over 60 seeds, every great cavern has at least two passages', dead.slice(0, 3).join('; '))
+}
 
 for (const sys of SYSTEMS) {
   const tag = `system ${sys.seed} (${sys.entries.length} mouth${sys.entries.length > 1 ? 's' : ''})`

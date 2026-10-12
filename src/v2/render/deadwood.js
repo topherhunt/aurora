@@ -185,6 +185,9 @@ const P_TAN = 12
 const P_SNOW = 13
 const P_DIRT = 14
 
+// Metres a piece's centre keeps from a labyrinth's ground: the longest log's half length.
+const LABYRINTH_PAD = 4
+
 // Where a piece of dead wood may lie. Every one of these is a rejection, never
 // a retry -- see ferns.js on why re-rolling would thicken the litter beside
 // every lake.
@@ -706,7 +709,7 @@ export class Deadwood {
     this.regrows = 0
     this.nearTiles = 0
     // Counted once per planned tile, `open` being the cover roll's share.
-    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0, open: 0 }
+    this.rejected = { elev: 0, slope: 0, water: 0, path: 0, snow: 0, open: 0, labyrinth: 0 }
     this.buildMs = performance.now() - t0
     this.placeMs = 0
     this.lastBuildMs = 0
@@ -831,6 +834,8 @@ export class Deadwood {
       // way: a road crossing water is a ford and a log across it is a blockage.
       const river = drowned ? null : this.paths.nearest(x, z, 'river')
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
+      // Out of a labyrinth's corridors and its gate, a log's length clear (layers/labyrinths.js).
+      if (this.biome && this.biome.labyrinths && this.biome.labyrinths.keepOutAt(x, z, LABYRINTH_PAD)) { rej.labyrinth++; continue }
 
       const o = plan.n * P
       const scale = this._scaleFor(variant, size)

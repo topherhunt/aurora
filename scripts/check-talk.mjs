@@ -11,7 +11,11 @@ import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { planTowns } from '../src/v2/layers/towns.js'
-import { TRAITS, castMinds, villageMinds } from '../src/v2/talk/mind.js'
+import { TRAITS, VOICE, castMinds, villageMinds } from '../src/v2/talk/mind.js'
+import { LORE, TOPICS } from '../src/v2/talk/lore.js'
+import { DialogGrid } from '../src/v2/talk/grid.js'
+import { Chat, CHAT, chatterMoment } from '../src/v2/talk/chat.js'
+import { LinePicker, leafkinTier } from '../src/v2/talk/lines.js'
 import { TalkWorld, compass } from '../src/v2/talk/world.js'
 import { Rapport } from '../src/v2/talk/rapport.js'
 import { QuestLog, questsFor, missingChild, MESSAGES } from '../src/v2/talk/quests.js'
@@ -33,7 +37,7 @@ const { towns } = planTowns({ ground: (x, z) => hm.sample(x, z), surface: (x, z)
 const world = new TalkWorld(SEED, towns)
 const EPOCH = 7
 const quests = questsFor(world, EPOCH)
-const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, ...more })
+const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, known: new Set(), ...more })
 const fire = (t) => ({ x: t.town.x, z: t.town.z })
 // A mind with some traits pinned, for testing one lever at a time.
 const as = (m, traits) => ({ ...m, traits: { ...m.traits, ...traits } })
@@ -113,15 +117,16 @@ const drift = new Set(Array.from({ length: 12 }, () => cs.say(`where:person:${ta
 check(drift.size >= 2, 'a spacey townsperson asked the same thing twelve times gives drifting answers', `${drift.size} distinct`)
 
 // --- wariness and standing ---
-const wary = as(t0.minds.find((m) => m.household.length > 0 && m.cls !== 'child'), { wariness: 1, honesty: 1, accuracy: 1, greed: 0 })
-const kin = t0.minds[wary.household[0]]
-const wctx = ctxAt(fire(t0))
+const wary = as(all.find((m) => m.household.length > 0 && m.cls !== 'child'), { wariness: 1, honesty: 1, accuracy: 1, greed: 0 })
+const wt = world.townOf(wary)
+const kin = wt.minds[wary.household[0]]
+const wctx = ctxAt(fire(wt))
 const cold = new Conversation(wary, wctx).say(`where:person:${kin.id}`)
 check(cold.claim === null && cold.mood === 'cold', 'a wary stranger will not say where their own kin is', cold.text)
 wctx.rapport.owe(wary.id, 1)
 const warm = new Conversation(wary, wctx).say(`where:person:${kin.id}`)
 check(warm.claim !== null, 'once in her debt, they will', warm.text)
-const greedy = new Conversation(as(wary, { greed: 1 }), ctxAt(fire(t0))).say(`where:person:${kin.id}`)
+const greedy = new Conversation(as(wary, { greed: 1 }), ctxAt(fire(wt))).say(`where:person:${kin.id}`)
 check(greedy.price === true, 'a greedy one names a price instead', greedy.text)
 
 // --- quests ---
@@ -228,6 +233,117 @@ const lc = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }))
 const lself = lc.say('talk:self').text
 check(lself.includes(leaf[0].name) && !/\b(I|I'm|the|a)\b/.test(lself), 'a leafkin speaks pidgin: its own name, no "I", no articles', lself)
 check(!lc.menu().some((c) => c.topic.startsWith('where:title')), 'a leafkin is not asked for the smith')
+
+// --- lore ---
+const folk = all.filter((m) => m.cls === 'folk')
+const asked = (m, topic, more = {}, ctx = ctxAt(fire(world.townOf(m)))) => new Conversation(as(m, more), ctx).say(`lore:${topic}`)
+const truths = new Set(LORE.dragons.map((x) => x.truth))
+const knew = folk.map((m) => asked(m, 'dragons', STRAIGHT)).filter((l) => l.claim !== null)
+check(knew.length > folk.length * 0.2 && knew.every((l) => truths.has(l.claim)), 'honest folk who know of dragons tell a true thing about them', `${knew.length} of ${folk.length}`)
+const dunnos = folk.map((m) => asked(m, 'dragons', { ...STRAIGHT, boast: 0 })).filter((l) => l.claim === null)
+check(dunnos.length > 0 && dunnos.every((l) => l.moment === 'answer.unknown'), 'someone who does not know and will not boast shrugs it off', dunnos[0]?.text)
+const tales = new Set(LORE.dragons.flatMap((x) => x.tales))
+const boasts = folk.map((m) => asked(m, 'dragons', { boast: 1 })).filter((l) => l.how?.boast && tales.has(l.claim))
+check(boasts.length > 0 && boasts.every((l) => l.moment === 'answer.boast'), 'a boaster who does not know tells a tall tale instead', boasts[0]?.text)
+const lies = new Set(Object.values(LORE).flatMap((fs) => fs.flatMap((x) => x.lies)))
+const liars = all.flatMap((m) => Object.keys(LORE).map((t) => asked(m, t, { honesty: 0, accuracy: 1, boast: 0, wariness: 0 }))).filter((l) => lies.has(l.claim))
+check(liars.length > 0, 'a dishonest person sometimes spreads misinformation', liars[0]?.text)
+const kctx = ctxAt(fire(t0))
+check(!new Conversation(t0.minds[0], kctx).menu().some((c) => c.topic === 'lore:gems'), 'gems have no button until someone mentions them')
+const gemTeller = all.map((m) => {
+  const ctx = ctxAt(fire(world.townOf(m)))
+  const c = new Conversation(as(m, { ...STRAIGHT, greed: 0 }), ctx)
+  return [c.say('lore:coins'), c.say('lore:coins')].some((l) => l.unlocks.includes('gems')) ? ctx : null
+}).find((ctx) => ctx !== null)
+check(gemTeller !== undefined && new Conversation(t0.minds[0], gemTeller).menu().some((c) => c.topic === 'lore:gems'), 'told of traders and gems, she can ask anyone about gems after', gemTeller && [...gemTeller.known].join(', '))
+check(Object.values(LORE).every((fs) => fs.length > 0) && Object.keys(TOPICS).every((t) => LORE[t] !== undefined), 'every topic has lore')
+const leafLore = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 })).say('lore:alchemist')
+check(leafLore.claim === null, 'a leafkin has no words for the alchemist', leafLore.text)
+
+// --- the dialog grid ---
+const menuCtx = ctxAt(fire(t0), { known: new Set(Object.keys(TOPICS)) })
+const gm = new Conversation(t0.minds[0], menuCtx).menu()
+check(gm.every((c) => (c.path.length >= 2 && c.path.length <= 5) || c.topic === 'bye') && gm.every((c) => /[.?!"]$/.test(c.path.at(-1))), 'every sentence is 2-5 fragments, its last one punctuated (goodbye stands alone)', gm.filter((c) => c.path.length > 5 || c.path.length < 2).map((c) => c.label).join(' | '))
+const grid = new DialogGrid()
+const top = grid.cells(gm)
+check(top.length === 16 && top[0].kind === 'empty' && top.some((c) => c.text === 'Goodbye.' && c.kind === 'send'), 'the top grid is 4x4, goodbye among its first fragments, no back arrow yet', top.filter((c) => c.text).map((c) => c.text).join(' / '))
+let sent = null
+for (const want of ['Where', 'is the', 'smith?']) sent = grid.press(gm, grid.cells(gm).findIndex((c) => c.text === want))
+check(sent === 'where:title:smith' && grid.path.length === 0, 'three fragments build "Where is the smith?" and send it', sent)
+grid.press(gm, grid.cells(gm).findIndex((c) => c.text === 'Where'))
+grid.press(gm, grid.cells(gm).findIndex((c) => c.text === 'is the'))
+grid.press(gm, 0)
+check(grid.path.join(' ') === 'Where' && grid.cells(gm)[0].kind === 'back', 'the back arrow steps back one fragment', grid.path.join(' '))
+const reach = new Set()
+const walk = (g, depth) => {
+  for (let i = 0; i < 16; i++) {
+    const c = g.cells(gm)[i]
+    if (c.kind === 'send') reach.add(c.topic)
+    if (c.kind === 'stem' || c.kind === 'more') {
+      const h = new DialogGrid()
+      h.path = [...g.path]
+      h.page = g.page
+      h.press(gm, i)
+      if (depth < 6) walk(h, depth + 1)
+    }
+  }
+}
+walk(new DialogGrid(), 0)
+check(gm.every((c) => reach.has(c.topic)), 'every chip can be reached through the grid', gm.filter((c) => !reach.has(c.topic)).map((c) => c.label).join(' | '))
+
+// --- a conversation lived ---
+const cheery = as(all.find((m) => m.cls === 'folk'), { kindness: 1, chattiness: 1, wariness: 0 })
+const open1 = new Chat(cheery, ctxAt(fire(world.townOf(cheery)))).open()
+check(!open1.ended && open1.moment.startsWith('greet.'), 'a cheery person hailed by a stranger greets her', open1.text)
+const shunned = ctxAt(fire(world.townOf(cheery)))
+shunned.rapport.catchLie(cheery.id)
+shunned.rapport.catchLie(cheery.id)
+const no = new Chat(cheery, shunned).open()
+check(no.ended && no.alone > 0, 'someone she has lied to twice will not talk to her, and she is left alone a while', no.text)
+const busy = [0, 1, 2, 3, 4, 5].map((s) => new Chat(as(cheery, { chattiness: 0 }), ctxAt(fire(world.townOf(cheery))), { busy: true, salt: s }).open())
+check(busy.some((l) => l.ended && l.moment === 'mood.busy'), 'a busy, unchatty person may decline', busy.find((l) => l.ended)?.text)
+const wild = new Chat(leaf[0], ctxAt({ x: 0, z: 0 }), { trusted: false }).open()
+check(wild.ended && wild.moment === 'refuse.wary', 'a leafkin that does not trust her will not talk', wild.text)
+const terse = new Chat(as(cheery, { chattiness: 0, kindness: 0, wariness: 1 }), ctxAt(fire(world.townOf(cheery))))
+let turns = 0, last = null
+while (!terse.ended && turns < 40) { last = terse.ask('talk:town'); turns++ }
+check(terse.ended && turns <= terse.patience && last.alone > 0, 'a curt person runs out of patience and sends her off', `${turns} questions: ${last.text}`)
+const byeChat = new Chat(cheery, ctxAt(fire(world.townOf(cheery))))
+const bye = byeChat.ask('bye')
+check(bye.ended && bye.moment === 'bye.warm' && bye.alone >= CHAT.alone.bye, 'goodbye ends it warmly, and they leave her be after', bye.text)
+
+// --- voices ---
+const table = JSON.parse(readFileSync(new URL('../public/sounds/voice/moments.json', import.meta.url), 'utf8'))
+const lines = new LinePicker(table, SEED)
+const speaker = all.find((m) => m.voice.pack === 'm-big')
+const heardLines = Array.from({ length: 6 }, (_, i) => lines.pick(speaker, 'greet.stranger', { now: i * 100 }).line)
+check(heardLines.every((l, i) => i === 0 || l !== heardLines[i - 1]) && table.human['greet.stranger'].includes(heardLines[0]), 'a speaker greets from their moment\'s pool, never the same line twice running', heardLines.join(' '))
+check(lines.pick(speaker, 'pass.nod', { now: 500.5 }) === null && lines.pick(speaker, 'pass.nod', { now: 500.5, force: true }) !== null, 'a speaker says nothing again within the gap, unless answering her')
+const moments = new Set(Object.keys(table.human))
+const said = []
+for (const m of [t0.minds[0], leaf[0]]) {
+  const c = new Conversation(m, ctxAt(fire(t0), { known: new Set(Object.keys(TOPICS)) }))
+  said.push(c.opener(), c.bye(), ...c.menu().filter((x) => x.topic !== 'bye').map((x) => c.say(x.topic)))
+}
+check(said.every((l) => moments.has(l.moment)), 'every line the engine says names a recorded moment', said.filter((l) => !moments.has(l.moment)).map((l) => l.moment).join(', '))
+const lk = leaf[0]
+const tiers = ['native', 'mixed', 'pidgin'].map((t) => lines.pick(lk, 'greet.stranger', { now: 1e4, force: true, tier: t }).line)
+check(tiers.every((l, i) => l.includes(['native', 'mixed', 'pidgin'][i])) && leafkinTier(false, 1) === 'native' && leafkinTier(true, 0) === 'mixed' && leafkinTier(true, 1) === 'pidgin', 'a leafkin speaks its own tongue until it trusts her, then pidgin as she warms it', tiers.join(' '))
+const he = all.find((m) => m.voice.he), she = all.find((m) => !m.voice.he && m.kind === 'human')
+check(he.voice.pack !== she.voice.pack && all.every((m) => Math.abs(m.voice.rate - 1) <= VOICE.rate && Math.abs(m.voice.tilt) <= VOICE.tilt), 'each person speaks with their body\'s voice, shifted a little in pitch and tone of their own')
+const chatterSpeakers = [...all.filter((m, i) => i % 7 === 0), lk]
+const unvoiced = []
+for (const m of chatterSpeakers) for (const hour of [3, 10, 18, 22]) for (let turn = 0; turn < 3; turn++) for (const r of [0, 0.2, 0.4, 0.6, 0.8, 0.99]) {
+  const moment = chatterMoment(m, ctxAt(fire(m.kind === 'leafkin' ? t0 : world.townOf(m))), { turn, hour, r })
+  if (new LinePicker(table, SEED).pick(m, moment, { now: 1e4, force: true, tier: 'native' }) === null) unvoiced.push(`${m.kind}:${moment}`)
+}
+check(unvoiced.length === 0, 'every chatter moment, human or leafkin, any hour or turn, has a recorded line to say', [...new Set(unvoiced)].join(', '))
+const formed = Object.entries(table.human).find(([, ls]) => ls.some((l) => l.includes('{')))
+if (formed) {
+  const [mom] = formed
+  const p = new LinePicker(table, 1).pool(speaker, mom, { form: 'she' })
+  check(p.length > 0 && p.every((l) => !l.includes('{') && !/-(he|him)$/.test(l)), 'a line recorded in forms is said in the form for who is meant', `${mom}: ${p.join(' ')}`)
+}
 
 if (process.argv.includes('--transcript')) {
   for (const who of [parent, w0, ...q.covers.map((id) => world.person(id)).slice(0, 1), friend]) {

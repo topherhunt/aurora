@@ -250,8 +250,9 @@ console.log('\na day with her far off')
       // The nearest villager to the sound: a talk beside a door stands as near one indoors as the talker.
       const who = v.all.reduce((best, c) => (Math.hypot(c.x - s.x, c.z - s.z) < Math.hypot(best.x - s.x, best.z - s.z) ? c : best))
       if (Math.hypot(who.x - s.x, who.z - s.z) >= 0.5 || who.hidden) hiddenVoice++
-      if (who?.state === 'talk') talkers.set(who.id, (talkers.get(who.id) ?? 0) + 1)
     }
+    // A talker's turns go to conversations.js to voice.
+    for (const t of v.chatter([])) talkers.set(t.id, (talkers.get(t.id) ?? 0) + 1)
     v.all.forEach((c, i) => {
       seen.add(c.state)
       const prev = was[i]
@@ -345,8 +346,8 @@ console.log('\na day with her far off')
   check(paces.size === v.all.length && v.all.every((c) => c.pace >= PACE[0] && c.pace <= PACE[1]) && runners >= 1 && runners < v.all.length, 'every villager has its own pace and some, not all, run their errands', `paces ${[...paces].map((p) => p.toFixed(2)).join(' ')}, ${runners} runners`)
   check(gazeOff === 0, 'a gazer faces the lake')
   check(meetings > 0 && apart === 0, 'a talk is two, within reach of each other, each the other\'s partner', `${meetings} talk frames`)
-  check(talkers.size >= 2 && [...talkers.values()].every((n) => n >= 2), 'both of a pair chatter, more than once', `${[...talkers.values()].join('/')} calls by ${talkers.size} talkers`)
-  check(gestures > 0 && voices.every((s) => SOUNDS[s] !== undefined) && voices.some((s) => s.startsWith('leafkinChatter')) && !voices.includes('leafkinWhimper') && !voices.includes('panting'), 'every call is a sound the ear has, chatter among them and no whimper', `${voices.length} calls`)
+  check(talkers.size >= 2 && [...talkers.values()].every((n) => n >= 2), 'both of a pair take turns to chatter, more than once', `${[...talkers.values()].join('/')} turns by ${talkers.size} talkers`)
+  check(gestures > 0 && voices.every((s) => SOUNDS[s] !== undefined) && !voices.includes('leafkinWhimper') && !voices.includes('panting'), 'every call is a sound the ear has, and no whimper', `${voices.length} calls`)
   check(hiddenVoice === 0, 'nothing is heard from indoors')
   check(doorCalls === entries + exits && doorOff === 0, 'a door is heard once as each goes in or comes out, from its sill, on the door rule', `${doorCalls} doors for ${entries + exits} crossings, ${doorOff} elsewhere`)
   check(v.stats.talks > 0 && v.stats.startles === 0, 'the stats agree', JSON.stringify(v.stats))

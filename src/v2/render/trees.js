@@ -2345,6 +2345,8 @@ export class Trees {
     scale *= forestScaleAt(above, this.biome, x, z)
     // OFF THE DEAD WOOD: a log is metres long and a trunk through it reads as the scatter's mistake, so the trunk gives way. Pure on both sides, so it is answered for ground the dead wood has not grown yet.
     if (this.deadwood && this.deadwood.occupiesAt(x, z, this.unitTrunkRadius[variant] * scale + DEADWOOD_CLEARANCE)) return 0
+    // Never inside a labyrinth's palisade or across its gate (layers/labyrinths.js); a village's biome, or none, has none.
+    if (this.biome !== null && this.biome.labyrinths &&this.biome.labyrinths.keepOutAt(x, z, this.unitTrunkRadius[variant] * scale)) return 0
     site.scale = scale
     return keep
   }

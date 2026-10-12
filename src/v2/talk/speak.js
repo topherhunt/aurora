@@ -4,6 +4,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TITLES } from './world.js'
 import { MESSAGES } from './quests.js'
+import { LORE, TOPICS, knowOdds } from './lore.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -35,6 +36,17 @@ const WANTS = {
   fisherman: 'butterflies', woodcutter: 'a sharp stick', hunter: 'carrots', leafkin: 'mushrooms',
 }
 
+// What a body's work brings up in conversation: gated lore topics (lore.js) told of it opens.
+const BODY_UNLOCKS = { miner: ['ores', 'caves'], alchemist: ['mushrooms'], herbalist: ['mushrooms', 'eating'], thief: ['gems'], trapper: ['labyrinths'], blacksmith: ['ores'], healer: ['eating'] }
+// How each lore topic is asked (grid.js): fragments, the last one punctuated.
+const LORE_PATH = {
+  striders: ['Tell me about', 'striders.'], dragons: ['Tell me about', 'dragons.'], snowlands: ['Tell me about', 'the snowlands.'],
+  leafkin: ['Tell me about', 'leafkin.'], caves: ['Tell me about', 'caves.'], labyrinths: ['Tell me about', 'labyrinths.'],
+  alchemist: ['What does', 'the alchemist', 'do?'], blacksmith: ['What does', 'the blacksmith', 'do?'],
+  coins: ['What are', 'coins', 'good for?'], gems: ['What are', 'gems', 'worth?'], ores: ['What are', 'flint and ores', 'worth?'],
+  mushrooms: ['Can I eat', 'mushrooms?'], eating: ['Can I eat', 'wild things?'],
+}
+
 const LEAFKIN_FAR = { "right here": 'here-here', "a stone's throw": 'close', 'a short walk': 'little walk', 'a fair walk': 'far', 'a long walk': 'far-far', 'a long road': 'far-far-far' }
 
 /** FNV-1a: a string as a 32-bit int for hash32. */
@@ -50,7 +62,7 @@ const pickBy = (r, list) => list[Math.min(list.length - 1, (r * list.length) | 0
 
 /** A conversation between her and one person: `menu()` lists the chips, `say(topic)` and `tell(belief)` return lines. */
 export class Conversation {
-  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z } }`, `from` where the speaker stands. */
+  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, known (Set of lore topics she has heard of) }`, `from` where the speaker stands. */
   constructor(mind, ctx) {
     this.mind = mind
     this.ctx = ctx
@@ -59,10 +71,25 @@ export class Conversation {
     this.mentions = new Map()
     // The message quest whose words the speaker has asked her to repeat, or null.
     this.delivering = null
+    // Lore topics asked this conversation: topic -> times, so asking again tells another fact.
+    this.lore = new Map()
   }
 
   get leafkin() {
     return this.mind.kind === 'leafkin'
+  }
+
+  /** How they come across to her now: 'cheery', 'plain' or 'curt', from kindness, chattiness, wariness and standing. */
+  get tone() {
+    const T = this.mind.traits
+    const t = T.kindness * 0.6 + T.chattiness * 0.6 - T.wariness * 0.5 + this._standing() * 0.8 - (this._worried() ? 0.4 : 0)
+    return t > 0.55 ? 'cheery' : t < 0.15 ? 'curt' : 'plain'
+  }
+
+  /** A parent whose child is missing has room for nothing else. */
+  _worried() {
+    const q = this.quest
+    return q !== null && q.parent === this.mind.id && this.ctx.log.state(q.id) !== 'done'
   }
 
   get town() {
@@ -82,24 +109,33 @@ export class Conversation {
     return null
   }
 
+  /** What she may say: `{ topic, label, path }`, `path` the fragments the dialog grid (grid.js) builds it from. Gated lore shows once she has heard of it (`ctx.known`). */
   menu() {
-    const chips = [['talk:self', 'Tell me about yourself'], ['talk:needs', 'Do you need anything?']]
+    const chips = [['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']]]
     if (!this.leafkin) {
-      chips.push(['talk:town', 'Tell me about this town'], ['where:here', 'Where am I?'], ['where:home', 'Where is your house?'])
-      for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, `Where is the ${title === 'potionmaster' ? 'potion master' : title}?`])
+      chips.push(['talk:town', ['Tell me about', 'this town.']], ['where:here', ['Where', 'am I?']], ['where:home', ['Where', 'do you live?']])
+      for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, ['Where', 'is the', `${title === 'potionmaster' ? 'potion master' : title}?`]])
     }
+    for (const t of Object.keys(TOPICS)) if (!TOPICS[t].gated || this.ctx.known.has(t)) chips.push([`lore:${t}`, LORE_PATH[t]])
     const m = this._message('to')
     if (m !== null && this.ctx.log.state(m.id) === 'accepted') {
-      if (this.delivering === m.id) for (const k of m.choices) chips.push([`word:${k}:${m.id}`,`"${MESSAGES[m.message][k]}"`])
-      else chips.push([`deliver:${m.id}`, `I bring word from ${this.ctx.world.person(m.giver).name}`])
+      if (this.delivering === m.id) for (const k of m.choices) chips.push([`word:${k}:${m.id}`, ['The words were', `"${MESSAGES[m.message][k]}"`]])
+      else chips.push([`deliver:${m.id}`, ['I bring word', `from ${this.ctx.world.person(m.giver).name}.`]])
     }
-    for (const [topic, label] of this.mentions) chips.push([topic, `Ask about ${label}`])
-    chips.push(['bye', 'Goodbye'])
-    return chips.map(([topic, label]) => ({ topic, label }))
+    for (const [topic, label] of this.mentions) chips.push([topic, ['What about', `${label}?`]])
+    chips.push(['bye', ['Goodbye.']])
+    return chips.map(([topic, path]) => ({ topic, label: path.join(' '), path }))
   }
 
   _mention(topic, label) {
     if (topic !== `ask:person:${this.mind.id}` && !this.mentions.has(topic)) this.mentions.set(topic, label)
+  }
+
+  /** Gated lore topics the speaker just named, now known to her: those not known before. */
+  _unlock(topics) {
+    const fresh = topics.filter((t) => !this.ctx.known.has(t))
+    for (const t of fresh) this.ctx.known.add(t)
+    return fresh
   }
 
   /** Her question `topic` (a chip's topic) answered: `{ text, gesture, toward, claim, mood }`. */
@@ -112,8 +148,16 @@ export class Conversation {
     if (head === 'ask') return this._askAbout(arg)
     if (head === 'deliver') return this._deliver(arg, null)
     if (head === 'word') return this._deliver(rest.slice(1).join(':'), Number(rest[0]))
-    if (head === 'bye') return this._line(this.leafkin ? 'Bye-bye.' : 'Safe roads.', 'wave')
+    if (head === 'lore') return this._lore(arg)
+    if (head === 'bye') return this.bye()
     throw new Error(`Conversation: no topic ${topic}`)
+  }
+
+  /** Their parting line: warm or curt by standing and tone. */
+  bye() {
+    const warm = this._standing() >= 0 && this.tone !== 'curt'
+    if (this.leafkin) return this._line(warm ? 'Bye-bye, friend!' : 'Go. Bye.', 'wave', { moment: warm ? 'bye.warm' : 'bye.curt' })
+    return this._line(warm ? pickBy(roll(this.mind.id, this.ask, 'bye'), ['Safe roads.', 'Take care of yourself.', 'Come back any time.']) : 'Right.', warm ? 'wave' : 'talk-shrug', { moment: warm ? 'bye.warm' : 'bye.curt', mood: warm ? 'warm' : 'cold' })
   }
 
   /** Their first line, when they hail her or she hails them: a parent with an untaken quest pleads, the rest greet her by how they stand with her. */
@@ -123,13 +167,17 @@ export class Conversation {
     const m = this._message('giver')
     if (m !== null && this.ctx.log.state(m.id) === 'delivered') return this._errand(m)
     const s = this._standing()
-    if (this.leafkin) return this._line(s > 0.3 ? `Friend! ${this.mind.name} here!` : 'Hm? Big-folk?', s > 0.3 ? 'wave' : 'talk-shrug')
-    if (s < -0.2) return this._line('You again.', 'talk-shrug', { mood: 'cold' })
-    return this._line(s > 0.3 ? 'Good to see you!' : 'Well met, stranger.', 'wave')
+    if (this.leafkin) return this._line(s > 0.3 ? `Friend! ${this.mind.name} here!` : 'Hm? Big-folk?', s > 0.3 ? 'wave' : 'talk-shrug', { moment: s > 0.3 ? 'greet.friend' : 'greet.cold' })
+    if (s < -0.2) return this._line('You again.', 'talk-shrug', { mood: 'cold', moment: 'greet.cold' })
+    if (s > 0.3) return this._line('Good to see you!', 'wave', { mood: 'warm', moment: 'greet.friend' })
+    const tone = this.tone
+    if (tone === 'curt') return this._line('What is it?', 'talk-shrug', { moment: 'greet.cold' })
+    return this._line(tone === 'cheery' ? `Well met, stranger! I'm ${this.mind.name}.` : 'Well met, stranger.', 'wave', { moment: 'greet.stranger' })
   }
 
+  /** A line: `{ text, gesture, toward, claim, mood, moment, unlocks }`, `moment` what its voice clip says (lines.js). */
   _line(text, gesture = 'talk-gesture', more = {}) {
-    return { text, gesture, toward: null, claim: null, mood: 'neutral', ...more }
+    return { text, gesture, toward: null, claim: null, mood: 'neutral', moment: 'answer.sure', unlocks: [], ...more }
   }
 
   // --- the pipeline ------------------------------------------------------
@@ -150,16 +198,18 @@ export class Conversation {
     }
     const lieRoll = roll(ctx.world.seed, mind.id, f.key, ctx.epoch, 'lie')
     if (conf === 0) {
-      if (f.alts.length > 0 && roll(ctx.world.seed, mind.id, f.key, ctx.epoch, 'boast') < T.boast * 0.7) {
-        return this._claim(f, pickBy(lieRoll, f.alts), { sure: 1, hedge: false, boast: true, again: false })
+      // Not knowing, a boaster makes something up: a tall tale where there is one.
+      const made = f.tales?.length > 0 ? f.tales : f.alts
+      if (made.length > 0 && roll(ctx.world.seed, mind.id, f.key, ctx.epoch, 'boast') < T.boast * 0.7) {
+        return this._claim(f, pickBy(lieRoll, made), { sure: 1, hedge: false, boast: true, again: false })
       }
-      return this._line(this._dunno(), 'talk-shrug')
+      return this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' })
     }
     // A stranger stands at 0: public facts (sens 0.15) pass everyone, kin's whereabouts (0.5) stop the wary half.
     const need = f.sens * T.wariness * 2 - 0.4
     if (this._standing() < need) {
-      if (T.greed > 0.6 && !f.motive) return this._line(this.leafkin ? 'Give shroom, then tell.' : "What's it worth to you?", 'talk-gesture', { mood: 'cold', price: true })
-      return this._line(this._refuse(), 'talk-shrug', { mood: 'cold' })
+      if (T.greed > 0.6 && !f.motive) return this._line(this.leafkin ? 'Give shroom, then tell.' : "What's it worth to you?", 'talk-gesture', { mood: 'cold', price: true, moment: 'refuse.price' })
+      return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
     }
     const lie = f.alts.length > 0 && lieRoll < (1 - T.honesty) * (f.motive ? 1 : SPEAK.idleLie)
     let claim = lie ? pickBy(roll(lieRoll * 4294967296, 'alt'), f.alts) : truth
@@ -181,7 +231,9 @@ export class Conversation {
     if (how.again) text = (this.leafkin ? 'Said already. ' : 'Like I said, ') + lower(text)
     else if (how.boast) text = pickBy(roll(this.mind.id, this.ask, 'b'), this.leafkin ? ['Leafkin know! ', 'Sure-sure. '] : ['Everyone knows ', 'Oh, easy: ', 'Ha! ']) + lower(text)
     else if (how.hedge) text = pickBy(roll(this.mind.id, this.ask, 'h'), this.leafkin ? ['Maybe... ', 'Think... '] : ['I think ', 'If I remember right, ', 'Maybe ']) + lower(text)
-    return { ...this._line(text, line.gesture ?? 'talk-gesture'), toward: line.toward ?? null, claim, how }
+    // A poor liar gives themself away in the voice.
+    const moment = how.again ? 'answer.again' : how.lie && this.mind.traits.honesty > 0.6 ? 'answer.nervous' : how.boast ? 'answer.boast' : how.hedge ? 'answer.hedge' : 'answer.sure'
+    return { ...this._line(text, line.gesture ?? 'talk-gesture', { moment }), toward: line.toward ?? null, claim, how }
   }
 
   _standing() {
@@ -268,7 +320,7 @@ export class Conversation {
     if (arg.startsWith('title:')) {
       const title = arg.slice(6)
       const p = world.titled(this.town, title)
-      if (p === null) return this._line(`We've no ${title === 'potionmaster' ? 'potion master' : title} here.`, 'talk-shrug', { claim: null })
+      if (p === null) return this._line(`We've no ${title === 'potionmaster' ? 'potion master' : title} here.`, 'talk-shrug', { moment: 'answer.unknown' })
       return this._wherePerson(p)
     }
     if (arg.startsWith('person:')) return this._wherePerson(world.person(arg.slice(7)))
@@ -340,9 +392,11 @@ export class Conversation {
     const T = mind.traits
     const r = roll(mind.id, this.ask, 'talk')
     if (arg === 'self') {
-      if (this.leafkin) return this._line(`${mind.name}. ${mind.name} find shroom. ${mind.name} good.`, 'talk-nod')
-      if (this._standing() < T.wariness - 0.85) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold' })
+      if (this.leafkin) return this._line(`${mind.name}. ${mind.name} find shroom. ${mind.name} good.`, 'talk-nod', { moment: 'talk.self', unlocks: this._unlock(['mushrooms']) })
+      if (this._standing() < T.wariness - 0.85) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
       let text = `I'm ${mind.name}. I ${this._work(mind)}.`
+      const unlocks = this._unlock(BODY_UNLOCKS[mind.body] ?? [])
+      if (this.tone === 'curt') return this._line(text, 'talk-gesture', { moment: 'talk.self', unlocks })
       const kin = mind.household.map((i) => this.town.minds[i])
       if (kin.length > 0) {
         text += ` I live with ${kin.map((k) => k.name).join(' and ')}.`
@@ -358,7 +412,7 @@ export class Conversation {
         text += ` Don't get me started on ${o.name}.`
         this._mention(`ask:person:${o.id}`, o.name)
       }
-      return this._line(text)
+      return this._line(text, 'talk-gesture', { moment: 'talk.self', unlocks })
     }
     if (arg === 'town') {
       const t = this.town
@@ -381,7 +435,7 @@ export class Conversation {
           this._mention(`ask:town:${near.index}`, near.name)
         }
       }
-      return this._line(text)
+      return this._line(text, 'talk-gesture', { moment: 'talk.town' })
     }
     if (arg === 'needs') return this._needs()
     throw new Error(`Conversation: no talk:${arg}`)
@@ -394,8 +448,9 @@ export class Conversation {
     const m = this._message('giver')
     if (m !== null && [null, 'accepted', 'delivered'].includes(ctx.log.state(m.id))) return this._errand(m)
     const want = WANTS[mind.body]
-    if (want === undefined || mind.traits.kindness > 0.75) return this._line(this.leafkin ? 'Need nothing. Happy.' : "I'm all right, thank you.", 'talk-nod')
-    return this._line(this.leafkin ? `Want ${want}! ${mind.name} love ${want}.` : `I could use some ${want}, if you come by any.`, 'talk-gesture', { want })
+    if (want === undefined || mind.traits.kindness > 0.75) return this._line(this.leafkin ? 'Need nothing. Happy.' : "I'm all right, thank you.", 'talk-nod', { moment: 'needs.no' })
+    const unlocks = this._unlock(/mushroom/.test(want) ? ['mushrooms'] : [])
+    return this._line(this.leafkin ? `Want ${want}! ${mind.name} love ${want}.` : `I could use some ${want}, if you come by any.`, 'talk-gesture', { want, moment: 'needs.yes', unlocks })
   }
 
   /** The parent's plea; answering it accepts the quest. */
@@ -408,9 +463,9 @@ export class Conversation {
     if (q.opening === 'direction') {
       const w = world.way(from, q.where)
       text += ` Someone saw ${child.name} heading ${w.dir}.`
-      return this._line(text, 'talk-point', { mood: 'distress', toward: q.where, quest: q.id })
+      return this._line(text, 'talk-point', { mood: 'distress', toward: q.where, quest: q.id, moment: 'missing.plea' })
     }
-    return this._line(text, 'beckon', { mood: 'distress', quest: q.id })
+    return this._line(text, 'beckon', { mood: 'distress', quest: q.id, moment: 'missing.plea' })
   }
 
   /** The sender's side of a message: the ask (which accepts it), a reminder, or thanks once it is delivered. A garbled message they never hear of. */
@@ -426,11 +481,11 @@ export class Conversation {
       log.set(m.id, 'done')
       rapport.owe(this.mind.id, 0.3)
       rapport.warm(this.mind.id, 0.2)
-      return this._line(`You told ${to.name}? Thank you. I won't forget it.`, 'talk-nod', { mood: 'warm', quest: m.id })
+      return this._line(`You told ${to.name}? Thank you. I won't forget it.`, 'talk-nod', { mood: 'warm', quest: m.id, moment: 'give.thanks' })
     }
-    if (state === 'accepted') return this._line(`Have you seen ${to.name} yet? Remember: "${words}"`, 'talk-nod', { quest: m.id })
+    if (state === 'accepted') return this._line(`Have you seen ${to.name} yet? Remember: "${words}"`, 'talk-nod', { quest: m.id, moment: 'errand.ask' })
     log.accept(m)
-    return this._line(`Would you carry word to ${to.name} in ${town.name}? ${to.name} is ${m.bond}. Tell ${to.name}: "${words}" Those words exactly.`, 'talk-gesture', { quest: m.id })
+    return this._line(`Would you carry word to ${to.name} in ${town.name}? ${to.name} is ${m.bond}. Tell ${to.name}: "${words}" Those words exactly.`, 'talk-gesture', { quest: m.id, moment: 'errand.ask' })
   }
 
   /** The recipient's side: with `k` null they ask what was said; else she answers with phrasing `k` of MESSAGES. */
@@ -441,7 +496,7 @@ export class Conversation {
     const giver = world.person(m.giver)
     if (k === null) {
       this.delivering = m.id
-      return this._line(`Word from ${giver.name}? What did ${giver.name} say?`, 'talk-nod')
+      return this._line(`Word from ${giver.name}? What did ${giver.name} say?`, 'talk-nod', { moment: 'errand.recall' })
     }
     this.delivering = null
     const words = MESSAGES[m.message][k]
@@ -449,11 +504,11 @@ export class Conversation {
       log.set(m.id, 'delivered')
       rapport.warm(this.mind.id, 0.25)
       rapport.owe(this.mind.id, 0.2)
-      return this._line(`"${words}" Oh... Thank you for carrying that all this way.`, 'talk-nod', { mood: 'warm', quest: m.id })
+      return this._line(`"${words}" Oh... Thank you for carrying that all this way.`, 'talk-nod', { mood: 'warm', quest: m.id, moment: 'errand.true' })
     }
     log.set(m.id, 'garbled')
     rapport.warm(this.mind.id, -0.15)
-    return this._line(`"${words.slice(0, -1)}"? That can't be right. ${giver.name} would never say that.`, 'talk-shrug', { mood: 'cold', quest: m.id })
+    return this._line(`"${words.slice(0, -1)}"? That can't be right. ${giver.name} would never say that.`, 'talk-shrug', { mood: 'cold', quest: m.id, moment: 'errand.garbled' })
   }
 
   _askAbout(arg) {
@@ -465,7 +520,7 @@ export class Conversation {
     if (q !== undefined) return q.parent === this.mind.id ? this._plea(q) : this._missing(q, p)
     const rel = this._relation(p)
     if (p.id === this.mind.id) return this._talk('self')
-    if (rel === 'stranger') return this._line(this._dunno(), 'talk-shrug')
+    if (rel === 'stranger') return this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' })
     const opinion = {
       household: `${p.name}? We share a roof.`,
       friend: `${p.name}'s a good sort.`,
@@ -488,7 +543,7 @@ export class Conversation {
         render: (claim) => (claim === q.where ? { text: `All right... ${child.name} is safe, here with us. Don't tell anyone.`, gesture: 'talk-nod' } : this._wayTo(claim, `${child.name}? Haven't seen them. Try`)),
       })
     }
-    if (seen === undefined) return this._line(`${child.name}? I haven't seen ${child.name} today.`, 'talk-shrug')
+    if (seen === undefined) return this._line(`${child.name}? I haven't seen ${child.name} today.`, 'talk-shrug', { moment: 'answer.unknown' })
     const c = seen.clue
     if (c.with !== undefined) {
       const host = world.person(c.with)
@@ -503,6 +558,28 @@ export class Conversation {
         return { text: `${lead} ${w.dir}, toward ${claim.label}.`, gesture: 'talk-point', toward: claim }
       },
     })
+  }
+
+  // --- lore --------------------------------------------------------------
+
+  /** A fact of lore `topic` (lore.js), another each time she asks: true, a lie, a tall tale, or a shrug. A leafkin tells only what it has words for. */
+  _lore(topic) {
+    const { mind, ctx } = this
+    if (LORE[topic] === undefined) throw new Error(`Conversation: no lore ${topic}`)
+    const facts = this.leafkin ? LORE[topic].filter((x) => x.lk !== null) : LORE[topic]
+    if (facts.length === 0) return this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' })
+    const n = this.lore.get(topic) ?? 0
+    this.lore.set(topic, n + 1)
+    const fact = facts[(((roll(ctx.world.seed, mind.id, topic) * facts.length) | 0) + n) % facts.length]
+    const odds = knowOdds(mind, topic)
+    const known = roll(ctx.world.seed, mind.id, 'lore', topic, fact.id) < odds
+    const line = this._answer({
+      key: `lore:${topic}:${fact.id}`, conf: known ? 0.35 + 0.6 * odds : 0, sens: fact.sens, motive: false,
+      truth: this.leafkin ? fact.lk : fact.truth, alts: this.leafkin ? [] : fact.lies, tales: this.leafkin ? [] : fact.tales, muddle: null,
+      // A curt speaker gives the first sentence only; a cheery one is glad to help.
+      render: (claim) => ({ text: this.tone === 'curt' ? claim.replace(/^([^.!?]*[.!?]).*$/, '$1') : this.tone === 'cheery' && !this.leafkin ? `${claim} Glad to help.` : claim, gesture: 'talk-gesture' }),
+    })
+    return line.claim === null ? line : { ...line, unlocks: this._unlock(fact.unlocks) }
   }
 
   // --- telling -----------------------------------------------------------
@@ -532,21 +609,21 @@ export class Conversation {
     } else throw new Error(`Conversation: no belief ${b.kind}`)
     if (!isTrue && (knows || roll(ctx.world.seed, mind.id, key, ctx.epoch, 'detect') < mind.traits.wariness * SPEAK.detect)) {
       ctx.rapport.catchLie(mind.id)
-      return this._line(this.leafkin ? 'Liar! Big-folk lie!' : knows ? "That's a lie, and you know it." : "I don't believe you.", 'talk-shrug', { mood: 'angry', caught: true })
+      return this._line(this.leafkin ? 'Liar! Big-folk lie!' : knows ? "That's a lie, and you know it." : "I don't believe you.", 'talk-shrug', { mood: 'angry', caught: true, moment: 'tell.caught' })
     }
     if (b.kind === 'sent') r.sentBy = b.by
     else r.beliefs.set(key, { x: b.x, z: b.z, label: b.label })
-    return this._line(this.leafkin ? 'Oh! Leafkin see.' : 'Is that so.', 'talk-nod', { caught: false })
+    return this._line(this.leafkin ? 'Oh! Leafkin see.' : 'Is that so.', 'talk-nod', { caught: false, moment: 'tell.believe' })
   }
 
   /** Her gift of `item`: a want met warms them and puts them in her debt. */
   give(item) {
     this.ask++
     const want = WANTS[this.mind.body]
-    if (want !== item) return this._line(this.leafkin ? 'Hm. Thank.' : "That's kind of you.", 'talk-nod')
+    if (want !== item) return this._line(this.leafkin ? 'Hm. Thank.' : "That's kind of you.", 'talk-nod', { moment: 'give.polite' })
     this.ctx.rapport.owe(this.mind.id, 0.3)
     this.ctx.rapport.warm(this.mind.id, 0.2)
-    return this._line(this.leafkin ? `${item}! Friend! Friend!` : `Oh, ${item}! I won't forget this.`, 'talk-nod', { mood: 'warm' })
+    return this._line(this.leafkin ? `${item}! Friend! Friend!` : `Oh, ${item}! I won't forget this.`, 'talk-nod', { mood: 'warm', moment: 'give.thanks' })
   }
 }
 

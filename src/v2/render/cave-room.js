@@ -787,6 +787,10 @@ export class CaveRoom {
       }
       const mesh = new THREE.Mesh(g, this.waterMaterial)
       mesh.renderOrder = 2
+      // Drawn as the rock around it is: with its region, and within CULL_M of her.
+      const nodes = this.plan.graph.nodes, e = b.edge === undefined ? null : this.plan.graph.edges[b.edge]
+      g.computeBoundingBox()
+      mesh.userData = { regions: e === null ? [nodes[b.node].region] : [nodes[e.a].region, nodes[e.b].region], box: g.boundingBox }
       this.group.add(mesh)
       this.waterMeshes.push(mesh)
       this.disposables.push(g)
@@ -846,6 +850,10 @@ export class CaveRoom {
       }
     }
     for (const mesh of this.mushGroups) mesh.visible = shown.has(mesh.userData.region)
+    for (const m of this.waterMeshes) {
+      const { regions, box } = m.userData
+      m.visible = regions.some((r) => shown.has(r)) && (flying || box.distanceToPoint(tmpP.set(eye.x, ly, eye.z)) < CULL_M)
+    }
     for (const s of this.skies) s.mesh.visible = shown.has(s.region) && (flying || chunkGap(s, eye.x, ly, eye.z) < CULL_M)
     const e = this.dripEye
     if (e === null || (e.x - eye.x) ** 2 + (e.y - ly) ** 2 + (e.z - eye.z) ** 2 > DRIP_STEP * DRIP_STEP) {
@@ -875,6 +883,7 @@ export class CaveRoom {
       const ly = eye.y - this.oy
       let best = MIRROR_REACH * MIRROR_REACH, at = null, p = null
       for (const m of this.waterMeshes) {
+        if (!m.visible) continue
         const q = m.geometry.getAttribute('position').array
         for (let i = 0; i < q.length; i += 3) {
           const d = (q[i] - eye.x) ** 2 + (q[i + 1] - ly) ** 2 + (q[i + 2] - eye.z) ** 2
@@ -898,11 +907,12 @@ export class CaveRoom {
     renderer.xr.enabled = false
     renderer.setClearColor(0x000000, 1)
     scene.background = null
-    for (const m of this.waterMeshes) m.visible = false
+    const drawn = this.waterMeshes.filter((m) => m.visible)
+    for (const m of drawn) m.visible = false
     renderer.setRenderTarget(this.mirror, this.mirrorFace)
     renderer.clear(true, true, false)
     renderer.render(scene, rig.children[this.mirrorFace])
-    for (const m of this.waterMeshes) m.visible = true
+    for (const m of drawn) m.visible = true
     scene.background = prevBackground
     renderer.setRenderTarget(prevTarget)
     renderer.setClearColor(tmpC, prevAlpha)

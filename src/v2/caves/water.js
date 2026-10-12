@@ -15,7 +15,7 @@ const DEEP = 14
  */
 export function settleWaters(graph, field) {
   // A great cavern's hollow its wall's shape octaves swallowed holds no water.
-  graph.pools = graph.pools.filter((p) => p.node === undefined || !graph.nodes[p.node].great || field.at(p.x, p.level - 0.05, p.z) < 0)
+  graph.pools = graph.pools.filter((p) => p.node === undefined || !graph.nodes[p.node].great || floorUnder(field, p.x, p.z, p.level + 0.3) < p.level - 0.2)
   for (const p of graph.pools) settle(p, graph, field)
   for (const sump of graph.pools) {
     if (sump.edge === undefined) continue
@@ -192,10 +192,15 @@ export function wetAt(shore, x, z) {
 
 // The widest quad (in cells) the open water is merged into, so the reflection's nearest-vertex pick stays a few metres off.
 const MERGE_CELLS = 32
+// The water's mesh reads every SHORE_STRIDE-th shore sample: its edge lies under the bank, so the 0.25 m grid the flood needs only multiplies the shoreline's triangles.
+const SHORE_STRIDE = 4
 
-/** The water plane over `shore` at `level`, as { position, index }: the open water as merged rectangles, each cell along the shore clipped to where its corners' rise interpolates under 0. The rectangles' sides meet the shore cells in T-junctions, crack-free only because the plane is flat. */
+/** The water plane over `shore` at `level`, as { position, index }: the open water as merged rectangles, each cell along the shore clipped to where its corners' rise interpolates under 0, on the shore grid thinned by SHORE_STRIDE. The rectangles' sides meet the shore cells in T-junctions, crack-free only because the plane is flat. */
 export function shoreMesh(shore, level) {
-  const { x0, z0, nx, nz, cell, s } = shore
+  const { x0, z0 } = shore, st = SHORE_STRIDE, cell = shore.cell * st
+  const nx = Math.floor((shore.nx - 1) / st) + 1, nz = Math.floor((shore.nz - 1) / st) + 1
+  const s = new Float32Array(nx * nz)
+  for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) s[k * nx + i] = shore.s[k * st * shore.nx + i * st]
   const pos = [], idx = []
   const wet = (i, k) => s[k * nx + i] < 0 && s[k * nx + i + 1] < 0 && s[(k + 1) * nx + i] < 0 && s[(k + 1) * nx + i + 1] < 0
   const used = new Uint8Array(nx * nz)

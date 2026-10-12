@@ -14,11 +14,29 @@ export const POST = {
   // The shaved point: the bark ends this far under the apex, each facet's top edge staggered by `stagger` of it.
   tip: 0.42,
   stagger: 0.35,
-  // Radial jitter as a share of the radius, all inward, and the ring centres' wander off the axis in metres.
-  rough: 0.09,
-  bow: 0.012,
+  // Radial jitter as a share of the radius, all inward, and the ring centres' wander off the axis in metres. With
+  // labyrinths.js POST_SPACING these set the widest crack in a wall: 0.29 - 2 * 0.15 * 0.93 * cos(pi / 9) + 2 * bow, 4 cm.
+  rough: 0.07,
+  bow: 0.006,
   // World metres one texture tile covers (deadwood.js texMetres).
   texMetres: 0.86,
+  // The rows of TIMBER_BEAM's tile the point samples across a facet: its lightest band, clear of the dark seam between its two logs (rows 56-100 of 128).
+  tipBand: [0.07, 0.37],
+}
+
+// Display brightness against the plain prop and card: the mesh is darkened and the card (photographed off the mesh) lightened by card / mesh in its sRGB bytes. The vertex colours are linear, hence the 2.2.
+export const POST_TONE = { mesh: 0.8, card: 1.2 }
+const MESH_GAIN = POST_TONE.mesh ** 2.2
+
+/** Lift a bake of a post (bakeImpostor's sRGB RGBA bytes) from the mesh's tone to the card's, in place. */
+export function tonePostCard(pixels) {
+  const k = POST_TONE.card / POST_TONE.mesh
+  for (let i = 0; i < pixels.length; i += 4) {
+    pixels[i] = Math.min(255, pixels[i] * k)
+    pixels[i + 1] = Math.min(255, pixels[i + 1] * k)
+    pixels[i + 2] = Math.min(255, pixels[i + 2] * k)
+  }
+  return pixels
 }
 
 // LOD0 and LOD1 (the user's spec): sides round, shaft segments up to the tip.
@@ -61,7 +79,7 @@ export function buildPalisadePost({ lod = 0, seed = 1 } = {}) {
     nrm.push(n[0], n[1], n[2])
     uv.push(u, v)
     layer.push(l)
-    col.push(shade, shade, shade * 0.97)
+    col.push(shade * MESH_GAIN, shade * MESH_GAIN, shade * MESH_GAIN * 0.97)
   }
   const shade = () => 0.86 + 0.14 * rand()
   for (let s = 0; s < segments; s++) {
@@ -80,20 +98,20 @@ export function buildPalisadePost({ lod = 0, seed = 1 } = {}) {
       put(lo[k1].p, lo[k1].n, u1, v(lo[k1]), LAYER.BARK_PINE, c)
     }
   }
-  // The shaved point: one flat facet per side from the bark's edge to the apex, the grain running up it.
+  // The shaved point: one flat facet per side from the bark's edge to the apex. The tile's grain runs along u, so u climbs the facet and v crosses it inside `tipBand`.
   const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fn = new THREE.Vector3()
   const ring = rings[segments]
+  const [v0, v1] = POST.tipBand
   for (let k = 0; k < sides; k++) {
     const a = ring[k].p, b = ring[(k + 1) % sides].p
     e1.set(apex[0] - a[0], apex[1] - a[1], apex[2] - a[2])
     e2.set(b[0] - a[0], b[1] - a[1], b[2] - a[2])
     fn.crossVectors(e1, e2).normalize()
     const n = [fn.x, fn.y, fn.z]
-    const w = Math.hypot(b[0] - a[0], b[2] - a[2]) / POST.texMetres
     const c = 1.05 + 0.1 * rand()
-    put(a, n, 0, a[1] / POST.texMetres, LAYER.TIMBER_BEAM, c)
-    put(apex, n, w / 2, apex[1] / POST.texMetres, LAYER.TIMBER_BEAM, c)
-    put(b, n, w, b[1] / POST.texMetres, LAYER.TIMBER_BEAM, c)
+    put(a, n, a[1] / POST.texMetres, v0, LAYER.TIMBER_BEAM, c)
+    put(apex, n, apex[1] / POST.texMetres, (v0 + v1) / 2, LAYER.TIMBER_BEAM, c)
+    put(b, n, b[1] / POST.texMetres, v1, LAYER.TIMBER_BEAM, c)
   }
 
   const g = new THREE.BufferGeometry()
@@ -109,3 +127,38 @@ export function buildPalisadePost({ lod = 0, seed = 1 } = {}) {
 
 /** The frame a post's card is photographed in (impostor.js bakeImpostor): as wide as the post and as tall. */
 export const POST_CARD_FRAME = { width: POST.radius * 2, height: POST.height }
+
+// The torch at the labyrinth's gate: a stake with a pitch-wrapped head, its flame standing on `height`.
+export const TORCH_POLE = { height: 1.75, radius: 0.045, head: 0.28, headRadius: 0.075, bury: 0.3 }
+
+/** One gate torch's pole on y = 0, in the post's attributes: a bark stake, its head dark with pitch. */
+export function buildTorchPole() {
+  const T = TORCH_POLE
+  const parts = [
+    [new THREE.CylinderGeometry(T.radius * 0.8, T.radius, T.height - T.head + T.bury, 7, 1, true), (T.height - T.head - T.bury) / 2, LAYER.BARK, 0.8],
+    [new THREE.CylinderGeometry(T.headRadius, T.headRadius * 0.85, T.head, 7, 1, false), T.height - T.head / 2, LAYER.TIMBER_BEAM, 0.18],
+  ]
+  const pos = [], nrm = [], uv = [], layer = [], col = []
+  for (const [g0, y, l, shade] of parts) {
+    const g = g0.toNonIndexed()
+    g.translate(0, y, 0)
+    const p = g.getAttribute('position'), n = g.getAttribute('normal'), u = g.getAttribute('uv')
+    for (let i = 0; i < p.count; i++) {
+      pos.push(p.getX(i), p.getY(i), p.getZ(i))
+      nrm.push(n.getX(i), n.getY(i), n.getZ(i))
+      uv.push(u.getX(i) * 0.4, p.getY(i) / POST.texMetres)
+      layer.push(l)
+      col.push(shade, shade * 0.95, shade * 0.9)
+    }
+    g0.dispose()
+    g.dispose()
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3))
+  g.setAttribute('uvProj', new THREE.Float32BufferAttribute(uv, 2))
+  g.setAttribute('texLayer', new THREE.Float32BufferAttribute(layer, 1))
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
+  g.computeBoundingSphere()
+  return g
+}

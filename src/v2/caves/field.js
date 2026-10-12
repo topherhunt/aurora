@@ -62,9 +62,9 @@ export function mouthFlare(n) {
   return { pts, end: { x: end.x, y: end.y, z: end.z }, w: end.w, h: end.h }
 }
 
-// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose depth fits in an eighth of its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for.
-const SHAPE_BASE = 0.625, SHAPE_AMP = 0.45, SHAPE_OCT = 7, SHAPE_RISE = 5, SHAPE_CARVE = 2, SHAPE_BIAS = 0.2
-const octavesOf = (dim) => { let k = 0; while (k < SHAPE_OCT && SHAPE_AMP * SHAPE_BASE * 2 ** k <= dim / 8) k++; return k }
+// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose size fits SHAPE_FIT times in its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for.
+const SHAPE_BASE = 0.625, SHAPE_AMP = 0.9, SHAPE_FIT = 3.6, SHAPE_OCT = 7, SHAPE_RISE = 5, SHAPE_CARVE = 2, SHAPE_BIAS = 0.2
+const octavesOf = (dim) => { let k = 0; while (k < SHAPE_OCT && SHAPE_FIT * SHAPE_BASE * 2 ** k <= dim) k++; return k }
 // The most an octave count's sum reaches either way.
 const reachOf = (oct) => SHAPE_AMP * SHAPE_BASE * (2 ** oct - 1)
 const roomOct = (n) => octavesOf(Math.max(2 * n.rx, 2 * n.rz, 1.05 * n.h))

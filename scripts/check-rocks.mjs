@@ -1843,7 +1843,7 @@ console.log('\nscatter')
   // under it is painted -- see GROUND_CUE. 0..900 m is the world's own span, so
   // the flat worlds below sit low on the ramp and the peak world sits at the top
   // of it, which is what makes the tints they produce comparable to the real ones.
-  // The lakes and roads the maze siting reads off the field (layers/mazes.js _fits): none, and the water at `level`.
+  // The lakes and roads the labyrinth siting reads off the field (layers/labyrinths.js _fits): none, and the water at `level`.
   const dryLayers = (level) => ({ lakes: { levelAt: () => level }, paths: { riverLevelAt: () => null, nearest: () => null } })
   const world = (h, tan, snowLine, level) => ({
     field: {
@@ -1943,15 +1943,15 @@ console.log('\nscatter')
 
   const forestRocks = build(forest)
   const byBed = Object.fromEntries(forestRocks.stats.beds.map((b) => [b.name, b]))
-  check(forestRocks.beds.map((b) => b.cfg.name).join(' ') === 'boulders scree sunken giants hollow embedded shore maze',
-    'eight beds in the table, named rather than counted', forestRocks.beds.map((b) => b.cfg.name).join(', '))
+  check(forestRocks.beds.map((b) => b.cfg.name).join(' ') === 'boulders scree sunken giants hollow embedded shore',
+    'seven beds in the table, named rather than counted', forestRocks.beds.map((b) => b.cfg.name).join(', '))
   // A BED'S `field` IS ITS SEED SLOT AND NEVER MOVES. `tileSeed` mixes it into
   // every tile of the bed's scatter, so renumbering one -- by deleting a bed and
   // letting the survivors take its number, say -- shifts every rock of that bed
   // in the world. A silent failure, the world still looks like a world, so the
-  // numbers are pinned here: 6 and 7 belonged to beds that were deleted, and a
-  // new bed takes the next unused one.
-  check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 9 5 8 10',
+  // numbers are pinned here: 6, 7 and 10 belonged to beds that were deleted,
+  // and a new bed takes the next unused one.
+  check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 9 5 8',
     'and every bed keeps the field number it was seeded with', forestRocks.beds.map((b) => b.cfg.field).join(' '))
   check(
     new Set(forestRocks.meshes.meshes.map((m) => m.material)).size === 1,
@@ -2138,11 +2138,9 @@ console.log('\nscatter')
         // worlds has one -- the `bank` world below is where that bed has to
         // actually place. And a `deep` bed asks the biome field, which these
         // uniform worlds do not author -- the hollow bed's own block below is
-        // where it has to actually place. A `maze` bed stands only on a maze
-        // the maze layer sited, which refuses ground past 24 degrees, so the
-        // cliff and peak worlds hold none -- check-mazes is where it places.
+        // where it has to actually place.
         const tooFlat = bed.minSlopeTan > worlds[env].beds[0].field.scatterAt(0, 0, 4, { h: 0, tan: 0 }).tan
-        const declined = bed.cfg.footOnly || bed.cfg.shoreOnly > 0 || bed.cfg.deep > 0 || bed.cfg.maze || tooFlat || (env === 'river' && !bed.cfg.allowSubmerged)
+        const declined = bed.cfg.footOnly || bed.cfg.shoreOnly > 0 || bed.cfg.deep > 0 || tooFlat || (env === 'river' && !bed.cfg.allowSubmerged)
         if (!declined && claims !== placed > 0) wrong.push(`${bed.cfg.name}/${env}`)
         census.push(`${bed.cfg.name[0]}/${env} ${claims ? placed : '-'}`)
       }
@@ -2543,8 +2541,7 @@ console.log('\nscatter')
       // seam would make the world stop being a pure function of position. Pairs
       // straddling a seam may interpenetrate and are not counted.
       {
-        // A maze bed's walls are boulders overlapping on purpose (DESIGN.md §41), on a lattice rather than a dart.
-        const undarted = r.beds.filter((b) => !(b.minGap > 0) && !b.cfg.maze).map((b) => b.cfg.name)
+        const undarted = r.beds.filter((b) => !(b.minGap > 0)).map((b) => b.cfg.name)
         check(undarted.length === 0, 'every bed keeps its rocks out of each other',
           undarted.length ? `no minGap on ${undarted.join(', ')}` : `all ${r.beds.length} beds`)
 

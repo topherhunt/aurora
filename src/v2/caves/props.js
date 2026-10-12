@@ -145,8 +145,9 @@ export function placeProps(graph, field, seed) {
       for (let j = 0; j < count; j++) {
         const a = rand() * Math.PI * 2, d = j === 0 ? 0 : spread * Math.sqrt(rand())
         const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d
-        const roof = j === 0 ? p.roof : surface(field, x, z, p.roof - 0.8, 1, 2.5)
+        // Its roof read up from its own floor: read from just under the lead's roof, it would start above any shelf of rock between.
         const floor = j === 0 ? p.y : surface(field, x, z, p.y + 0.8, -1, 2.5)
+        const roof = j === 0 ? p.roof : floor === null ? null : surface(field, x, z, floor + 0.1, 1, p.roof - floor + 2.5)
         if (roof === null || floor === null || roof - floor < 2) continue
         const room = roof - floor, size = j === 0 ? 1 : 0.1 * 10 ** rand()
         const lone = j > 0 && rand() < 0.12

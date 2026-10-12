@@ -4,7 +4,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TRADES } from '../layers/trades.js'
 
-const SALT = { town: 7101, mind: 7102, ties: 7103, leafkin: 7104 }
+const SALT = { town: 7101, mind: 7102, ties: 7103, leafkin: 7104, voice: 7105 }
 
 export const TRAITS = ['honesty', 'accuracy', 'chattiness', 'boast', 'wariness', 'greed', 'kindness']
 
@@ -25,7 +25,25 @@ const LEAN = {
   shepherd: { kindness: 0.1 },
 }
 
-// Names carry no sex: the avatars are not tagged, so every name may belong to anyone.
+// Each body's baked voice (tools/voice/pack.mjs) and pronoun, as tools/characters/characters.json tags its avatar.
+const FEMALE = new Set(['farmer', 'fisherman', 'innkeeper', 'herbalist', 'alchemist', 'thief', 'healer', 'shieldmaiden', 'battlemage'])
+// A person's own sound over their body's voice: playbackRate within 1 +- `rate`, a treble tilt within +- `tilt` dB.
+export const VOICE = { rate: 0.05, tilt: 3, leafkinRate: 1.5 }
+
+/** The voice body `body` speaks with: `{ pack, he }`, `he` false for she. */
+export function bodyVoice(body) {
+  if (body === 'leafkin') return { pack: 'leafkin', he: false }
+  if (body === 'child-villager-2') return { pack: 'teen-from-man', he: true }
+  return FEMALE.has(body) ? { pack: 'f-bright', he: false } : { pack: 'm-big', he: true }
+}
+
+function voiceOf(rand, body) {
+  const { pack, he } = bodyVoice(body)
+  const rate = (pack === 'leafkin' ? VOICE.leafkinRate : 1) * (1 + (rand() * 2 - 1) * VOICE.rate)
+  return { pack, he, rate, tilt: (rand() * 2 - 1) * VOICE.tilt }
+}
+
+// Names carry no sex: any name may fall to any body.
 const NAMES = [
   'Ragna', 'Tove', 'Eirik', 'Sigrun', 'Halvard', 'Ylva', 'Bjarni', 'Asta', 'Torvald', 'Gisela', 'Leif', 'Solveig', 'Orm', 'Hilde', 'Arne', 'Ingrid',
   'Sten', 'Brynja', 'Kare', 'Freydis', 'Ulf', 'Gunnhild', 'Ivar', 'Thora', 'Rune', 'Dagny', 'Finn', 'Signe', 'Hakon', 'Embla', 'Odd', 'Liv',
@@ -58,15 +76,16 @@ export function townName(seed, index) {
   return head + tail
 }
 
-/** A mind for each of the town's folk (layers/towns.js `town.folk`), in folk order: `{ id, kind, name, body, trade, cls, home, work, household, friends, rival, traits }`, ties as folk indexes. */
+/** A mind for each of the town's folk (layers/towns.js `town.folk`), in folk order: `{ id, kind, name, body, trade, cls, home, work, household, friends, rival, traits, voice }`, ties as folk indexes. */
 export function castMinds(seed, town, townIndex) {
   const rand = mulberry32(hash32(seed, SALT.mind, townIndex))
   const names = [...NAMES]
+  const voices = mulberry32(hash32(seed, SALT.voice, townIndex))
   const minds = town.folk.map((f, i) => {
     const cls = TRADES.roles[f.body]
     if (cls === undefined) throw new Error(`castMinds: ${f.body} has no class in TRADES.roles`)
     const name = names.splice((rand() * names.length) | 0, 1)[0]
-    return { id: `${town.id}:${i}`, index: i, kind: 'human', town: townIndex, name, body: f.body, trade: f.trade, cls, home: f.home, work: f.work, household: [], friends: [], rival: null, traits: temperament(rand, [LEAN[cls], LEAN[f.body]]) }
+    return { id: `${town.id}:${i}`, index: i, kind: 'human', town: townIndex, name, body: f.body, trade: f.trade, cls, home: f.home, work: f.work, household: [], friends: [], rival: null, traits: temperament(rand, [LEAN[cls], LEAN[f.body]]), voice: voiceOf(voices, f.body) }
   })
   // Lodgers at the inn are not the innkeeper's household.
   const inn = town.buildings.findIndex((b) => b.trade === 'inn')
@@ -100,9 +119,10 @@ export function villageMinds(seed, count, homes) {
   const rand = mulberry32(hash32(seed, SALT.leafkin))
   const names = [...LEAFKIN_NAMES]
   const lean = { honesty: 0.2, accuracy: -0.25, wariness: 0.3, boast: -0.1 }
+  const voices = mulberry32(hash32(seed, SALT.voice))
   const minds = Array.from({ length: count }, (_, i) => {
     const name = names.length > 0 ? names.splice((rand() * names.length) | 0, 1)[0] : `${pick(rand, LEAFKIN_NAMES)}-${i}`
-    return { id: `lk${seed.toString(36)}:${i}`, index: i, kind: 'leafkin', name, body: 'leafkin', trade: 'gather', cls: 'leafkin', home: homes[i], work: null, household: [], friends: [], rival: null, traits: temperament(rand, [lean]) }
+    return { id: `lk${seed.toString(36)}:${i}`, index: i, kind: 'leafkin', name, body: 'leafkin', trade: 'gather', cls: 'leafkin', home: homes[i], work: null, household: [], friends: [], rival: null, traits: temperament(rand, [lean]), voice: voiceOf(voices, 'leafkin') }
   })
   for (const m of minds) m.household = minds.filter((o) => o !== m && o.home === m.home).map((o) => o.index)
   return minds

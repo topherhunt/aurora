@@ -79,6 +79,8 @@ export class WalkSurface {
     // `columnAt(x, z, minSize, out)` and `blockTopAt(x, z, minSize)` in
     // Rocks' terms and is read on its own into the one span buffer; one with
     // a `deckAt(x, z)` says where its top is a floor she stands level on.
+    // heightAt and crossed pass a fifth `sheer` true: a layer may then run a
+    // span's top to Infinity so she never stands on it (palisades.js).
     this.stone = [rocks]
     // Layers of bodies that stand in her way as a trunk does (addBody).
     this.bodies = []

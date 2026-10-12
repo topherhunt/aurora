@@ -127,7 +127,8 @@ export const TOWNSFOLK = {
   stand: [4, 12],
   sit: [25, 70],
   homing: 60,
-  talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10 },
+  // `mouth` is where a talker's voice comes from, of its height.
+  talk: { m: 2.2, s: [8, 20], cool: 45, chatter: [1.5, 3], everyTicks: 10, mouth: 0.9 },
   // Each class's errands (TRADES.roles): a guard patrols the ways, a traveller sits at the fire and minds the striders, a child runs between the doors. A child's pace is `childPace` times its own.
   errands: {
     folk: [['visit', 0.25], ['home', 0.15], ['sit', 0.3], ['wander', 0.3], ['lead', 0.06]],
@@ -377,6 +378,8 @@ export class TownLife {
     this.tick = null
     // The doors' one-shots of the last advance, each `{ sound, x, y, z, house }`, `house` the building's index.
     this.calls = []
+    // The talkers' turns of the last advance, each `{ id, partner, x, y, z }`, for conversations.js to voice.
+    this.chatter = []
     this.voicing = false
     this.turnTick = 0
     this.homing = false
@@ -393,6 +396,7 @@ export class TownLife {
     const from = this.tick
     const end = Math.min(tick, from + budget)
     this.calls.length = 0
+    this.chatter.length = 0
     for (let t = from + 1; t <= end; t++) {
       if (t >= this.turnTick) { this._placeAll(t / TICK_HZ); continue }
       this.tick = t
@@ -1181,6 +1185,7 @@ export class TownLife {
           c.voice = between(c.rand, TOWNSFOLK.talk.chatter)
           const gesture = TALKS[(c.rand() * TALKS.length) | 0]
           this._play(c, gesture, this.bodies[c.body].durations[gesture] / c.pace)
+          if (this.voicing) this.chatter.push({ id: c.id, partner: c.partner.id, x: c.x, y: c.y + c.size * TOWNSFOLK.talk.mouth, z: c.z })
         }
         if (c.hold <= 0) this._untalk(c)
         break
@@ -1540,6 +1545,40 @@ export class Townsfolk {
       life.calls.length = 0
     }
     return into
+  }
+
+  /** The talkers' turns since the last step, each `{ town, id, partner, x, y, z }` (`town` its index), drained. */
+  chatter(into) {
+    for (const [town, { life }] of this.alive) {
+      for (const v of life.chatter) into.push({ town, ...v })
+      life.chatter.length = 0
+    }
+    return into
+  }
+
+  /** `c` held in a conversation with her from `seconds`: stopped where it is drawn and turned to her until release(), its sim going on without it. */
+  hold(c, seconds) {
+    c.greet = { until: Infinity, at: seconds, clip: 'idle' }
+    c.gcue++
+  }
+
+  /** A held one's `clip` played once from `seconds`, then idle. */
+  gesture(c, clip, seconds) {
+    if (c.greet === null) throw new Error(`Townsfolk.gesture: ${c.id} is not held`)
+    c.greet.clip = clip
+    c.greet.at = seconds
+    c.gcue++
+  }
+
+  /** `c` comes to her unasked from `seconds`: walks up to `come` m, waves, and waits, held as hold() holds. */
+  approach(c, seconds, come) {
+    c.greet = { until: Infinity, at: Infinity, clip: 'wave', come }
+    c.gcue++
+  }
+
+  /** Let go: it walks back onto its sim. */
+  release(c, seconds) {
+    if (c.greet !== null) c.greet.until = seconds
   }
 
   /** The people drawn this frame walking or running afoot, for their footfalls (ambience.js herds, by main.js): one record each, rewritten per call. */
@@ -1912,6 +1951,24 @@ export class Townsfolk {
     if (c.greet !== null) {
       const want = Math.atan2(-(feet.z - pose.z), feet.x - pose.x), s = swing(pose.heading, want)
       pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
+      // Coming to her (approach): walked up to `come` m, and only there the wave begins.
+      if (c.greet.at === Infinity && seconds < c.greet.until) {
+        const dx = feet.x - pose.x, dz = feet.z - pose.z, d = Math.hypot(dx, dz)
+        const m = this.bodies[c.body].gait.walk * c.k * c.pace * dt
+        if (d - c.greet.come > m) {
+          pose.x += (dx / d) * m
+          pose.z += (dz / d) * m
+          pose.y = this._ground(c, pose.x, pose.z, pose.y)
+          pose.clip = 'walk'
+          pose.speed = m / dt
+          pose.cue = 1e6 + c.gcue * 2
+          pose.from = -1
+          pose.scale = 1
+          return
+        }
+        c.greet.at = seconds
+        c.gcue++
+      }
       const dur = this.bodies[c.body].durations[c.greet.clip]
       pose.clip = seconds - c.greet.at < dur ? c.greet.clip : 'idle'
       pose.speed = 0

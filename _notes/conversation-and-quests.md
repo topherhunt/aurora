@@ -65,10 +65,15 @@ Small theory-of-mind touches that pay for themselves: they remember what they to
 
 ## In the headset
 
-- **You start it**: point the trigger at an NPC within about 3 m. They stop (the existing greet stop), turn to you, and a small panel appears beside their head with the chips.
-- **They start it**: a quest-giver hails you (walks up, as leafkin already do) and opens the panel on their first line. You can dismiss it.
-- **It ends** when you walk 4 m off, press Bye, or they lose patience.
-- **Overhearing**: other players see small speech bubbles over the NPC and over you, so they can read along from nearby without the panel.
+`src/v2/conversations.js` runs it; `talk/chat.js` decides when they talk and stop, `talk/grid.js` and `ui/dialog-panel.js` are the grid.
+
+- **You start it** by speaking up while facing a townsperson (or a leafkin that trusts you) within 3 m: only a spike in the mic's level counts (`audio/mic.js`), never the words. The Quest browser gives `getUserMedia` over HTTPS behind a permission prompt; until it is allowed, or where it is refused, the C key stands in. They stop, turn, gesture and greet, and the panel appears below them, between you: their line over a 4x4 grid. A sentence is 2-5 fragments pressed in turn, the punctuated one sends it, `<` steps back, and Goodbye sits at the top level. No preview.
+- **They may refuse**: busy and unchatty, cold to you, a leafkin that does not trust you, or one you just left (`CHAT.alone`). They cut you off when patience runs out.
+- **They start it**: now and then a free townsperson within 12 m who wants something of you, or is the cheery chatty sort, walks up, waves and hails; speak while facing them and the panel opens. Left waiting 15 s, they go back to what they were doing.
+- **It ends** when you walk 4.5 m off, go indoors, say Goodbye or are dismissed; their last line stays up to be read. After Goodbye they leave you be a while.
+- **Holds are drawn, not simulated**: the townsfolk's greet path and the villagers' ease offsets (`net-ease.js`) pose the held one while the deterministic sim walks on underneath, so a release glides them back. A townsperson walking up to you passes through obstacles in pose-space.
+- **Their chatter with each other** comes as turns from the talk state (`TownLife.chatter`, `Villagers.turns`), voiced as `chatterMoment` picks: gossip leads, then reactions, moods and the hour.
+- **Overhearing** (other players seeing bubbles) is not built.
 
 ## Netplay
 
@@ -104,10 +109,10 @@ Engine (three-free, gated by `check-talk.mjs`): `mind.js` (names, ties, temperam
 1. **Minds and Where-is.** Built.
 2. **Distortion and chips.** Built: lies, muddles, hedges, boasts, refusals and prices, Ask-about chips, the leafkin pidgin.
 3. **The missing child.** Rolled and talkable (plea, witnesses, coverers who lie or admit). Not yet in the world: the child's body standing where `where` says, finding it, Follow me home. A wild spot is a bearing and distance from the fire and still needs a ground check (dry, walkable).
-4. **Telling and gossip.** Built in the engine (`tell` for "X sent me" and "Y is at Z", `gossip`); nothing calls `gossip` from the talk state yet, and rapport lives only in memory, not the save or the room.
-5. **The headset panel, hails and overhead bubbles.** Not started: needs `townsfolk.js`, `villagers.js` and `main.js`, which other sessions are in.
+4. **Telling and gossip.** Built in the engine (`tell` for "X sent me" and "Y is at Z", `gossip`); nothing calls `gossip` from the talk state yet. Rapport and the quest log live for the session only; the topics she has heard of are saved (`talk.topics`).
+5. **The headset panel and hails.** Built (In the headset). Overhead bubbles are not.
 6. **The message.** Built: someone asks her to carry a phrase to a grown-up in the nearest town; the recipient asks what was said and she picks from the true words and three near-misses. True words warm the recipient and the sender thanks her and owes her; garbled words turn the recipient cold for good. The discretion variant ("not where her husband can hear") is not built.
-7. **Voice.** Moment and utterance inventory, recorder and splice lab built (`tools/voice/`, `voice-recorder.html`); not yet recorded, converted, scheduled or played.
+7. **Voice.** Recorded and converted into four packs (`m-big`, `f-bright`, `teen-from-man`, `leafkin`), baked by `node tools/voice/pack.mjs` into `public/sounds/voice/` (one MP3 per pack, each line its own stream, indexed, and `moments.json`), gated by `check-voice.mjs`. `audio/voices.js` fetches a pack the first time anyone in it speaks and decodes a line only when it plays; speech is bright up close, darker and echoed with distance, and silent past 20 m. `talk/lines.js` picks the line (shuffle per moment, cooldowns, leafkin trust tiers), each person on their body's pack with their own rate and tone tilt (`mind.js` `voice`). 32 clipped takes still need re-recording, then a re-pack. Splicing is not used.
 8. Go-and-look, trades, the rest of the quest list.
 
 ## Decided

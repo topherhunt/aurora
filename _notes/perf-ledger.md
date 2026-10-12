@@ -34,6 +34,7 @@ The cost was a re-queue loop: `thicken = near2 < loSq[q]` is always true at leve
 - `probes` 4 to 5 ms on most windows in town and forest; `grass` 3 to 6 ms and `rocks` 2 to 7 ms tile growth while moving; `ferns` 2 to 4.5; `pebbles` 5 to 6 ms in the forest; a 79 ms `sky+ambience` frame; 15.9 ms `animals` spike; `other` (GC, A-Frame, GPU wait) 10 to 78 ms on single frames.
 
 ## Falsified (do not retry)
+Discard, halving and per-triangle results here were measured before multiview, while the frame was command-bound. Under `?multiview` at fb 1 it is not (fill shows, see below), so retest those three under multiview before leaning on them.
 - Halving litter, grass or the card pool: saves 0 within noise. Dropping the alpha discard on litter or grass: 0 within noise. Wind off: 0 or negative.
 - Upload bytes: about 50 KB standing and 1 MB walking per frame. Not the cost.
 - Per-triangle cost: pebbles at 56k tris cost 0.3 to 0.8; mushrooms at 500 tris and sticks at 4.5k cost 0.3 to 0.6. The earlier "sticks and mushrooms 1 ms each" did not repeat.
@@ -61,6 +62,7 @@ Experiments, in order (each a trace-only A/B switch in a `tmp/` script, never in
 7. Census under multiview reports 0 draws for most layers; make the census hooks count `?multiview` draws or compare through the plain run.
 
 ## Per-draw state cuts (mandate: fewer WebGL calls a frame)
+- A draw is not one unit of cost: one that reuses the bound program and textures and changes a uniform is 2 to 3 calls, one that switches program is 12 to 50. More draws in state order can beat fewer that each switch, so count calls, not draws. Merging has a GPU price: a merged mesh frustum-culls as one piece and an uber-shader branches, which matters wherever fill does (trees, grass, ferns). Open: price draw count against per-draw state directly (same layer split into N draws sharing a program vs fewer draws switching).
 - `src/uniform-block.js`: `lighting.useBlock(renderer)` puts every non-sampler `WorldLight` uniform (sun/sky, night lift, air, lamps, torches, hearth glow, caustics) in one std140 UBO, packed from the same `{ value }` objects and uploaded once per change; `renderer.render` is wrapped to sync first. Verified on desktop: driver offsets and size match, no failed programs. Pages that never call `useBlock` keep plain uniforms.
 - `src/uniform-latch.js`: sun, hemisphere and fog creep every frame and three caches per program, so each creep was re-sent ~16 times; the latch holds them until the drift passes 0.4% (colours/intensities) or 5e-4 (sun position). Left: view-space light direction/colour change with head motion and cost one call per program.
 - `main.js` `setOpaqueSort`: grouped by program id before material id.
