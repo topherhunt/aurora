@@ -3,6 +3,7 @@
 // Passages are D-shaped: a half-ellipse vault over a flat floor, swept along each edge's samples. Nodes are ellipsoid domes cut by a floor. The pieces join by a smooth min, so every junction gets a fillet instead of a crease.
 
 import { Noise3 } from './noise3.js'
+import { reliefAt } from './graph.js'
 
 const BIN = 8
 // Smooth-min radius: how wide the fillet where two pieces of air meet. It also sags a shared floor by up to BLEND / 4, which is why a passage's own segments join by a hard min.
@@ -10,6 +11,18 @@ const BLEND = 0.8
 // Past this distance from the surface, the wall noise cannot change the sign, so it is skipped.
 const ROUGH = 1.4
 const FAR = 50
+
+// Metres a passage's floor rises into its walls.
+const COVE = 0.9
+
+const lowOf = (n) => (n.relief === undefined ? 0 : n.relief.lo)
+
+/** Mouth n's flare: the passage folding outward behind it to the plane the room draws across its far end, { pts, end: { x, y, z }, w, h }. A cellar's runs straight to its door. */
+export function mouthFlare(n) {
+  const [len, w, h] = n.cellar ? [2.4, 1.1, 2.5] : [3.2, 2.6, 3.6]
+  const end = { x: n.x - n.dx * len, y: n.y, z: n.z - n.dz * len }
+  return { pts: [{ x: n.x, y: n.y, z: n.z, w: 1.2, h: 2.6, cut: 0 }, { ...end, w, h, cut: 0 }], end, w, h }
+}
 
 export class CaveField {
   constructor(graph, seed) {
@@ -20,8 +33,8 @@ export class CaveField {
     for (const n of graph.nodes) {
       const r = Math.max(n.rx, n.rz)
       prims.push({
-        node: true, rough: 1, group: n.i, region: n.region, x: n.x, y: n.y, z: n.z, c: Math.cos(n.rot), s: Math.sin(n.rot), rx: n.rx, rz: n.rz, h: n.h, dish: n.dish, cavern: n.kind === 'cavern',
-        x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r, y0: n.y - n.dish - 1, y1: n.y + n.h * 1.05,
+        node: true, rough: 1, group: n.i, region: n.region, x: n.x, y: n.y, z: n.z, c: Math.cos(n.rot), s: Math.sin(n.rot), rx: n.rx, rz: n.rz, h: n.h, dish: n.dish, cavern: n.kind === 'cavern' && !n.great, owner: n,
+        x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r, y0: n.y - Math.max(n.dish, -lowOf(n)) - 1, y1: n.y + n.h * 1.05,
       })
     }
     const run = (pts, group, regionAt, rough) => {
@@ -43,13 +56,14 @@ export class CaveField {
     }
     let group = graph.nodes.length + graph.edges.length
     for (const l of graph.lobes) {
-      const r = Math.max(l.rx, l.rz)
+      const r = Math.max(l.rx, l.rz), n = graph.nodes[l.node]
       prims.push({
-        node: true, rough: 1, group: group++, region: l.region, x: l.x, y: l.y, z: l.z, c: Math.cos(l.rot), s: Math.sin(l.rot), rx: l.rx, rz: l.rz, h: l.h, dish: 0, cavern: false,
-        x0: l.x - r, x1: l.x + r, z0: l.z - r, z1: l.z + r, y0: l.y - 1, y1: l.y + l.h * 1.05,
+        node: true, rough: 1, group: group++, region: l.region, x: l.x, y: l.y, z: l.z, c: Math.cos(l.rot), s: Math.sin(l.rot), rx: l.rx, rz: l.rz, h: l.h, dish: 0, cavern: false, owner: n,
+        x0: l.x - r, x1: l.x + r, z0: l.z - r, z1: l.z + r, y0: l.y + lowOf(n) - 1, y1: l.y + l.h * 1.05,
       })
     }
     for (const o of graph.nooks) run(o.pts, group++, () => o.region, 1)
+    for (const n of graph.nodes) if (n.kind === 'mouth') run(mouthFlare(n).pts, group++, () => n.region, 1)
     const pad = BLEND + ROUGH
     for (const p of prims) { p.x0 -= pad; p.x1 += pad; p.z0 -= pad; p.z1 += pad; p.y0 -= pad; p.y1 += pad }
     this.prims = prims
@@ -138,7 +152,7 @@ export class CaveField {
     const q = Math.sqrt(lx * lx + lz * lz + ly * ly)
     const shell = (q - 1) * Math.min(p.rx, p.rz, ry)
     const rho2 = lx * lx + lz * lz
-    let floor = p.y + this.bump(x, z)
+    let floor = p.y + this.bump(x, z) + reliefAt(p.owner, x, z)
     if (p.dish > 0) floor -= p.dish * Math.max(0, 1 - rho2 / 0.4356)
     // Swells in a cavern's floor, gone by its rim so a passage's ramp starts level with it.
     if (p.cavern) floor += 0.5 * this.floorNoise.at2(x * 0.11, z * 0.11) * Math.min(1, rho2 * 2, Math.max(0, (0.81 - rho2) / 0.3))
@@ -151,14 +165,16 @@ export class CaveField {
     const u = along < 0 ? 0 : along > 1 ? 1 : along
     const t = Math.hypot(x - p.ax - u * p.ex, z - p.az - u * p.ez)
     const w = p.wa + (p.wb - p.wa) * u, h = p.ha + (p.hb - p.ha) * u
-    // The floor climbs a metre a metre into the rounded end caps: otherwise the lower of two segments on a climb shelves a terrace as far into the next as it is wide.
+    // The floor climbs a metre a metre into the rounded end caps: otherwise the lower of two segments on a climb shelves a terrace as far into the next as it is wide. The vault stays on the unclimbed floor, or a cap's lifted vault leaves a film of air at its neighbour's roof that reads as a floor.
     const over = (along < 0 ? -along : along > 1 ? along - 1 : 0) * p.len
-    let floor = p.ya + (p.yb - p.ya) * along + over + this.bump(x, z)
+    // The floor coves up into each wall, so where a passage climbs out of another's tube her foot finds a ramp instead of a ledge at the tube's edge.
+    const side = t / w - 0.55
+    let floor = p.ya + (p.yb - p.ya) * along + over + this.bump(x, z) + (side > 0 ? COVE * (side / 0.45) ** 2 : 0)
     const cut = p.ca + (p.cb - p.ca) * u
     if (cut > 0) floor -= cut * Math.max(0, 1 - (t / (0.55 * w)) ** 2)
     const v = y - floor
     this._v = v
-    const a = t / w, b = v / h
+    const a = t / w, b = (v + over) / h
     return Math.max((Math.sqrt(a * a + b * b) - 1) * Math.min(w, h), -v)
   }
 }

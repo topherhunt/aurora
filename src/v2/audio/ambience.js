@@ -122,6 +122,7 @@ export const SOUNDS = {
   uiClose: 'sounds/ui-close-backpack.mp3',
   uiPop: 'sounds/ui-pop.mp3',
   flaregun: 'sounds/ui-flaregun-shoot.mp3',
+  extinguish: 'sounds/action-extinguish.mp3',
 }
 
 const LAKE_MOVING_S = 0.5

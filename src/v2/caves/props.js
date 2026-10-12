@@ -5,6 +5,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { PALETTES, GLOWS } from './regions.js'
 import { onRock, rayRock } from './chalk.js'
+import { reliefAt } from './graph.js'
 
 // A stalagmite this tall is a trunk to her.
 export const MITE_BLOCKS = 1.0
@@ -20,10 +21,17 @@ export function columnAt(field, x, z, y) {
   return { floor: floor + 0.05, roof: roof - 0.05 }
 }
 
+// The rock face met marching from `y` (in air) in direction `dir` (+1 up, -1 down) within `reach` metres, or null.
+function surface(field, x, z, y, dir, reach) {
+  if (field.at(x, y, z) > 0) return null
+  for (let d = 0; d < reach; d += 0.1) if (field.at(x, y + dir * d, z) > 0) return y + dir * (d - 0.05)
+  return null
+}
+
 export function placeProps(graph, field, seed) {
   const rand = mulberry32(seed ^ 0x9f05)
   const rr = (a, b) => a + (b - a) * rand()
-  const out = { mites: [], tites: [], mush: [], ruins: [], chalk: [], fish: [], crabs: [], obstacles: [], lights: [] }
+  const out = { mites: [], tites: [], mush: [], boulders: [], torches: [], ruins: [], chalk: [], fish: [], crabs: [], obstacles: [], lights: [] }
   const lines = graph.nodes.map(() => [])
   for (const e of graph.edges) { lines[e.a].push(e.pts); lines[e.b].push(e.pts) }
   const clear = (n, x, z, pad) => lines[n.i].every((pts) => pts.every((p, k) => k + 1 >= pts.length || segDist(x, z, p, pts[k + 1]) > CLEAR + pad))
@@ -33,49 +41,81 @@ export function placeProps(graph, field, seed) {
   for (const g of [...graph.glows].reverse()) regionGlow[graph.nodes[g.node].region] = g.color
   const hit = [0, 0, 0], nrm = [0, 0, 0], at = [0, 0, 0]
 
+  // Node n's floor at (x, z), or null where that is rock, a pit, or under 2 m of headroom.
+  const stand = (n, x, z) => {
+    const base = n.y + reliefAt(n, x, z)
+    const col = columnAt(field, x, z, base + 1.2)
+    if (col === null || col.floor < base - 0.6 || col.roof - col.floor < 2) return null
+    return { x, z, y: col.floor, roof: col.roof }
+  }
   // A random spot on node n's floor at normalised radius rho0..rho1.
   const spot = (n, rho0, rho1) => {
     const a = rand() * Math.PI * 2, rho = Math.sqrt(rr(rho0 * rho0, rho1 * rho1))
     const lx = Math.cos(a) * rho * n.rx, lz = Math.sin(a) * rho * n.rz
     const c = Math.cos(n.rot), s = Math.sin(n.rot)
-    const x = n.x + lx * c - lz * s, z = n.z + lx * s + lz * c
-    const col = columnAt(field, x, z, n.y + 1.2)
-    if (col === null || col.floor < n.y - 0.6 || col.roof - col.floor < 2) return null
-    return { x, z, y: col.floor, roof: col.roof }
+    return stand(n, n.x + lx * c - lz * s, n.z + lx * s + lz * c)
+  }
+
+  // A cellar's way in: one or two torches in the passage wall, 5 to 20 m from its door, on alternate sides.
+  const cellarTorches = (n) => {
+    const e = graph.edges.find((q) => q.a === n.i || q.b === n.i)
+    const pts = e.a === n.i ? e.pts : [...e.pts].reverse()
+    let side = rand() < 0.5 ? 1 : -1
+    for (let k = rand() < 0.5 ? 1 : 2, at = rr(5, 9); k > 0; k--, at += rr(4, 9), side = -side) {
+      const p = alongPts(pts, at)
+      if (p === null || !rayRock(field, p.x, p.y + 1.7, p.z, -p.dz * side, 0, p.dx * side, 4, hit)) continue
+      outward(field, hit, nrm)
+      const l = Math.hypot(nrm[0], nrm[2])
+      if (l < 0.5) continue
+      const nx = nrm[0] / l, nz = nrm[2] / l
+      out.torches.push({ x: hit[0], y: hit[1], z: hit[2], nx, nz })
+      out.lights.push({ x: hit[0] + nx * 0.4, y: hit[1] + 0.45, z: hit[2] + nz * 0.4, ...TORCHLIGHT })
+    }
   }
 
   for (const n of graph.nodes) {
-    if (n.kind === 'mouth') continue
+    if (n.kind === 'mouth') {
+      if (n.cellar) cellarTorches(n)
+      continue
+    }
     const pal = PALETTES[graph.regions[n.region].palette]
     const area = n.rx * n.rz
     const big = n.kind === 'cavern'
 
-    // Dripstone: stalactites over, stalagmites under, now and then the two met as a column.
-    const drips = Math.round(area * 0.12 * pal.tites)
-    for (let k = 0; k < drips; k++) {
+    // Dripstone in bunches: a lead stalactite and up to seven smaller round it, each with a stalagmite under it now and then.
+    const bunches = Math.round(area * 0.1 * pal.tites)
+    for (let k = 0; k < bunches; k++) {
       const p = spot(n, 0.15, 0.95)
       if (p === null) continue
-      const room = p.roof - p.y
-      const tl = Math.min(room * 0.35, rr(0.3, big ? 6 : 2.2))
-      out.tites.push({ x: p.x, y: p.roof, z: p.z, len: tl, r: tl * rr(0.1, 0.16), seed: rand() })
-      if (rand() < 0.55) {
-        let ml = Math.min(room * 0.3, rr(0.2, big ? 4 : 1.8))
+      const count = 1 + Math.floor(rand() ** 1.6 * 8), spread = rr(0.4, big ? 3 : 1.6)
+      for (let j = 0; j < count; j++) {
+        const a = rand() * Math.PI * 2, d = j === 0 ? 0 : spread * Math.sqrt(rand())
+        const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d
+        const roof = j === 0 ? p.roof : surface(field, x, z, p.roof - 0.8, 1, 2.5)
+        const floor = j === 0 ? p.y : surface(field, x, z, p.y + 0.8, -1, 2.5)
+        if (roof === null || floor === null || roof - floor < 2) continue
+        const room = roof - floor, size = j === 0 ? 1 : rr(0.3, 0.9)
+        const tl = Math.min(room * 0.35, size * rr(0.3, big ? 6 : 2.2))
+        out.tites.push({ x, y: roof, z, len: tl, r: tl * rr(0.1, 0.16), seed: rand() })
+        if (rand() >= 0.55) continue
+        let ml = Math.min(room * 0.3, size * rr(0.2, big ? 4 : 1.8))
         const r = ml * rr(0.18, 0.26)
-        if (ml > MITE_BLOCKS && !clear(n, p.x, p.z, r)) ml = rr(0.2, 0.8)
-        out.mites.push({ x: p.x, y: p.y, z: p.z, len: ml, r: Math.max(0.06, ml * 0.22), seed: rand() })
-        if (ml > MITE_BLOCKS) block(p.x, p.z, ml * 0.22, p.y, p.y + ml)
+        if (ml > MITE_BLOCKS && !clear(n, x, z, r)) ml = rr(0.2, 0.8)
+        out.mites.push({ x, y: floor, z, len: ml, r: Math.max(0.06, ml * 0.22), seed: rand() })
+        if (ml > MITE_BLOCKS) block(x, z, ml * 0.22, floor, floor + ml)
       }
     }
 
-    // Mushrooms: carpets of small ones, a few huge.
+    // Mushrooms: carpets of small ones, a few huge. The second `caps` rolls keep only the glowing, so glowing caps come twice as often as plain ones.
     const caps = Math.round(area * 0.1 * (0.3 + pal.mush))
-    for (let k = 0; k < caps; k++) {
+    for (let k = 0; k < caps * 2; k++) {
+      const glow = rand() < 0.2 + pal.glow * 0.6 ? regionGlow[n.region] : null
+      if (k >= caps && glow === null) continue
       const p = spot(n, 0.5, 0.97)
       if (p === null) continue
       const huge = rand() < 0.18
       const h = huge ? Math.min(p.roof - p.y - 0.4, rr(1.8, big ? 6 : 3.6)) : rr(0.1, 0.5)
       if (huge && (h < 1.5 || !clear(n, p.x, p.z, h * 0.6))) continue
-      const glow = rand() < 0.2 + pal.glow * 0.6 ? regionGlow[n.region] : null
       out.mush.push({ x: p.x, y: p.y, z: p.z, h, lean: rr(-0.15, 0.15), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: UP })
       if (huge) block(p.x, p.z, Math.max(0.12, h * 0.07), p.y, p.y + h)
       // Every glowing cap tints the rock round it, the small ones a pace or two of floor and wall.
@@ -83,9 +123,9 @@ export function placeProps(graph, field, seed) {
     }
 
     // Wall clumps: a few small glowing caps standing out of the rock, each lighting its own patch of wall faintly.
-    const clumps = Math.round((1 + area * 0.012) * (0.3 + pal.mush + pal.glow))
+    const clumps = Math.round(2 * (1 + area * 0.012) * (0.3 + pal.mush + pal.glow))
     for (let k = 0; k < clumps; k++) {
-      const a = rand() * Math.PI * 2, y0 = n.y + rr(0.3, 2.6)
+      const a = rand() * Math.PI * 2, y0 = n.y + reliefAt(n, n.x, n.z) + rr(0.3, 2.6)
       if (field.at(n.x, y0, n.z) > -0.3) continue
       if (!rayRock(field, n.x, y0, n.z, Math.cos(a), 0, Math.sin(a), Math.max(n.rx, n.rz) * 1.5 + 2, hit)) continue
       outward(field, hit, nrm)
@@ -144,6 +184,42 @@ export function placeProps(graph, field, seed) {
         if (p !== null) out.crabs.push({ x: p.x, y: p.y, z: p.z, yaw: rand() * 6.28, seed: rand() })
       }
     }
+
+    // A great cavern: groves of giant glowing mushrooms on its dry ground, boulders strewn between, fish in its hollows' pools.
+    if (n.great) {
+      let lit = 0
+      for (let g = Math.round(area / 200); g > 0; g--) {
+        const c = spot(n, 0.1, 0.9)
+        if (c === null) continue
+        const count = 3 + Math.floor(rand() * 10), spread = rr(3, 10)
+        for (let j = 0; j < count; j++) {
+          const a = rand() * 6.28, d = spread * Math.sqrt(rand())
+          const x = c.x + Math.cos(a) * d, z = c.z + Math.sin(a) * d
+          // Low ground is where the river and the pools lie.
+          if (reliefAt(n, x, z) < -0.5) continue
+          const p = stand(n, x, z)
+          if (p === null) continue
+          const h = Math.min(p.roof - p.y - 1, 1.5 + 10.5 * rand() ** 2.2)
+          if (h < 1.5 || !clear(n, x, z, Math.max(0.6, h * 0.1))) continue
+          const glow = rand() < 0.8 ? regionGlow[n.region] : null
+          out.mush.push({ x, y: p.y, z, h, lean: rr(-0.12, 0.12), yaw: rand() * 6.28, glow, seed: rand(), giant: h > 5, region: n.region, up: UP })
+          block(x, z, Math.max(0.12, h * 0.07), p.y, p.y + h)
+          if (glow !== null && h > 4 && lit++ < GROVE_LIGHTS) out.lights.push({ x, y: p.y + h, z, color: glow, reach: 6 + h, power: 0.35 })
+        }
+      }
+      for (let k = Math.round(area / 50); k > 0; k--) {
+        const p = spot(n, 0.05, 0.95)
+        if (p === null) continue
+        const r = 0.3 + 2.7 * rand() ** 2.5
+        if (r > 0.5 && !clear(n, p.x, p.z, r)) continue
+        out.boulders.push({ x: p.x, y: p.y - 0.3 * r, z: p.z, r, yaw: rand() * 6.28, seed: rand() })
+        if (r > 0.5) block(p.x, p.z, r * 0.9, p.y, p.y + r)
+      }
+      for (const pl of graph.pools) {
+        if (pl.node !== n.i) continue
+        for (let k = Math.round(rr(1, 2 + pl.r)); k > 0; k--) out.fish.push({ node: n.i, x: pl.x, z: pl.z, y: pl.level - 0.25 - rr(0.2, pl.depth * 0.7), r: pl.r * rr(0.15, 0.45), phase: rand() * 6.28, speed: rr(0.25, 0.6) })
+      }
+    }
   }
 
   // Each region's landmark, at its biggest chamber's middle: the thing she names the place by.
@@ -151,7 +227,7 @@ export function placeProps(graph, field, seed) {
     if (r.landmark < 0) continue
     const n = graph.nodes[r.landmark]
     const kind = PALETTES[r.palette].landmark
-    const col = columnAt(field, n.x, n.z, n.y + 1.2)
+    const col = columnAt(field, n.x, n.z, n.y + reliefAt(n, n.x, n.z) + 1.2)
     if (col === null) continue
     const room = col.roof - col.floor
     const off = (a, d) => ({ x: n.x + Math.cos(a) * d, z: n.z + Math.sin(a) * d })
@@ -162,7 +238,7 @@ export function placeProps(graph, field, seed) {
       if (clear(n, p.x, p.z, 1.6)) at = p
     }
     if (at === null) continue
-    const c = columnAt(field, at.x, at.z, n.y + 1.2)
+    const c = columnAt(field, at.x, at.z, n.y + reliefAt(n, at.x, at.z) + 1.2)
     if (c === null) continue
     if (kind === 'pillar' || kind === 'column') {
       const r0 = kind === 'pillar' ? rr(0.9, 1.5) : rr(0.6, 0.9)
@@ -183,7 +259,7 @@ export function placeProps(graph, field, seed) {
       for (let k = 0; k < count; k++) {
         const d = (k - (count - 1) / 2) * gap
         const x = at.x + Math.cos(yaw) * d, z = at.z + Math.sin(yaw) * d
-        const cc = columnAt(field, x, z, n.y + 1.2)
+        const cc = columnAt(field, x, z, n.y + reliefAt(n, x, z) + 1.2)
         if (cc === null || !clear(n, x, z, 0.6)) { prev = null; continue }
         const top = cc.floor + Math.min(cc.roof - cc.floor - 0.5, 4.2)
         for (let y = cc.floor - 0.1; y < top; y += 0.9) out.ruins.push({ x, y, z, w: 0.75, h: Math.min(0.9, top - y), yaw, tilt: 0 })
@@ -197,7 +273,7 @@ export function placeProps(graph, field, seed) {
   // The graph's own glows: a cluster of glowing caps at each, bright enough to read across a chamber.
   for (const g of graph.glows) {
     const n = graph.nodes[g.node]
-    const col = columnAt(field, g.x, g.z, n.y + 1.2)
+    const col = columnAt(field, g.x, g.z, n.y + reliefAt(n, g.x, g.z) + 1.2)
     if (col === null || !clear(n, g.x, g.z, 0.5)) continue
     const h = Math.min(col.roof - col.floor - 0.5, rr(1.2, n.kind === 'cavern' ? 4.5 : 2.6))
     if (h < 0.8) continue
@@ -213,6 +289,9 @@ export function placeProps(graph, field, seed) {
 }
 
 const UP = [0, 1, 0]
+const TORCHLIGHT = { color: [0.9, 0.55, 0.25], reach: 7, power: 0.7 }
+// Lights one great cavern's groves may bake into the rock.
+const GROVE_LIGHTS = 16
 
 // The unit normal out of the rock at p (the field is positive in rock), into `out`.
 function outward(field, p, out) {
@@ -223,6 +302,16 @@ function outward(field, p, out) {
   const l = Math.hypot(out[0], out[1], out[2])
   if (l < 1e-9) throw new Error('caves/props: no gradient at a wall point')
   out[0] /= l; out[1] /= l; out[2] /= l
+}
+
+// The point `at` metres along a polyline, with its unit plan heading, or null past its end.
+function alongPts(pts, at) {
+  for (let k = 0; k + 1 < pts.length; k++) {
+    const p = pts[k], q = pts[k + 1], l = Math.hypot(q.x - p.x, q.z - p.z)
+    if (at <= l) { const u = at / l; return { x: p.x + (q.x - p.x) * u, y: p.y + (q.y - p.y) * u, z: p.z + (q.z - p.z) * u, dx: (q.x - p.x) / l, dz: (q.z - p.z) / l } }
+    at -= l
+  }
+  return null
 }
 
 function segDist(x, z, a, b) {

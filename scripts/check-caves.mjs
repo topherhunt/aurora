@@ -28,6 +28,16 @@ const check = (ok, label, detail = '') => {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
 
+// A chunk's seam vertices (those in the half-metre band outside its low faces or inside its high ones), sorted, as one string.
+function seamOf(position, ox, oy, oz) {
+  const out = []
+  const o = [ox, oy, oz]
+  for (let v = 0; v < position.length; v += 3) {
+    if ([0, 1, 2].some((a) => position[v + a] < o[a] || position[v + a] > o[a] + CHUNK - LODS[0].voxel)) out.push(`${position[v]},${position[v + 1]},${position[v + 2]}`)
+  }
+  return out.sort().join(';')
+}
+
 const MAX_TAN = Math.tan((50 * Math.PI) / 180)
 const STEP = 0.25
 const STRIDE = 1.5
@@ -156,12 +166,14 @@ for (const sys of SYSTEMS) {
 
   // The mesh: every chunk at every LOD, timed; then the triangles CaveRoom draws standing at each node, within a budget.
   const t2 = performance.now()
-  let tris = 0
+  let tris = 0, cracked = 0
   const chunks = []
   for (const [i, j, k] of chunkList(field)) {
     const c = { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: LODS.map(() => null) }
-    LODS.forEach(({ voxel }, lod) => {
-      const m = meshChunk(field, i, j, k, cave.lights, voxel)
+    const tiers = meshChunk(field, i, j, k, cave.lights)
+    const seams = tiers.map((m) => (m === null ? '' : seamOf(m.position, i * CHUNK, j * CHUNK, k * CHUNK)))
+    if (seams.some((q) => q !== seams[0])) cracked++
+    tiers.forEach((m, lod) => {
       if (m === null) return
       c.lods[lod] = new Map()
       for (let p = 0; p < m.parts.length; p += 3) c.lods[lod].set(m.parts[p], m.parts[p + 2] / 3)
@@ -170,6 +182,7 @@ for (const sys of SYSTEMS) {
     chunks.push(c)
   }
   const meshMs = performance.now() - t2
+  check(cracked === 0, `${tag}: every chunk's seam vertices are the same at every LOD`, `${cracked} cracked chunks`)
   let worst = 0, at = -1
   for (const n of graph.nodes) {
     const shown = drawnRegions(graph, n.region)

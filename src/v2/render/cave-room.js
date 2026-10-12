@@ -12,6 +12,8 @@ import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CH
 import { ribbons } from '../caves/chalk.js'
 import { CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../caves/mesh.js'
 import { shoreMesh } from '../caves/water.js'
+import { stalagmite } from '../caves/stalagmite.js'
+import { mouthFlare } from '../caves/field.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
@@ -56,6 +58,8 @@ vec3 caveFog(vec3 c, vec3 p) {
 
 const VERT = /* glsl */ `
 attribute vec3 glow;
+attribute float day;
+uniform vec3 uDay;
 varying vec3 vCol;
 varying vec3 vGlow;
 varying vec3 vPos;
@@ -89,7 +93,7 @@ void main() {
 #endif
 #else
   vCol = color.rgb;
-  vGlow = glow;
+  vGlow = glow + day * uDay;
 #endif
   vec4 w = modelMatrix * p;
   vPos = w.xyz;
@@ -209,10 +213,11 @@ function caveUniforms(lighting, stone) {
     uFogDensity: { value: CAVE_AIR.density },
     uFogColor: { value: new THREE.Color(...CAVE_AIR.color) },
     uTime: { value: 0 },
+    uDay: { value: new THREE.Color() },
   }
 }
 
-// A cone of `sides` round a vertical axis from y 0 (radius 1) to y 1 (the tip), each ring's radius jittered so no two dripstones read alike.
+// The pillar and column landmarks: a cone of `sides` round a vertical axis from y 0 (radius 1) to y 1, each ring's radius jittered.
 function dripGeometry(seed, sides, rings, flute) {
   const rand = mulberry32(seed)
   const pos = [], idx = []
@@ -247,6 +252,31 @@ function mushroomGeometries(tier) {
     g.setAttribute('cap', new THREE.BufferAttribute(Float32Array.from(layer, (l) => (l === LAYER.MUSHROOM_CAP_CAVE ? 1 : 0)), 1))
     return { geometry: g, height: g.userData.mushroom.height }
   })
+}
+
+const DRIP_VARIANTS = 4
+function dripstone(seed) {
+  const { position, index } = stalagmite(seed)
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(position, 3))
+  g.setIndex(new THREE.BufferAttribute(index, 1))
+  g.computeVertexNormals()
+  return g
+}
+
+const BOULDER_VARIANTS = 3
+// A unit icosphere (80 triangles) with each vertex pushed in or out, so it reads as a rock rather than a ball. The push hashes the vertex's position: the sphere is unindexed, and its copies of one corner must move together or it cracks.
+function boulderGeometry(seed) {
+  const g = new THREE.IcosahedronGeometry(1, 1)
+  const pos = g.getAttribute('position')
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
+    const h = Math.sin(Math.round(x * 97) * 12.9898 + Math.round(y * 97) * 78.233 + Math.round(z * 97) * 37.719 + seed) * 43758.5453
+    const k = 0.75 + 0.45 * (h - Math.floor(h))
+    pos.setXYZ(i, x * k, Math.max(-0.4, y * k), z * k)
+  }
+  g.computeVertexNormals()
+  return g
 }
 
 const tmpM = new THREE.Matrix4()
@@ -292,13 +322,49 @@ export class CaveRoom {
     this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.mushMaterial, this.waterMaterial, this.markMaterial, this.mirror]
     this._props(plan.props)
     this._water(plan.waters)
+    this._mouths(plan.graph)
+  }
+
+  // Across each mouth's flare, the opening: a plane of sky (setDay colours it), or for a cellar its door, lit by the torches like the rock.
+  _mouths(graph) {
+    const mouths = graph.nodes.filter((n) => n.kind === 'mouth')
+    const pos = [], idx = []
+    for (const n of mouths.filter((m) => !m.cellar)) {
+      const { end, w, h } = mouthFlare(n)
+      const lx = -n.dz * (w + 1.4), lz = n.dx * (w + 1.4), y0 = end.y - 1, y1 = end.y + h + 1.4
+      const v = pos.length / 3
+      pos.push(end.x - lx, y0, end.z - lz, end.x + lx, y0, end.z + lz, end.x + lx, y1, end.z + lz, end.x - lx, y1, end.z - lz)
+      idx.push(v, v + 1, v + 2, v, v + 2, v + 3)
+    }
+    this.skyMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, fog: false })
+    this.disposables.push(this.skyMaterial)
+    if (pos.length > 0) {
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      g.setIndex(idx)
+      this.group.add(new THREE.Mesh(g, this.skyMaterial))
+      this.disposables.push(g)
+    }
+    this._instanced(new THREE.PlaneGeometry(1.2, 2.2).translate(0, 1.1, 0), mouths.filter((m) => m.cellar), (n) => {
+      const { end } = mouthFlare(n)
+      tmpQ.setFromEuler(tmpE.set(0, Math.atan2(n.dx, n.dz), 0))
+      tmpM.compose(tmpP.set(end.x, end.y - 0.35, end.z), tmpQ, tmpS.set(1, 1, 1))
+      return { color: [0.16, 0.09, 0.045] }
+    }, this.propMaterial)
+  }
+
+  /** The hour on the mouths: `dayness` 0 (night) to 1 (day) blends their sky planes and the daylight baked round them from night blue to white. */
+  setDay(dayness) {
+    const k = Math.min(1, Math.max(0, dayness))
+    this.uniforms.uDay.value.setRGB(0.02 + 0.53 * k, 0.03 + 0.57 * k, 0.08 + 0.62 * k)
+    this.skyMaterial.color.setRGB(0.05 + 0.95 * k, 0.08 + 0.92 * k, 0.25 + 0.75 * k, THREE.SRGBColorSpace)
   }
 
   /** A chunk from the worker at one LOD: { key, lod, position, normal, color, glow, index, parts }, one mesh per region sharing the buffers. */
   addChunk(m) {
     const attrs = {
       position: new THREE.BufferAttribute(m.position, 3), normal: new THREE.BufferAttribute(m.normal, 3),
-      color: new THREE.BufferAttribute(m.color, 3), glow: new THREE.BufferAttribute(m.glow, 3),
+      color: new THREE.BufferAttribute(m.color, 3), glow: new THREE.BufferAttribute(m.glow, 3), day: new THREE.BufferAttribute(m.day, 1),
     }
     const index = new THREE.BufferAttribute(m.index, 1)
     let sphere = null
@@ -358,14 +424,16 @@ export class CaveRoom {
       tmpM.compose(tmpP.set(x, y, z), tmpQ, tmpS.set(sx, sy, sz))
     }
     const lean = (seed) => (seed - 0.5) * 0.12
-    const drips = [0, 1, 2].map((k) => dripGeometry(0xd71 + k, 7, 4, false))
-    for (let k = 0; k < 3; k++) {
-      this._instanced(drips[k], props.tites.filter((t) => Math.floor(t.seed * 3) === k), (t) => {
-        set(t.x, t.y + 0.15, t.z, t.seed * 40, Math.PI + lean(t.seed), lean(1 - t.seed), t.r, t.len + 0.15, t.r * (0.8 + 0.4 * t.seed))
+    // One dripstone model in DRIP_VARIANTS seeds, pointed down for a stalactite and up for a stalagmite.
+    const drips = Array.from({ length: DRIP_VARIANTS }, (_, k) => dripstone(0xd71 + k))
+    for (let k = 0; k < DRIP_VARIANTS; k++) {
+      const mine = (t) => Math.floor(t.seed * DRIP_VARIANTS) === k
+      this._instanced(drips[k], props.tites.filter(mine), (t) => {
+        set(t.x, t.y + 0.1, t.z, t.seed * 40, Math.PI + lean(t.seed), lean(1 - t.seed), t.r, t.len + 0.1, t.r * (0.8 + 0.4 * t.seed))
         return { color: t.seed > 0.5 ? pale : rock }
       })
-      this._instanced(drips[k].clone(), props.mites.filter((t) => !t.pillar && Math.floor(t.seed * 3) === k), (t) => {
-        set(t.x, t.y - 0.1, t.z, t.seed * 40, lean(t.seed), lean(1 - t.seed), t.r * 1.4, t.len + 0.1, t.r * (1.2 + 0.4 * t.seed))
+      this._instanced(drips[k].clone(), props.mites.filter((t) => !t.pillar && mine(t)), (t) => {
+        set(t.x, t.y - 0.05, t.z, t.seed * 40, lean(t.seed), lean(1 - t.seed), t.r * 1.4, t.len + 0.05, t.r * (1.2 + 0.4 * t.seed))
         return { color: t.seed > 0.5 ? pale : rock }
       })
     }
@@ -406,6 +474,25 @@ export class CaveRoom {
       set(b.x, b.y, b.z, b.yaw, b.tilt, 0, b.span ?? b.w, b.h, b.w)
       return { color: [0.13, 0.12, 0.105] }
     })
+
+    // Boulders: a few lumpy rocks in BOULDER_VARIANTS shapes, squat and half sunk.
+    for (let k = 0; k < BOULDER_VARIANTS; k++) {
+      this._instanced(boulderGeometry(0xb01 + k), props.boulders.filter((b) => Math.floor(b.seed * BOULDER_VARIANTS) === k), (b) => {
+        set(b.x, b.y, b.z, b.yaw, 0, 0, b.r, b.r * (0.6 + 0.3 * b.seed), b.r * (0.8 + 0.3 * b.seed))
+        return { color: b.seed > 0.6 ? pale : rock }
+      })
+    }
+
+    // Wall torches: a stick leaning out of the rock, its flame lit from within.
+    const tip = (t) => [t.x + t.nx * 0.31, t.y + 0.45, t.z + t.nz * 0.31]
+    this._instanced(new THREE.BoxGeometry(0.06, 0.55, 0.06).translate(0, 0.275, 0), props.torches, (t) => {
+      set(t.x - t.nx * 0.05, t.y, t.z - t.nz * 0.05, Math.atan2(t.nx, t.nz), 0.6, 0, 1, 1, 1)
+      return { color: [0.12, 0.07, 0.03] }
+    }, this.propMaterial)
+    this._instanced(new THREE.OctahedronGeometry(0.09, 0).scale(1, 1.7, 1), props.torches, (t) => {
+      set(...tip(t), 0, 0, 0, 1, 1, 1)
+      return { color: [0, 0, 0], emit: [1.6, 0.8, 0.3] }
+    }, this.propMaterial)
 
     // Chalk: lumps of the same stone, paler and bluer, to be learnt by eye; one picked up anywhere this session (taken.js) lies nowhere.
     this.chalkRows = props.chalk

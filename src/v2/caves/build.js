@@ -6,12 +6,10 @@ import { placeProps, columnAt } from './props.js'
 import { waterBodies } from './walk.js'
 import { settleWaters } from './water.js'
 
-// The daylight leaking in at a mouth: a light every DAY_STEP metres in from it, fading to nothing by DAY_M, so the way out reads from down the passage.
-const DAYLIGHT = { color: [0.55, 0.6, 0.7], reach: 6, power: 0.8 }
+// The daylight leaking in at a mouth: a light every DAY_STEP metres from its flare's far end, fading to nothing DAY_M in, so the way out reads from down the passage. Baked as `day` lights, which the room tints by the hour (CaveRoom.setDay); a cellar's door lets none in.
+const DAYLIGHT = { color: [1, 1, 1], reach: 6, power: 0.8, day: true }
 const DAY_M = 11
 const DAY_STEP = 2.5
-// A cellar's (an entry with `cellar` set): the house's candlelight down its stair.
-const LAMPLIGHT = { color: [0.9, 0.55, 0.25], reach: 8, power: 0.6 }
 // Metres in from the mouth node she arrives, and how near it she must come to leave.
 export const ARRIVE_IN = 3.5
 export const EXIT_R = 1.6
@@ -27,9 +25,8 @@ export function planCave({ seed, entries }) {
   for (const n of graph.nodes) {
     if (n.kind !== 'mouth') continue
     const { dx, dz, cellar } = entries[n.entry]
-    if (cellar) lights.push({ x: n.x - dx * 0.6, y: n.y + 1.4, z: n.z - dz * 0.6, ...LAMPLIGHT })
-    else {
-      for (let d = -0.6; d < DAY_M; d += DAY_STEP) {
+    if (!cellar) {
+      for (let d = -2.6; d < DAY_M; d += DAY_STEP) {
         const x = n.x + dx * d, z = n.z + dz * d
         const col = columnAt(field, x, z, n.y + 1.4)
         if (col === null) continue

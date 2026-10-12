@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora -- stalagmite</title>
+    <style>
+      body { margin: 0; overflow: hidden; background: #05080f; color: #cfe3ff; font: 12px/1.5 monospace; }
+      canvas { display: block; }
+      #panel { position: absolute; left: 10px; top: 10px; padding: 8px 10px; background: rgba(8,14,26,.88); border: 1px solid #2b4a72; border-radius: 3px; }
+      #panel .t { color: #eaf3ff; letter-spacing: .06em; }
+      #panel .s { color: #7f96b8; font-size: 11px; margin-bottom: 6px; }
+      input, button { font: inherit; color: #cfe3ff; background: #0e1726; border: 1px solid #2b4a72; border-radius: 3px; padding: 3px 5px; }
+      button { cursor: pointer; }
+      button.on { background: #1d3a5f; border-color: #4a7fbf; }
+      #seed { width: 70px; }
+      #stats { margin-top: 6px; color: #7f96b8; }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <div class="t">STALAGMITE</div>
+      <div class="s">the cave's one dripstone (src/v2/caves/stalagmite.js): up, down, and in a bunch</div>
+      <input type="number" id="seed" class="qa-seed" value="1" min="0" step="1" />
+      <button id="reroll" class="qa-reroll">reroll</button>
+      <button id="wire" class="qa-wire">wireframe</button>
+      <div id="stats" class="qa-stats"></div>
+    </div>
+    <script type="module" src="/src/gen-stalagmite-main.js"></script>
+  </body>
+</html>

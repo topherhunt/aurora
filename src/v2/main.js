@@ -2276,6 +2276,7 @@ function updateFire(dt) {
     if (t.hand === null || !underWater(t.x, t.y, t.z)) continue
     hands.holding(t.hand).lit = false
     hands.rehold(t.hand)
+    if (ambience) sound.play('extinguish', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7 })
   }
   hands.litTips(STICK_TIP, litTipList)
   const tips = litTipList.map((t, i) => ({ x: t.x, y: t.y, z: t.z, phase: i * 2.1 }))
@@ -3305,6 +3306,7 @@ async function sendProgramCheck() {
     const id = await postTrace({ mode: 'programs', startedAt: new Date().toISOString(), seconds: 0, samples: [], context })
     programCheckLabel = `${context.failedPrograms.length} bad`
     console.log('program check filed as', id)
+    perfTrace.host.play('uiPop', 1, 0.4)
   } catch (e) {
     programCheckLabel = 'failed'
     console.error(e)
@@ -4115,7 +4117,10 @@ function caveTest() {
   const doors = caveBuild.plan.doors
   for (let i = 0; i < doors.length; i++) {
     const d = doors[i]
-    if (Math.hypot(feet.x - d.mx, feet.z - d.mz) > EXIT_R || Math.abs(feet.y - (d.my + CAVE_OY)) > 1.5) continue
+    // Out once she nears the mouth or steps past it into the flare.
+    const back = (d.mx - feet.x) * d.dx + (d.mz - feet.z) * d.dz, side = Math.abs((feet.x - d.mx) * d.dz - (feet.z - d.mz) * d.dx)
+    const out = Math.hypot(feet.x - d.mx, feet.z - d.mz) <= EXIT_R || (back > 0 && back < 6 && side < 3)
+    if (!out || Math.abs(feet.y - (d.my + CAVE_OY)) > 1.5) continue
     leaveCave(i).catch(reportRuntimeError)
     break
   }
@@ -4229,6 +4234,7 @@ function stepCave(head, t) {
   caveKeep.clear()
   keepUnderRoof(caveKeep).add(caveBuild.room.group)
   hideOutside(caveKeep, caveHidden)
+  caveBuild.room.setDay(dayness)
   caveBuild.room.update(head, submerged, t)
   if (questToggles.reflections && !submerged) caveBuild.room.reflect(renderer, scene, head)
   stepChalk()

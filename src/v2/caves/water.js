@@ -33,7 +33,7 @@ function settle(p, graph, field) {
   if (p.node !== undefined) {
     const n = graph.nodes[p.node]
     homes.push(ellipse(n, HOME))
-    seed = [n.x, n.z]
+    seed = [p.x, p.z]
   } else {
     const e = graph.edges[p.edge]
     homes.push(ellipse(graph.nodes[e.a], HOME), ellipse(graph.nodes[e.b], HOME), line(e.pts, SUMP_HOME))

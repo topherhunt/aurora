@@ -26,10 +26,11 @@ self.onmessage = (ev) => {
         self.postMessage({ id, type: 'near' })
       }
       const [i, j, k] = list[n++]
+      const tiers = meshChunk(cave.field, i, j, k, cave.lights)
       for (let lod = 0; lod < LODS.length; lod++) {
-        const m = meshChunk(cave.field, i, j, k, cave.lights, LODS[lod].voxel)
+        const m = tiers[lod]
         if (m === null) continue
-        self.postMessage({ id, type: 'chunk', key: `${i},${j},${k}`, lod, ...m }, [m.position.buffer, m.normal.buffer, m.color.buffer, m.glow.buffer, m.index.buffer, m.parts.buffer])
+        self.postMessage({ id, type: 'chunk', key: `${i},${j},${k}`, lod, ...m }, [m.position.buffer, m.normal.buffer, m.color.buffer, m.glow.buffer, m.day.buffer, m.index.buffer, m.parts.buffer])
       }
     }
     if (n < list.length) setTimeout(next, 0)
