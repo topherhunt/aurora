@@ -68,8 +68,8 @@ let tiles = null
 // The forest tint's biome, seeded from the same module constant main.js seeds
 // the trees' from, for the reason V2Height's seed is: a seed in the message
 // could drift from the scatter's and the ground would go green where no wood
-// stands.
-const biome = new BiomeField({ seed: SEED })
+// stands. Built with the field, which its mazes are sited on.
+let biome = null
 
 function onInit(msg) {
   // fromRaw, not a second decode. The main thread has already parsed the PNG to
@@ -105,6 +105,7 @@ function onInit(msg) {
   // continuation of the generator rather than a knob, so what travels is the
   // descriptor and the object is rebuilt here. Null for the shipped world.
   field = new V2Height({ heightmap, layers, relief: msg.relief, detail: msg.fine ? new FineJitter(msg.fine) : null })
+  biome = new BiomeField({ seed: SEED, ground: field })
   // The biome class grid, when the world has one (v3 does, the shipped world does not); GroundTint validates it so a grid of the wrong size fails here, not as a wrongly coloured world.
   ground = msg.ground ? new GroundTint(msg.ground) : null
   if (!Array.isArray(msg.hearths)) throw new Error('v2 terrain worker init needs a hearths array')

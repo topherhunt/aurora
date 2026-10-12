@@ -72,15 +72,15 @@ const SIZE_POW = 2.0
 // scales the horizontal axis the shape is already long in, and the other by
 // its complement, so the plan runs from round to twice as long as wide; `FLAT`
 // scales the height, so the same stone is a domed cobble or a flat chip.
-const STRETCH = [0.75, 1.25]
-const FLAT = [0.55, 1.1]
+export const STRETCH = [0.75, 1.25]
+export const FLAT = [0.55, 1.1]
 
 // How much of a pebble's height is below the DRAWN ground. A closed solid, so a
 // deep burial costs nothing but triangles the depth buffer never fills; the top
 // of the range leaves only a crown showing, which is what most stone on a wood
 // floor does. Varied per instance because a row of stones all proud by the same
 // fraction reads as placed.
-const SINK = [0.3, 0.55]
+export const SINK = [0.3, 0.55]
 
 // Candidates per square metre at full density, and the tile they are rolled in.
 //
@@ -144,9 +144,9 @@ const ROAD_SPREAD = 2
 // resident to ROAD_RADIUS, but past RADIUS only a tile a road crosses is loaded
 // (_reseat), and it holds cobbles alone until she is within RADIUS of it -- a
 // wood 40 m off pays nothing for the road's reach.
-const FULL_RADIUS = 8
-const RADIUS = 28
-const REACH_SIZES = 90
+export const FULL_RADIUS = 8
+export const RADIUS = 28
+export const REACH_SIZES = 90
 const ROAD_FULL_RADIUS = 30
 const ROAD_RADIUS = 42
 const ROAD_RANK = FULL_RADIUS / ROAD_FULL_RADIUS

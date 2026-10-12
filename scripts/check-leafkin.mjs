@@ -872,7 +872,7 @@ console.log('\nthe real ground')
   waterS.rebuild()
   const tex = buildTextureArray()
   const S = () => new THREE.Scene()
-  const biome = () => new BiomeField({ seed: SEED })
+  const biome = () => new BiomeField({ seed: SEED, ground: field })
   const deadBank = deadwoodBankFrom({ stump: readShippedLadder('stump-rotting'), log: readShippedLadder('log-fallen', { longAxisZ: true }) })
   const mouthBank = mouthBankFrom(readShippedLadder('cave-mouth'))
   /** One client's world grown about (x, z): its own rocks, dead wood, trees, caps and mouths. */
@@ -894,8 +894,11 @@ console.log('\nthe real ground')
   }
   const [cx, cz] = [160, -356]
   const w0 = grow(cx, cz)
-  const site = w0.entrances.sites([]).sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz))[0]
   const g = w0.ground()
+  // The nearest mouth with caps in roaming reach, which the tests below roam to.
+  const site = w0.entrances.sites([]).sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz))
+    .find((s) => g.capsNear(s.x, s.z, ROAM_M, []).length > 0)
+  if (!site) throw new Error('check-leafkin: no mouth near the probe spot has caps in roaming reach')
   let r = 1
   const rand = () => ((r = (r * 1664525 + 1013904223) >>> 0) / 4294967296)
 

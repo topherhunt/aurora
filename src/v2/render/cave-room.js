@@ -6,7 +6,6 @@ import { TORCH_REACH } from '../../lighting.js'
 import { ROCK_TILE_MEAN, LAYER } from '../../textures.js'
 import { buildMushroom } from '../../props/mushroom.js'
 import { mushroomVariants, mushroomParams } from '../../props/mushroom-bank.js'
-import { mulberry32 } from '../../sim/mathx.js'
 import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
@@ -19,6 +18,9 @@ import { SKY_GLSL } from '../../sky-glsl.js'
 import { buildFern } from '../../props/fern.js'
 import { shipFernParams, FERN_TIERS } from '../../props/fern-bank.js'
 import { buildBladeClump } from '../../props/grass-blades.js'
+import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
+import { rockParams } from '../../props/rock-bank.js'
+import { buildPebble, STRETCH, FLAT, SINK, FULL_RADIUS, RADIUS as PEBBLE_REACH, REACH_SIZES } from './litter.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
@@ -298,33 +300,6 @@ function caveUniforms(lighting, stone) {
   }
 }
 
-// The pillar and column landmarks: a cone of `sides` round a vertical axis from y 0 (radius 1) to y 1, each ring's radius jittered.
-function dripGeometry(seed, sides, rings, flute) {
-  const rand = mulberry32(seed)
-  const pos = [], idx = []
-  for (let r = 0; r <= rings; r++) {
-    const y = r / rings
-    const wob = 1 + (rand() - 0.5) * 0.35
-    for (let s = 0; s < sides; s++) {
-      const a = (s / sides) * Math.PI * 2 + (rand() - 0.5) * 0.3
-      const fl = flute ? (s % 2 === 0 ? 1 : 0.86) : 1
-      const rad = r === rings ? 0.02 : Math.pow(1 - y, flute ? 0.05 : 1.4) * wob * fl
-      pos.push(Math.cos(a) * rad + (rand() - 0.5) * 0.08 * (1 - y), y, Math.sin(a) * rad)
-    }
-  }
-  for (let r = 0; r < rings; r++) {
-    for (let s = 0; s < sides; s++) {
-      const a = r * sides + s, b = r * sides + ((s + 1) % sides)
-      idx.push(a, a + sides, b, b, a + sides, b + sides)
-    }
-  }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  g.setIndex(idx)
-  g.computeVertexNormals()
-  return g
-}
-
 // The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), capped from the cave sheet, each with a `cap` attribute (1 on the cap) and its built height.
 function mushroomGeometries(tier) {
   return mushroomVariants().map((v, i) => {
@@ -376,22 +351,13 @@ function dripCards() {
 const ROW_ATTRS = { iColor: 3, iEmit: 3, iGlow: 3, iDay: 1 }
 const NO_LIGHT = new Float32Array(ROCK_AT)
 
-const BOULDER_VARIANTS = 3
-// Boulders under this radius are rubble, drawn as the 20-triangle stone: they are most of them.
-const RUBBLE_R = 0.4
-// A unit icosphere (80 triangles, 20 at `detail` 0) with each vertex pushed in or out, so it reads as a rock rather than a ball. The push hashes the vertex's position: the sphere is unindexed, and its copies of one corner must move together or it cracks.
-function boulderGeometry(seed, detail) {
-  const g = new THREE.IcosahedronGeometry(1, detail)
-  const pos = g.getAttribute('position')
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
-    const h = Math.sin(Math.round(x * 97) * 12.9898 + Math.round(y * 97) * 78.233 + Math.round(z * 97) * 37.719 + seed) * 43758.5453
-    const k = 0.75 + 0.45 * (h - Math.floor(h))
-    pos.setXYZ(i, x * k, Math.max(-0.4, y * k), z * k)
-  }
-  g.computeVertexNormals()
-  return g
-}
+// Stones this many metres across and up are the world's boulder on its LOD ladder (props/rock.js), and smaller ones litter.js's pebble on its reach. The fraction of a boulder's height bedded under the floor, as render/boulders.js beds a village's.
+const BOULDER_FROM = 1
+const BOULDER_SINK = 0.4
+// Stones share their rock's colour and light sampled once per cell this many metres wide: a rockAt per pebble is most of a second on a big system.
+const STONE_LIT_M = 2
+// A pebble's shape and keep rolls, off its one seed.
+const roll = (seed, k) => (seed * k) % 1
 
 const tmpM = new THREE.Matrix4()
 const tmpQ = new THREE.Quaternion()
@@ -568,6 +534,56 @@ export class CaveRoom {
     return mesh
   }
 
+  // Rows (place as _rows) each drawn by one of `geometries` or none, as _repick says: { src, n, meshes }, or null for no rows.
+  _picked(geometries, rows, place) {
+    if (rows.length === 0) { for (const g of geometries) g.dispose(); return null }
+    const meshes = geometries.map((g) => {
+      const mesh = new THREE.InstancedMesh(g, this.rockMaterial, rows.length)
+      for (const k in ROW_ATTRS) g.setAttribute(k, new THREE.InstancedBufferAttribute(new Float32Array(rows.length * ROW_ATTRS[k]), ROW_ATTRS[k]))
+      mesh.count = 0
+      mesh.frustumCulled = false
+      this.group.add(mesh)
+      this.disposables.push(g)
+      return mesh
+    })
+    return { src: this._rows(rows, place), n: rows.length, meshes }
+  }
+
+  // Each row of a _picked set packed into mesh `pick(i, x, y, z)` (an index, or -1 for none), its translation (x, y, z) relative to the cave-local eye.
+  _repick(set, ex, ey, ez, pick) {
+    if (set === null) return
+    const fill = set.meshes.map(() => 0), m = set.src.matrix
+    for (let i = 0; i < set.n; i++) {
+      const f = pick(i, m[i * 16 + 12] - ex, m[i * 16 + 13] - ey, m[i * 16 + 14] - ez)
+      if (f < 0) continue
+      const mesh = set.meshes[f], j = fill[f]++
+      mesh.instanceMatrix.array.set(m.subarray(i * 16, i * 16 + 16), j * 16)
+      for (const k in ROW_ATTRS) {
+        const s = ROW_ATTRS[k]
+        mesh.geometry.getAttribute(k).array.set(set.src[k].subarray(i * s, i * s + s), j * s)
+      }
+    }
+    set.meshes.forEach((mesh, f) => {
+      mesh.count = fill[f]
+      mesh.instanceMatrix.needsUpdate = true
+      for (const k in ROW_ATTRS) mesh.geometry.getAttribute(k).needsUpdate = true
+    })
+  }
+
+  // The stones at cave-local eye (x, y, z): a boulder on its rung of the rock ladder, leaving one ROCK_LOD_HYSTERESIS further out than it came in; a pebble kept at full density inside FULL_RADIUS and thinned by rank as FULL_RADIUS / d past it, out to its own reach, as litter.js keeps the overworld's.
+  _pickStones(x, y, z) {
+    this._repick(this.boulderSet, x, y, z, (i, dx, dy, dz) => {
+      const d = Math.hypot(dx, dy, dz) / this.boulderSize[i], cur = this.boulderRung[i]
+      let r = 0
+      while (r < ROCK_LOD_AT.length && d >= ROCK_LOD_AT[r] * (cur <= r ? 1 + ROCK_LOD_HYSTERESIS : 1)) r++
+      return (this.boulderRung[i] = r)
+    })
+    this._repick(this.pebbleSet, x, y, z, (i, dx, dy, dz) => {
+      const d = Math.hypot(dx, dy, dz)
+      return d < this.pebbleReach[i] && this.pebbleRank[i] * d < FULL_RADIUS ? 0 : -1
+    })
+  }
+
   // A dripstone kind of one variant: its model within DRIP_NEAR of her eye and its card beyond, the rows split between them by update().
   _drips(geometry, card, rows, place) {
     if (rows.length === 0) { geometry.dispose(); card.dispose(); return }
@@ -627,16 +643,12 @@ export class CaveRoom {
         set(t.x, t.y + 0.1, t.z, t.seed * 40, Math.PI + lean(t.seed), lean(1 - t.seed), t.r, t.len + 0.1, t.r * (0.8 + 0.4 * t.seed))
         return wall(t)
       })
-      this._drips(model.clone(), this.cards.quads[k].clone(), props.mites.filter((t) => !t.pillar && mine(t)), (t) => {
+      this._drips(model.clone(), this.cards.quads[k].clone(), props.mites.filter(mine), (t) => {
         set(t.x, t.y - 0.05, t.z, t.seed * 40, lean(t.seed), lean(1 - t.seed), t.r * 1.4, t.len + 0.05, t.r * (1.2 + 0.4 * t.seed))
         return wall(t)
       })
     }
     this.dripEye = null
-    this._instanced(dripGeometry(0xc01, 12, 6, true), props.mites.filter((t) => t.pillar), (t) => {
-      set(t.x, t.y - 0.2, t.z, t.seed * 40, 0, 0, t.r, t.len + 0.4, t.r)
-      return wall(t)
-    })
 
     // Ferns and grass: by the mouths, and ferns in the glow of a well-lit chamber.
     const fern = buildFern({ ...shipFernParams(FERN_TIERS[1].segments), seed: 0xfe2 })
@@ -683,14 +695,34 @@ export class CaveRoom {
       return { color: [0.13, 0.12, 0.105], lit: this._rock(b.x, b.y, b.z) }
     })
 
-    // Boulders: lumpy rocks in BOULDER_VARIANTS shapes at two details, squat, of the rock they lie on.
-    for (let k = 0; k < 2 * BOULDER_VARIANTS; k++) {
-      const rubble = k >= BOULDER_VARIANTS
-      this._instanced(boulderGeometry(0xb01 + k, rubble ? 0 : 1), props.boulders.filter((b) => (b.r < RUBBLE_R) === rubble && Math.floor(b.seed * BOULDER_VARIANTS) === k % BOULDER_VARIANTS), (b) => {
-        set(b.x, b.y, b.z, b.yaw, 0, 0, b.r, b.r * (0.6 + 0.3 * b.seed), b.r * (0.8 + 0.3 * b.seed))
-        return wall(b)
-      })
+    // Stones: a boulder row's `y` is 0.3 r under the floor it lies on, a pebble row's the floor. Both wear the rock under them, a shade either way, and update() re-picks which are drawn and at what rung.
+    const cells = new Map()
+    const stoneLit = (x, y, z, seed) => {
+      const key = `${Math.floor(x / STONE_LIT_M)},${Math.floor(y / STONE_LIT_M)},${Math.floor(z / STONE_LIT_M)}`
+      if (!cells.has(key)) cells.set(key, this._rock(x, y, z).slice())
+      const lit = cells.get(key), k = 0.92 + 0.16 * seed
+      return { color: [lit[3] * k, lit[4] * k, lit[5] * k], lit }
     }
+    const rungs = ROCK_TIERS.map((_, tier) => buildRock({ ...rockParams(), tier }))
+    const mm = rungs[0].userData.rock.measured
+    const big = props.boulders.filter((b) => 2 * b.r >= BOULDER_FROM)
+    this.boulderSet = this._picked(rungs, big, (b) => {
+      const k = (2 * b.r) / mm.width
+      set(b.x, b.y + 0.3 * b.r - BOULDER_SINK * mm.height * k, b.z, b.yaw, 0, 0, k, k, k)
+      return stoneLit(b.x, b.y, b.z, b.seed)
+    })
+    this.boulderSize = Float32Array.from(big, (b) => (rockLodSize(mm) * 2 * b.r) / mm.width)
+    this.boulderRung = new Int8Array(big.length).fill(ROCK_LOD_AT.length)
+    const pebble = buildPebble(), ph = pebble.userData.rock.measured.height
+    const small = [...props.pebbles, ...props.boulders.filter((b) => 2 * b.r < BOULDER_FROM).map((b) => ({ ...b, y: b.y + 0.3 * b.r, s: 2 * b.r }))]
+    this.pebbleSet = this._picked([pebble], small, (p) => {
+      const stretch = STRETCH[0] + roll(p.seed, 7.13) * (STRETCH[1] - STRETCH[0]), flat = FLAT[0] + roll(p.seed, 13.7) * (FLAT[1] - FLAT[0])
+      const sink = (SINK[0] + roll(p.seed, 29.3) * (SINK[1] - SINK[0])) * ph * p.s * flat
+      set(p.x, p.y - sink, p.z, p.yaw, 0, 0, p.s * stretch, p.s * flat, p.s / stretch)
+      return stoneLit(p.x, p.y, p.z, p.seed)
+    })
+    this.pebbleReach = Float32Array.from(small, (p) => Math.min(PEBBLE_REACH, REACH_SIZES * p.s))
+    this.pebbleRank = Float32Array.from(small, (p) => roll(p.seed, 53.1))
 
     // Wall torches: a stick leaning out of the rock, its flame lit from within.
     const tip = (t) => [t.x + t.nx * 0.31, t.y + 0.45, t.z + t.nz * 0.31]
@@ -818,6 +850,7 @@ export class CaveRoom {
     if (e === null || (e.x - eye.x) ** 2 + (e.y - ly) ** 2 + (e.z - eye.z) ** 2 > DRIP_STEP * DRIP_STEP) {
       this.dripEye = { x: eye.x, y: ly, z: eye.z }
       this._splitDrips(eye.x, ly, eye.z)
+      this._pickStones(eye.x, ly, eye.z)
     }
     if (this.crabs !== null) {
       this.crabRows.forEach((c, i) => {

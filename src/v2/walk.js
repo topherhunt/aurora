@@ -156,7 +156,7 @@ export class WalkSurface {
     }
     const ceiling = y + this.reach
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, this.rockMin, spans)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans, true)
       for (let i = 0; i < n; i++) {
         const top = spans[i * 2 + 1]
         if (top > best && top <= ceiling) best = top
@@ -233,7 +233,7 @@ export class WalkSurface {
   /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
   crossed(x, z, lo, hi) {
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, this.rockMin, spans)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans, true)
       if (n >= SPAN_CAP) return true
       for (let i = 0; i < n; i++) {
         if (spans[i * 2 + 1] > lo && spans[i * 2] < hi) return true

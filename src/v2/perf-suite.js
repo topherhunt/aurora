@@ -28,7 +28,7 @@ const ladder = (parts) => parts.slice(0, -1).map((_, k) => ({ name: parts.slice(
 
 // Each group is measured twice (forward, then reverse) unless `once`; its `drill` states
 // once, and only when the group crossed DRILL_MIN_MS.
-export const GROUPS = [
+const FULL_GROUPS = [
   { name: 'scatter', off: ['litter', 'boulders', 'ferns', 'grass', 'trees'], drill: ladder(['litter', 'boulders', 'ferns', 'grass', 'trees']) },
   {
     name: 'animals', off: ['animals'],
@@ -64,3 +64,8 @@ export const GROUPS = [
   { name: 'everything', off: EVERYTHING, drill: [], once: true },
   { name: 'floor+terrain', off: EVERYTHING.filter((k) => k !== 'terrain'), drill: [], once: true },
 ]
+
+// `?suite=scatter`: each scatter layer taken away alone (about a minute), for its own frame-ms and triangle saving; run it at `?fbscale=1` and `?fbscale=0.7` to split each saving into fill and the rest.
+const SCATTER_GROUPS = ['trees', 'grass', 'ferns', 'boulders', 'litter'].map((k) => ({ name: k, off: [k], drill: [] }))
+
+export const GROUPS = new URLSearchParams(location.search).get('suite') === 'scatter' ? SCATTER_GROUPS : FULL_GROUPS

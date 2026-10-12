@@ -5,13 +5,16 @@
 // Plans a spread of systems from fixed seeds and checks the promises: the same cave from the same seed, a way back to a mouth from everywhere (on the graph, then by walking the built walk surface), water where the sumps and pools say, and a mesh within budget. What this can NOT check: how dark or how lost it feels. That needs a headset.
 
 import { planCave, EXIT_R } from '../src/v2/caves/build.js'
-import { DROP_MIN } from '../src/v2/caves/graph.js'
+import { DROP_MIN, reliefAt } from '../src/v2/caves/graph.js'
+import { columnAt, MUSH_FOOT } from '../src/v2/caves/props.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { chunkList, meshChunk, CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../src/v2/caves/mesh.js'
 import { Chalk, ChalkPen, encode, decode, valid, onRock, rayRock, ribbons, QUANT_M, STEP_M, STROKE_MAX, BATCH } from '../src/v2/caves/chalk.js'
 import { groupSystems, caveEntries, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
 import { readFileSync } from 'node:fs'
+import * as THREE from 'three'
+import { LOCOMOTION, Player } from '../src/player.js'
 import { SEED, SPAWN } from '../src/v2/config.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
@@ -150,8 +153,67 @@ for (const sys of SYSTEMS) {
     check(ok, `${tag}: mouth ${doors.indexOf(d)} lands her standing and dry, clear of the exit`)
   }
 
+  // Flight in a cave is a steady flyLowSpeed. In rock heightAt answers its WALL sentinel, a kilometre over her: read as a floor it threw her up there in a frame.
+  {
+    const d = doors[0]
+    walk.hintY = d.y
+    const rig = new THREE.Group(), camera = new THREE.PerspectiveCamera()
+    rig.add(camera)
+    const player = new Player(rig, camera, walk)
+    player.spawnAt(d.x, d.z)
+    player.setFlying(true)
+    const o = player.originPosition(), up = o.clone()
+    up.y += 50
+    const low = player.flySpeedAt(o), high = player.flySpeedAt(up)
+    check(low === LOCOMOTION.flyLowSpeed && high === low, `${tag}: she flies at flyLowSpeed by a cave floor and 50 m over it`, `${low.toFixed(0)} vs ${high.toFixed(0)} m/s`)
+    const y0 = rig.position.y
+    for (let f = 0; f < 144; f++) {
+      walk.hintY = player.originPosition().y
+      player.update(1 / 72, { move: 0, strafe: 0, lift: 1, turn: 0, unstick: false, instant: true })
+      rig.updateMatrixWorld(true)
+    }
+    const rise = rig.position.y - y0
+    // Plus her takeoff, which seats her a flight clearance over the floor.
+    check(rise <= 2 * LOCOMOTION.flyLowSpeed + 2.5, `${tag}: two seconds of lift from a door climb no more than two seconds at that speed and her takeoff`, `${rise.toFixed(1)} m`)
+  }
+
   const drowned = props.mush.filter((m) => { const l = walk.trueWaterAt(m.x, m.z, m.y); return l !== null && m.y < l })
   check(drowned.length === 0, `${tag}: no mushroom grows under water`, `${drowned.length} drowned`)
+  // A floor mushroom's whole base disc, tilted with it, is on or in the rock: no edge of its stem stands over air.
+  let floating = 0, worstGap = 0, tilted = 0
+  const floorMush = props.mush.filter((m) => m.up[1] > 0.9)
+  for (const m of floorMush) {
+    const u = new THREE.Vector3(...m.up).normalize(), t1 = new THREE.Vector3(1, 0, 0).cross(u).normalize(), t2 = u.clone().cross(t1)
+    if (u.y < 0.999) tilted++
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2, R = MUSH_FOOT * m.h
+      const gap = -field.at(m.x + R * (Math.cos(a) * t1.x + Math.sin(a) * t2.x), m.y + R * (Math.cos(a) * t1.y + Math.sin(a) * t2.y), m.z + R * (Math.cos(a) * t1.z + Math.sin(a) * t2.z))
+      worstGap = Math.max(worstGap, gap)
+      if (gap > 0.06) { floating++; break }
+    }
+  }
+  check(floating === 0 && tilted > 0, `${tag}: every floor mushroom's base is planted in the rock, tilted with its slope`, `${floating} of ${floorMush.length} float, worst ${worstGap.toFixed(2)} m, ${tilted} tilted`)
+  // No dripstone reaches past 55% of its floor to roof, and each giant one has a giant stalactite over it.
+  let tallMites = 0, bare = 0, giants = 0
+  for (const t of props.mites) {
+    const col = columnAt(field, t.x, t.z, t.y + 0.5)
+    if (col !== null && t.len > 0.55 * (col.roof - col.floor) + 0.2) tallMites++
+    if (t.len < 6) continue
+    giants++
+    if (!props.tites.some((q) => Math.hypot(q.x - t.x, q.z - t.z) < 0.1 && q.len > 0.5 * t.len)) bare++
+  }
+  check(tallMites === 0 && bare === 0, `${tag}: no stalagmite stands past 55% of its room, and every giant one has its stalactite`, `${tallMites} too tall, ${bare} of ${giants} giants bare`)
+  // A great cavern's hills run on up its wall: its relief stands metres high somewhere on its rim.
+  for (const n of graph.nodes.filter((q) => q.great)) {
+    let rim = 0
+    for (let a = 0; a < 6.28; a += 0.05) {
+      const lx = Math.cos(a) * n.rx, lz = Math.sin(a) * n.rz
+      rim = Math.max(rim, reliefAt(n, n.x + lx * Math.cos(n.rot) - lz * Math.sin(n.rot), n.z + lx * Math.sin(n.rot) + lz * Math.cos(n.rot)))
+    }
+    check(rim > 2, `${tag}: great cavern ${n.i}'s hills reach its wall`, `${rim.toFixed(1)} m of relief at its rim`)
+  }
+  const forms = new Set(field.prims.filter((p) => !p.node).map((p) => (p.form === null ? 'plain' : `${p.form.fw > 1.2 ? 'wide' : p.form.tube ? 'tube' : p.form.crumple > 0 ? 'crumpled' : 'tall'}`)))
+  check(forms.size >= 4, `${tag}: its passages come in at least four cross-sections`, [...forms].join(', '))
   // The drip is placed on water itself, not on the dry corner of a pool's box.
   const dry = walk.waters.filter((b) => b.kind !== 'river').filter((b) => { const q = walk.nearestWater(b.x0, b.level + 1, b.z0, 10, {}); return q !== null && walk.trueWaterAt(q.x, q.z, q.y) === null })
   check(dry.length === 0, `${tag}: nearestWater from a pool's box corner lands on its water`, `${dry.length} on dry ground`)
@@ -229,7 +291,7 @@ for (const sys of SYSTEMS) {
   check(worst < DRAWN_MAX, `${tag}: under ${DRAWN_MAX / 1000}k triangles drawn from any node`, `${(worst / 1000).toFixed(0)}k at node ${at}, ${(tris / 1000).toFixed(0)}k near-LOD in ${chunks.length} chunks, plan ${planMs.toFixed(0)} ms, mesh ${(meshMs / 1000).toFixed(1)} s`)
   const kinds = {}
   for (const n of graph.nodes) kinds[n.kind] = (kinds[n.kind] || 0) + 1
-  console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.edges.filter((q) => q.kind === 'drowned').length} drowned, ${graph.rivers.length} rivers, ${chokes.length} chokes) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} boulders ${props.boulders.length} (${props.boulders.filter((b) => b.r >= 0.4).length} big) lights ${cave.lights.length}`)
+  console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.edges.filter((q) => q.kind === 'drowned').length} drowned, ${graph.rivers.length} rivers, ${chokes.length} chokes) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} boulders ${props.boulders.length} (${props.boulders.filter((b) => b.r >= 0.5).length} over 1 m) pebbles ${props.pebbles.length} lights ${cave.lights.length}`)
 }
 
 // Chalk: the codec, the store, the pen, and the ribbon on real rock.

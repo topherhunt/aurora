@@ -4643,7 +4643,7 @@ async function buildRoom(room, at) {
   // in the open, off the same biome field the trees read.
   await bootStep('deadwood')
   // A village is wood to its walls, thickest along its roads (village.js WOOD), meadow in the clearing.
-  const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed })
+  const biome = room.village ? villageBiome(seed, roomSpec.clearing, layers.paths) : new BiomeField({ seed, ground: height })
   // The village's garden plots, wanted here before the trees: nothing grows on a planted plot but its rows (render/carrots.js).
   let plots = room.village ? roomSpec.gardens.map((g) => ({ x: g.x, z: g.z, r: g.r, spots: gardenSpots(g) }))
     : townPlan ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ x: w.x, z: w.z, r: Math.max(...w.outline.map(([lx, lz]) => Math.hypot(lx, lz))), spots: fieldSpots(w) })))

@@ -6,6 +6,7 @@
 
 import { mulberry32 } from '../../sim/mathx.js'
 import { PALETTES, GLOWS } from './regions.js'
+import { Noise3 } from './noise3.js'
 
 // Steepest walk grade (rise over run) a passage is given; well under the 50 degree limit with the floor's rubble on it.
 export const GRADE_MAX = 0.42
@@ -447,7 +448,7 @@ const RELIEF_SLOPE = 0.6
 
 /**
  * Rolls node n's floor relief, `n.relief = { x0, z0, nx, nz, cell, v, lo }`, v the metres over the nominal floor per grid corner over the node and its lobes, lo its least.
- * A tilt and mounds, held to zero where passages meet the rim (and under a drop's lip, so the fall stays over her reach), and out of a dish. A great cavern's is rolled bigger, with a channel down its length; each hollow in it deep enough is pushed to `pools`.
+ * A tilt and mounds, held to zero where passages meet the rim (and under a drop's lip, so the fall stays over her reach), and out of a dish. A great cavern's is rolled bigger and rough, with a channel down its length, its hills free to run on up into its wall (its grid reaches past the cragged dome, field.js); each hollow in it deep enough is pushed to `pools`.
  */
 function relieve(n, edges, nooks, lobes, pools, rand) {
   const rr = (a, b) => a + (b - a) * rand()
@@ -457,26 +458,30 @@ function relieve(n, edges, nooks, lobes, pools, rand) {
   let x0 = n.x - r, x1 = n.x + r, z0 = n.z - r, z1 = n.z + r
   for (const l of mine) { const lr = Math.max(l.rx, l.rz); x0 = Math.min(x0, l.x - lr); x1 = Math.max(x1, l.x + lr); z0 = Math.min(z0, l.z - lr); z1 = Math.max(z1, l.z + lr) }
   const cell = RELIEF_CELL
-  x0 = Math.floor(x0) - 2; z0 = Math.floor(z0) - 2
-  const nx = Math.ceil((x1 - x0) / cell) + 3, nz = Math.ceil((z1 - z0) / cell) + 3
+  const pad = great ? 18 : 2
+  x0 = Math.floor(x0) - pad; z0 = Math.floor(z0) - pad
+  const nx = Math.ceil((x1 - x0) / cell) + pad + 1, nz = Math.ceil((z1 - z0) / cell) + pad + 1
   const ta = rand() * Math.PI * 2, tilt = great ? rr(0.02, 0.08) : rr(0.04, 0.15)
   const mounds = Array.from({ length: great ? 10 + Math.floor((n.rx * n.rz) / 120) : 2 + Math.floor(rand() * 4) }, () => {
     const a = rand() * Math.PI * 2, at = Math.sqrt(rand()) * 0.9
     return { x: n.x + Math.cos(a) * at * n.rx, z: n.z + Math.sin(a) * at * n.rz, A: great ? rr(-6, 8) : rr(-1.5, 2), s: great ? rr(6, 20) : rr(1.5, 3.5) }
   })
   const chan = great ? channel(n, rand) : null
-  const capOf = (x, z) => 0.25 * n.h * Math.min(1, 1.6 * Math.max(0, 1 - rhoOf(n, { x, z }) ** 2))
+  const capOf = (x, z) => 0.25 * n.h * (great ? 1 : Math.min(1, 1.6 * Math.max(0, 1 - rhoOf(n, { x, z }) ** 2)))
+  // Not from `rand`: this stream feeds every node after this one.
+  const rough = great ? new Noise3(Math.imul(Math.floor(n.x * 131 + n.z * 71), 0x9e3779b1) ^ 0x6c1e) : null
+  const floored = (x, z) => rhoOf(n, { x, z }) < 0.95 || mine.some((l) => rhoOf(l, { x, z }) < 0.95)
   const P = new Float32Array(nx * nz), N = new Float32Array(nx * nz)
   for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) {
     const x = x0 + i * cell, z = z0 + k * cell
     let v = tilt * ((x - n.x) * Math.cos(ta) + (z - n.z) * Math.sin(ta))
     for (const m of mounds) v += m.A * Math.exp(-((x - m.x) ** 2 + (z - m.z) ** 2) / (2 * m.s * m.s))
+    if (rough !== null) v += 2.4 * rough.at2(x * 0.035, z * 0.035) + 1.4 * (1 - 2 * Math.abs(rough.at2(x * 0.1 + 13, z * 0.1))) + 0.6 * rough.at2(x * 0.28 + 5, z * 0.28)
     if (chan !== null) { const d = lineDist(chan.pts, x, z); if (d < chan.w) v = Math.min(v, -chan.depth) }
     const c = k * nx + i
     P[c] = Math.min(Math.max(v, 0), capOf(x, z))
     // Hollows only where there is floor, so every basin holds its water in air.
-    const floored = rhoOf(n, { x, z }) < 0.95 || mine.some((l) => rhoOf(l, { x, z }) < 0.95)
-    N[c] = n.dish > 0 || !floored ? 0 : Math.max(-v, 0)
+    N[c] = n.dish > 0 || !floored(x, z) ? 0 : Math.max(-v, 0)
     if (n.dish > 0 && rhoOf(n, { x, z }) < 0.7) P[c] = 0
     if (i === 0 || k === 0 || i === nx - 1 || k === nz - 1) P[c] = N[c] = 0
   }
@@ -500,7 +505,7 @@ function relieve(n, edges, nooks, lobes, pools, rand) {
   let lo = 0
   for (let c = 0; c < v.length; c++) { v[c] = P[c] - N[c]; lo = Math.min(lo, v[c]) }
   n.relief = { x0, z0, nx, nz, cell, v, lo }
-  if (great) hollows(n, pools)
+  if (great) hollows(n, pools, floored)
 }
 
 // A meandering channel down a great cavern's long axis, inside its rim band.
@@ -544,8 +549,8 @@ function slopeLimit(v, nx, nz, k) {
   }
 }
 
-// Water in a great cavern's hollows: each basin of the relief, flooded in from its rim, deep enough that its water stands clear of the floor's bump at both its bed and its spill, is a pool at three fifths of its depth.
-function hollows(n, pools) {
+// Water in a great cavern's hollows: each basin of the relief whose bed is `floored` (not between hills in the rock past the rim), flooded in from its rim, deep enough that its water stands clear of the floor's bump at both its bed and its spill, is a pool at three fifths of its depth.
+function hollows(n, pools, floored) {
   const { nx, nz, v, x0, z0, cell } = n.relief
   const fill = new Float32Array(nx * nz).fill(Infinity)
   const done = new Uint8Array(nx * nz)
@@ -578,7 +583,7 @@ function hollows(n, pools) {
     }
     const low = basin.reduce((a, b) => (v[b] < v[a] ? b : a))
     const spill = fill[low], min = v[low]
-    if (spill - min < 1.5 || basin.length < 12) continue
+    if (spill - min < 1.5 || basin.length < 12 || !floored(x0 + (low % nx) * cell, z0 + Math.floor(low / nx) * cell)) continue
     const level = n.y + min + 0.6 * (spill - min) - 0.3
     pools.push({ node: n.i, x: x0 + (low % nx) * cell, z: z0 + Math.floor(low / nx) * cell, level, r: Math.sqrt(basin.length / Math.PI) * cell, depth: level - n.y - min, drowned: [] })
   }

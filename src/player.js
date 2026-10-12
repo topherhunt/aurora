@@ -382,7 +382,7 @@ export class Player {
   }
 
   /**
-   * The floor a landing from (x, y, z) stands on, asked from her height so a landing under an overhang is on the ground beneath it. Where floors stack (solidAt, the caves) it is the first floor under her, through any rock she has flown into, and null with none within LOCOMOTION.landDepth: heightAt there answers a sentinel, not a floor, over a void or inside rock.
+   * The floor a landing from (x, y, z) stands on, asked from her height so a landing under an overhang is on the ground beneath it. Where floors stack (solidAt, the caves) it is the first floor under her, through any rock she has flown into, and null with none within LOCOMOTION.landDepth: heightAt there answers a sentinel, not a floor, over a void or inside rock (its wall, a kilometre over her, even where solidAt finds a sliver of air).
    */
   _landingFloor(x, y, z) {
     const th = this.th
@@ -394,6 +394,10 @@ export class Player {
         continue
       }
       const ground = th.heightAt(x, z, y)
+      if (ground > y + 2 * this.scale) {
+        y -= 0.25 * this.scale
+        continue
+      }
       if (ground < lim) return null
       if (th.solidAt(x, ground - 0.1 * this.scale, z)) return ground
       y = Math.min(ground, y - 0.25 * this.scale)
@@ -648,9 +652,12 @@ export class Player {
   // Fly speed at a given locomotion origin, from height above the ground
   // directly below. The HUD already shows both halves of this -- `agl` and
   // `speed` on the position block -- which is what makes a speed that changes on
-  // its own legible rather than mysterious.
+  // its own legible rather than mysterious. Where floors stack (solidAt, the
+  // caves) it is a steady flyLowSpeed: a speed that follows the floors and
+  // roofs she passes over and through is too jumpy in a cave.
   flySpeedAt(origin) {
     const L = LOCOMOTION
+    if (typeof this.th.solidAt === 'function') return L.flyLowSpeed * this.scale
     const alt = (origin.y - this.th.heightAt(origin.x, origin.z)) / this.scale
     const t = THREE.MathUtils.clamp((alt - L.flyLowAlt) / (L.flyHighAlt - L.flyLowAlt), 0, 1)
     return (L.flyLowSpeed + (L.flyHighSpeed - L.flyLowSpeed) * t) * this.scale
@@ -742,18 +749,18 @@ export class Player {
     const origin = this.originPosition()
     const ox = origin.x - p.x, oz = origin.z - p.z
     if (!th.solidAt(x0 + ox, y0 + 0.3 * this.scale, z0 + oz)) {
-      // heightAt answers a wall far over her.
+      // heightAt answers a wall far over her: it stops her step, and is never a floor to lift her onto (a kilometre up, from a sliver of air under a roof).
       if (th.heightAt(origin.x, origin.z, y0) > y0 + 2 * this.scale) {
         p.x = x0
         p.z = z0
         origin.x = x0 + ox
         origin.z = z0 + oz
       }
-      const floor = th.heightAt(origin.x, origin.z, y0) + clear
-      if (p.y < floor) p.y = floor
+      const floor = th.heightAt(origin.x, origin.z, y0)
+      if (floor <= y0 + 2 * this.scale && p.y < floor + clear) p.y = floor + clear
     } else if (!th.solidAt(origin.x, p.y + 0.3 * this.scale, origin.z)) {
-      const floor = th.heightAt(origin.x, origin.z, p.y) + clear
-      if (p.y < floor) p.y = floor
+      const floor = th.heightAt(origin.x, origin.z, p.y)
+      if (floor <= p.y + 2 * this.scale && p.y < floor + clear) p.y = floor + clear
     }
     this.blocked = false
     this.smoothY = p.y

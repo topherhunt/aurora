@@ -54,6 +54,7 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 32 | `design/32-towns.md` | Towns: flat valleys found at boot and spaced 900 m apart, 8-25 of §19's buildings graded by prestige from the clearing outward, every clearing, pad, door path and road a generated road record the terrain flattens and a save drops, one merged mesh per near town and one 14-triangle box pool for every far building |
 | 33 | `design/33-vitals.md` | Health and sleep: 100 HP, a fall past 4 of her metres costing 10 HP a metre, the veil, donut and heartbeat below half, death's black and its choice of the save or a new game, sleep in a leafkin bed (a click on a desktop, lying face up over the pillow in the headset) as the only healing and the only save, and a room that all sleeps skipping to the sun's next crossing of the horizon |
 | 35 | `design/35-roads.md` | Roads between towns: an A* over an 8 m cost grid that favours valleys and refuses steep steps, laid as one winding web of generated road records, a stone bridge (§34) square across a river where going round costs more, a signpost on a cairn at every fork naming the 3-5 nearest towns, and each town's Nordic name drawn from the features it stands near |
+| 41 | `design/41-boulder-mazes.md` | Clearings and boulder mazes: the glades over the cover noise, the maze carve and its siting on gentle dry ground, the `maze` bed whose stone is sheer to the walker, the keep-outs, the gate |
 
 Plus two files with no section number:
 

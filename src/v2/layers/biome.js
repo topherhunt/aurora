@@ -1,22 +1,26 @@
 // ---------------------------------------------------------------------------
 // BiomeField: how much forest a place wants, as a smooth 0..1 field over the world.
 //
-// Three-free. 0 is open meadow, 1 is dense towering forest, and the middle is the sparser, lower wood between them. The tree scatter reads it per candidate as a keep-probability and a height multiplier (render/trees.js BIOME); nothing else reads it yet.
+// Three-free. 0 is open meadow, 1 is dense towering forest, and the middle is the sparser, lower wood between them. It reaches the forest through layers/forest.js as a keep-probability and a height multiplier.
 //
-// It is value noise on a coarse lattice, three octaves, off the same mulberry32 the scatters run on -- a pure function of position and the world seed, four hashes per octave, no storage. The lattice is a couple of hundred metres so a meadow is a clearing you walk across rather than a gap between trees, and the octaves under it fray the edge so the treeline is not a contour.
+// It is value noise on a coarse lattice, three octaves, off the same mulberry32 the scatters run on -- a pure function of position and the world seed, four hashes per octave, no storage. The octaves under the coarsest fray the edge so the treeline is not a contour. Over the noise go GLADES, small round clearings the noise is too coarse to make, and the boulder mazes (layers/mazes.js), which hold the cover up so every maze stands in the wood.
 //
-// THE SEAM FOR AUTHORED OVERRIDES: `coverAt` is the one function the scatter calls. Painted meadow regions, when they come, compose here -- the same way SnowField's authored points ride over its base -- and the scatter never learns the difference.
+// THE SEAM FOR AUTHORED OVERRIDES: `coverAt` is the one function every reader calls (the trees, the terrain tint, the rocks' hollow and maze beds), each from its own instance off the seed. Anything that moves the forest composes here and they all agree.
 // ---------------------------------------------------------------------------
 
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
+import { BoulderMazes } from './mazes.js'
 
 // Metres per lattice cell of the coarsest octave. A meadow or a dense stand is a fraction of this across.
-const CELL = 180
+const CELL = 90
 
 const OCTAVES = 3
 
-// Three octaves of value noise cluster around the middle; this window maps them onto the field, and it is deliberately OFF-CENTRE so that forest is the default and meadow the exception. Surveyed at a 5 m step over 16 km2: half the ground reads full forest, four tenths the sparser wood between, and 8% meadow (under 0.15) in about 120 clearings from 17 m to 320 m across. Widen the window toward 0.8 for an even split.
+// Three octaves of value noise cluster around the middle; this window maps them onto the field, and it is deliberately OFF-CENTRE so that forest is the default and meadow the exception. Widen the window toward 0.8 for an even split. The survey of what the field and the glades make together is DESIGN.md §41.
 const CONTRAST = [0.2, 0.6]
+
+// At most one glade per `cell` square, at odds `chance`, `d` metres across where the trees have thinned to a tenth. Seated wholly inside its cell, so coverAt asks one hash for it.
+const GLADE = { cell: 110, chance: 0.6, d: [20, 60] }
 
 function latticeHash(ix, iz, seed, octave) {
   let h =
@@ -30,9 +34,11 @@ function latticeHash(ix, iz, seed, octave) {
 }
 
 export class BiomeField {
-  constructor({ seed }) {
+  /** `ground` is the world's height field, which the mazes are sited on. */
+  constructor({ seed, ground }) {
     if (typeof seed !== 'number' || !Number.isFinite(seed)) throw new Error(`BiomeField: seed must be a finite number, got ${seed}`)
     this.seed = seed
+    this.mazes = new BoulderMazes({ seed, ground })
   }
 
   /** 0 open meadow .. 1 dense forest at (x, z). */
@@ -56,6 +62,25 @@ export class BiomeField {
       amp *= 0.5
       cell *= 0.5
     }
-    return smoothstep(CONTRAST[0], CONTRAST[1], sum / norm)
+    const cover = smoothstep(CONTRAST[0], CONTRAST[1], sum / norm) * this._gladeAt(x, z)
+    const wood = this.mazes.woodAt(x, z)
+    return wood > 0 ? cover + (1 - cover) * wood : cover
+  }
+
+  /** The glade's share of the cover at (x, z): 0 at its heart, 1 outside it. */
+  _gladeAt(x, z) {
+    const ix = Math.floor(x / GLADE.cell), iz = Math.floor(z / GLADE.cell)
+    const rand = mulberry32(latticeHash(ix, iz, this.seed, 7))
+    if (rand() >= GLADE.chance) return 1
+    const r = 0.5 * (GLADE.d[0] + rand() * (GLADE.d[1] - GLADE.d[0]))
+    // Inset by the glade's whole fade and wobble, so it never reaches a neighbouring cell.
+    const inset = r * 1.5
+    const gx = ix * GLADE.cell + inset + rand() * (GLADE.cell - 2 * inset)
+    const gz = iz * GLADE.cell + inset + rand() * (GLADE.cell - 2 * inset)
+    const dx = x - gx, dz = z - gz
+    const d2 = dx * dx + dz * dz
+    if (d2 > inset * inset) return 1
+    const edge = r * (1 + 0.2 * Math.sin(3 * Math.atan2(dz, dx) + rand() * Math.PI * 2))
+    return smoothstep(edge * 0.75, edge * 1.2, Math.sqrt(d2))
   }
 }

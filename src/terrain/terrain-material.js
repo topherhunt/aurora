@@ -1725,7 +1725,7 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
     uSnowAlbedo: src.uSnowAlbedo,
     uForestTint: { value: new THREE.Color(...FOREST_TINT) },
     // +/- brightness of the grain at full strength.
-    uGrain: { value: 0.15 },
+    uGrain: { value: 0.3 },
   }
   if (stipple) {
     Object.assign(material.userData.uniforms, {

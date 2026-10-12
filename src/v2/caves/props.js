@@ -13,6 +13,9 @@ import { waterBodies } from './walk.js'
 export const MITE_BLOCKS = 1.0
 // Plan metres any obstacle keeps from a passage's line.
 const CLEAR = 2.0
+// A scatter of pebbles per this much of a node's rx * rz, and one per this many metres of passage.
+const PEBBLE_M2 = 3
+const PEBBLE_STEP = 2
 
 /** Floor and roof on the vertical through (x, z), marching from `y` (in air): { floor, roof } or null when `y` is in rock. */
 export function columnAt(field, x, z, y) {
@@ -33,12 +36,21 @@ function surface(field, x, z, y, dir, reach) {
 export function placeProps(graph, field, seed) {
   const rand = mulberry32(seed ^ 0x9f05)
   const rr = (a, b) => a + (b - a) * rand()
-  const out = { mites: [], tites: [], mush: [], boulders: [], ferns: [], grass: [], torches: [], ruins: [], chalk: [], crabs: [], obstacles: [], lights: [] }
+  const out = { mites: [], tites: [], mush: [], boulders: [], ferns: [], grass: [], torches: [], ruins: [], chalk: [], crabs: [], obstacles: [], lights: [], pebbles: [] }
   const lines = graph.nodes.map(() => [])
   for (const e of graph.edges) { lines[e.a].push(e.pts); lines[e.b].push(e.pts) }
   const clear = (n, x, z, pad) => lines[n.i].every((pts) => pts.every((p, k) => k + 1 >= pts.length || segDist(x, z, p, pts[k + 1]) > CLEAR + pad))
   const block = (x, z, r, y0, y1) => out.obstacles.push({ x, z, r: r + 0.3, y0, y1 })
   const stone = (x, y, z, r) => out.boulders.push({ x, y, z, r, yaw: rand() * 6.28, seed: rand() })
+  // A scatter of litter.js's pebbles on the floor within a metre of (x, y, z), `s` across and skewed small as on the overworld's ground.
+  const strew = (x0, y0, z0) => {
+    for (let j = 3 + Math.floor(rand() * 6); j > 0; j--) {
+      const a = rand() * 6.28, d = 1.2 * Math.sqrt(rand())
+      const x = x0 + Math.cos(a) * d, z = z0 + Math.sin(a) * d
+      const y = surface(field, x, z, y0 + 0.3, -1, 0.8)
+      if (y !== null) out.pebbles.push({ x, y, z, s: 0.06 + 0.24 * rand() ** 2, yaw: rand() * 6.28, seed: rand() })
+    }
+  }
   // Each region's mushrooms glow one colour: its first glow's, so they match the light on its walls.
   const regionGlow = graph.regions.map((r) => GLOWS[(r.i * 7 + seed) % GLOWS.length])
   for (const g of [...graph.glows].reverse()) regionGlow[graph.nodes[g.node].region] = g.color
@@ -240,7 +252,7 @@ export function placeProps(graph, field, seed) {
 
     // Boulders: strewn on the floor, small ones heaped in rubble, now and then a big one jutting from the floor or a wall. Heaps and big ones are obstacles, so they keep clear of the passage lines.
     if (!n.great) {
-      for (let k = Math.round(rr(1, 3) + area * 0.012); k > 0; k--) {
+      for (let k = Math.round(rr(2, 6) + area * 0.024); k > 0; k--) {
         const p = spot(n, 0.2, 0.95)
         if (p === null) continue
         const r = 0.12 + (big ? 1.4 : 0.8) * rand() ** 3
@@ -249,7 +261,7 @@ export function placeProps(graph, field, seed) {
         if (r > 0.5) block(p.x, p.z, r * 0.9, p.y, p.y + r)
       }
     }
-    for (let k = rand() < 0.6 ? Math.floor(rr(1, big ? 4 : 3)) : 0; k > 0; k--) {
+    for (let k = rand() < 0.6 ? Math.floor(rr(2, big ? 7 : 5)) : 0; k > 0; k--) {
       const c = spot(n, 0.3, 0.9)
       if (c === null) continue
       const spread = clear(n, c.x, c.z, 1.6) ? rr(0.8, 1.6) : rr(0.4, 0.7), H = spread * 0.45
@@ -263,14 +275,16 @@ export function placeProps(graph, field, seed) {
       }
       if (spread > 0.75) block(c.x, c.z, spread * 0.7, c.y, c.y + H)
     }
-    if (rand() < (big ? 0.6 : 0.3)) {
+    for (let k = 0; k < 2; k++) {
+      if (rand() >= (big ? 0.6 : 0.3)) continue
       const p = spot(n, 0.3, 0.85), r = rr(1, big ? 3 : 1.8)
       if (p !== null && p.roof - p.y > r + 1 && clear(n, p.x, p.z, r)) {
         stone(p.x, p.y - 0.25 * r, p.z, r)
         block(p.x, p.z, r * 0.85, p.y, p.y + r)
       }
     }
-    if (rand() < (big ? 0.7 : 0.4)) {
+    for (let k = 0; k < 2; k++) {
+      if (rand() >= (big ? 0.7 : 0.4)) continue
       const a = rand() * Math.PI * 2, y0 = n.y + reliefAt(n, n.x, n.z) + rr(0.4, 2.4)
       if (field.at(n.x, y0, n.z) < -0.3 && rayRock(field, n.x, y0, n.z, Math.cos(a), 0, Math.sin(a), Math.max(n.rx, n.rz) * 1.5 + 2, hit)) {
         outward(field, hit, nrm)
@@ -281,6 +295,11 @@ export function placeProps(graph, field, seed) {
           block(x, z, r * 0.8, y - r, y + r)
         }
       }
+    }
+
+    for (let k = Math.round(area / PEBBLE_M2); k > 0; k--) {
+      const p = spot(n, 0, 0.95)
+      if (p !== null) strew(p.x, p.y, p.z)
     }
 
     // Crabs round a pool's shore (its fish are the rivers' own, render/fish.js).
@@ -313,12 +332,12 @@ export function placeProps(graph, field, seed) {
           if (glow !== null && h > 4 && lit++ < GROVE_LIGHTS) out.lights.push({ x, y: p.y + h, z, color: glow, reach: 9 + 1.5 * h, power: 0.5 })
         }
       }
-      for (let k = Math.round(area / 50); k > 0; k--) {
+      for (let k = Math.round(area / 25); k > 0; k--) {
         const p = spot(n, 0.05, 0.95)
         if (p === null) continue
-        const r = 0.3 + 2.7 * rand() ** 2.5
+        const r = 0.15 + 3.35 * rand() ** 2.5
         if (r > 0.5 && !clear(n, p.x, p.z, r)) continue
-        out.boulders.push({ x: p.x, y: p.y - 0.3 * r, z: p.z, r, yaw: rand() * 6.28, seed: rand() })
+        stone(p.x, p.y - 0.3 * r, p.z, r)
         if (r > 0.5) block(p.x, p.z, r * 0.9, p.y, p.y + r)
       }
     }
@@ -337,15 +356,21 @@ export function placeProps(graph, field, seed) {
     let at = null
     for (let k = 0; k < 12 && at === null; k++) {
       const p = off(rand() * 6.28, Math.min(n.rx, n.rz) * rr(0.25, 0.5))
-      if (clear(n, p.x, p.z, 1.6)) at = p
+      if (clear(n, p.x, p.z, kind === 'pillar' || kind === 'column' ? 4 : 1.6)) at = p
     }
     if (at === null) continue
     const c = columnAt(field, at.x, at.z, n.y + reliefAt(n, at.x, at.z) + 1.2)
     if (c === null) continue
     if (kind === 'pillar' || kind === 'column') {
-      const r0 = kind === 'pillar' ? rr(0.9, 1.5) : rr(0.6, 0.9)
-      out.mites.push({ x: at.x, y: c.floor, z: at.z, len: c.roof - c.floor + 0.3, r: r0, seed: rand(), pillar: true, fluted: kind === 'column' })
-      block(at.x, at.z, r0, c.floor, c.roof)
+      // A giant stalagmite (slim for a column) at most 55% of the way to the roof, its giant stalactite over it. The roof is re-read from just over the found floor: the relief's guess can start above a crag's overhang.
+      const foot = columnAt(field, at.x, at.z, c.floor + 0.5)
+      if (foot === null) continue
+      const room2 = foot.roof - c.floor
+      const ml = room2 * rr(0.42, 0.55), tl = Math.min(ml * rr(0.65, 0.9), room2 * 0.9 - ml)
+      const r0 = Math.min(ml * (kind === 'pillar' ? 0.2 : 0.13), 3)
+      out.mites.push({ x: at.x, y: c.floor, z: at.z, len: ml, r: r0, seed: rand() })
+      out.tites.push({ x: at.x, y: foot.roof, z: at.z, len: tl, r: Math.min(tl * 0.16, 2.4), seed: rand() })
+      block(at.x, at.z, r0 * 1.4, c.floor, c.floor + ml)
     } else if (kind === 'giant') {
       if (drowned(at.x, c.floor, at.z)) continue
       const h = Math.min(room - 0.6, rr(6, 9))
@@ -390,10 +415,14 @@ export function placeProps(graph, field, seed) {
     out.lights.push({ x: g.x, y: col.floor + h, z: g.z, color: g.color, reach: g.reach * 1.4, power: 0.6 })
   }
 
-  // Along the passages: a few small stones against the walls, and at a braid's `choke` (graph.js) a rockfall filling it wall to wall and floor to roof, an obstacle she cannot pass.
+  // Along the passages: pebbles, a few small stones against the walls, and at a braid's `choke` (graph.js) a rockfall filling it wall to wall and floor to roof, an obstacle she cannot pass.
   for (const e of graph.edges) {
     const len = e.pts[e.pts.length - 1].s
-    for (let k = Math.round((len / 10) * rand()); k > 0; k--) {
+    for (let k = Math.round(len / PEBBLE_STEP); k > 0; k--) {
+      const p = alongPts(e.pts, rr(0, len)), u = rr(-0.6, 0.6) * e.pts[e.pts.length >> 1].w
+      if (p !== null) strew(p.x - p.dz * u, p.y, p.z + p.dx * u)
+    }
+    for (let k = Math.round((len / 5) * rand()); k > 0; k--) {
       const p = alongPts(e.pts, rr(3, Math.max(3, len - 3))), side = rand() < 0.5 ? 1 : -1
       if (p === null || !rayRock(field, p.x, p.y + 0.4, p.z, -p.dz * side, 0, p.dx * side, 5, hit)) continue
       const r = rr(0.12, 0.4)
@@ -424,7 +453,71 @@ export function placeProps(graph, field, seed) {
     }
     for (let u = -wide[0]; u <= wide[1]; u += 0.5) block(p.x - p.dz * u, p.z + p.dx * u, 0.4, col.floor - 1, col.roof + 1)
   }
+  // Seated, a floor cap may sink under a pool's edge, and is dropped.
+  out.mush = out.mush.filter((m) => m.up !== UP || (plant(field, m), !drowned(m.x, m.y, m.z)))
   return out
+}
+
+// The widest stem base of the mushroom species (mushroom-bank.js's barrel), per metre of height.
+export const MUSH_FOOT = 0.28
+// How far a floor mushroom tilts from upright toward its ground's normal.
+const MUSH_TILT = 0.6
+
+// Seats floor mushroom m on the ground under its whole base: tilted part way to the slope its footprint samples, and sunk until no point of its base disc stands over air.
+function plant(field, m) {
+  const R = MUSH_FOOT * m.h, reach = 0.3 + 1.2 * R
+  const floorAt = (x, z) => {
+    const y = nearFloor(field, x, z, m.y, reach)
+    if (y !== null) return y
+    return field.at(x, m.y, z) > 0 ? m.y + reach : m.y - reach
+  }
+  const rim = []
+  let sx = 0, sz = 0, sxx = 0, szz = 0
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2, dx = Math.cos(a) * R, dz = Math.sin(a) * R
+    const y = floorAt(m.x + dx, m.z + dz)
+    rim.push({ dx, dz, y })
+    sx += dx * y; sz += dz * y; sxx += dx * dx; szz += dz * dz
+  }
+  const c = floorAt(m.x, m.z)
+  if (R > 1e-3) {
+    // The least-squares slope through the rim (a wall's rock counted a rise), tilted MUSH_TILT of the way, never past about 27 degrees.
+    let gx = sx / sxx, gz = sz / szz
+    const g = Math.hypot(gx, gz) * MUSH_TILT
+    if (g > 0.5) { gx *= 0.5 / g; gz *= 0.5 / g }
+    const nx = -gx * MUSH_TILT, nz = -gz * MUSH_TILT
+    const l = Math.hypot(nx, 1, nz)
+    m.up = [nx / l, 1 / l, nz / l]
+    m.y = Math.min(c, ...rim.map((p) => p.y - MUSH_TILT * (gx * p.dx + gz * p.dz)))
+  } else {
+    m.y = c
+  }
+  // The rim samples miss the bump between them: sink on until no point of the tilted base disc is in air.
+  const [ux, uy, uz] = m.up
+  const t1 = [uy, -ux, 0], tl = Math.hypot(uy, ux)
+  t1[0] /= tl; t1[1] /= tl
+  const t2 = [uy * t1[2] - uz * t1[1], uz * t1[0] - ux * t1[2], ux * t1[1] - uy * t1[0]]
+  for (let pass = 0; pass < 4; pass++) {
+    let gap = 0
+    for (let k = 0; k < 24; k++) {
+      const ca = Math.cos((k / 24) * Math.PI * 2) * R, sa = Math.sin((k / 24) * Math.PI * 2) * R
+      gap = Math.max(gap, -field.at(m.x + ca * t1[0] + sa * t2[0], m.y + ca * t1[1] + sa * t2[1], m.z + ca * t1[2] + sa * t2[2]))
+    }
+    if (gap <= 0.02) break
+    m.y -= gap + 0.02
+  }
+}
+
+// The floor (rock under air) on the vertical through (x, z) nearest `y`, within `reach` metres either way, or null.
+function nearFloor(field, x, z, y, reach) {
+  let best = null
+  let below = field.at(x, y - reach, z) > 0
+  for (let t = y - reach + 0.05; t <= y + reach; t += 0.05) {
+    const rock = field.at(x, t, z) > 0
+    if (below && !rock && (best === null || Math.abs(t - y) < Math.abs(best - y))) best = t - 0.025
+    below = rock
+  }
+  return best
 }
 
 const UP = [0, 1, 0]
