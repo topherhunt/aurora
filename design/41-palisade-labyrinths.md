@@ -83,7 +83,7 @@ A stone plinth 0.64 m square and 1 m tall carrying a dragon egg, and behind it f
 
 ## The drums
 
-Within 20 m of a labyrinth's outline she hears `npc-yeti-drums-loop.wav` looped from its middle (ambience.js `RULES.drums`): two bars, 1.62696 s, cut from `npc-yeti-drums.mp3` by tools/music/bar-loop.mjs and played by one natively looping source (LoopVoice `exact`), so the beat never drifts at the join. `nearness` walks 0 at that reach to 1 at the middle's edge; the level runs 0.015 to 0.3 and the low-pass 220 to 9000 Hz, both geometrically, so far off they are a distant thump. Off indoors. Once she stands in the middle they stop for good: main.js `drumsStilled` holds its `rx,rz` and the save carries it.
+Within 20 m of a labyrinth's outline she hears `npc-yeti-drums.mp3` looped from its middle (ambience.js `RULES.drums`): its first two bars (`span`, 1.62696 s from its first sound at 772 samples, found by autocorrelating its envelope; the clip runs on into a third bar it cuts short), looped natively by one source (LoopVoice `exact`), so every pass is the same length to the sample. `nearness` walks 0 at that reach to 1 at the middle's edge; the level runs 0.015 to 0.3 and the low-pass 220 to 9000 Hz, both geometrically, so far off they are a distant thump, and the rate (pitch with it) 0.8 to 1 linearly. Off indoors. Once she stands in the middle they stop for good: main.js `drumsStilled` holds its `rx,rz` and the save carries it.
 
 ## The green giant (src/v2/render/giants.js)
 
@@ -93,7 +93,9 @@ One per labyrinth: the yeti, 5 m tall (a metre over the posts), its fur tinted [
 
 **Live.** It notices her within 5 m in the quarter circle it faces, unless she is more than 4 m over its feet (a tower's deck is safe), and this client becomes its authority, owing an anchor a second. It chases at 1 m/s (her walk is 1.45) by BFS along the graph to her node, or to the entrance cell when she is outside; within 2.2 m it swings (the threaten clip at 0.6 rate), and the blow lands halfway through for 25 HP if she is still within 2.7 m. Past 10 m, or a stale anchor, it forgets her, owes a rejoin anchor and walks back to where its round has got to. The chapter turn snaps a returning giant onto its round.
 
-It shares the snowmen's visibility toggle and trace row, and treads through ambience's herd as `human`/`tread`/`thud`.
+**A flare** shot within 10 m of it (main.js `fireFlare` calls `scare`), live or on its round, makes this client its authority and has it cower 15 s where it stands (the yeti's cower clip), screaming `npc-leafkin-scream.mp3` at 0.4 rate (`RULES.giantScream`, sent into the valley echo). A `cower` anchor carries its end and whether it was after her; after it, it takes up the chase if she is still within 10 m, else walks back to its round.
+
+It shares the snowmen's visibility toggle and trace row, and treads through ambience's herd as `human`/`tread`/`giantThud`: the snowmen's thud louder, deeper and sent into the valley echo.
 
 ## Keep-outs
 
@@ -105,7 +107,7 @@ It shares the snowmen's visibility toggle and trace row, and treads through ambi
 ## The checks
 
 - **check-labyrinths** `[every]`, ~16 s. Every labyrinth: every cell reached from the one entrance, one door, two torches; wall covered by posts or cracks of at most 4 cm; girths in range; its towers; its dead ends' carrots on their nodes, clear of walls and posts; its drums' reach and rise; the giant's graph one piece, `nodeAt` finding every node, every leg 0.25 m clear of the walls. Walked: WalkSurface flooded on a 0.25 m grid with Palisades' own columnAt, every cell and the middle reached from outside, and with the gate plugged, none. Towers climbed, held and fallen from; wall tops found.
-- **check-giants**: on flat ground with a stand-in skinned yeti: the round's coverage and pace, the closed-form pose across two frame rates, noticing, chase, swing and blows, forgetting and the walk back, a peer going live on an anchor.
+- **check-giants**: on flat ground with a stand-in skinned yeti: the round's coverage and pace, the closed-form pose across two frame rates, noticing, chase, swing and blows, forgetting and the walk back, a peer going live on an anchor; a flare's cower, its scream, its anchor and what follows.
 - **check-world-plan**: the boot reads the plan's footprints, and the gate trails reach the roads through no labyrinth.
 
 ## Open

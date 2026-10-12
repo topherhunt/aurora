@@ -31,8 +31,13 @@ export const REACH_M = 2.2
 const SLACK_M = 0.5
 export const BLOW = 25
 const BLOW_AT = 0.5
+// A flare shot within SCARE_M of it (scare) has it cower COWER_S, then take up what it was doing: her, if she is still within FORGET_M, else its round.
+export const SCARE_M = 10
+export const COWER_S = 15
 // The threaten clip's rate, as a swing.
 const SWING_RATE = 0.6
+// The leafkin's scream slowed to a giant's.
+const SCREAM_RATE = 0.4
 // Seconds it stands in each dead end of its round, and in the middle at the round's turn.
 const PAUSE_S = [2, 5]
 const MIDDLE_S = 8
@@ -44,9 +49,9 @@ export const ANCHOR_STALE_S = 3
 const CORRECT_S = 1
 const REPLANT_EVERY = 6
 const FADE_S = 0.25
-export const CLIPS = ['idle', 'walk', 'threaten']
-const PLANTED = new Set(['idle'])
-const MODES = new Set(['chase', 'swing', 'rejoin'])
+export const CLIPS = ['idle', 'walk', 'threaten', 'cower']
+const PLANTED = new Set(['idle', 'cower'])
+const MODES = new Set(['chase', 'swing', 'cower', 'rejoin'])
 
 const ticksOf = (s) => Math.max(1, Math.round(s * TICK_HZ))
 const UP = new THREE.Vector3(0, 1, 0)
@@ -150,8 +155,10 @@ export class Giants {
         id: i, key: '', hash: 0, site: null, m: null, round: null, laid: false,
         x: 0, y: 0, z: 0, heading: 0, sx: 0, sy: 0, sz: 0, sh: 0, lx: 0, ly: 0, lz: 0, lh: 0, aim: 0,
         size: HEIGHT_M, k: 1,
-        // round, back, chase or swing; the tick record (sim/score.js stepTo) and the tick this chapter turns on.
+        // round, back, chase, swing or cower; the tick record (sim/score.js stepTo) and the tick this chapter turns on.
         state: 'round', rec: { tick: 0, alpha: 1, at: 0 }, turnTick: 0,
+        // Cowering: the tick it ends on, and whether it then goes after her (else back to its round).
+        cowerEnd: 0, cowerChase: false,
         // Live on a player: { by, anchor, sendTick, ex, ez, eh }.
         live: null, blowTick: -1,
         // The clip, the ticks it runs between, its rate, `cycle` its length at that rate (the ear's footfall clock), `cue` counting plays, and the ground speed.
@@ -172,6 +179,8 @@ export class Giants {
     this.outbox = []
     // HP of the blows landed on her since the last drain.
     this.owed = 0
+    // Its scream as it cowers, for the ear: { sound, rule, rate, x, y, z } (voices).
+    this.said = []
     this._parent = new Int32Array(0)
     this._queue = []
     if (asset) {
@@ -211,6 +220,27 @@ export class Giants {
     return n
   }
 
+  /** The giants' one-shots since the last call, for the ear (audio/ambience.js `voiced`). */
+  voices(into) {
+    for (const v of this.said) into.push(v)
+    this.said.length = 0
+    return into
+  }
+
+  /** A flare shot from (x, z): every giant within SCARE_M not already cowering cowers, this client its authority. How many did. */
+  scare(x, z) {
+    let n = 0
+    for (const c of this.slots) {
+      if (!c.laid || c.state === 'cower' || Math.hypot(x - c.sx, z - c.sz) > SCARE_M) continue
+      const k = c.rec.tick, chase = c.live !== null
+      c.live = { by: null, anchor: null, sendTick: k + ticksOf(ANCHOR_S), ex: 0, ez: 0, eh: 0 }
+      this._cower(c, k, k + ticksOf(COWER_S), chase)
+      this._owe(c, k, 'cower')
+      n++
+    }
+    return n
+  }
+
   /** Every giant drawn this frame, for the ear (audio/ambience.js): x, y, z, size, clip, cycle and speed on each. */
   bodies(into) {
     if (!this.batch.visible) return into
@@ -219,13 +249,14 @@ export class Giants {
   }
 
   get stats() {
-    const states = { round: 0, back: 0, chase: 0, swing: 0 }
+    const states = { round: 0, back: 0, chase: 0, swing: 0, cower: 0 }
     for (const c of this.slots) if (c.laid) states[c.state]++
     return { laid: this.slots.filter((c) => c.laid).length, states }
   }
 
   // -------------------------------------------------------------------------
-  // The room: anchors as the snowmen's, `[key, T, x, y, z, heading, -1, mode, by, 0]`.
+  // The room: anchors as the snowmen's, `[key, T, x, y, z, heading, -1, mode, by, end, chase]`; a cowering one's
+  // `end` is the world second it stops and `chase` 1 if it then goes after the player it was live on.
   // -------------------------------------------------------------------------
 
   /** An anchor heard from the room (`by` null, this client's own, is ignored): kept for a giant not yet laid; on one laid, puts it live on that client's player where the anchor has it, nudges one already live, or (rejoin) sets it walking back from there. One this client is the authority for keeps its own player. */
@@ -245,6 +276,7 @@ export class Giants {
     }
     c.live.anchor = anchor
     c.live.by = by
+    if (mode === 'cower' && c.state !== 'cower') this._cower(c, tickOf(T), tickOf(anchor[9]), anchor[10] === 1)
     c.live.ex = anchor[2] - c.sx
     c.live.ez = anchor[4] - c.sz
     c.live.eh = swing(c.sh, anchor[5])
@@ -257,7 +289,7 @@ export class Giants {
   }
 
   _owe(c, k, mode) {
-    const anchor = [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, 0]
+    const anchor = mode === 'cower' ? [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, c.cowerEnd * TICK_S, c.cowerChase ? 1 : 0] : [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, 0]
     this.outbox.push(anchor)
     this.anchored.set(c.key, anchor)
   }
@@ -334,6 +366,7 @@ export class Giants {
       c.rec.tick = tickOf(T)
       this._golive(c, by, c.rec.tick)
       c.live.anchor = anchor
+      if (mode === 'cower') this._cower(c, c.rec.tick, tickOf(anchor[9]), anchor[10] === 1)
       return
     }
     const from = mode === 'rejoin' ? tickOf(T) : tickOf(T + ANCHOR_STALE_S)
@@ -367,6 +400,15 @@ export class Giants {
     c.state = 'chase'
     this._play(c, 'walk', k, CHASE_SPEED)
     if (by === null) this._owe(c, k, 'chase')
+  }
+
+  /** Cowering from tick `k` to `end`, screaming as it starts; `chase` whether it then goes after her. */
+  _cower(c, k, end, chase) {
+    c.state = 'cower'
+    c.cowerEnd = end
+    c.cowerChase = chase
+    this._play(c, 'cower', k, 0)
+    this.said.push({ sound: 'leafkinScream', rule: 'giantScream', rate: SCREAM_RATE, x: c.sx, y: c.sy + HEIGHT_M * 0.8, z: c.sz })
   }
 
   _unlive(c, k) {
@@ -433,14 +475,19 @@ export class Giants {
     c.sy = this.walk.heightAt(c.sx, c.sz)
   }
 
-  /** One live tick: her lost (gone from the room, past FORGET_M, above ABOVE_M, or a peer's anchor stale) and it forgets her; a swing runs out, its blow landing BLOW_AT through if she is still in reach; else it swings at her within REACH_M or goes after her. */
+  /** One live tick: cowering, it holds until its end and then goes after her or back to its round; else her lost (gone from the room, past FORGET_M, above ABOVE_M, or a peer's anchor stale) and it forgets her; a swing runs out, its blow landing BLOW_AT through if she is still in reach; else it swings at her within REACH_M or goes after her. */
   _stepLive(c, k) {
     const live = c.live
     const p = this._player(live.by)
     const fresh = live.by === null || (live.anchor !== null && k * TICK_S - live.anchor[1] < ANCHOR_STALE_S)
     const d = p === null ? Infinity : Math.hypot(p.x - c.sx, p.z - c.sz)
-    if (!fresh || d > FORGET_M || p.y - c.sy > ABOVE_M) { this._unlive(c, k); return }
-    if (c.state === 'swing') {
+    if (c.state === 'cower') {
+      if (!fresh || (k >= c.cowerEnd && !(c.cowerChase && d <= FORGET_M && p.y - c.sy <= ABOVE_M))) { this._unlive(c, k); return }
+      if (k >= c.cowerEnd) { c.state = 'chase'; this._play(c, 'walk', k, CHASE_SPEED) }
+    } else if (!fresh || d > FORGET_M || p.y - c.sy > ABOVE_M) { this._unlive(c, k); return }
+    if (c.state === 'cower') {
+      // Held where it crouches.
+    } else if (c.state === 'swing') {
       c.aim = Math.atan2(-(p.z - c.sz), p.x - c.sx)
       this._turn(c)
       if (k === c.blowTick && live.by === null && d <= REACH_M + SLACK_M) this.owed += BLOW

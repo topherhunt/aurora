@@ -5,11 +5,12 @@
 // Its round: from the middle through every cell and back, closed-form, the same on two clients at two frame rates, and
 // never out of the maze. Her: noticed ahead within NOTICE_M and not behind, nor high on a tower; chased inside the maze
 // slower than she walks; struck for BLOW once in reach; forgotten past FORGET_M, a rejoin owed, and the round taken up
-// again. The room: an anchor a second while live, and a peer put live on its player by one.
+// again. A flare within SCARE_M: it cowers COWER_S, screaming, then takes up her chase or its round. The room: an anchor a
+// second while live, a peer put live on its player by one, and cowering by a cower anchor.
 
 import * as THREE from 'three'
 import { Labyrinths, POST_HEIGHT } from '../src/v2/layers/labyrinths.js'
-import { Giants, roundOf, roundAt, HEIGHT_M, NOTICE_M, FORGET_M, REACH_M, BLOW, CHASE_SPEED, ABOVE_M, ANCHOR_S, NOTICE_HALF } from '../src/v2/render/giants.js'
+import { Giants, roundOf, roundAt, HEIGHT_M, NOTICE_M, FORGET_M, REACH_M, BLOW, CHASE_SPEED, ABOVE_M, ANCHOR_S, NOTICE_HALF, SCARE_M, COWER_S } from '../src/v2/render/giants.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
@@ -195,6 +196,46 @@ console.log('\nher')
   const pc = giantOf(peer)
   peer.apply([pc.key, 1001, m.cells[0][0], 0, m.cells[0][1], 0, -1, 'chase', 'client-7', 0], 1001.05)
   check(pc.live !== null && pc.live.by === 'client-7' && pc.state === 'chase' && Math.hypot(pc.sx - m.cells[0][0], pc.sz - m.cells[0][1]) < 0.2, "a peer's giant goes live on the anchor's player where the anchor has it", `${pc.state}`)
+}
+
+console.log('\nthe flare')
+{
+  // Chasing her, a flare from where she stands: it cowers where it is, screams, owes a cower anchor, and lands no blow.
+  const g = make()
+  step(g, 1000, 1001, 30)
+  const c = giantOf(g)
+  const her = herAt(c, 1, NOTICE_M - 2)
+  step(g, 1001, 1001.2, 30, her)
+  g.pending()
+  const far = g.scare(c.sx + SCARE_M + 1, c.sz)
+  const n = g.scare(her[0], her[2])
+  const said = g.voices([])
+  const owed = g.pending().find((x) => x[0] === c.key && x[7] === 'cower')
+  check(far === 0 && n === 1 && c.state === 'cower' && c.clip === 'cower' && c.speed === 0, `a flare past ${SCARE_M} m is ignored; one from her sets it cowering`, c.state)
+  check(said.length === 1 && said[0].sound === 'leafkinScream' && said[0].rule === 'giantScream' && said[0].rate < 0.5, "it screams the leafkin's scream, deepened", JSON.stringify(said[0]))
+  check(owed !== undefined && Math.abs(owed[9] - (owed[1] + COWER_S)) < 0.06 && owed[10] === 1, 'a cower anchor owed, carrying its end and that it then chases', JSON.stringify(owed))
+  const x0 = c.sx, z0 = c.sz
+  let blows = 0
+  step(g, 1001.23, 1001 + COWER_S - 0.5, 30, her, () => { blows += g.drainBlows() })
+  check(c.state === 'cower' && Math.hypot(c.sx - x0, c.sz - z0) < 1e-9 && blows === 0 && g.scare(her[0], her[2]) === 0, `for ${COWER_S} s it holds where it crouches, harmless, and a second flare is nothing`, `${c.state}, ${blows} HP`)
+  step(g, 1001 + COWER_S - 0.47, 1001 + COWER_S + 1, 30, her)
+  check(c.state === 'chase' || c.state === 'swing', 'then, she still near, it takes up her chase', c.state)
+
+  // On its round, her far: cowering, then back to its round.
+  const g2 = make()
+  step(g2, 1000, 1001, 30)
+  const c2 = giantOf(g2)
+  check(g2.scare(c2.sx + SCARE_M - 1, c2.sz) === 1 && c2.state === 'cower', 'a giant on its round cowers too')
+  const owed2 = g2.pending().find((x) => x[0] === c2.key && x[7] === 'cower')
+  step(g2, 1001.03, 1001 + COWER_S + 1, 30)
+  check(owed2[10] === 0 && c2.state === 'back' && g2.pending().some((x) => x[0] === c2.key && x[7] === 'rejoin'), 'and after it, walks back to its round, a rejoin owed', c2.state)
+
+  // A peer hears the cower anchor: its giant cowers there and screams.
+  const peer = make()
+  step(peer, 1000, 1001, 30)
+  const pc = giantOf(peer)
+  peer.apply([pc.key, 1001, m.cells[0][0], 0, m.cells[0][1], 0, -1, 'cower', 'client-7', 1001 + COWER_S, 1], 1001.05)
+  check(pc.state === 'cower' && pc.live.by === 'client-7' && peer.voices([]).length === 1, "a peer's giant cowers on a cower anchor, and screams", pc.state)
 }
 
 console.log(failures === 0 ? '\nall giant checks passed' : `\n${failures} giant check(s) FAILED`)

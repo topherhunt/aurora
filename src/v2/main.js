@@ -2236,6 +2236,7 @@ function fireFlare(key, aim = null) {
     color: PALETTE[rec.hue], seed: Math.random(),
   }
   flares.add(f, 0)
+  if (giants) giants.scare(gunMuzzle.x, gunMuzzle.z)
   shotFlash.fire(f.color)
   netplay.sendFlare(toWire(f))
   if (ambience) sound.play('flaregun', { bus: 'near', rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
@@ -5361,8 +5362,8 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'thud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,

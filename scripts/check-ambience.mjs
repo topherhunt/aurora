@@ -101,8 +101,9 @@ function fakeCtx() {
     },
     createBufferSource() {
       // `env` is the voice's gain, found through a filter if one sits between.
-      const s = node({ buffer: null, playbackRate: { value: 1 }, startAt: null, stopAt: null, onended: null,
-        start(t = ctx.currentTime) { s.startAt = t }, stop(t) { s.stopAt = t } })
+      const rates = []
+      const s = node({ buffer: null, rates, playbackRate: fakeParam('rate', rates), loop: false, loopStart: 0, loopEnd: 0, startAt: null, offset: null, stopAt: null, onended: null,
+        start(t = ctx.currentTime, offset = 0) { s.startAt = t; s.offset = offset }, stop(t) { s.stopAt = t } })
       Object.defineProperties(s, {
         env: { get() { const first = s.outs[0]; return first?.gain ? first : first?.outs[0] ?? null } },
         lp: { get() { return s.outs[0]?.frequency ? s.outs[0] : null } },
@@ -229,22 +230,28 @@ console.log('loop voice')
   try { engine.loop(['a', 'b'], { exact: true }) } catch { threw++ }
   try { engine.loop('drums', { exact: true, next: () => null }) } catch { threw++ }
   check(threw === 2, 'an exact loop over two clips, or with a swap, throws')
+  threw = 0
+  try { voice.setCutoff(500) } catch { threw++ }
+  try { engine.loop('brook', { rand: mulberry32(1) }).setRate(0.9) } catch { threw++ }
+  check(threw === 2, 'and setRate on a walking loop throws')
 }
 
 {
-  // The labyrinth drums' clip (tools/music/bar-loop.mjs): two whole bars whose last sample runs into the first, no jump at the join bigger than a typical step inside the clip.
-  const wav = fs.readFileSync(new URL(`../public/${SOUNDS.drums}`, import.meta.url))
-  let at = 12, data = null, fmt = null
-  while (at < wav.length) {
-    const id = wav.toString('ascii', at, at + 4), size = wav.readUInt32LE(at + 4)
-    if (id === 'fmt ') fmt = { channels: wav.readUInt16LE(at + 10), rate: wav.readUInt32LE(at + 12), bits: wav.readUInt16LE(at + 22) }
-    if (id === 'data') data = new Int16Array(wav.buffer.slice(wav.byteOffset + at + 8, wav.byteOffset + at + 8 + size))
-    at += 8 + size + (size & 1)
-  }
-  const steps = Array.from(data.subarray(1), (v, i) => Math.abs(v - data[i])).sort((a, b) => a - b)
-  const join = Math.abs(data[0] - data[data.length - 1])
-  check(SOUNDS.drums.endsWith('.wav') && fmt.channels === 1 && fmt.bits === 16 && Math.abs(data.length / fmt.rate - 1.627) < 0.01 && join <= steps[steps.length >> 1],
-    'the drums\' loop is a 1.627 s WAV whose end runs into its start', `${data.length} samples at ${fmt.rate} Hz, join ${join} against a median step ${steps[steps.length >> 1]}`)
+  // An exact span: the source starts at `from` and loops [from, to] natively; setRate eases the one source, and a restart takes the rate set.
+  const ctx = fakeCtx()
+  const engine = new SoundEngine({ ctx })
+  engine.buffers.set('drums', { duration: 2.283 })
+  const voice = engine.loop('drums', { exact: [0.032, 1.659], rate: [1, 1], drift: 0, rand: mulberry32(5) })
+  voice.setRate(0.8)
+  voice.start()
+  const [s] = ctx.sources
+  check(s.loop === true && s.loopStart === 0.032 && s.loopEnd === 1.659 && s.offset === 0.032 && s.playbackRate.value === 0.8, 'an exact span starts at its head and loops its bars, at the rate set before it started')
+  voice.setRate(0.9)
+  check(s.rates.at(-1).v === 0.9 && ctx.sources.length === 1, 'setRate eases the playing source, starting no other')
+  let threw = 0
+  try { engine.loop('drums', { exact: [1, 0.5] }) } catch { threw++ }
+  try { engine.loop('drums', { exact: [0, 3], rand: mulberry32(1) }).start() } catch { threw++ }
+  check(threw === 2, 'a span backwards, or past the clip\'s end, throws')
 }
 
 {
@@ -472,7 +479,7 @@ function fakeEngine() {
     loop(name, opts) {
       const v = { name, opts, active: false, level: null, at: null, starts: 0, stops: 0,
         start() { v.active = true; v.starts++ }, stop() { v.active = false; v.stops++ },
-        setLevel(l) { v.level = l }, setPosition(x, y, z) { v.at = { x, y, z } }, setCutoff(hz) { v.cutoff = hz } }
+        setLevel(l) { v.level = l }, setPosition(x, y, z) { v.at = { x, y, z } }, setCutoff(hz) { v.cutoff = hz }, setRate(r) { v.rate = r } }
       loops[name] = v
       return v
     },
@@ -1587,26 +1594,27 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(threw === 1, 'a fiddler with no radius throws')
 }
 {
-  // A labyrinth's drums: one muffled loop, its pitch held, off with none heard or indoors, quiet and dull at the reach, loud and bright at the middle.
+  // A labyrinth's drums: one muffled exact loop, off with none heard or indoors, quiet and dull at the reach, loud and bright at the middle.
   const D = RULES.drums
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -300
   let heard = null
   const amb = new Ambience({ engine, sense, rand: mulberry32(15), drums: () => heard })
   const d = amb.loops.drums, head = { x: 0, y: GROUND + 1.6, z: 0 }
-  check(d.name === 'drums' && 'drums' in SOUNDS && d.opts.muffle === true && d.opts.directional === true && d.opts.exact === true && d.opts.rate[0] === 1 && d.opts.rate[1] === 1 && d.opts.drift === 0, 'one muffled, placed, exact loop, its pitch held')
+  check(d.name === 'drums' && 'drums' in SOUNDS && d.opts.muffle === true && d.opts.directional === true && d.opts.exact === D.span && d.opts.rate[0] === 1 && d.opts.rate[1] === 1 && d.opts.drift === 0, 'one muffled, placed loop of its two bars, exactly')
+  check(Math.abs((D.span[1] - D.span[0]) - 1.62696) < 1e-5 && D.rate[0] === 0.8 && D.rate[1] === 1, 'the span two bars of 1.62696 s, the rate 0.8 at the reach to 1 at the middle')
   run(amb, 1, { head })
   check(!d.active, 'none heard, silent')
   heard = { x: 30, y: GROUND + 1.6, z: 0, near: 0 }
   run(amb, 1, { head })
   const farLevel = d.level, farCut = d.cutoff
-  check(d.active && Math.abs(farLevel - D.level[0]) < 1e-9 && Math.abs(farCut - D.cutoff[0]) < 1e-6 && d.at.x === 30, 'at the reach, on at the quiet end and its dullest, placed at the middle', `level ${farLevel?.toFixed(3)}, ${farCut?.toFixed(0)} Hz`)
+  check(d.active && Math.abs(farLevel - D.level[0]) < 1e-9 && Math.abs(farCut - D.cutoff[0]) < 1e-6 && d.rate === D.rate[0] && d.at.x === 30, 'at the reach, on at the quiet end and its dullest, placed at the middle', `level ${farLevel?.toFixed(3)}, ${farCut?.toFixed(0)} Hz`)
   heard.near = 0.5
   run(amb, 1, { head })
-  check(d.level > farLevel && d.cutoff > farCut && d.level < D.level[1] && d.cutoff < D.cutoff[1], 'halfway, louder and brighter')
+  check(d.level > farLevel && d.cutoff > farCut && d.level < D.level[1] && d.cutoff < D.cutoff[1] && Math.abs(d.rate - (D.rate[0] + D.rate[1]) / 2) < 1e-9, 'halfway, louder, brighter and halfway in rate')
   heard.near = 1
   run(amb, 1, { head })
-  check(Math.abs(d.level - D.level[1]) < 1e-9 && Math.abs(d.cutoff - D.cutoff[1]) < 1e-6, 'at the middle\'s edge, full and bright', `level ${d.level?.toFixed(3)}, ${d.cutoff?.toFixed(0)} Hz`)
+  check(Math.abs(d.level - D.level[1]) < 1e-9 && Math.abs(d.cutoff - D.cutoff[1]) < 1e-6 && d.rate === D.rate[1], 'at the middle\'s edge, full, bright and at rate 1', `level ${d.level?.toFixed(3)}, ${d.cutoff?.toFixed(0)} Hz`)
   run(amb, 1, { head, indoors: true })
   check(!d.active, 'indoors, silent')
   heard = null

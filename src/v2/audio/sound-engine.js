@@ -486,9 +486,9 @@ export class SoundEngine {
  * through a wall. `next`, if given, is asked before each cycle and may name the
  * clip to play in place of the draw (null for the draw): one take swapped into a bed.
  *
- * `exact` is for a rhythm: the one clip as a single source looping natively, so every pass is the clip's length to the
- * sample, with no crossfade and its rate and gain as rolled at construction. The clip must already be whole bars that
- * join seamlessly (tools/music/bar-loop.mjs).
+ * `exact` is for a rhythm: the one clip as a single source looping natively, so every pass is the same length to the
+ * sample, with no crossfade and its gain as rolled at construction. `true` loops the whole clip; `[from, to]` seconds
+ * loops that span of it (whole bars), starting at `from`. Its rate holds unless the caller sets it (setRate).
  */
 export const LOOP_XFADE_S = [0.1, 1.0]
 export const LOOP_RATE = [0.9, 1.1]
@@ -501,6 +501,7 @@ export class LoopVoice {
     this.names = Array.isArray(name) ? name : [name]
     if (this.names.length === 0) throw new Error('LoopVoice: no clip named')
     if (exact && (this.names.length !== 1 || next !== null)) throw new Error(`LoopVoice(${this.names.join('|')}): an exact loop plays one clip`)
+    if (Array.isArray(exact) && !(exact.length === 2 && exact[0] >= 0 && exact[1] > exact[0])) throw new Error(`LoopVoice(${this.names[0]}): an exact span is [from, to] seconds, got ${JSON.stringify(exact)}`)
     this.exact = exact
     this.name = this.names.join('|')
     this.rand = rand
@@ -539,7 +540,10 @@ export class LoopVoice {
     this.active = true
     this.nextAt = this.engine.ctx.currentTime + 0.01
     this.nextFadeIn = LOOP_XFADE_S[0]
-    if (this.exact) this._play(this.engine.buffer(this.names[0]), this.nextAt, this.cycleGain, true)
+    if (!this.exact) return
+    const buffer = this.engine.buffer(this.names[0])
+    if (Array.isArray(this.exact) && this.exact[1] > buffer.duration) throw new Error(`LoopVoice(${this.name}): the exact span ends past the clip's ${buffer.duration} s`)
+    this._play(buffer, this.nextAt, this.cycleGain, this.exact)
   }
 
   /** Fade `level` to zero over `fade` seconds and stop queuing cycles; the sources still queued are cut when the fade lands. */
@@ -570,6 +574,14 @@ export class LoopVoice {
     setParam(this.filter.frequency, hz, this.engine.ctx.currentTime, tau)
   }
 
+  /** An exact loop's playback rate (pitch with it), eased in over `tau`. */
+  setRate(r, tau = 0.15) {
+    if (!this.exact) throw new Error(`LoopVoice(${this.name}) is not exact; its rate walks`)
+    if (!(r > 0)) throw new Error(`LoopVoice(${this.name}).setRate: got ${r}`)
+    this.rate = r
+    for (const s of this.sources) setParam(s.playbackRate, r, this.engine.ctx.currentTime, tau)
+  }
+
   /** Walk a value by at most `step`, held inside [lo, hi]. */
   static walk(v, lo, hi, rand, step = LOOP_STEP) {
     const next = v + (rand() * 2 - 1) * step
@@ -591,18 +603,20 @@ export class LoopVoice {
     while (this.nextAt < ctx.currentTime + LOOP_LOOKAHEAD_S) this._cycle()
   }
 
-  /** `buffer` from `start` at the voice's rate through a gain of its own into `level`, held in `sources` till it ends; `loop` repeats it natively. */
+  /** `buffer` from `start` at the voice's rate through a gain of its own into `level`, held in `sources` till it ends; `loop` true repeats it natively, `[from, to]` that span of it. */
   _play(buffer, start, gain, loop) {
     const ctx = this.engine.ctx
     const src = ctx.createBufferSource()
     src.buffer = buffer
-    src.loop = loop
+    src.loop = loop !== false
+    const from = Array.isArray(loop) ? loop[0] : 0
+    if (Array.isArray(loop)) { src.loopStart = from; src.loopEnd = loop[1] }
     src.playbackRate.value = this.rate
     const env = ctx.createGain()
     env.gain.value = gain
     src.connect(env)
     env.connect(this.level)
-    src.start(start)
+    src.start(start, from)
     this.sources.push(src)
     src.onended = () => {
       src.disconnect()

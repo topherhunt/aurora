@@ -107,7 +107,7 @@ export const SOUNDS = {
   roar: 'sounds/dragon-roar.mp3',
   growl: 'sounds/dragon-growl.mp3',
   fiddle: 'sounds/ambience-violin-playing.mp3',
-  drums: 'sounds/npc-yeti-drums-loop.wav',
+  drums: 'sounds/npc-yeti-drums.mp3',
   campfire1: 'sounds/ambience-campfire-1.mp3',
   campfire2: 'sounds/ambience-campfire-2.mp3',
   campfire3: 'sounds/ambience-campfire-3.mp3',
@@ -194,6 +194,8 @@ export const RULES = {
   hoof: { reach: 40, near: 2, size: 2.2, level: 0.25, max: 0.3, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0], far: 15 },
   // A snowman's: the same tread deeper and louder, carrying farther, so a 2-6 m body thuds where a strider steps.
   thud: { reach: 60, near: 3, size: 1.2, level: 0.8, max: 1, deep: 0.8, jitter: 0.1, gain: [0.8, 1.0] },
+  // A green giant's (render/giants.js): the thud louder, carrying farther, deeper still for a 9 m body, and `echo` of it sent into the valley echo.
+  giantThud: { reach: 80, near: 6, size: 1.2, level: 1.6, max: 1.6, deep: 0.95, jitter: 0.05, gain: [0.85, 1.0], echo: 0.6 },
   // A fox within `reach` yips every `every` seconds, walking or not: `level` up to `near` metres off, falling as near/distance past it.
   foxYip: { reach: 40, near: 4, level: 0.7, every: [40, 120], gain: [0.7, 1.0] },
   // A stag within `reach` grunts every `every` seconds, the same way. The clip is mastered 21 dB hotter than the yip, which is why the level is low.
@@ -204,6 +206,8 @@ export const RULES = {
   voice: { reach: 60, near: 5, edge: 10, level: 0.8, gain: [0.8, 1.0], walled: true },
   // ...and a glade's villagers, a dozen within earshot of each other, are heard across its pond, not across its wood.
   villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0], walled: true },
+  // A green giant's scream as a flare sets it cowering: the leafkin's, slowed (giants.js SCREAM_RATE), heard across the labyrinth and its wood, `echo` of it into the valley echo.
+  giantScream: { reach: 80, near: 8, edge: 20, level: 1.0, gain: [0.9, 1.0], echo: 0.5 },
   // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A strider's chirp or fidget flutter, heard across a town's rails.
@@ -254,8 +258,8 @@ export const RULES = {
   caveDrip: { interval: [10, 15], reach: 10, near: 3, level: 0.4, gain: [0.7, 1.0] },
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
-  // A labyrinth's drums (design/41-palisade-labyrinths.md), looped from its middle while she is within `reach` metres of its outline and has not yet stood in its middle: `near` 0 at the reach to 1 at the middle's edge walks the level from `level[0]` to `level[1]` and the low-pass from `cutoff[0]` to `cutoff[1]` Hz, both geometrically, so far off they are a distant thump.
-  drums: { reach: 20, level: [0.015, 0.3], cutoff: [220, 9000], gain: [0.9, 1.0] },
+  // A labyrinth's drums (design/41-palisade-labyrinths.md), looped from its middle while she is within `reach` metres of its outline and has not yet stood in its middle: `near` 0 at the reach to 1 at the middle's edge walks the level from `level[0]` to `level[1]` and the low-pass from `cutoff[0]` to `cutoff[1]` Hz, both geometrically, so far off they are a distant thump, and the rate (pitch with it) linearly from `rate[0]` to `rate[1]`. `span` is the clip's two whole bars in seconds, looped exactly (LoopVoice `exact`); the clip runs on into a third it cuts short.
+  drums: { reach: 20, level: [0.015, 0.3], cutoff: [220, 9000], rate: [0.8, 1], gain: [0.9, 1.0], span: [772 / 24000, (772 + 39047) / 24000] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
   campfire: { reach: 16, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
   // The flames a spark lit and the torches she and peers carry (wildfire.js): ONE loop over CAMPFIRES, placed at the nearest flame, each flame within `reach` metres adding its share of `level` (falling as near/distance, to nothing over the last `edge` metres) so more flames are louder, the sum's square root held under `cap`: a torch in the hand is faint, a blaze of dozens reaches level * cap. On the near bus, so the walls a house or a cave stands her behind (SoundEngine.setIndoors) do not smother the torch in her hand.
@@ -269,7 +273,7 @@ export const RULES = {
 const DEG = Math.PI / 180
 
 /** A rule's far treatment for a shot `d` metres off: `far` metres more than it is, or `air` times as dull at its true metres, or none. */
-const farOf = (R, d) => R.far !== undefined ? { distance: d + R.far } : R.air !== undefined ? { distance: d, air: R.air } : {}
+const farOf = (R, d) => ({ ...(R.far !== undefined ? { distance: d + R.far } : R.air !== undefined ? { distance: d, air: R.air } : {}), ...(R.echo === undefined ? {} : { echo: R.echo }) })
 
 export class Ambience {
   /**
@@ -397,7 +401,7 @@ export class Ambience {
     this.loops.hearth = engine.loop(CAMPFIRES, { directional: true, bus: 'near', gain: RULES.campfire.gain })
     this.blazeAt = { x: 0, y: 0, z: 0 }
     this.drums = drums
-    this.loops.drums = engine.loop('drums', { directional: true, muffle: true, exact: true, rate: [1, 1], drift: 0, gain: RULES.drums.gain })
+    this.loops.drums = engine.loop('drums', { directional: true, muffle: true, exact: RULES.drums.span, rate: [1, 1], drift: 0, gain: RULES.drums.gain })
     this.leavesOn = false
     this.hushed = false
     this.windOn = false
@@ -1122,11 +1126,12 @@ export class Ambience {
     }
   }
 
-  /** The labyrinth drums' loop by how near its middle she is: level and cutoff by RULES.drums, placed at its middle; off indoors. */
+  /** The labyrinth drums' loop by how near its middle she is: level, cutoff and rate by RULES.drums, placed at its middle; off indoors. */
   _drums(head, indoors) {
     const D = RULES.drums
     const at = indoors ? null : this.drums(head)
     if (at !== null && !(at.near >= 0 && at.near <= 1)) throw new Error(`Ambience: drums near must be 0..1, got ${at.near}`)
+    if (at !== null) this.loops.drums.setRate(D.rate[0] + (D.rate[1] - D.rate[0]) * at.near)
     this._loop('drums', at !== null, at === null ? 0 : D.level[0] * (D.level[1] / D.level[0]) ** at.near, at)
     if (at !== null) this.loops.drums.setCutoff(D.cutoff[0] * (D.cutoff[1] / D.cutoff[0]) ** at.near)
   }
