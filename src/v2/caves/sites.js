@@ -18,6 +18,7 @@ export const MOUTH = {
 }
 import { hash32 } from '../../sim/score.js'
 import { WORLD_HALF } from '../config.js'
+import { rollTownInterior } from '../rooms/town-interior.js'
 
 // The eight scan directions as texel offsets, two texels out (16 m, 22.6 m on the diagonals).
 const DIRS = [[2, 0], [2, 2], [0, 2], [-2, 2], [-2, 0], [-2, -2], [0, -2], [2, -2]]
@@ -94,7 +95,7 @@ function refine(field, x0, z0, dx, dz) {
 
 /**
  * The town houses with a door down to a cave, as `{ id, t, i, x, z, dx, dz }`: town `t`'s building `i`, its cave entered under its centre (x, z) heading (dx, dz).
- * Huts are too small to fit the door reliably; check-towns rolls every one chosen here with it.
+ * Never a hut, nor a house whose inside, rolled as far as its stair, has no corner for it `CELLAR.rooms` in from the door; check-towns rolls every one chosen here with it.
  */
 export function siteCellars(towns, seed) {
   const cellars = []
@@ -102,6 +103,7 @@ export function siteCellars(towns, seed) {
     if (b.kind === 'hut') return
     const rng = mulberry32(hash32(seed, t, i, 0xce11))
     if (rng() >= CELLAR_ODDS || cellars.some((c) => Math.hypot(c.x - b.x, c.z - b.z) < CELLAR_SPACING)) return
+    if (rollTownInterior({ seed, index: t * 256 + i, plan: b.plan, wealth: b.wealth, shop: b.trade === 'potions' || b.trade === 'inn' ? b.trade : null, cellar: true, probe: true }).cellar === null) return
     const a = rng() * Math.PI * 2
     cellars.push({ id: cellars.length, t, i, x: b.x, z: b.z, dx: Math.cos(a), dz: Math.sin(a) })
   }))

@@ -210,25 +210,33 @@ function flood(room) {
 }
 
 {
-  // design/38 Cellar: a house with a cellar (never a hut) has its stair in a ground-floor corner well away from the front door, screened by a board wall, walked to and down from the door, its other rooms still all reached; check-towns rolls every house the map actually sites one in.
+  // design/38 Cellar: a house with a cellar (never a hut) has its stair in a ground-floor corner at least `CELLAR.rooms` doorways in from the hall, where a house has one that takes it, screened by a board wall, walked to and down from the door, its other rooms still all reached; check-towns rolls every house the map actually sites one in.
   const threwC = [], lostC = [], wallsC = [], spotsC = [], nearC = [], screenC = []
+  let tried = 0, took = 0
   for (const kind of Object.keys(KINDS).filter((k) => k !== 'hut')) for (let s = 1; s <= SEEDS; s++) {
     const plan = planBuilding({ seed: s * 7919, kind }), tag = `${kind}/${s}`
+    tried++
+    if (rollTownInterior({ seed: 4242, index: s, plan, wealth: W(s), cellar: true, probe: true }).cellar === null) continue
+    took++
     let r
     try { r = rollTownInterior({ seed: 4242, index: s, plan, wealth: W(s), cellar: true }) } catch (e) { threwC.push(`${tag}: ${e.message}`); continue }
     const f = flood(r)
     if (f.deep > -CELLAR.fade) lostC.push(`${tag} down to ${f.deep.toFixed(2)} m`)
-    const h = r.cellar.hole, d = Math.hypot((h.x0 + h.x1) / 2 - r.doorIn.x, (h.z0 + h.z1) / 2 - r.doorIn.z)
-    if (d < 4) nearC.push(`${tag} ${d.toFixed(1)} m`)
+    const h = r.cellar.hole, at = (x, z) => r.rooms.find((q) => q.level === 0 && within(q.rect, x, z)).id
+    const steps = new Map([[at(r.doorIn.x, r.doorIn.z), 0]])
+    for (const [a, n] of steps) for (const d of r.doorways) if (d.level === 0 && (d.a === a || d.b === a) && !steps.has(d.a === a ? d.b : d.a)) steps.set(d.a === a ? d.b : d.a, n + 1)
+    const n = steps.get(at((h.x0 + h.x1) / 2, (h.z0 + h.z1) / 2))
+    if (!(n >= CELLAR.rooms)) nearC.push(`${tag} ${n} doorways in`)
     const sc = r.cellar.screen
     if (!r.solids.some((b) => b.kind === 'wall' && b.y0 === 0 && b.y1 >= 2.2 && (sc.axis === 'x' ? b.z0 < sc.at && b.z1 > sc.at && b.x0 <= Math.min(h.x0, h.x1) + 0.01 && b.x1 >= h.x1 - 0.01 : b.x0 < sc.at && b.x1 > sc.at && b.z0 <= h.z0 + 0.01 && b.z1 >= h.z1 - 0.01))) screenC.push(tag)
     if (f.out > 0) wallsC.push(tag)
     for (const sp of r.spots) if (!f.reached(sp.standX, sp.standZ, r.nav.floors[sp.level])) { spotsC.push(`${tag} ${sp.kind}`); break }
   }
   const show = (list) => (list.length ? ` -- ${list.slice(0, 4).join(', ')}` : '')
-  check(threwC.length === 0, `every building but a hut rolls with a cellar stair${show(threwC)}`)
+  check(took >= tried * 0.75, `most buildings but huts have a room deep enough for a cellar stair (${took} of ${tried})`)
+  check(threwC.length === 0, `every building whose cellar stair fits rolls with it${show(threwC)}`)
   check(lostC.length === 0, `she walks from the front door down the cellar stair into the cave${show(lostC)}`)
-  check(nearC.length === 0, `the cellar stair is tucked away from the front door${show(nearC)}`)
+  check(nearC.length === 0, `the cellar stair is ${CELLAR.rooms} or more doorways in from the hall${show(nearC)}`)
   check(screenC.length === 0, `a board wall screens the cellar stair along its length${show(screenC)}`)
   check(wallsC.length === 0, `a cellar house never lets her out through a wall${show(wallsC)}`)
   check(spotsC.length === 0, `a cellar house still reaches every resident's place${show(spotsC)}`)

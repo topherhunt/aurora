@@ -600,6 +600,13 @@ if (!sceneEl.systems.light) throw new Error("A-Frame's light system is missing: 
 sceneEl.systems.light.data.defaultLightsEnabled = false
 sceneEl.systems.light.removeDefaultLights()
 renderer = sceneEl.renderer
+// `?multiview&nomdraw`: three falls back to one draw per BatchedMesh chunk with a `_gl_DrawID` uniform instead of gl_DrawID, to test whether multi-draw misreads the draw index under multiview.
+if (MULTIVIEW && new URLSearchParams(location.search).has('nomdraw')) {
+  const ext = renderer.extensions
+  const { get, has } = ext
+  ext.has = (name) => name !== 'WEBGL_multi_draw' && has.call(ext, name)
+  ext.get = (name) => (name === 'WEBGL_multi_draw' ? null : get.call(ext, name))
+}
 // PERFORMANCE MANDATE: draw calls are the Quest's bottleneck (~6 us of main thread per WebGL call, _notes/perf-ledger.md). three's default opaque order groups by material id, which interleaves
 // programs (80 program switches in 86 draws); grouping by compiled program first makes each program's `useProgram`, camera and light refresh happen once a pass. Do not revert to material order.
 {

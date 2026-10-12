@@ -329,14 +329,14 @@ check(towns.every((town) => town.buildings.some((b) => b.sign === 'flask')), 'ev
   const shopOf = (b) => (b.trade === 'potions' || b.trade === 'inn' ? b.trade : null)
   const shops = towns.flatMap((town, t) => town.buildings.map((b, i) => ({ b, index: t * 256 + i })).filter(({ b }) => shopOf(b) !== null))
   // A house that will not roll even as a plain house is check-town-interiors' to answer for.
-  const rolls = (b, index, shop) => { try { return rollTownInterior({ seed: SEED, index, plan: b.plan, shop }) } catch { return null } }
+  const rolls = (b, index, shop) => { try { return rollTownInterior({ seed: SEED, index, plan: b.plan, wealth: b.wealth, shop }) } catch { return null } }
   const fine = shops.filter(({ b, index }) => rolls(b, index, null))
   const bare = fine.filter(({ b, index }) => { const r = rolls(b, index, shopOf(b)); return !r || !r.spots.some((s) => s.kind === 'shop') })
   check(bare.length === 0, `every potion master and innkeeper keeps a counter inside (${fine.length} of ${shops.length} shops roll as houses${bare.length ? `; none in ${bare.slice(0, 4).map((x) => `${x.b.trade} ${x.index}`).join(', ')}` : ''})`)
   // design/39-caves.md §2: main.js does not roll a cellar house until she goes in, so every one sited on this map is rolled here.
   const cellars = siteCellars(towns, SEED).map((c) => ({ b: towns[c.t].buildings[c.i], index: c.t * 256 + c.i }))
   const plain = cellars.filter(({ b, index }) => rolls(b, index, shopOf(b)))
-  const shut = plain.filter(({ b, index }) => { try { return !rollTownInterior({ seed: SEED, index, plan: b.plan, shop: shopOf(b), cellar: true }).cellar } catch { return true } })
+  const shut = plain.filter(({ b, index }) => { try { return !rollTownInterior({ seed: SEED, index, plan: b.plan, wealth: b.wealth, shop: shopOf(b), cellar: true }).cellar } catch { return true } })
   check(cellars.length >= towns.length / 2 && shut.length === 0, `every house sited a cellar fits its stair (${plain.length} of ${cellars.length} roll as houses${shut.length ? `; not in ${shut.slice(0, 4).map((x) => x.index).join(', ')}` : ''})`)
 }
 // Stand-in bodies with the farmer's numbers: gait per asset unit, a 1-unit body.

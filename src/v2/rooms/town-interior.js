@@ -9,8 +9,8 @@ const T = 0.15
 export const PART = 0.12
 export const DOORWAY = { w: 1.1, h: 2.2 }
 export const DOOR = { w: 1.25, h: 2.25 }
-// The cellar stair: its well the first of `w` out from an outer wall that keeps its screen off the corner wall's windows, `len` along it, `land` of floor before its head, stone steps `rise` by `run`. Where every width meets a window it stands `slide` off the corner, its deep end boarded. She goes into the cave `fade` below the floor.
-export const CELLAR = { w: [0.9, 1.05, 0.8, 1.2], len: 2.5, land: 1.0, slide: 0.6, rise: 0.2, run: 0.28, fade: 1.0 }
+// The cellar stair: in a ground room at least `rooms` doorways in from the hall, its well the first of `w` out from an outer wall that keeps its screen off the corner wall's windows, `len` along it, `land` of floor before its head, stone steps `rise` by `run`. Where every width meets a window it stands `slide` off the corner, its deep end boarded. She goes into the cave `fade` below the floor.
+export const CELLAR = { rooms: 2, w: [0.9, 1.05, 0.8, 1.2], len: 2.5, land: 1.0, slide: 0.6, rise: 0.2, run: 0.28, fade: 1.0 }
 export const SLAB = 0.2
 export const STAIR = { run: 0.26, w: 0.95 }
 // Headroom a walker needs: the townsfolk run to 1.85 m, her crown (walk.js WALK.height) to 1.9.
@@ -95,9 +95,9 @@ export function levelCeilingAt(room, level, x, z) {
 export const townRoomAt = (room, level, x, z) => room.rooms.find((r) => r.level === level && within(r.rect, x, z)) || null
 
 /**
- * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, its household's `wealth` 0 (poorest) to 1, kept as a `shop` ('potions', or 'inn' for an open taproom with a bar under rows of small bedrooms) or not (null), with a stair down to a `cellar` cave or not. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
+ * The inside of the building planned as `plan`, house `index` of the world seeded `seed`, its household's `wealth` 0 (poorest) to 1, kept as a `shop` ('potions', or 'inn' for an open taproom with a bar under rows of small bedrooms) or not (null), with a stair down to a `cellar` cave or not; with `probe`, only as far as that stair, unfurnished, its `cellar` null where none fits. Everything placed is in `items` for the renderer, `solids` (axis-aligned boxes) for the stone, `candles` for the flames and the light, `spots` for the residents, and `nav` for their routes.
  */
-export function rollTownInterior({ seed, index, plan, wealth, shop = null, cellar = false }) {
+export function rollTownInterior({ seed, index, plan, wealth, shop = null, cellar = false, probe = false }) {
   if (!Number.isInteger(seed) || !Number.isInteger(index) || !plan || !Array.isArray(plan.masses)) throw new Error('rollTownInterior: needs an integer seed and index and a building plan')
   if (!(wealth >= 0 && wealth <= 1)) throw new Error(`rollTownInterior: wealth ${wealth} is not in 0..1`)
   if (shop !== null && shop !== 'potions' && shop !== 'inn') throw new Error(`rollTownInterior: no shop called ${shop}`)
@@ -551,14 +551,20 @@ export function rollTownInterior({ seed, index, plan, wealth, shop = null, cella
     }
   }
 
-  // --- the cellar stair (design/38 Cellar): a well along an outer wall running down into a ground room's corner, as far from the front door as fits, screened from the room by a board wall so it shows only from its head. Its own rng, so a house without one rolls as it always did.
+  // --- the cellar stair (design/38 Cellar): a well along an outer wall running down into the corner of a ground room `CELLAR.rooms` or more doorways in from the hall, as far from the front door as fits, screened from the room by a board wall so it shows only from its head. Its own rng, so a house without one rolls as it always did.
   room.cellar = null
   if (cellar) {
     const crng = mulberry32(hash32(seed, index, 0xce11))
     const { len, land } = CELLAR
+    const steps = new Map([[hall.id, 0]]), queue = [hall.id]
+    for (const a of queue) for (const d of doorways) {
+      if (d.level !== 0 || (d.a !== a && d.b !== a)) continue
+      const n = d.a === a ? d.b : d.a
+      if (!steps.has(n)) { steps.set(n, steps.get(a) + 1); queue.push(n) }
+    }
     const cands = []
     for (const rm of rooms) {
-      if (rm.level !== 0) continue
+      if (rm.level !== 0 || !(steps.get(rm.id) >= CELLAR.rooms)) continue
       for (const e of outside(0, rm.rect).edges) for (const s of [-1, 1]) {
         corner: for (const off of [0, CELLAR.slide]) for (const W of CELLAR.w) {
           if (e.hi - e.lo < len + land + 0.2 + off) break corner
@@ -594,7 +600,8 @@ export function rollTownInterior({ seed, index, plan, wealth, shop = null, cella
       room.cellar = { axis: e.axis, at: e.at, ix: e.ix, iz: e.iz, u0, u1, top, w: W, hole, screen: { axis: e.axis, at: e.axis === 'x' ? (screen.z0 + screen.z1) / 2 : (screen.x0 + screen.x1) / 2, lo: Math.min(u0, cap ? deep + s * PART : u0), hi: Math.max(u1, cap ? deep + s * PART : u1), y1 }, cap: cap && { u: deep }, x: edge.x, z: edge.z, nx: e.axis === 'x' ? s : 0, nz: e.axis === 'x' ? 0 : s, in: inn }
       break
     }
-    if (room.cellar === null) throw new Error(`rollTownInterior: no ground-floor corner of house ${index} takes its cellar stair`)
+    if (probe) return room
+    if (room.cellar === null) throw new Error(`rollTownInterior: no ground-floor corner ${CELLAR.rooms} rooms in from the door of house ${index} takes its cellar stair`)
   }
 
   // --- furnishing ------------------------------------------------------------------

@@ -28,8 +28,10 @@ function patch(shader) {
     .replace(/void main\(\s*\)\s*\{/, 'void main() {\n vGVM0 = viewMatrix[ 0 ]; vGVM1 = viewMatrix[ 1 ]; vGVM2 = viewMatrix[ 2 ]; vGVM3 = viewMatrix[ 3 ];')
 }
 
+// three declares GL_OVR_multiview (v1), which lets the view id feed only gl_Position; every other use (view-space varyings, fades, fog depth) is undefined, so the declaration is raised to multiview2.
 // three's multiview prefix puts `layout( num_views ) in;` ahead of its own `#extension GL_ANGLE_multi_draw` (BatchedMesh, the terrain), which ESSL3 rejects; no onBeforeCompile can reach the prefix, so the lines are hoisted as the source reaches the driver.
 function hoistExtensions(src) {
+  src = src.replace(/#extension GL_OVR_multiview\s*:/g, '#extension GL_OVR_multiview2 :')
   const lines = src.match(/^[ \t]*#extension[^\n]*\n/gm)
   if (!lines) return src
   const rest = src.replace(/^[ \t]*#extension[^\n]*\n/gm, '')
