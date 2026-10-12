@@ -26,7 +26,7 @@ const check = (ok, label, detail = '') => {
 
 const ground = {
   scatterAt: (x, z, cell, out) => { out.h = 0; out.tan = 0; return out },
-  layers: { lakes: { levelAt: () => null }, paths: { riverLevelAt: () => null, nearest: () => null } },
+  layers: { lakes: { levelAt: () => null }, paths: { riverLevelAt: () => null, nearest: () => null }, labyrinthSites: null },
 }
 const labyrinths = new Labyrinths({ seed: 11, ground })
 let site = null

@@ -579,7 +579,9 @@ function addMushroom(out, p, place) {
           UNDER_SPLAY * -n.dot(capAxis) - outward,
           outward < 0 ? 0.8 / -outward : Infinity,
         )
-        n.addScaledVector(radial, Math.max(0, splay)).normalize()
+        // Halved toward the rim: a wavy rim zigzags in radius column to column,
+        // twisting the outer band's faces sideways off a radial normal.
+        n.addScaledVector(radial, Math.max(0, splay) * (1 - 0.5 * t ** 3)).normalize()
         // v = 0 at the AXIS on the flesh sheet, so a gill drawn as a line of
         // constant u reaches the rim regardless of how many rings this tier has.
         const [u, v] = cellUV(p.fleshCell, j / cols, t)

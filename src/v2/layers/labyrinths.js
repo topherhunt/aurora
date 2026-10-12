@@ -4,8 +4,8 @@
 // ask and memoized. Its walls are polylines sampled off a warped polar maze; render/palisades.js stands posts along them
 // near the eye and is the walker's stone along the same lines whether or not the posts are placed.
 //
-// MEMOIZED AGAINST THE GROUND AS FIRST ASKED: a sculpt does not move a labyrinth already sited, and every holder (main
-// thread, terrain worker) must site it off the same surface or the wood and the walls part company.
+// THE WORLD PLAN SITES THEM (layers.labyrinthSites): every holder (main thread, terrain worker) reads the same footprints,
+// or the wood and the walls part company. Without one, each sites off the ground as first asked.
 
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'

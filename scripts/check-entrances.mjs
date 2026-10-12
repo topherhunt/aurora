@@ -40,7 +40,7 @@ const field = {
   heightAndSlopeAt: () => ({ h: GROUND, tan: 0 }),
   snowLineAt: () => 9999,
   bands: { altLo: 0, altSpan: 900 },
-  layers: { lakes: { levelAt: () => null }, paths: { riverLevelAt: () => null, nearest: () => null } },
+  layers: { lakes: { levelAt: () => null }, paths: { riverLevelAt: () => null, nearest: () => null }, labyrinthSites: null },
 }
 const water = { levelAt: () => null, isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, fields: { occupiesAt: () => false } }

@@ -1844,7 +1844,7 @@ console.log('\nscatter')
   // the flat worlds below sit low on the ramp and the peak world sits at the top
   // of it, which is what makes the tints they produce comparable to the real ones.
   // The lakes and roads the labyrinth siting reads off the field (layers/labyrinths.js _fits): none, and the water at `level`.
-  const dryLayers = (level) => ({ lakes: { levelAt: () => level }, paths: { riverLevelAt: () => null, nearest: () => null } })
+  const dryLayers = (level) => ({ lakes: { levelAt: () => level }, paths: { riverLevelAt: () => null, nearest: () => null }, labyrinthSites: null })
   const world = (h, tan, snowLine, level) => ({
     field: {
       layers: dryLayers(level),

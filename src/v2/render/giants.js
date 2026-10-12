@@ -1,17 +1,6 @@
-// ---------------------------------------------------------------------------
-// THE GREEN GIANTS (DESIGN.md §41): one in each labyrinth, a green-tinted yeti
-// a metre taller than its posts, lumbering round the maze and never out of it.
-//
-// It walks only the maze's graph (labyrinths.js mazeOf `ways`). Time is the
-// room's clock, as the snowmen's (render/snowmen.js says how): its ROUND is
-// closed-form in world time -- an Euler walk of the graph's spanning tree from
-// the middle, pausing in each dead end -- so every client has it where every
-// other does. It notices her within NOTICE_M on the side it faces, unless she
-// is ABOVE_M over its feet (a tower's deck is safe), and goes LIVE on her: this
-// client its authority, owing the room an anchor every ANCHOR_S. It chases her
-// along the graph, swings at her within REACH_M, and forgets her past
-// FORGET_M, then walks BACK to where its round has got to.
-// ---------------------------------------------------------------------------
+// The green giants (design/41-palisade-labyrinths.md): one per labyrinth, a green yeti a metre over its posts. Its round
+// is closed-form in the room's clock along the maze's graph; noticing her makes this client its authority, owing anchors,
+// as the snowmen's (render/snowmen.js). Round, chase, swing, forget, back.
 
 import THREE from '../../three-instance.js'
 import { lazyLoad } from '../lazy-load.js'
