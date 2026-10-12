@@ -1,4 +1,4 @@
-// Lays the overworld's towns, roads, cave mouths and trails against the shipped world and writes them as world/plan.json, which the client reads instead of laying them (src/v2/layers/world-plan.js). vite.config.js runs it for `npm run build` and for the dev server.
+// Lays the overworld's towns, roads, cave mouths, labyrinths and trails against the shipped world and writes them as world/plan.json, which the client reads instead of laying them (src/v2/layers/world-plan.js). vite.config.js runs it for `npm run build` and for the dev server.
 //
 //   node scripts/bake-world-plan.mjs <out.json>
 
@@ -19,7 +19,7 @@ const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: n
 const layers = Layers.deserialize(structuredClone(doc))
 const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
 field.setLayers(layers)
-const plan = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
+const plan = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), field, surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
 applyWorldPlan(layers, plan)
 const shores = packShores(layers, field)
 const text = JSON.stringify({ key: worldPlanKey({ doc, relief: RELIEF_SHIPPED, seed: SEED, spawn: SPAWN }), plan: packWorldPlan(plan), shores })

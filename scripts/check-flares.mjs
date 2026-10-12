@@ -10,12 +10,13 @@
 // different paths; a shot into a hillside or under a lake; a peer's flare drawn
 // twice; a village's flares hanging over the overworld; a window that stays lit
 // with no charge left; a shot's flash that never fades or hides the view in
-// white rather than the flare's colour; the pick shipped with its red button still on, or a new
+// white rather than the flare's colour; a recall that takes the wrong flare, one
+// out of reach, or one still in flight, or never leaves the save; the pick shipped with its red button still on, or a new
 // pick worn with the old one's muzzle and window.
 
 import * as THREE from 'three'
-import { Flares, FLARE, MAX_SPARKS, spanOf, walkOf, fromWire, toWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
-import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, aimTarget, pressSafety, roomKey } from '../src/v2/flaregun.js'
+import { Flares, FLARE, MAX_SPARKS, spanOf, walkOf, fromWire, toWire, recallFromWire, recallToWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
+import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, RECALL_M, RECALL_DEG, aimTarget, pressSafety, roomKey } from '../src/v2/flaregun.js'
 import { readGlbChunks } from '../tools/tripo-pack.mjs'
 
 let failures = 0
@@ -135,6 +136,51 @@ console.log('the layer')
   loaded.update(0.016, 1000)
   check(loaded.list.length === 0 && !loaded.mesh.visible, 'clear forgets them all')
   check(throws(() => loaded.load([['bad']])), 'a corrupt save throws')
+}
+
+console.log('the recall')
+{
+  const flares = new Flares(new THREE.Scene())
+  flares.setRoom('overworld')
+  const cos = Math.cos(THREE.MathUtils.degToRad(RECALL_DEG))
+  const muzzle = new THREE.Vector3(0, 1.5, 0)
+  const up = new THREE.Vector3(0, 1, 0)
+  flares.add(flare({ id: 'over', tx: 0, ty: 101.5, tz: 0 }), 5)
+  flares.add(flare({ id: 'aside', tx: 30, ty: 101.5, tz: 0 }), 5)
+  flares.add(flare({ id: 'far', tx: 0, ty: RECALL_M + 50, tz: 1 }), 5)
+  flares.add(flare({ id: 'glade', room: 'leafkin:hollow:1.0:1.0', tx: 0, ty: 50, tz: 0 }), 5)
+  check(flares.aimedAt(muzzle, up, RECALL_M, cos).id === 'over', 'aimed straight at a flare, it is the one taken, not one beside it')
+  const off = new THREE.Vector3(Math.sin(THREE.MathUtils.degToRad(RECALL_DEG + 1)), Math.cos(THREE.MathUtils.degToRad(RECALL_DEG + 1)), 0)
+  check(flares.aimedAt(muzzle, off, RECALL_M, cos) === null, `${RECALL_DEG + 1} degrees off a flare, it is not taken`)
+  flares.list = flares.list.filter((f) => f.id !== 'over')
+  check(flares.aimedAt(muzzle, up, RECALL_M, cos) === null, `past ${RECALL_M} m, in another room, or off the aim, none is taken`)
+  flares.add(flare({ id: 'fresh', tx: 0, ty: 60, tz: 0 }), 0)
+  check(flares.aimedAt(muzzle, up, RECALL_M, cos) === null, 'one still in flight is not taken')
+
+  flares.update(FLIGHT_S + GROW_S, 1000)
+  check(flares.recall('fresh', 0, 1.5, 0, 0) && !flares.recall('fresh', 0, 1.5, 0, 0), 'a flare is recalled once')
+  check(!flares.recall('nobody', 0, 0, 0, 0), 'an unknown id is left be')
+  check(flares.aimedAt(muzzle, up, RECALL_M, cos) === null && !flares.save().some((a) => a[0] === 'fresh'), 'a recalled flare is not taken twice, nor saved')
+  flares.update(FLIGHT_S / 2, 1000)
+  const i = flares.list.filter((f) => f.room === 'overworld').findIndex((f) => f.id === 'fresh')
+  const y = flares.aPos.array[i * 3 + 1], size = flares.aSize.array[i * 3]
+  check(y > 1.5 && y < 60 && size > MUZZLE_M && size < REST_M, 'halfway back it is between the sky and the muzzle, shrinking', `y ${y.toFixed(1)}, ${size.toFixed(2)} m`)
+  flares.update(FLIGHT_S / 2 + 1e-3, 1000)
+  check(!flares.list.some((f) => f.id === 'fresh'), 'home, it is forgotten')
+  flares.recall('aside', 0, 1.5, 0, FLIGHT_S + 1)
+  flares.update(0, 1000)
+  check(!flares.list.some((f) => f.id === 'aside'), 'a peer\'s recall heard after its flight is forgotten at once')
+
+  flares.add(flare({ id: 'mid', ox: 0, oy: 0, oz: 0, tx: 0, ty: 100, tz: 0 }), 0)
+  flares.update(FLIGHT_S / 2, 1000)
+  const p = flightAt(flares.list.find((f) => f.id === 'mid'), 0.5, new THREE.Vector3())
+  flares.recall('mid', 0, 0, 0, 0)
+  const m = flares.list.find((f) => f.id === 'mid')
+  check(near(m.tx, p.x) && near(m.ty, p.y) && near(m.tz, p.z), 'one recalled in flight turns back from where it is', `${m.ty.toFixed(1)} m up`)
+
+  const w = recallToWire('abc123', new THREE.Vector3(1.234, 2, 3))
+  check(JSON.stringify(recallFromWire(w)) === JSON.stringify(['abc123', 1.23, 2, 3]), 'a recall survives the wire')
+  check(throws(() => recallFromWire(['abc123', 1, 2])) && throws(() => recallFromWire(['Bad Id', 1, 2, 3])), 'a short or badly named recall is refused')
 }
 
 console.log('the rooms')

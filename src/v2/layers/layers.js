@@ -50,6 +50,8 @@ export class Layers {
     )
     this.clefts = new CleftSet(doc.clefts === undefined ? [] : doc.clefts)
     this.fields = new FieldSet(doc.fields === undefined ? [] : doc.fields)
+    // The labyrinths' footprints (labyrinths.js siteOf) as the world plan sited them, or null where nothing has: then Labyrinths sites its own.
+    this.labyrinthSites = doc.labyrinths === undefined ? null : doc.labyrinths
     this.ids = new IdAllocator(doc)
     this.epoch = 0
     this._dirty = null
@@ -255,6 +257,11 @@ export class Layers {
     if (list.length === 0 && was === null) return null
     const now = list.length > 0 ? this.clefts.rectOf(list) : null
     return this._commit(unionRect(was, now))
+  }
+
+  // The world plan's labyrinth footprints, generated at boot. They shape no ground, so nothing is dirtied; set before any Labyrinths reads them.
+  setLabyrinthSites(list) {
+    this.labyrinthSites = list
   }
 
   // The towns' farm fields (fields.js), generated at boot: trades.js fieldRecord each. Replaces any already held.

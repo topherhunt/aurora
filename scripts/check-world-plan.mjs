@@ -5,11 +5,12 @@
 // A baked plan read back must be the live plan to the bit, down to which objects are shared, since the client trusts it in place of laying one.
 
 import { readFileSync } from 'node:fs'
-import { SEED, SPAWN } from '../src/v2/config.js'
+import { SEED, SPAWN, WORLD_HALF } from '../src/v2/config.js'
 import { Heightmap } from '../src/v2/height/heightmap.js'
 import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED, RELIEF_DEFAULTS } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
+import { BiomeField } from '../src/v2/layers/biome.js'
 import { applyWorldPlan, packShores, planWorld, packWorldPlan, unpackWorldPlan, worldPlanKey } from '../src/v2/layers/world-plan.js'
 
 let failures = 0
@@ -24,7 +25,7 @@ const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: n
 const layers = Layers.deserialize(doc)
 const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
 field.setLayers(layers)
-const live = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
+const live = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), field, surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
 
 const text = JSON.stringify(packWorldPlan(live))
 const back = unpackWorldPlan(JSON.parse(text))
@@ -71,10 +72,33 @@ const baked = JSON.stringify(packShores(layers, field))
 const bootLayers = Layers.deserialize(JSON.parse(JSON.stringify(doc)))
 const bootField = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
 bootField.setLayers(bootLayers)
-for (const p of [back.townPlan, back.roadPlan, back.trailPlan]) bootLayers.addGenerated(p.records)
+for (const p of [back.townPlan, back.roadPlan, back.trailPlan, back.labyrinthPlan]) bootLayers.addGenerated(p.records)
 applyWorldPlan(bootLayers, back)
 const traced = JSON.stringify(packShores(bootLayers, bootField))
 check(baked === traced && baked.length > 2, "the baked lake shores are the ones the boot's ground traces", `${Object.keys(JSON.parse(baked)).length} shores, ${(baked.length / 1024).toFixed(0)} KB`)
+
+{
+  // DESIGN.md §41: the boot's labyrinths are the plan's, and a trail runs from each gate to the roads without crossing any labyrinth.
+  const labs = new BiomeField({ seed: SEED, ground: bootField }).labyrinths
+  const { sites, trails, records, failed } = back.labyrinthPlan
+  const read = labs.sitesIn(-WORLD_HALF, -WORLD_HALF, WORLD_HALF, WORLD_HALF)
+  check(sites.length > 0 && read.length === sites.length && read.every((s, i) => JSON.stringify(s) === JSON.stringify(sites[i])), "the boot reads the plan's labyrinth footprints", `${sites.length} labyrinths`)
+  let unmoored = 0, crossing = 0
+  for (const t of trails) {
+    const [rx, rz] = t.mouth.split(',').map(Number)
+    const m = labs.mazeOf(labs.siteOf(rx, rz))
+    const pts = records.find((r) => r.id === t.record).pts
+    const gx = (m.torches[0][0] + m.torches[1][0]) / 2, gz = (m.torches[0][1] + m.torches[1][1]) / 2
+    if (Math.hypot(pts[0][0] - gx, pts[0][2] - gz) > 0.01) unmoored++
+    for (let k = 1; k < pts.length; k++) {
+      for (let i = 0; i < 8; i++) {
+        const x = pts[k - 1][0] + ((pts[k][0] - pts[k - 1][0]) * i) / 8, z = pts[k - 1][2] + ((pts[k][2] - pts[k - 1][2]) * i) / 8
+        if (labs.insideAt(x, z, -0.5)) crossing++
+      }
+    }
+  }
+  check(trails.length + failed.length === sites.length && trails.length >= sites.length * 0.8 && unmoored === 0 && crossing === 0, "a trail runs from most labyrinths' gates to the roads, through no labyrinth", `${trails.length} trails, no road reaches ${failed.length}, ${trails.filter((t) => t.onto !== 'road').length} join another`)
+}
 
 const key = worldPlanKey({ doc, relief: RELIEF_SHIPPED, seed: SEED, spawn: SPAWN })
 check(key === worldPlanKey({ doc: JSON.parse(JSON.stringify(doc)), relief: { ...RELIEF_SHIPPED }, seed: SEED, spawn: { ...SPAWN } }), 'the key reads the inputs, not their identity')

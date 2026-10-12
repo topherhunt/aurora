@@ -4,7 +4,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TITLES } from './world.js'
 import { MESSAGES } from './quests.js'
-import { LORE, TOPICS, knowOdds, expertise } from './lore.js'
+import { LORE, TOPICS, knowOdds, expertise, expertBody, beliefOdds, sawOdds } from './lore.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -19,6 +19,8 @@ export const SPEAK = {
   detect: 0.5,
   // Standing a friend's name lends, or a rival's costs.
   sentBy: 0.3,
+  // Standing a witness needs before telling her what they saw of a contested fact (lore.js `seen`).
+  confide: 0.15,
 }
 
 const TRADE_WORDS = {
@@ -36,11 +38,19 @@ const WANTS = {
   fisherman: 'butterflies', woodcutter: 'a sharp stick', hunter: 'carrots', leafkin: 'mushrooms',
 }
 
+// What a body is called when someone is sent to them: "Ask Edvin the skald", "A trapper would know".
+const CALLING = {
+  alchemist: 'potion master', herbalist: 'herbalist', healer: 'healer', blacksmith: 'smith', miner: 'miner', hunter: 'hunter', trapper: 'trapper',
+  shepherd: 'shepherd', farmer: 'farmer', thief: 'wanderer', skald: 'skald', innkeeper: 'innkeeper', jarlsthane: 'elder',
+}
+// Where a speaker sends her for tall tales: the skald, else a boaster this sure of themself.
+const TALE_TELLER = 0.6
+
 // What a body's work brings up in conversation: gated lore topics (lore.js) told of it opens.
-const BODY_UNLOCKS = { miner: ['ores', 'caves'], alchemist: ['mushrooms'], herbalist: ['mushrooms', 'eating'], thief: ['gems'], trapper: ['labyrinths'], blacksmith: ['ores'], healer: ['eating'] }
+const BODY_UNLOCKS = { miner: ['ores', 'caves'], alchemist: ['mushrooms'], herbalist: ['mushrooms', 'eating'], thief: ['gems'], trapper: ['labyrinths', 'yetis'], blacksmith: ['ores'], healer: ['eating'] }
 // How each lore topic is asked (grid.js): fragments, the last one punctuated.
 const LORE_PATH = {
-  striders: ['Tell me about', 'striders.'], dragons: ['Tell me about', 'dragons.'], snowlands: ['Tell me about', 'the snowlands.'],
+  striders: ['Tell me about', 'striders.'], dragons: ['Tell me about', 'dragons.'], snowlands: ['Tell me about', 'the snowlands.'], yetis: ['Tell me about', 'yetis.'],
   leafkin: ['Tell me about', 'leafkin.'], caves: ['Tell me about', 'caves.'], labyrinths: ['Tell me about', 'labyrinths.'],
   alchemist: ['What does', 'the alchemist', 'do?'], blacksmith: ['What does', 'the blacksmith', 'do?'],
   coins: ['What are', 'coins', 'good for?'], gems: ['What are', 'gems', 'worth?'], ores: ['What are', 'flint and ores', 'worth?'],
@@ -136,6 +146,7 @@ export class Conversation {
       for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, ['Where', 'is the', `${title === 'potionmaster' ? 'potion master' : title}?`]])
     }
     for (const t of Object.keys(TOPICS)) if (!TOPICS[t].gated || this.ctx.known.has(t)) chips.push([`lore:${t}`, LORE_PATH[t]])
+    if (!this.leafkin) for (const t of Object.keys(TOPICS)) if (!TOPICS[t].gated || this.ctx.known.has(t)) chips.push([`who:${t}`, ['Who knows', `about ${TOPICS[t].label}?`]])
     const m = this._message('to')
     if (m !== null && this.ctx.log.state(m.id) === 'accepted') {
       if (this.delivering === m.id) for (const k of m.choices) chips.push([`word:${k}:${m.id}`, ['The words were', `"${MESSAGES[m.message][k]}"`]])
@@ -245,6 +256,7 @@ export class Conversation {
     if (head === 'deliver') return this._deliver(arg, null)
     if (head === 'word') return this._deliver(rest.slice(1).join(':'), Number(rest[0]))
     if (head === 'lore') return this._lore(arg)
+    if (head === 'who') return this._who(arg)
     if (head === 'bye') return this.bye()
     throw new Error(`Conversation: no topic ${topic}`)
   }
@@ -775,7 +787,7 @@ export class Conversation {
     const knows = (f) => roll(ctx.world.seed, mind.id, 'lore', topic, f.id) < knowOdds(mind, topic, f)
     let fact = ring.find((f) => !told.has(f.id) && knows(f))
     if (fact === undefined && told.size > 0) {
-      if (!this.leafkin) return this._line(`That's all I know of ${TOPICS[topic].label}.`, 'talk-shrug', { moment: 'answer.unknown', about: this._expertAbout(topic) })
+      if (!this.leafkin) return this._referred(this._line(`That's all I know of ${TOPICS[topic].label}.`, 'talk-shrug', { moment: 'answer.unknown' }), topic)
       told.clear()
       fact = ring.find(knows)
     }
@@ -785,15 +797,87 @@ export class Conversation {
     const odds = knowOdds(mind, topic, fact)
     const line = this._answer({
       key: `lore:${topic}:${fact.id}`, conf: known ? 0.35 + 0.6 * odds : 0, sens: fact.sens, motive: false,
-      truth: this.leafkin ? fact.lk : fact.truth, alts: this.leafkin ? [] : fact.lies, tales: this.leafkin ? [] : fact.tales, muddle: null,
+      truth: this.leafkin ? fact.lk : fact.doubt.length > 0 ? this._stance(topic, fact) : fact.truth, alts: this.leafkin ? [] : fact.lies, tales: this.leafkin ? [] : fact.tales, muddle: null,
       // A curt speaker gives the first sentence only; a cheery one is glad to help.
       render: (claim) => ({ text: this.tone === 'curt' ? claim.replace(/^([^.!?]*[.!?]).*$/, '$1') : this.tone === 'cheery' && !this.leafkin ? `${claim} Glad to help.` : claim, gesture: 'talk-gesture', about: [{ kind: 'lore', topic }, ...this._named(fact.unlocks)] }),
     })
-    if (line.claim !== null) return { ...line, unlocks: this._unlock(fact.unlocks) }
+    if (line.claim !== null) {
+      const told = { ...line, unlocks: this._unlock(fact.unlocks) }
+      return fact.doubt.includes(line.claim) ? this._talesTo(told) : told
+    }
+    return line.moment === 'answer.unknown' ? this._referred(line, topic) : line
+  }
+
+  /** Contested `fact` as the speaker holds it: their own sighting if they saw it and trust her, a scoff if they do not believe it, else the fact as they heard it. */
+  _stance(topic, fact) {
+    const b = this._belief(fact.of ?? topic, topic)
+    if (b.saw && fact.seen !== null && this._standing() >= SPEAK.confide) return fact.seen
+    return b.doubts ? pickBy(roll(this.ctx.world.seed, this.mind.id, 'stance', topic, fact.id), fact.doubt) : fact.truth
+  }
+
+  /** How the speaker holds contested subject `of` (lore.js `of`), whose expertise is `topic`'s: `{ saw, doubts }`, one view however it comes up. */
+  _belief(of, topic) {
+    const r = (k) => roll(this.ctx.world.seed, this.mind.id, 'stance', of, k)
+    const saw = r('saw') < sawOdds(this.mind, topic)
+    return { saw, doubts: !saw && r('believe') >= beliefOdds(this.mind, topic) }
+  }
+
+  /** A speaker friendly enough to send her on to someone else. */
+  _helpful() {
+    return this.tone !== 'curt' && this._standing() >= 0
+  }
+
+  /** `line` (a shrug) with, from a helpful speaker, who would know `topic`. */
+  _referred(line, topic) {
+    if (this.leafkin || !this._helpful()) return line
+    const to = this._sentTo(topic)
+    return to === null ? line : { ...line, text: `${line.text} ${to.text}`, about: to.about }
+  }
+
+  /** Who would know `topic`, as `{ text, about }`: the town's expert by name (where they are is another question), else the kind of person to find; or null. */
+  _sentTo(topic) {
     const about = this._expertAbout(topic)
-    if (line.moment !== 'answer.unknown' || about.length === 0) return line
-    const x = ctx.world.person(about[0].id)
-    return { ...line, text: `${line.text} Ask ${x.name}, ${this._pr(x).he} ${third(this._work(x))}.`, about }
+    if (about.length > 0) return { text: `Ask ${this._called(this.ctx.world.person(about[0].id))}.`, about }
+    const body = expertBody(topic)
+    return body === null ? null : { text: `${cap(article(CALLING[body]))} would know, if you can find one.`, about: [] }
+  }
+
+  /** A scoff `line`, from a helpful speaker, sends her to the town's teller of tall tales. */
+  _talesTo(line) {
+    const teller = this._helpful() ? this._taleTeller() : null
+    if (teller === null) return line
+    return { ...line, text: `${line.text.replace(/ Glad to help\.$/, '')} If it's tall tales you want, ask ${this._called(teller)}.`, about: [...line.about, { kind: 'person', id: teller.id }] }
+  }
+
+  /** The skald of the speaker's town, else its surest boaster, never the speaker; or null. */
+  _taleTeller() {
+    if (this.town === null) return null
+    const others = this.town.minds.filter((m) => m.id !== this.mind.id)
+    const skald = others.find((m) => m.body === 'skald')
+    if (skald !== undefined) return skald
+    const boasters = others.filter((m) => m.traits.boast > TALE_TELLER).sort((a, b) => b.traits.boast - a.traits.boast)
+    return boasters[0] ?? null
+  }
+
+  /** `p` as sent to: "Edvin the skald", or just the name when their body has no calling. */
+  _called(p) {
+    return CALLING[p.body] === undefined ? p.name : `${p.name} the ${CALLING[p.body]}`
+  }
+
+  /** Who knows of lore `topic`: themself, the town's expert, the kind of person to find, or, from one who holds it a fairy tale, nobody (and the tale-teller). A curt or wary speaker will not say. */
+  _who(topic) {
+    if (TOPICS[topic] === undefined) throw new Error(`Conversation: no lore ${topic}`)
+    if (!this._helpful()) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
+    const label = TOPICS[topic].label
+    if (TOPICS[topic].contested && this._belief(topic, topic).doubts) {
+      return this._talesTo(this._line(`Nobody, because there are no ${label}.`, 'talk-shrug', { moment: 'answer.sure' }))
+    }
+    const best = this._expertAbout(topic)
+    if (expertise(this.mind.body, topic) > 0 && (best.length === 0 || expertise(this.mind.body, topic) >= expertise(this.ctx.world.person(best[0].id).body, topic))) {
+      return this._line(`You're looking at them. What do you want to know of ${label}?`, 'talk-nod', { moment: 'answer.sure', about: [{ kind: 'lore', topic, named: true }] })
+    }
+    const to = this._sentTo(topic)
+    return to === null ? this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' }) : this._line(to.text, 'talk-gesture', { moment: 'answer.sure', about: to.about })
   }
 
   /** The one in the speaker's town who knows most of `topic` (lore.js `expertise`), as an `about`, or none. */
@@ -862,5 +946,7 @@ export function gossip(rapport, a, b) {
 const third = (phrase) => phrase.replace(/^(\w+)/, (w) => (/(sh|ch|s|x)$/.test(w) ? `${w}es` : `${w}s`))
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1)
+
+const article = (noun) => `${/^[aeiou]/.test(noun) ? 'an' : 'a'} ${noun}`
 
 const lower = (s) => (/^(You|That|This|Someone|We|Haven|The|There|All|Me|Big|Try|He|She|Just|Off)\b/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s)

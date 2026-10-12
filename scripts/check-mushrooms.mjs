@@ -88,13 +88,15 @@ const check = (ok, label, detail = '') => {
 // that switch a whole block on or off -- `underside`, `gillBlades`, `ring`,
 // `stemHeight: 0`, `cluster` -- are each bracketed from both sides.
 //
-// TWO OF THOSE BRACKETS ARE WRITTEN OUT EXPLICITLY RATHER THAN LEFT TO THE
-// DEFAULT, and both for the same reason: the default moved under them.
-// `underside` is now false by default, so every shape that means to exercise the
-// gill sheet says `underside: true` out loud -- left implicit, six of these
+// THREE OF THOSE BRACKETS ARE WRITTEN OUT EXPLICITLY RATHER THAN LEFT TO THE
+// DEFAULT, and all for the same reason: the default moved under them.
+// `gillDepth` defaults to 0, which flattens every blade to zero area, so the
+// shapes with blades give them depth.
+// `underside` has flipped default before, so every shape that means to exercise
+// the gill sheet says `underside: true` out loud -- left implicit, six of these
 // shapes would have quietly stopped building an underside at all and the blades,
 // which mushroom.js only emits when there is an underside to hang them from,
-// would have gone with it. `stemCurve` is now 0.3, and section 5's absolute
+// would have gone with it. `stemCurve` defaults non-zero, and section 5's absolute
 // reference ("the cap top faces the sky") can only be asserted on a mushroom
 // that is standing up straight, so the shapes it leans on say `stemCurve: 0`.
 const SHAPES = [
@@ -103,9 +105,9 @@ const SHAPES = [
   { name: 'button', over: { radial: 6, capRings: 2, underside: true, underRings: 1, inroll: 0.5, capRise: 0.34, margin: -0.03, umbo: 0.05, stemCurve: 0 } },
   { name: 'parasol', over: { radial: 12, stemRadial: 8, capRings: 3, capCurve: 5.5, capRise: 0.14, ring: 0.4, stemRings: 4, stemCurve: 0.3, capCell: 2, fleshCell: 3 } },
   { name: 'funnel', over: { capRise: -0.18, capCurve: 1.6, wavy: 0.22, lobes: 5, underside: true, underRings: 2, stemCurve: 0, capCell: 3, fleshCell: 2 } },
-  { name: 'cave giant', over: { height: 3, radial: 14, stemRadial: 12, capRings: 3, underside: true, underRings: 3, stemRings: 5, gillBlades: 24, ring: 0.7, capLayer: LAYER.MUSHROOM_CAP_CAVE, capCell: 1, fleshCell: 3 } },
+  { name: 'cave giant', over: { height: 3, radial: 14, stemRadial: 12, capRings: 3, underside: true, underRings: 3, stemRings: 5, gillBlades: 24, gillDepth: 0.66, ring: 0.7, capLayer: LAYER.MUSHROOM_CAP_CAVE, capCell: 1, fleshCell: 3 } },
   { name: 'no underside', over: { underside: false, radial: 5, capRings: 1, stemRings: 1, stemCurve: 0 } },
-  { name: 'blades, no ring', over: { gillBlades: 12, ring: 0, radial: 9, underside: true, underRings: 2 } },
+  { name: 'blades, no ring', over: { gillBlades: 12, gillDepth: 0.66, ring: 0, radial: 9, underside: true, underRings: 2 } },
   // stemRadial 6 against radial 9 is the case the ring block cares about: the
   // skirt's inner edge has to land on the stalk, so it is swept with the STEM's
   // column count and not the cap's.
@@ -118,8 +120,8 @@ const SHAPES = [
   { name: 'troop', over: { cluster: 6, clusterSpread: 0.7, radial: 7, stemRadial: 1, ring: 0.3 } },
   // stemHeight 0 is the bracket fungus: no stem block, no ring block, and the
   // cap attaches at y = 0 instead of riding a frame.
-  { name: 'bracket', over: { stemHeight: 0, capTilt: 0.5, sweep: Math.PI, capRadius: 0.6, underside: true, gillBlades: 6 } },
-  { name: 'troop of brackets', over: { cluster: 3, stemHeight: 0, underside: true, gillBlades: 5, radial: 6 } },
+  { name: 'bracket', over: { stemHeight: 0, capTilt: 0.5, sweep: Math.PI, capRadius: 0.6, underside: true, gillBlades: 6, gillDepth: 0.66 } },
+  { name: 'troop of brackets', over: { cluster: 3, stemHeight: 0, underside: true, gillBlades: 5, gillDepth: 0.66, radial: 6 } },
 ]
 
 console.log(`\n=== mushroom checks, ${SHAPES.length} shapes ===\n`)
@@ -313,7 +315,7 @@ const HEIGHTS = [0.05, 0.09, 0.22, 1.4, 3.0]
 // Only the stalk's TOP ring is cast from, and only the CAP is cast at. The top
 // ring is the only one that can penetrate, since every ring below it is further
 // from the cap by construction; and the cap is the only surface whose cover
-// counts, because the underside is optional and off by default.
+// counts, because the underside is optional.
 //
 // CALIBRATED BY BREAKING IT: with `capLift` forced to zero in mushroom.js this
 // section fails on `funnel` -- and off this file, on all 54 chanterelle cells of
@@ -549,8 +551,8 @@ console.log('\nwinding')
           }
         }
       } else if (b.name === 'underside') {
-        // Row 0 is the rim, which hangs below the cap edge by `gillDrop` and so
-        // faces the ground whatever the profile above it does.
+        // Row 0 is the inner edge at the stem top, under the solid, so it faces
+        // the ground whatever the profile above it does.
         for (let j = 0; j <= b.cols; j++) {
           const i = b.first + j
           sampled++

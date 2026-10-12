@@ -11,6 +11,7 @@ export const TOPICS = {
   blacksmith: { label: 'the blacksmith', gated: false },
   coins: { label: 'coins', gated: false },
   snowlands: { label: 'the snowlands', gated: false },
+  yetis: { label: 'yetis', gated: true, contested: true },
   leafkin: { label: 'leafkin', gated: true },
   caves: { label: 'caves', gated: true },
   labyrinths: { label: 'labyrinths', gated: true },
@@ -31,12 +32,12 @@ const EXPERT = {
   healer: { mushrooms: 0.3, eating: 0.35 },
   blacksmith: { ores: 0.45, blacksmith: 0.45, coins: 0.2 },
   miner: { ores: 0.4, caves: 0.4, gems: 0.3 },
-  hunter: { striders: 0.35, dragons: 0.25, snowlands: 0.2 },
-  trapper: { snowlands: 0.35, labyrinths: 0.3, striders: 0.2 },
+  hunter: { striders: 0.35, dragons: 0.25, snowlands: 0.2, yetis: 0.2 },
+  trapper: { snowlands: 0.35, labyrinths: 0.3, striders: 0.2, yetis: 0.3 },
   shepherd: { striders: 0.3 },
   farmer: { striders: 0.25, eating: 0.2 },
   thief: { gems: 0.35, coins: 0.35, labyrinths: 0.25 },
-  skald: { dragons: 0.3, snowlands: 0.2, labyrinths: 0.2 },
+  skald: { dragons: 0.3, snowlands: 0.2, labyrinths: 0.2, yetis: 0.25 },
   innkeeper: { coins: 0.3 },
   jarlsthane: { dragons: 0.2, coins: 0.2 },
 }
@@ -50,14 +51,36 @@ export function knowOdds(mind, topic, fact) {
   return fact.common && mind.kind === 'human' ? Math.max(odds, mind.cls === 'child' ? COMMON.child : COMMON.adult) : odds
 }
 
+// A contested fact (`doubt`) is believed at these odds by class, plus expertise: the worldly and the young believe.
+const BELIEVE = { travel: 0.55, folk: 0.25, guard: 0.15, child: 0.7 }
+
+/** How likely `mind` is to believe a contested fact of `topic` they have heard. */
+export function beliefOdds(mind, topic) {
+  return Math.min(1, (BELIEVE[mind.cls] ?? 0.3) + expertise(mind.body, topic))
+}
+
+/** How likely `mind` is to have seen a contested fact of `topic` for themself: travellers, and those whose work takes them there. */
+export function sawOdds(mind, topic) {
+  return Math.min(1, (mind.cls === 'travel' ? 0.3 : 0) + expertise(mind.body, topic))
+}
+
 /** How much better than most body `body` knows `topic`: 0 for no better. */
 export function expertise(body, topic) {
   return EXPERT[body]?.[topic] ?? 0
 }
 
+/** The body that knows `topic` best anywhere, or null. */
+export function expertBody(topic) {
+  let best = null
+  for (const body of Object.keys(EXPERT)) if (expertise(body, topic) > (best === null ? 0 : expertise(best, topic))) best = body
+  return best
+}
+
 // A fact: `truth`, `lies` (misinformation, said by the dishonest), `tales` (told by boasters, or by anyone who does
 // not know and will not admit it), `lk` the truth in leafkin pidgin, `unlocks` the other topics the telling names: each her follow-up after, and a gated one hers to ask anyone.
-const f = (id, truth, { lies = [], tales = [], lk = null, unlocks = [], sens = 0, rumour = false, common = false } = {}) => ({ id, truth, lies, tales, lk, unlocks, sens, rumour, common })
+// `doubt` makes a fact contested: one who heard it but does not believe it (beliefOdds) honestly scoffs with a doubt line, and one who saw it (sawOdds) tells `seen` to someone they trust.
+// Belief is held per subject, `of` (default the fact's topic; a TOPICS entry marked `contested` is one whole subject), so a speaker scoffs at yetis however they come up.
+const f = (id, truth, { lies = [], tales = [], lk = null, unlocks = [], sens = 0, rumour = false, common = false, doubt = [], seen = null, of = null } = {}) => ({ id, truth, lies, tales, lk, unlocks, sens, rumour, common, doubt, seen, of })
 
 export const LORE = {
   striders: [
@@ -91,6 +114,7 @@ export const LORE = {
   ],
   snowlands: [
     f('cold', 'Climb high enough and it is all snow. Bitter cold up there, and nothing to eat.', { common: true, lies: ['It never snows on the peaks. That is just cloud.'], tales: ['They say yetis live up in the snow. And that they love flowers.'], lk: 'White-cold up-up. Brrm. Leafkin no go.', unlocks: ['eating'] }),
+    f('yetis', 'Some say yetis roam the snowy wastes, and taunt anyone who comes near.', { rumour: true, lies: ['Nothing lives up in the snow. Not even yetis.'], doubt: ['Folk talk of yetis up there. Bears and bad eyesight, I say.'], of: 'yetis', unlocks: ['yetis'] }),
     f('dragons', 'Above the snow is where the dragons nest.', { lies: ['The dragons nest down by the lakes.'], tales: ['There is a giant\'s skeleton up in the snow, big as a hall.'], unlocks: ['dragons'] }),
   ],
   leafkin: [
@@ -100,14 +124,21 @@ export const LORE = {
   ],
   caves: [
     f('dark', 'Caves open at the feet of cliffs. Pitch dark inside, so carry a light.', { common: true, lies: ['Caves are lit inside, by glowing moss.'], tales: ['There is a cave with a sleeping giant in it. I heard it snore.'], lk: 'Dark-dark inside. Brrm. Leafkin no go deep.' }),
-    f('chalk', 'Mark the walls as you go, or you will never find the way out.', { lies: ['Every cave goes straight through the mountain. You cannot get lost.'] }),
+    f('lost', 'Caves are devilish. The passages fork and twist and double back. Easy to get lost down there.', { common: true, lies: ['Every cave goes straight through the mountain. You cannot get lost.'], tales: ['A man went into a cave after his goat. Came out forty years later, still looking.'], lk: 'Cave twisty-twisty. Leafkin lost, never come home.' }),
+    f('chalk', 'There is chalk in the caves, a soft whitish stone. Pick some up and mark the walls as you go, or you may never find the way out.', { lies: ['Chalk marks wash off in the damp. Do not bother.'], lk: 'White-stone in cave. Draw-draw on wall, find way home.' }),
     f('falls', 'Deep down, the roof comes down when you least expect it. Listen for the rumble.', { lies: ['Cave roofs never fall. Mountains do not move.'] }),
     f('gems', 'Gems glitter in the deep caves, for those who dare.', { rumour: true, lies: ['There is nothing in caves but bats.'], unlocks: ['gems'] }),
   ],
   labyrinths: [
-    f('boulders', 'Deep in the forest are mazes of boulders. Easy to get in, hard to get out.', { lies: ['The boulder mazes move at night.'], lk: 'Rock-twisty in deep wood. Leafkin get lost. Hee.' }),
+    f('stakes', 'Deep in the forest are mazes walled with sharpened stakes. Easy to get in, hard to get out.', { lies: ['The mazes in the woods move at night.'], lk: 'Stick-twisty in deep wood. Leafkin get lost. Hee.' }),
     f('wall', 'In a maze, keep one hand on the wall and you will come out in the end.', { lies: ['In a maze, always turn left. Always.'] }),
     f('heart', 'Somebody built mazes of stakes out in the wild. There is always something at the heart.', { rumour: true, tales: ['At the heart of a maze I found a chest of gold. Gave it all away.'], unlocks: ['gems'] }),
+    f('giants', 'Green giants guard the mazes in the woods. Whatever lies at the heart, they keep it.', { rumour: true, lies: ['The giants in the mazes are friendly. They show you the way out.'], tales: ['I wrestled a green giant for its treasure once. We called it a draw.'], doubt: ['Green giants? A fireside tale for children.', 'Giants in the woods! Next you will tell me the trees talk.'], of: 'giants', seen: 'I saw one once, through the stakes. Green as moss and twice my height. I did not go in.', lk: 'Big-green in stick-twisty. Keesh! Leafkin no go.' }),
+  ],
+  yetis: [
+    f('wastes', 'Yetis live out in the snowy wastes. Great white brutes, taller than a man.', { rumour: true, lies: ['Yetis live in the deep woods, under the roots.'], tales: ['They say yetis love flowers. Bring one a posy and it weeps.'], doubt: ['Yetis? A story to keep children out of the snow.', 'There are no yetis. Snow-blind trappers seeing bears.'], seen: 'I saw one myself, up in the snow. White as the drifts, and it watched me the whole way down.', lk: 'Big-white up in cold. Brrm! Leafkin hide.', unlocks: ['snowlands'] }),
+    f('taunt', 'Get near a yeti and it taunts you. Hoots and drums and throws snow at you, then it comes.', { rumour: true, lies: ['Yetis are gentle. They will share their fire with you.'], doubt: ['Drums in the snow? That is the wind in the ice, nothing more.'], unlocks: ['snowlands'] }),
+    f('kill', 'Never go close to a yeti. Most likely it will kill you.', { rumour: true, lies: ['A yeti is all noise. Shout back and it runs off.'], tales: ['I wrestled a yeti once. It cried for its mother.'], doubt: ['Nobody was ever killed by a yeti. The cold kills them, and the yeti gets the blame.'] }),
   ],
   gems: [
     f('diamond', 'Diamonds are the prize. A trader will give a hundred gold for one.', { rumour: true, lies: ['Jade is worth more than diamonds, everyone knows.'], tales: ['I held a diamond the size of an egg once.'] }),

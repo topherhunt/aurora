@@ -107,6 +107,7 @@ export const SOUNDS = {
   roar: 'sounds/dragon-roar.mp3',
   growl: 'sounds/dragon-growl.mp3',
   fiddle: 'sounds/ambience-violin-playing.mp3',
+  drums: 'sounds/npc-yeti-drums.mp3',
   campfire1: 'sounds/ambience-campfire-1.mp3',
   campfire2: 'sounds/ambience-campfire-2.mp3',
   campfire3: 'sounds/ambience-campfire-3.mp3',
@@ -253,6 +254,8 @@ export const RULES = {
   caveDrip: { interval: [10, 15], reach: 10, near: 3, level: 0.4, gain: [0.7, 1.0] },
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
+  // A labyrinth's drums (design/41-palisade-labyrinths.md), looped from its middle while she is within `reach` metres of its outline and has not yet stood in its middle: `near` 0 at the reach to 1 at the middle's edge walks the level from `level[0]` to `level[1]` and the low-pass from `cutoff[0]` to `cutoff[1]` Hz, both geometrically, so far off they are a distant thump.
+  drums: { reach: 20, level: [0.03, 0.6], cutoff: [220, 9000], gain: [0.9, 1.0] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
   campfire: { reach: 16, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
   // The flames a spark lit and the torches she and peers carry (wildfire.js): ONE loop over CAMPFIRES, placed at the nearest flame, each flame within `reach` metres adding its share of `level` (falling as near/distance, to nothing over the last `edge` metres) so more flames are louder, the sum's square root held under `cap`: a torch in the hand is faint, a blaze of dozens reaches level * cap. On the near bus, so the walls a house or a cave stands her behind (SoundEngine.setIndoors) do not smother the torch in her hand.
@@ -284,8 +287,9 @@ export class Ambience {
    * @param campfires the fires burning, if any: `[{ x, y, z }]`, each its flame (RULES.campfire).
    * @param hearth    the flame of the hearth in the house she is in, `{ x, y, z }` or null, heard as a campfire.
    * @param torches   the room's torches, if any: `{ at: [{ x, y, z }], lit }`, each flame's position and lit() how lit they all are now, 0..1 (RULES.torch).
+   * @param drums     drums(head): the labyrinth drums heard at her head, `{ x, y, z, near }` (RULES.drums), or null.
    */
-  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null, blaze = () => [], hearth = () => null }) {
+  constructor({ engine, sense, rand = Math.random, herds = [], crawlers = [], startlers = [], dragons = null, fish = null, grasshoppers = null, voiced = [], waves = true, fiddlers = [], campfires = [], torches = null, blaze = () => [], hearth = () => null, drums = () => null }) {
     if (!engine) throw new Error('Ambience: missing engine')
     for (const v of voiced) {
       if (!v?.layer || typeof v.layer.voices !== 'function') throw new Error('Ambience: a voiced layer needs voices()')
@@ -392,6 +396,8 @@ export class Ambience {
     this.hearth = hearth
     this.loops.hearth = engine.loop(CAMPFIRES, { directional: true, bus: 'near', gain: RULES.campfire.gain })
     this.blazeAt = { x: 0, y: 0, z: 0 }
+    this.drums = drums
+    this.loops.drums = engine.loop('drums', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: RULES.drums.gain })
     this.leavesOn = false
     this.hushed = false
     this.windOn = false
@@ -535,6 +541,7 @@ export class Ambience {
     this._campfires(head)
     this._blaze(head)
     this._torches(head)
+    this._drums(head, indoors)
     this._crawl(head)
     this._fish(head)
     this._strokes(dt, speed, swimming, submerged)
@@ -1113,6 +1120,15 @@ export class Ambience {
       const d = Math.hypot(head.x - f.x, head.y - f.y, head.z - f.z)
       this._loop(f.key, lit > 0 && d < T.reach, lit * T.level * Math.min(1, T.near / Math.max(d, 1e-3)) * (1 - smoothstep(T.reach - T.edge, T.reach, d)), f)
     }
+  }
+
+  /** The labyrinth drums' loop by how near its middle she is: level and cutoff by RULES.drums, placed at its middle; off indoors. */
+  _drums(head, indoors) {
+    const D = RULES.drums
+    const at = indoors ? null : this.drums(head)
+    if (at !== null && !(at.near >= 0 && at.near <= 1)) throw new Error(`Ambience: drums near must be 0..1, got ${at.near}`)
+    this._loop('drums', at !== null, at === null ? 0 : D.level[0] * (D.level[1] / D.level[0]) ** at.near, at)
+    if (at !== null) this.loops.drums.setCutoff(D.cutoff[0] * (D.cutoff[1] / D.cutoff[0]) ** at.near)
   }
 }
 

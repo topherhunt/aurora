@@ -16,6 +16,7 @@ import { Journeys } from './render/journeys.js'
 import { Signposts } from './render/signposts.js'
 import { Bridges } from './render/bridges.js'
 import { Palisades, PALISADE_CARDS } from './render/palisades.js'
+import { Climb } from './climb.js'
 import { loadStoneBridge } from '../bridges/stone-bridge.js'
 import { BiomeField } from './layers/biome.js'
 import { snowDefaults } from './layers/doc.js'
@@ -79,6 +80,7 @@ import { Fireflies } from './render/fireflies.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
+import { Giants } from './render/giants.js'
 import { Leafkin } from './render/leafkin.js'
 import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
@@ -120,8 +122,8 @@ import { EyeLevel } from './eye-level.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
-import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, PALETTE, MUZZLE, aimTarget, pressSafety, roomKey } from './flaregun.js'
-import { FLARE, Flares, fromWire, toWire } from './render/flares.js'
+import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, CHARGES as FLARE_CHARGES, PALETTE, MUZZLE, RECALL_M, RECALL_DEG, aimTarget, pressSafety, roomKey } from './flaregun.js'
+import { FLARE, Flares, fromWire, toWire, recallFromWire, recallToWire } from './render/flares.js'
 import { Flints, KIND as FLINT, SPARK, SPARK_CAP, SPARK_M, SPARK_S, STRIKE, clickBuffer, sparkColor, strikeCatches } from './flint.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
@@ -155,7 +157,7 @@ import { siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
 import { CaveWalk } from './caves/walk.js'
 import { CaveMouths } from './render/cave-mouths.js'
-import { CaveRoom, CAVE_AIR, CAVE_MURK } from './render/cave-room.js'
+import { CaveRoom, CAVE_AIR, CAVE_MURK, DOOR as CAVE_DOOR } from './render/cave-room.js'
 import { ChalkStones, KIND as CHALK } from './render/chalk.js'
 import { Chalk, ChalkPen, onRock, rayRock } from './caves/chalk.js'
 
@@ -935,6 +937,10 @@ const chalk = new Chalk(() => trust.player)
 const talkKnown = new Set()
 const talkRapport = new Rapport()
 const talkLog = new QuestLog()
+// The labyrinths whose middle she has stood in, by `rx,rz`, saved: their drums are still for good.
+const drumsStilled = new Set()
+const drumsHere = { s: null, near: 0, middle: false }
+const drumsAt = { x: 0, y: 0, z: 0, near: 0 }
 // Her voice as the hail (audio/mic.js), asked for on the first gesture once the sound is open.
 let talkMic = null
 const talkGaze = new THREE.Vector3()
@@ -968,6 +974,7 @@ function saveGame() {
     // Her size, as the mushrooms left it; their timed effects are not saved.
     size: effects.size,
     talk: { topics: [...talkKnown] },
+    drumsStilled: [...drumsStilled],
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -1003,6 +1010,8 @@ function applySave(doc) {
   // A save from before talk has heard of nothing.
   talkKnown.clear()
   if (doc.talk !== undefined) for (const t of doc.talk.topics) talkKnown.add(t)
+  drumsStilled.clear()
+  if (doc.drumsStilled !== undefined) for (const k of doc.drumsStilled) drumsStilled.add(k)
 }
 
 /** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
@@ -1097,6 +1106,7 @@ function newGame() {
   talkKnown.clear()
   talkRapport.of.clear()
   talkLog.of.clear()
+  drumsStilled.clear()
   giveFlareGun()
   giveFlint()
   paintBackpack()
@@ -2192,18 +2202,32 @@ const gunFrame = new THREE.Matrix4()
 const gunMuzzle = new THREE.Vector3()
 const gunAim = new THREE.Vector3()
 const gunTarget = new THREE.Vector3()
-/** The trigger on a hand holding the flare gun, which kicks it in the hand either way (hands.js kick): a flare off down the barrel, or down `aim` (unit) where given, to the room; a dry click on safe or with no charge left. */
+const RECALL_COS = Math.cos(THREE.MathUtils.degToRad(RECALL_DEG))
+/**
+ * The trigger on a hand holding the flare gun, which kicks it in the hand either way (hands.js kick), aimed down the
+ * barrel or down `aim` (unit) where given: armed, a flare off to the room; on safe, the flare it is aimed at recalled
+ * into the muzzle for the room, a charge back; else a dry click.
+ */
 function fireFlare(key, aim = null) {
   const rec = hands.holding(key)
   hands.kick(key)
-  if (!rec.armed || rec.charges <= 0) {
-    if (ambience) sound.play('uiPop', { bus: 'near', rate: 0.5, gain: 0.25 })
-    return
-  }
   hands.heldFrame(key, gunFrame)
   gunMuzzle.copy(MUZZLE).applyMatrix4(gunFrame)
   if (aim === null) gunAim.set(0, 0, -1).transformDirection(gunFrame)
   else gunAim.copy(aim)
+  const back = rec.armed ? null : flares.aimedAt(gunMuzzle, gunAim, RECALL_M, RECALL_COS)
+  if (back !== null) {
+    flares.recall(back.id, gunMuzzle.x, gunMuzzle.y, gunMuzzle.z, 0)
+    rec.charges = Math.min(FLARE_CHARGES, rec.charges + 1)
+    netplay.sendRecall(recallToWire(back.id, gunMuzzle))
+    if (ambience) sound.play('flaregunBack', { bus: 'near', rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
+    questPulse(key, 0.8, 80)
+    return
+  }
+  if (!rec.armed || rec.charges <= 0) {
+    if (ambience) sound.play('uiPop', { bus: 'near', rate: 0.5, gain: 0.25 })
+    return
+  }
   aimTarget(gunMuzzle, gunAim, (x, z) => walk.heightAt(x, z), (x, z) => waterSurfaces.levelAt(x, z, true), gunTarget)
   rec.charges--
   const f = {
@@ -2339,7 +2363,7 @@ function cycleFlareColor(key) {
   if (ambience) sound.play('uiPop', { bus: 'near', rate: 1.4, gain: 0.3 })
 }
 
-/** The flares peers shot since last frame, into the sky; one still leaving its muzzle in her room is heard, as far off as it is. */
+/** The flares peers shot or recalled since last frame, into the sky or back out of it; a shot or recall just made in her room is heard, as far off as it is. */
 function drainFlares() {
   player.headPosition(headTmp)
   for (const a of netplay.flares) {
@@ -2350,6 +2374,15 @@ function drainFlares() {
     if (d < FLARE_HEARD_M) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: f.ox, y: f.oy, z: f.oz }, distance: d })
   }
   netplay.flares.length = 0
+  for (const a of netplay.recalls) {
+    const age = a[4] / 1000
+    const [id, mx, my, mz] = recallFromWire(a.slice(0, 4))
+    const f = flares.list.find((g) => g.id === id)
+    if (!flares.recall(id, mx, my, mz, age) || age > 0.5 || f.room !== flares.room || !ambience) continue
+    const d = Math.hypot(mx - headTmp.x, my - headTmp.y, mz - headTmp.z)
+    if (d < FLARE_HEARD_M) sound.play('flaregunBack', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: mx, y: my, z: mz }, distance: d })
+  }
+  netplay.recalls.length = 0
 }
 
 const trustsHer = (id) => trust.trusts(villagers.seed, id)
@@ -3207,6 +3240,9 @@ let baked = null
 let signposts = null
 let bridges = null
 let palisades = null
+let giants = null
+// The watchtowers' ladders, while there are palisades and she is on the overworld's walk.
+let climb = null
 let roadLines = null
 // Every laid way and bridge of the road plan as blue line segments 2 m over the road, each used stub carried on to its town's centre, and a dot on each centre, drawn without depth test or fog so the whole web reads from any height.
 function buildRoadLines(plan, towns) {
@@ -3427,6 +3463,7 @@ function applyAnimalVisibility() {
   spiders.setShown(animalOn('spiders'))
   wildlife.setShown(animalOn('wildlife'))
   snowmen.batch.visible = animalOn('snowmen')
+  if (giants) giants.batch.visible = animalOn('snowmen')
   if (leafkin) leafkin.batch.visible = animalOn('leafkin')
   if (villagers) villagers.batch.visible = animalOn('leafkin')
   if (hobs) hobs.batch.visible = animalOn('leafkin')
@@ -3627,6 +3664,7 @@ async function bootWorld() {
     () => {
       sound.buffers.set('heartbeat', heartbeatBuffer(sound.ctx)); sound.buffers.set('flintClick', clickBuffer(sound.ctx))
       sound.buffers.set('zoomBack', reversedBuffer(sound.ctx, sound.buffers.get('zoom')))
+      sound.buffers.set('flaregunBack', reversedBuffer(sound.ctx, sound.buffers.get('flaregun')))
       buzz = startBuzz(sound)
       console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
     (err) => { console.error('[v2] sound disabled:', err); return false },
@@ -3828,7 +3866,8 @@ function disposeRoom() {
   if (wildStriders) { wildStriders.dispose(); wildStriders = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
-  if (palisades) { palisades.dispose(); palisades = null; window.v2palisades = null }
+  if (palisades) { palisades.dispose(); palisades = null; climb = null; window.v2palisades = null }
+  if (giants) { giants.dispose(); giants = null }
   if (roadLines) { roadLines.removeFromParent(); for (const part of roadLines.children) { part.geometry.dispose(); part.material.dispose() } roadLines = null }
   townPlan = null
   roadPlan = null
@@ -4120,6 +4159,8 @@ caveStone.colorSpace = THREE.SRGBColorSpace
 caveStone.wrapS = caveStone.wrapT = THREE.RepeatWrapping
 caveStone.anisotropy = 4
 chalkStones.setStone(caveStone)
+// The interiors' wood grain, worn by the cave's torch sticks and cellar doors.
+const caveGrain = (await loadInteriorTextures()).grain
 const chalkPens = Object.fromEntries(HAND_KEYS.map((key) => [key, new ChalkPen((pts) => chalk.draw(cave.sys.seed, pts, cave.sys.cx, cave.sys.cz))]))
 // How far off the rock a held lump's centre still draws: its radius and a little.
 const CHALK_TOUCH_M = 0.1
@@ -4147,7 +4188,7 @@ function buildCave(sys, door) {
   const t0 = performance.now()
   const entries = caveEntries(sys, caveSites.mouths, caveSites.cellars)
   const plan = planCave({ seed: sys.seed, entries })
-  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone, propTextures, sky.uniforms)
+  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone, caveGrain, propTextures, sky.uniforms)
   chalkStones.setRoom(room)
   chalkShown = -1
   const id = ++caveJob
@@ -4190,9 +4231,9 @@ function caveTest() {
   const doors = caveBuild.plan.doors
   for (let i = 0; i < doors.length; i++) {
     const d = doors[i]
-    // Out once she nears the mouth or steps past it into the flare.
+    // Out once she nears the mouth or steps past it into the flare; a cellar's door, as a house's, only once she walks up to its face.
     const back = (d.mx - feet.x) * d.dx + (d.mz - feet.z) * d.dz, side = Math.abs((feet.x - d.mx) * d.dz - (feet.z - d.mz) * d.dx)
-    const out = Math.hypot(feet.x - d.mx, feet.z - d.mz) <= EXIT_R || (back > 0 && back < 6 && side < 3)
+    const out = d.cellar ? -back <= HOUSE_DOOR.walk && side < HOUSE_DOOR.side : Math.hypot(feet.x - d.mx, feet.z - d.mz) <= EXIT_R || (back > 0 && back < 6 && side < 3)
     if (!out || Math.abs(feet.y - (d.my + CAVE_OY)) > 1.5) continue
     leaveCave(i).catch(reportRuntimeError)
     break
@@ -4532,25 +4573,27 @@ async function buildRoom(room, at) {
       const t0 = performance.now()
       const file = await (baked ?? loadWorldPlan(WORLD_PLAN_URL))
       baked = null
-      let mouths, trailPlan
+      let mouths, trailPlan, labyrinthPlan
       if (file !== null && file.key === key) {
-        ;({ townPlan, roadPlan, mouths, trailPlan } = unpackWorldPlan(file.plan))
+        ;({ townPlan, roadPlan, mouths, trailPlan, labyrinthPlan } = unpackWorldPlan(file.plan))
         if (file.shores === undefined) throw new Error(`${WORLD_PLAN_URL} carries no lake shores; re-bake it`)
         bakedShores = file.shores
         layers.addGenerated(townPlan.records)
         layers.addGenerated(roadPlan.records)
         layers.addGenerated(trailPlan.records)
+        layers.addGenerated(labyrinthPlan.records)
       } else {
         console.warn(`[v2] ${file === null ? `no ${WORLD_PLAN_URL}` : `${WORLD_PLAN_URL} was baked against another document or relief`}; laying the towns and roads live`)
-        ;({ townPlan, roadPlan, mouths, trailPlan } = planWorld({ heightmap, ground: (x, z) => heightmap.sample(x, z), surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
+        ;({ townPlan, roadPlan, mouths, trailPlan, labyrinthPlan } = planWorld({ heightmap, ground: (x, z) => heightmap.sample(x, z), field: height, surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
       }
       if (roadPlan.failed.length > 0) console.warn(`[v2] roads: no route for ${roadPlan.failed.join(', ')}`)
       if (trailPlan.failed.length > 0) console.warn(`[v2] trails: no road reaches mouths ${trailPlan.failed.join(', ')}`)
+      if (labyrinthPlan.failed.length > 0) console.warn(`[v2] trails: no road reaches the labyrinths in regions ${labyrinthPlan.failed.join(' ')}`)
       console.log(
         `[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ` +
           `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
       )
-      applyWorldPlan(layers, { townPlan, mouths })
+      applyWorldPlan(layers, { townPlan, mouths, labyrinthPlan })
       caveSites = siteCaves(mouths, townPlan)
     }
   }
@@ -4767,7 +4810,7 @@ async function buildRoom(room, at) {
     window.v2roads = { plan: roadPlan, signposts, bridges, lines: roadLines } // console: `v2roads.plan.signs`, `v2roads.bridges.items`
   }
   if (biome.labyrinths) {
-    palisades = new Palisades(scene, { labyrinths: biome.labyrinths, field: height, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), cards: litterCards })
+    palisades = new Palisades(scene, { labyrinths: biome.labyrinths, field: height, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), cards: litterCards, egg: await loadEggBank() })
     palisades.update(spawn, fireNow())
     window.v2palisades = palisades // console: `v2palisades.stats`
   }
@@ -4864,6 +4907,7 @@ async function buildRoom(room, at) {
   worldProbe.setVantage(probeVantage)
   window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
   player = new Player(rig, camera, walk, { scale: herScale() })
+  climb = palisades ? new Climb(player, palisades) : null
   netplay.scale = herScale()
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
   // A save before `y` was written lands on the topmost surface.
@@ -5180,6 +5224,12 @@ async function buildRoom(room, at) {
   if (wildStriders) creatureNet.add(wildStriders, ['ws'])
   if (townsfolk) creatureNet.add(townsfolk, ['ts'])
   window.v2snowmen = snowmen
+  // A green giant in each labyrinth (render/giants.js), on the bare ground so a brush with a wall never stands it on the posts.
+  if (palisades) {
+    giants = new Giants(scene, palisades.labyrinths, { walk: height })
+    for (const m of giants.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-giants' })
+    creatureNet.add(giants, ['gg'])
+  }
 
   // Her hands (hands.js): what a controller takes from the beds, the ground
   // and the creature layers, holds, drops and stows, so after every layer it
@@ -5311,7 +5361,7 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'thud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
       voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
@@ -5331,6 +5381,15 @@ async function buildRoom(room, at) {
         return houseOut({ x: o.x + f.x, y: o.y + f.y, z: o.z + f.z }, {})
       },
       torches: lamps ? { at: lamps.lamps.map((l) => ({ x: l.x, y: l.flameY, z: l.z })), lit: () => lamps.lit } : null,
+      // A labyrinth's drums from its middle, till she has stood there.
+      drums: (head) => {
+        const pal = palisades
+        if (pal === null || !pal.labyrinths.nearness(head.x, head.z, SOUND_RULES.drums.reach, drumsHere)) return null
+        const s = drumsHere.s
+        if (drumsStilled.has(`${s.rx},${s.rz}`)) return null
+        drumsAt.x = s.cx; drumsAt.y = head.y; drumsAt.z = s.cz; drumsAt.near = drumsHere.near
+        return drumsAt
+      },
     })
     window.v2ambience = ambience
   })
@@ -5376,7 +5435,7 @@ async function buildRoom(room, at) {
   worldProbe.exclude(
     ...[
       grass, litter, mushrooms, deadwood, sticks, bones, carrots, frogs, crabs, butterflies, grasshoppers,
-      fireflies, spiders, wildlife, snowmen, leafkin, villagers, hobs, dragons, roosts, townsfolk, townsfolk?.striders,
+      fireflies, spiders, wildlife, snowmen, giants, leafkin, villagers, hobs, dragons, roosts, townsfolk, townsfolk?.striders,
     ].filter(Boolean).map((l) => l.batch),
     litterCards.group,
     ...ferns.meshes.slice(0, ferns.ringCount)
@@ -5901,7 +5960,7 @@ const HOTKEYS = [
       { keys: 'e', what: 'let go of what the hand holds, where the hand is (a click no longer does)' },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
       { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
-      { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed; A / X in the headset' },
+      { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed, and on safe recalls the flare it is aimed at for a charge back; A / X in the headset' },
       { keys: 'c', what: 'speak up to the townsperson or leafkin you face, within a few metres -- in the headset (or with a mic allowed), just say something aloud; click the grid that opens to talk' },
     ],
   },
@@ -6789,6 +6848,11 @@ function peerHeadsNow() {
 
 // Standard xr-standard gamepad mapping; same table as input.js, repeated here
 // because the fallback below decodes a raw gamepad that Input never saw.
+// A world hand's position for a ladder grip (climb.grip).
+const climbHand = new THREE.Vector3()
+// Landing on a palisade's points: the HP it costs, and the metres she is pushed off across the wall.
+const WALL_TOP = { harm: 30, shove: 0.55 }
+const wallAcross = { x: 0, z: 0 }
 const QUEST_BTN = { TRIGGER: 0, GRIP: 1, STICK: 3, PRIMARY: 4, SECONDARY: 5 }
 const questFallbackPrev = { left: {}, right: {} }
 
@@ -7103,7 +7167,11 @@ function teleportDoors(feet, dir) {
   }
   if (cave !== null) {
     // Each way out faces in, so she lobs at it from its +normal side; its box stands on the floor, up to 0.7 m under the node.
-    for (const d of caveBuild.plan.doors) add({ x: d.mx, y: walk.heightAt(d.mx, d.mz, d.my + CAVE_OY), z: d.mz, nx: d.dx, nz: d.dz }, 2 * EXIT_R, TELEPORT_DOOR.exitH, 1, TELEPORT_DOOR.exitDepth)
+    for (const d of caveBuild.plan.doors) {
+      const at = { x: d.mx, y: walk.heightAt(d.mx, d.mz, d.my + CAVE_OY), z: d.mz, nx: d.dx, nz: d.dz }
+      if (d.cellar) add(at, 2 * HOUSE_DOOR.side, CAVE_DOOR.h - CAVE_DOOR.sunk, 1)
+      else add(at, 2 * EXIT_R, TELEPORT_DOOR.exitH, 1, TELEPORT_DOOR.exitDepth)
+    }
     return doors
   }
   if (indoors) {
@@ -7487,7 +7555,9 @@ function readInput(dt) {
     }
     if (hands) {
       for (const hand of ['left', 'right']) {
-        if (st[hand].buttons.GRIP?.justPressed) hands.drop(hand, handsHead())
+        const grip = st[hand].buttons.GRIP
+        const rung = climb !== null && player.th === walk && climb.grip(hand, !!grip?.pressed, !!grip?.justPressed, hands.holding(hand) === null, (hand === 'left' ? leftGrip : rightGrip).getWorldPosition(climbHand))
+        if (grip?.justPressed && !rung) hands.drop(hand, handsHead())
         if (st[hand].buttons.PRIMARY?.justPressed && holdsGun(hand)) cycleFlareColor(hand)
         else if (st[hand].buttons.PRIMARY?.justPressed && hands.holding(hand) === null && wildStriders && wildStriders.riding) wildStriders.dismount(player)
       }
@@ -7890,8 +7960,22 @@ function tick() {
     if (wildStriders && wildStriders.riding) {
       if (moveInput.ride) wildStriders.ride(dt, moveInput.ride, player)
       else wildStriders.sit(dt, player)
-    } else player.update(dt, moveInput)
+    } else {
+      if (climb !== null && player.th === walk && !renderer.xr.isPresenting) {
+        const yaw = player.headYaw()
+        climb.desk(dt, moveInput, Math.sin(yaw), Math.cos(yaw))
+      }
+      player.update(dt, moveInput)
+    }
     harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
+    // Feet on a palisade's points: they hurt, and she topples off to one side or the other.
+    const o = player.originPosition()
+    if (palisades !== null && player.th === walk && !player.flying && !player.swimming && player.standY !== null && palisades.onWallTop(o.x, o.z, player.standY, wallAcross)) {
+      harm(WALL_TOP.harm, 'palisade points')
+      const side = Math.random() < 0.5 ? -1 : 1
+      player.shove(wallAcross.x * side * WALL_TOP.shove, wallAcross.z * side * WALL_TOP.shove)
+    }
+    if (palisades !== null && player.th === walk && palisades.labyrinths.nearness(o.x, o.z, 0, drumsHere) && drumsHere.middle) drumsStilled.add(`${drumsHere.s.rx},${drumsHere.s.rz}`)
   }
   if (boats) boats.settle()
   portalTest()
@@ -8170,6 +8254,11 @@ function stepOverworld(dt, now) {
   if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
+  if (giants) {
+    stepAnimal('snowmen', () => giants.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
+    const blow = giants.drainBlows()
+    if (blow > 0) harm(blow, 'the green giant')
+  }
   // The leafkin is startled by her feet (peers at them, she small: sized above) and steps on the room's clock (sim/score.js), last frame's reading.
   if (leafkin) stepAnimal('leafkin', () => leafkin.update(player.originPosition(), headTmp, clock.seconds, dt))
   // The villagers likewise, under the leafkin's row.

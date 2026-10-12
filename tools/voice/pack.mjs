@@ -14,7 +14,7 @@ import { HUMAN, LEAFKIN, MOMENTS } from './atoms.js'
 
 const WORK = new URL('./work/', import.meta.url)
 const OUT = new URL('../../public/sounds/voice/', import.meta.url)
-const HUMAN_VOICES = ['m-big', 'f-bright', 'teen-from-man']
+const HUMAN_VOICES = ['man', 'woman', 'boy', 'girl']
 const KBPS = 48
 
 /** A 16-bit PCM WAV's length in seconds, from its header. */

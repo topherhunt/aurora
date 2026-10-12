@@ -176,6 +176,8 @@ export class Player {
     this._fallTop = null
     this.fell = 0
     this.flying = false
+    // Held where she is (hold): no ground under her until she walks, flies or is placed.
+    this.held = false
     this.travel = null // non-null while a double-click flight is in progress
     // Afloat or under: the rig's height is swimY plus the bob, not the ground.
     this.swimming = false
@@ -236,7 +238,7 @@ export class Player {
    */
   _landAt(ground, feetY) {
     const p = this.rig.position
-    this.swimming = false
+    this.swimming = this.held = false
     this._fallTop = null
     this.smoothY = this.standY = p.y = ground
     const level = this._waterAt(p.x, p.z)
@@ -339,7 +341,7 @@ export class Player {
   // Onto a mount's back (v2/render/wild-striders.js): turned about her head to face `heading` (the creatures' convention, forward (cos, -sin)), then moved so her head is at (x, eyeY, z). update() is not called while she rides; carry() moves her.
   mountAt(x, eyeY, z, heading) {
     this.travel = null
-    this.flying = this.swimming = false
+    this.flying = this.swimming = this.held = false
     this.speed = 0
     this.fell = 0
     this._fallTop = null
@@ -350,6 +352,26 @@ export class Player {
     this.rig.position.x += x - head.x
     this.rig.position.y += eyeY - head.y
     this.rig.position.z += z - head.z
+  }
+
+  // Her feet held at `y` (a ladder, v2/climb.js) until she walks, flies or is placed; walking off is a step like any other, a fall included.
+  hold(y) {
+    this.travel = null
+    this.flying = this.swimming = false
+    this.speed = 0
+    this._fallTop = null
+    this.held = true
+    this.smoothY = this.standY = this.rig.position.y = y
+  }
+
+  // Pushed (dx, dz) off where she stands onto whatever is under her there, eased down as a step down is and never priced as a fall: the push's cost is its caller's.
+  shove(dx, dz) {
+    const p = this.rig.position
+    p.x += dx
+    p.z += dz
+    this.held = false
+    this._fallTop = null
+    this.standY = this.th.heightAt(p.x, p.z, this.standY)
   }
 
   // Carried by her mount: moved by (dx, dy, dz), then turned `turn` about the vertical through (px, pz), her own pose in the play space untouched.
@@ -382,7 +404,7 @@ export class Player {
     this.flying = on
     this.speed = 0
     this.blocked = false
-    if (on) this.swimming = false
+    if (on) this.swimming = this.held = false
     return true
   }
 
@@ -521,6 +543,14 @@ export class Player {
     // the ground it must NOT count: lift is meaningless there and folding it in
     // would make the ascend key double as a walk key.
     const drive = this.flying || this.swimming ? Math.min(1, Math.hypot(demand, liftIn)) : demand
+
+    if (this.held) {
+      if (demand === 0) {
+        this.speed = 0
+        return
+      }
+      this.held = false
+    }
 
     const top = this.flying ? this.flySpeedAt(origin) : L.maxSpeed * this.scale
     if (drive <= 0) {

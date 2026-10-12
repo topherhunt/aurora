@@ -89,7 +89,12 @@ export function placeProps(graph, field, seed) {
       const l = Math.hypot(nrm[0], nrm[2])
       if (l < 0.5) return false
       const nx = nrm[0] / l, nz = nrm[2] / l
-      out.torches.push({ x: hit[0], y: hit[1], z: hit[2], nx, nz })
+      // Its foot is TORCH_SINK deep in the rock, marched back along its lean from where the lean leaves the wall, so a wall that bulges or falls away under it can't leave it standing off in air (a spot whose lean runs along the rock, or finds none, is refused); `out` is foot to that exit.
+      const ax = nx * Math.sin(TORCH_LEAN), ay = Math.cos(TORCH_LEAN), az = nz * Math.sin(TORCH_LEAN), rock = (s) => field.at(hit[0] + ax * s, hit[1] + ay * s, hit[2] + az * s)
+      let exit = 0, foot = 0
+      while (rock(exit) > 0) if ((exit += 0.02) > 0.6) return false
+      while (rock(-foot) < TORCH_SINK) if ((foot += 0.02) > 0.6) return false
+      out.torches.push({ x: hit[0] - ax * foot, y: hit[1] - ay * foot, z: hit[2] - az * foot, nx, nz, out: exit + foot })
       out.lights.push({ x: hit[0] + nx * 0.4, y: hit[1] + 0.45, z: hit[2] + nz * 0.4, ...TORCHLIGHT })
       return true
     }
@@ -131,8 +136,12 @@ export function placeProps(graph, field, seed) {
 
   for (const n of graph.nodes) {
     if (n.kind === 'mouth') {
-      if (n.cellar) cellarTorches(n)
-      else mouthDressing(n)
+      if (n.cellar) {
+        cellarTorches(n)
+        // The door is a wall: a row of posts just behind its face, the passage's rock running on past it, so she stops short of the face by about her radius.
+        const { end } = mouthFlare(n)
+        for (let s = -1.5; s <= 1.5; s += 0.3) block(end.x - n.dx * 0.15 - n.dz * s, end.z - n.dz * 0.15 + n.dx * s, 0.15, end.y - 1, end.y + 3)
+      } else mouthDressing(n)
       continue
     }
     const pal = PALETTES[graph.regions[n.region].palette]
@@ -526,6 +535,9 @@ function nearFloor(field, x, z, y, reach) {
 
 const UP = [0, 1, 0]
 const TORCHLIGHT = { color: [0.9, 0.55, 0.25], reach: 7, power: 0.7 }
+// A wall torch's lean out from the wall off upright, and how deep its foot is set in the rock.
+export const TORCH_LEAN = 0.6
+const TORCH_SINK = 0.12
 // Lights one great cavern's groves may bake into the rock.
 const GROVE_LIGHTS = 24
 // Glowing floor caps a chamber needs for a fill light and ferns, and the fill's longest reach.

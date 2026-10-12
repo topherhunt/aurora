@@ -14,8 +14,7 @@ export const POST = {
   // The shaved point: the bark ends this far under the apex, each facet's top edge staggered by `stagger` of it.
   tip: 0.42,
   stagger: 0.35,
-  // Radial jitter as a share of the radius, all inward, and the ring centres' wander off the axis in metres. With
-  // labyrinths.js POST_SPACING these set the widest crack in a wall: 0.29 - 2 * 0.15 * 0.93 * cos(pi / 9) + 2 * bow, 4 cm.
+  // Radial jitter as a share of the radius, all inward (labyrinths.js POST_FACE is the mean it leaves), and the ring centres' wander off the axis in metres.
   rough: 0.07,
   bow: 0.006,
   // World metres one texture tile covers (deadwood.js texMetres).
@@ -135,25 +134,66 @@ export function buildPalisadePost({ lod = 0, seed = 1 } = {}) {
 /** The frame a post's card is photographed in (impostor.js bakeImpostor): as wide as the post and as tall. */
 export const POST_CARD_FRAME = { width: POST.radius * 2, height: POST.height }
 
-// The torch at the labyrinth's gate: a stake with a pitch-wrapped head, its flame standing on `height`.
+// The torch at the labyrinth's gate: a stake with a pitch-wrapped head, its flame standing on `height`. The beacon in the middle is the same stake taller.
 export const TORCH_POLE = { height: 1.75, radius: 0.045, head: 0.28, headRadius: 0.075, bury: 0.3 }
 
-/** One gate torch's pole on y = 0, in the post's attributes: a bark stake, its head dark with pitch. */
-export function buildTorchPole() {
+/** One torch pole `height` tall on y = 0, in the post's attributes: a bark stake, its head dark with pitch. */
+export function buildTorchPole(height = TORCH_POLE.height) {
   const T = TORCH_POLE
-  const parts = [
-    [new THREE.CylinderGeometry(T.radius * 0.8, T.radius, T.height - T.head + T.bury, 7, 1, true), (T.height - T.head - T.bury) / 2, LAYER.BARK, 0.8],
-    [new THREE.CylinderGeometry(T.headRadius, T.headRadius * 0.85, T.head, 7, 1, false), T.height - T.head / 2, LAYER.TIMBER_BEAM, 0.18],
-  ]
+  const fat = Math.sqrt(height / T.height)
+  return propGeometry([
+    [new THREE.CylinderGeometry(T.radius * 0.8 * fat, T.radius * fat, height - T.head + T.bury, 7, 1, true), [0, (height - T.head - T.bury) / 2, 0], LAYER.BARK, 0.8],
+    [new THREE.CylinderGeometry(T.headRadius, T.headRadius * 0.85, T.head, 7, 1, false), [0, height - T.head / 2, 0], LAYER.TIMBER_BEAM, 0.18],
+  ])
+}
+
+/** A watchtower's deck `half` square, its top on y = 0: planks along x over two joists, each plank its own shade. */
+export function buildTowerDeck(half, seed = 1) {
+  const rand = mulberry32(seed * 104729 + 7)
+  const planks = 6, gap = 0.012, thick = 0.06
+  const w = (2 * half - gap * (planks - 1)) / planks
+  const parts = []
+  for (let i = 0; i < planks; i++) {
+    const z = -half + w / 2 + i * (w + gap)
+    parts.push([new THREE.BoxGeometry(2 * half + (rand() - 0.5) * 0.06, thick, w), [(rand() - 0.5) * 0.03, -thick / 2, z], LAYER.TIMBER_HEWN, 0.75 + 0.25 * rand()])
+  }
+  for (const x of [-half * 0.55, half * 0.55]) parts.push([new THREE.BoxGeometry(0.1, 0.12, 2 * half), [x, -thick - 0.06, 0], LAYER.TIMBER_BEAM, 0.7])
+  return propGeometry(parts)
+}
+
+/** A ladder `height` tall on y = 0 in the x-y plane, its rails `half` either side of x = 0, a rung every `RUNG` metres. */
+export const RUNG = 0.3
+export function buildLadder(height, half) {
+  const parts = []
+  for (const x of [-half, half]) parts.push([new THREE.CylinderGeometry(0.03, 0.035, height, 6, 1, false), [x, height / 2, 0], LAYER.TIMBER_BEAM, 0.85])
+  for (let y = RUNG; y < height - 0.05; y += RUNG) parts.push([new THREE.CylinderGeometry(0.022, 0.022, 2 * half, 5, 1, false).rotateZ(Math.PI / 2), [0, y, 0], LAYER.TIMBER_BEAM, 0.95])
+  return propGeometry(parts)
+}
+
+/** The altar's plinth `half` square and `height` tall on y = 0: a footing, a shaft and a capstone of rubble masonry. */
+export function buildPlinth(half, height) {
+  return propGeometry([
+    [new THREE.BoxGeometry(2 * half * 1.15, 0.16, 2 * half * 1.15), [0, 0.08 - 0.1, 0], LAYER.STONE, 0.8],
+    [new THREE.BoxGeometry(2 * half * 0.9, height - 0.28, 2 * half * 0.9), [0, (height - 0.28) / 2 + 0.06, 0], LAYER.STONE, 0.95],
+    [new THREE.BoxGeometry(2 * half, 0.12, 2 * half), [0, height - 0.06, 0], LAYER.STONE, 1.05],
+  ])
+}
+
+/** Parts [geometry, offset, layer, shade] into one geometry in the post's attributes, each face's uvProj its own plane's metres over texMetres. Disposes the parts. */
+function propGeometry(parts) {
   const pos = [], nrm = [], uv = [], layer = [], col = []
-  for (const [g0, y, l, shade] of parts) {
+  for (const [g0, [ox, oy, oz], l, shade] of parts) {
     const g = g0.toNonIndexed()
-    g.translate(0, y, 0)
-    const p = g.getAttribute('position'), n = g.getAttribute('normal'), u = g.getAttribute('uv')
+    g.translate(ox, oy, oz)
+    const p = g.getAttribute('position'), n = g.getAttribute('normal')
     for (let i = 0; i < p.count; i++) {
-      pos.push(p.getX(i), p.getY(i), p.getZ(i))
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i)
+      const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i))
+      pos.push(x, y, z)
       nrm.push(n.getX(i), n.getY(i), n.getZ(i))
-      uv.push(u.getX(i) * 0.4, p.getY(i) / POST.texMetres)
+      if (ay >= ax && ay >= az) uv.push(x / POST.texMetres, z / POST.texMetres)
+      else if (ax >= az) uv.push(z / POST.texMetres, y / POST.texMetres)
+      else uv.push(x / POST.texMetres, y / POST.texMetres)
       layer.push(l)
       col.push(shade, shade * 0.95, shade * 0.9)
     }

@@ -79,8 +79,9 @@ export class WalkSurface {
     // `columnAt(x, z, minSize, out)` and `blockTopAt(x, z, minSize)` in
     // Rocks' terms and is read on its own into the one span buffer; one with
     // a `deckAt(x, z)` says where its top is a floor she stands level on.
-    // heightAt and crossed pass a fifth `sheer` true: a layer may then run a
-    // span's top to Infinity so she never stands on it (palisades.js).
+    // heightAt and crossed pass a fifth, her foot height: a layer may then run a
+    // span's top to Infinity while she is under it, so she never stands on it
+    // from below (palisades.js).
     this.stone = [rocks]
     // Layers of bodies that stand in her way as a trunk does (addBody).
     this.bodies = []
@@ -158,7 +159,7 @@ export class WalkSurface {
     }
     const ceiling = y + this.reach
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, this.rockMin, spans, true)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans, y)
       for (let i = 0; i < n; i++) {
         const top = spans[i * 2 + 1]
         if (top > best && top <= ceiling) best = top
@@ -232,10 +233,10 @@ export class WalkSurface {
     return null
   }
 
-  /** Whether any stone on the vertical line through (x, z) crosses (lo, hi). */
+  /** Whether any stone on the vertical line through (x, z) crosses (lo, hi), `lo` her feet plus her reach as fits asks it. */
   crossed(x, z, lo, hi) {
     for (let s = 0; s < this.stone.length; s++) {
-      const n = this.stone[s].columnAt(x, z, this.rockMin, spans, true)
+      const n = this.stone[s].columnAt(x, z, this.rockMin, spans, lo - this.reach)
       if (n >= SPAN_CAP) return true
       for (let i = 0; i < n; i++) {
         if (spans[i * 2 + 1] > lo && spans[i * 2] < hi) return true

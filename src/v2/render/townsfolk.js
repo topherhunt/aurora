@@ -1399,7 +1399,7 @@ export class Townsfolk {
 
   /** `graph` is its town's (townGraph), null for a traveller off the road. */
   _entity(c, graph = null) {
-    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
+    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
   }
 
   _wake(i) {
@@ -1412,7 +1412,7 @@ export class Townsfolk {
     for (const c of life.all) this._entity(c, life.graph)
     for (const m of life.mounts) {
       const key = `town:${i}:${m.id}`
-      Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null })
+      Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null, held: null })
     }
     // The smithy's forge burns all day; its flame's shader reads world space, so it hangs off the scene.
     const smithy = town.works.find((w) => w.kind === 'smithy')
@@ -1556,10 +1556,15 @@ export class Townsfolk {
     return into
   }
 
-  /** `c` held in a conversation with her from `seconds`: stopped where it is drawn and turned to her until release(), its sim going on without it. */
+  /** `c` held in a conversation with her from `seconds`: stopped where it is drawn and turned to her until release(), its sim going on without it; a rider stays in its saddle (`saddle`), its strider stopped and turned with it. */
   hold(c, seconds) {
     c.greet = { until: Infinity, at: seconds, clip: 'idle' }
     c.gcue++
+    const m = c.mount
+    if (c.saddle === null && m !== null && m.state === 'ridden' && c.hop >= 1) {
+      c.saddle = m
+      m.held = c
+    }
   }
 
   /** A held one's `clip` played once from `seconds`, then idle; turned to `toward` {x, z} while it plays, when given. */
@@ -1595,6 +1600,17 @@ export class Townsfolk {
 
   _poseMount(m, a) {
     const pose = m.pose
+    if (m.held !== null) {
+      // Under a rider held in a conversation, or riding back onto its sim after: where the rider's _pose put its feet, before _saddle lifts it.
+      const r = m.held.pose
+      pose.x = r.x; pose.y = r.y; pose.z = r.z; pose.heading = r.heading
+      pose.size = m.base * (this.bond.grown.get(m.key) ?? 1)
+      pose.clip = r.speed > 0 ? 'walk' : 'idle'
+      pose.speed = r.speed
+      pose.cue = r.speed > 0 ? 1e6 : 1e6 + 1
+      m.gone = false
+      return
+    }
     pose.x = m.px + (m.x - m.px) * a
     pose.y = m.py + (m.y - m.py) * a
     pose.z = m.pz + (m.z - m.pz) * a
@@ -1915,7 +1931,7 @@ export class Townsfolk {
     Object.assign(c.pose, { clip: j.ride ? 'ride' : 'walk', speed: j.speed, cue: 0, from: -1, scale: 1, hop: j.ride ? 1 : 0 })
     let m = null
     if (j.ride) {
-      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null }, mountFields(striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296), hash32(this.seed, j.from, j.to, Math.round(j.t0), k, 0x71a7)))
+      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null, held: null }, mountFields(striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296), hash32(this.seed, j.from, j.to, Math.round(j.t0), k, 0x71a7)))
       Object.assign(m.pose, { clip: 'walk', speed: j.speed })
       c.mount = m
     }
@@ -1971,26 +1987,42 @@ export class Townsfolk {
         c.greet.at = seconds
         c.gcue++
       }
-      const dur = this.bodies[c.body].durations[c.greet.clip]
-      pose.clip = seconds - c.greet.at < dur ? c.greet.clip : 'idle'
-      pose.speed = 0
-      pose.cue = 1e6 + c.gcue * 2 + (pose.clip === 'idle' ? 1 : 0)
       pose.from = -1
       pose.scale = 1
-      if (seconds >= c.greet.until) { c.greet = null; c.lag = true; c.cool = seconds + G.cool }
+      pose.speed = 0
+      if (c.saddle !== null) {
+        // Sat on its stopped strider: the gestures are a standing body's, and would stand it up in the saddle.
+        const g = c.saddle.pose
+        pose.x = g.x; pose.y = g.y; pose.z = g.z
+        pose.hop = 1
+        pose.clip = 'ride-idle'
+        pose.cue = 1e6 + 1
+      } else {
+        pose.clip = seconds - c.greet.at < this.bodies[c.body].durations[c.greet.clip] ? c.greet.clip : 'idle'
+        pose.cue = 1e6 + c.gcue * 2 + (pose.clip === 'idle' ? 1 : 0)
+      }
+      if (seconds >= c.greet.until) {
+        c.greet = null
+        c.lag = true
+        c.cool = seconds + G.cool
+        // Its sim off that strider meanwhile (down at a rail, or gone down the road), it is let go from the saddle where it sits.
+        if (c.saddle !== null && !(c.mount === c.saddle && c.saddle.state === 'ridden' && c.hop >= 1)) this._unsaddle(c)
+      }
       return
     }
     if (c.lag) {
-      const dx = sx - pose.x, dz = sz - pose.z, d = Math.hypot(dx, dz)
-      const body = this.bodies[c.body], speed = body.gait.walk * c.k * c.pace * G.catchUp
+      const on = c.saddle !== null, from = on ? c.saddle.pose : pose
+      const dx = sx - from.x, dz = sz - from.z, d = Math.hypot(dx, dz)
+      const body = this.bodies[c.body], speed = (on ? JOURNEYS.speed.ride : body.gait.walk * c.k * c.pace) * G.catchUp
       if (d > speed * dt) {
         const m = speed * dt
-        pose.x += (dx / d) * m
-        pose.z += (dz / d) * m
-        pose.y = this._ground(c, pose.x, pose.z, pose.y)
+        pose.x = from.x + (dx / d) * m
+        pose.z = from.z + (dz / d) * m
+        pose.y = this._ground(c, pose.x, pose.z, from.y)
         const s = swing(pose.heading, Math.atan2(-dz, dx))
         pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
-        pose.clip = 'walk'
+        if (on) pose.hop = 1
+        pose.clip = on ? 'ride' : 'walk'
         pose.speed = speed
         pose.cue = 1e6 + c.gcue * 2
         pose.from = -1
@@ -1998,6 +2030,7 @@ export class Townsfolk {
         return
       }
       c.lag = false
+      if (on) this._unsaddle(c)
     }
     pose.x = sx; pose.y = sy; pose.z = sz
     this._shove(c, dt)
@@ -2007,6 +2040,11 @@ export class Townsfolk {
     pose.cue = c.cue
     pose.from = c.from
     pose.scale = 1
+  }
+
+  _unsaddle(c) {
+    c.saddle.held = null
+    c.saddle = null
   }
 
   _draw(c, dt) {
@@ -2029,7 +2067,8 @@ export class Townsfolk {
     if (!puppet) return
     puppet.show(want, gone ? DOOR_FADE_S : lodFadeS())
     puppet.mixer.timeScale = c.pace * pose.scale
-    if (pose.hop > 0 && c.mount) this._saddle(c)
+    const mount = c.saddle !== null ? c.saddle : c.mount
+    if (pose.hop > 0 && mount) this._saddle(c, mount)
     _pos.set(pose.x, pose.y, pose.z)
     _quat.setFromAxisAngle(UP, pose.heading)
     _scl.setScalar(c.k)
@@ -2064,9 +2103,9 @@ export class Townsfolk {
   }
 
   /** In the saddle of its strider (drawn this frame) by its hop: the ride clip's underside on the saddle, rising `leap` over the line between. */
-  _saddle(c) {
+  _saddle(c, mount) {
     const pose = c.pose, h = pose.hop
-    const seat = this.striders.saddle(c.mount, _head)
+    const seat = this.striders.saddle(mount, _head)
     const hips = _hand.copy(this.bodies[c.body].ride).multiplyScalar(c.k).applyAxisAngle(UP, pose.heading)
     pose.x += (seat.x - hips.x - pose.x) * h
     pose.y += (seat.y - hips.y - pose.y) * h + Math.sin(Math.PI * h) * TOWNSFOLK.leap
@@ -2082,7 +2121,7 @@ export class Townsfolk {
       S.rein(_hand.set(x, S.barY(x, z), z), _head)
       return
     }
-    const by = m.state === 'led' ? m.leader : m.state === 'ridden' ? m.rider : null
+    const by = m.held !== null ? m.held : m.state === 'led' ? m.leader : m.state === 'ridden' ? m.rider : null
     if (by === null || !by.puppet) return
     const p = by.puppet
     S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head)

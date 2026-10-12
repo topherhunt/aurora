@@ -97,10 +97,10 @@ const SLIDERS = [
   [null, 'capTilt', 0, 0.5, 0.01, 'tips the whole cap off the stem axis'],
   [null, 'sweep', 0.6, TAU, 0.02, 'how far round the cap goes. Less than full turn + stemHeight 0 = a BRACKET fungus on a log'],
 
-  ['— underside', 'underside', 0, 1, 1, 'build the gilled underside at all. Off is now the DEFAULT -- it doubles as a puffball and halves the triangles, and a 9 cm cap is never seen from below. Turn it on to look at anything you could stand under'],
-  [null, 'gillDrop', 0, 0.2, 0.005, 'how far the gills hang below the rim'],
+  ['— underside', 'underside', 0, 1, 1, 'close the cap into a solid with a creamy gilled underside that meets the stem top. Off leaves the cap a single sheet -- the puffball look'],
+  [null, 'gillDrop', -0.2, 0.3, 0.005, 'how far the underside bulges down between rim and stem top, which both stay attached. Thickens the cap; negative arcs it up into the cap'],
   [null, 'gillBlades', 0, 24, 1, 'real radial fins hung under the cap, 2 triangles each. Only worth it on a mushroom you stand next to'],
-  [null, 'gillDepth', 0, 1, 0.01, 'how far in toward the stem the underside reaches'],
+  [null, 'gillDepth', 0, 1, 0.01, 'how far each blade hangs below the underside, tapering to nothing at the rim'],
 
   ['— stem', 'stemHeight', 0, 1.1, 0.01, 'stem length, relative to total height. 0 removes it entirely -- bracket fungus, puffball'],
   [null, 'stemRadius', 0.005, 0.3, 0.002, 'radius at HALF height, so taper stays symmetric about it'],
@@ -108,6 +108,7 @@ const SLIDERS = [
   [null, 'bulb', 0, 1.2, 0.01, 'a swelling confined to the bottom fifth. The volva of an amanita'],
   [null, 'lean', 0, 0.9, 0.01, 'launch angle off vertical'],
   [null, 'stemCurve', 0, 1.4, 0.01, 'bend accumulated along the stem, so it is an S rather than a stick'],
+  [null, 'stemReach', 0, 0.9, 0.01, 'how far the stem top, and the underside with it, runs up inside the cap, as a fraction of capRise. 0 = level with the rim'],
   [null, 'ring', 0, 0.7, 0.01, 'skirt around the stem, as a fraction of cap radius. 0 = none'],
   [null, 'ringHeight', 0.15, 0.95, 0.01, 'where up the stem the skirt sits'],
   [null, 'ringDroop', 0, 1, 0.02, 'how far the skirt hangs'],
@@ -165,11 +166,7 @@ const SLIDERS = [
 // left to right, and the source panel counts the shelf's length.
 const PRESETS = MUSHROOM_NAMES.map((name) => [name, MUSHROOM_SPECIES[name].params])
 
-// `underside` is a slider, so it has to be 0/1 here rather than false/true, and
-// it is derived from the default rather than assumed on. That assumption used
-// to be harmless and is not any more: the shipped default is now OFF, and a
-// bench that opened with the underside built would be showing you a mushroom
-// with a third more triangles than the game draws.
+// `underside` is a slider, so it has to be 0/1 here rather than false/true.
 const UNDERSIDE_0_1 = MUSHROOM_DEFAULTS.underside ? 1 : 0
 
 const params = {
@@ -362,7 +359,7 @@ scene.add(group)
 const V_STEM_HEIGHT = [1, 2 / 3, 1.5]
 const V_CAP_RADIUS = [1, 2 / 3, 1.5]
 const V_CAP_RISE = [1, 0.5, 2]
-const V_STEM_CURVE = [0.3, 0.7]
+const V_STEM_CURVE = [MUSHROOM_DEFAULTS.stemCurve, 0.7]
 
 // Laid out as a matrix rather than as a flat run of 54, because the whole value
 // of the page is reading a position back to its parameters. Across: capRadius
@@ -718,9 +715,9 @@ function refresh() {
   variantNote.innerHTML = galleryMode
     ? `<b>Across, ${GALLERY_COLS} columns:</b> capRadius &times;1, &times;2/3, &times;1.5 in blocks of three, ` +
       `and stemHeight &times;1, &times;2/3, &times;1.5 within each block. ` +
-      `<b>Down, ${GALLERY_ROWS} rows:</b> stemCurve 0.3 for the top three rows and 0.7 for the bottom three, ` +
+      `<b>Down, ${GALLERY_ROWS} rows:</b> stemCurve ${V_STEM_CURVE[0]} for the top three rows and ${V_STEM_CURVE[1]} for the bottom three, ` +
       `and capRise &times;1, &times;0.5, &times;2 within each block. ` +
-      `The top-left cell is the sliders as they stand, with stemCurve pinned to 0.3, and it is the one ` +
+      `The top-left cell is the sliders as they stand, with stemCurve pinned to ${V_STEM_CURVE[0]}, and it is the one ` +
       `<em>card</em> bakes its impostor from. ` +
       `<b>The gold ring</b> is the one cell the shipped bank builds: every multiplier &times;1, which ` +
       `is this species exactly as <code>MUSHROOM_SPECIES</code> writes it down. The bank ships one ` +
@@ -1173,6 +1170,45 @@ document.getElementById('reset').addEventListener('click', () => {
   syncPalette()
   frame()
   refresh()
+})
+
+// --- copy -------------------------------------------------------------------
+
+// Every slider plus the two palette cells, as JSON ready to paste over a
+// MUSHROOM_SPECIES `params` block. `planes` is card-only, so it stays out.
+function copyText() {
+  const out = {}
+  for (const [, key, , , step] of SLIDERS) {
+    if (key === 'planes') continue
+    out[key] = step >= 1 ? Math.round(params[key]) : Number(params[key].toFixed(3))
+  }
+  out.capCell = params.capCell
+  out.fleshCell = params.fleshCell
+  return JSON.stringify(out, null, 2)
+}
+
+const copyBtn = document.getElementById('copy')
+let copyTimer = 0
+function flashCopy(label, hold) {
+  copyBtn.textContent = label
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => { copyBtn.textContent = 'copy' }, hold)
+}
+// Both failures reach the label: the API is absent on a non-secure origin and
+// permission-gated on a secure one, and a silent no-op looks like success.
+copyBtn.addEventListener('click', () => {
+  if (!navigator.clipboard) {
+    flashCopy('no clipboard API', 4000)
+    console.error('gen-mushroom: navigator.clipboard is undefined -- this page is not on a secure origin')
+    return
+  }
+  navigator.clipboard.writeText(copyText()).then(
+    () => flashCopy('copied', 1000),
+    (e) => {
+      flashCopy(`clipboard blocked (${e.name})`, 4000)
+      console.error('gen-mushroom: clipboard write refused', e)
+    }
+  )
 })
 
 // --- run --------------------------------------------------------------------

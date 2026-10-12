@@ -328,6 +328,30 @@ try {
   const sky = await nextFlares(sixth)
   if (sky.length !== 1 || sky[0][0] !== 'f1' || !(sky[0][10] >= 200)) throw new Error(`newcomer should hear the sky, aged: ${JSON.stringify(sky)}`)
   sixth.close()
+  // A recall reaches every other client once with its age, never its recaller; a malformed one is dropped; a newcomer hears the recall and not the flare.
+  const nextRecalls = (ws) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('recalls timeout')), 1000)
+    const onMessage = (event) => {
+      const message = JSON.parse(event.data)
+      if (message.type === 'snapshot' && message.recalls) {
+        clearTimeout(timer)
+        ws.removeEventListener('message', onMessage)
+        resolve(message)
+      }
+    }
+    ws.addEventListener('message', onMessage)
+  })
+  second.send(JSON.stringify({ version: 1, type: 'recall', recall: ['f1', 1, 2] }))
+  second.send(JSON.stringify({ version: 1, type: 'recall', recall: ['f1', 1, 2, 3] }))
+  const back = (await nextRecalls(first)).recalls
+  if (back.length !== 1 || !same(back[0].slice(0, 4), ['f1', 1, 2, 3]) || !(back[0][4] >= 0 && back[0][4] < 500)) throw new Error(`recall round-trip mismatch: ${JSON.stringify(back)}`)
+  await wait(120)
+  const recaller = await nextClock(second, () => true)
+  if ('recalls' in recaller) throw new Error(`the recaller should not hear her own recall back, got ${JSON.stringify(recaller.recalls)}`)
+  const sweeper = await open()
+  const swept = await nextRecalls(sweeper)
+  if ('flares' in swept || swept.recalls.length !== 1 || swept.recalls[0][0] !== 'f1') throw new Error(`newcomer should hear the recall and not the recalled flare: ${JSON.stringify({ flares: swept.flares, recalls: swept.recalls })}`)
+  sweeper.close()
   // Trust reaches the other client once, never its teller; a malformed batch is dropped whole; a newcomer hears it all.
   const nextTrust = (ws) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('trust timeout')), 1000)
@@ -395,7 +419,7 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
   const alone = await nextClock(first, (m) => m.skipHours !== 7)
   if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
-  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one or a room that all sleeps, and a sleeper\'s flag relays; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer; trust relayed once, not to its teller, a malformed batch dropped, all of it to a newcomer; chalk likewise, a backlog trickled to a newcomer 32 a snapshot)')
+  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one or a room that all sleeps, and a sleeper\'s flag relays; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer; a recall likewise, the recalled flare gone from the sky a newcomer hears; trust relayed once, not to its teller, a malformed batch dropped, all of it to a newcomer; chalk likewise, a backlog trickled to a newcomer 32 a snapshot)')
   first.close()
   second.close()
 } finally {

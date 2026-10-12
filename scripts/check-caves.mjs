@@ -160,6 +160,15 @@ for (const sys of SYSTEMS) {
     walk.hintY = d.y
     const ok = walk.fits(d.x, d.z, d.y) && walk.trueWaterAt(d.x, d.z, d.y + 1.6) === null && Math.hypot(d.x - d.mx, d.z - d.mz) > EXIT_R + 1
     check(ok, `${tag}: mouth ${doors.indexOf(d)} lands her standing and dry, clear of the exit`)
+    if (!d.cellar) continue
+    // Walking straight at a cellar's door from its arrival she stops in front of its face, within main.js HOUSE_DOOR.walk (0.5 m) of it.
+    let gap = Infinity
+    for (let s = 0; s < 8; s += 0.02) {
+      const x = d.x - d.dx * s, z = d.z - d.dz * s, h = walk.heightAt(x, z, d.y + 0.5)
+      if (!walk.fits(x, z, h) || walk.obstacleAt(x, z, {}) !== null) break
+      gap = (x - d.mx) * d.dx + (z - d.mz) * d.dz
+    }
+    check(gap > 0 && gap <= 0.5, `${tag}: walking at cellar ${doors.indexOf(d)}'s door she stops at its face, near enough to touch it`, `${gap.toFixed(2)} m in front of it`)
   }
 
   // Flight in a cave is a steady flyLowSpeed. In rock heightAt answers its WALL sentinel, a kilometre over her: read as a floor it threw her up there in a frame.
@@ -394,7 +403,7 @@ for (const sys of SYSTEMS) {
   const layers = Layers.deserialize(JSON.parse(readFileSync(new URL('layers.json', root), 'utf8')))
   const field = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
   field.setLayers(layers)
-  const { roadPlan, mouths, trailPlan } = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
+  const { roadPlan, mouths, trailPlan } = planWorld({ heightmap: hm, ground: (x, z) => hm.sample(x, z), field, surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, spawn: SPAWN })
   layers.setClefts(mouths.map((m) => [m.x, m.z, m.nx, m.nz, m.y]))
   const bank = mouthBankFrom(readShippedLadder('cave-mouth'))
   const half = (bank.width * MOUTH.scale) / 2, depth = bank.depth * MOUTH.scale

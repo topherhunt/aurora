@@ -118,11 +118,11 @@ function roomFor(name) {
     // was moving, so a joiner finds the boats where they were left.
     // `loose`, `gone`, `taken` and `rev`: the things in the room, see applyThing.
     // `anchors`, `lured` and `crev`: the creatures someone is interacting with, see applyCreature.
-    // `flares` and `frev`: the flares shot in the room, see applyFlare.
+    // `flares` and `frev`: the flares shot in the room, see applyFlare; `recalls` and `rrev` those recalled, see applyRecall.
     // `flames` and `mrev`: the flames lit on trees, ferns and sticks, see applyFlame.
     // `trust` and `trev`: which villager trusts which player, see applyTrust.
     // `chalk` and `krev`: the strokes drawn on cave walls, see applyChalk.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0, chalk: new Map(), krev: 0 }
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, recalls: [], rrev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0, chalk: new Map(), krev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -184,6 +184,28 @@ function flaresFor(room, client, now) {
   const out = []
   for (const e of room.flares) if (e.rev > client.seenFrev && e.by !== client.id) out.push([...e.data, now - e.at])
   client.seenFrev = room.frev
+  return out.length ? out : null
+}
+
+// A RECALL: [id, mx, my, mz], a flare flown back into a gun's muzzle. It leaves the room's flares, so a late joiner
+// never sees it, and goes to every other client once with its age, kept FLARE_CAP deep so a newcomer's saved sky drops
+// the ones recalled while it was away. Relayed even for an id the relay has forgotten, since a client may still hang it.
+function validRecall(r) {
+  return Array.isArray(r) && r.length === 4 && typeof r[0] === 'string' && /^[0-9a-z]{1,16}$/.test(r[0]) && r.slice(1).every((n) => Number.isFinite(n))
+}
+
+function applyRecall(room, client, recall, now) {
+  if (room.recalls.some((e) => e.data[0] === recall[0])) return
+  room.flares = room.flares.filter((e) => e.data[0] !== recall[0])
+  room.recalls.push({ data: recall, at: now, rev: ++room.rrev, by: client.id })
+  if (room.recalls.length > FLARE_CAP) room.recalls.shift()
+}
+
+/** The recalls since this client last heard, none of them its own, each with its age in ms; null when there are none. */
+function recallsFor(room, client, now) {
+  const out = []
+  for (const e of room.recalls) if (e.rev > client.seenRrev && e.by !== client.id) out.push([...e.data, now - e.at])
+  client.seenRrev = room.rrev
   return out.length ? out : null
 }
 
@@ -541,6 +563,8 @@ wss.on('connection', (ws, request) => {
     seenCrev: 0,
     // How far through the room's flares it has been told.
     seenFrev: 0,
+    // How far through the room's recalls it has been told.
+    seenRrev: 0,
     // How far through the room's flames it has been told.
     seenMrev: 0,
     // How far through the room's trust it has been told.
@@ -591,6 +615,13 @@ wss.on('connection', (ws, request) => {
     if (message && message.type === 'flare') {
       if (validFlare(message.flare)) {
         applyFlare(room, client, message.flare, now)
+        client.lastSeen = now
+      }
+      return
+    }
+    if (message && message.type === 'recall') {
+      if (validRecall(message.recall)) {
+        applyRecall(room, client, message.recall, now)
         client.lastSeen = now
       }
       return
@@ -671,7 +702,7 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things, the creatures, the flares, the flames, the trust and the chalk ride only when something changed since this client last heard.
+      // The things, the creatures, the flares, their recalls, the flames, the trust and the chalk ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
@@ -679,6 +710,8 @@ setInterval(() => {
       if (creatures) snapshot.creatures = creatures
       const flares = flaresFor(room, client, now)
       if (flares) snapshot.flares = flares
+      const recalls = recallsFor(room, client, now)
+      if (recalls) snapshot.recalls = recalls
       const flames = flamesFor(room, client, now)
       if (flames) snapshot.flames = flames
       const trust = trustFor(room, client)

@@ -2,6 +2,7 @@
 //
 // The group stands at the cave's world height `oy`; every plan position inside it is cave-local.
 import THREE from '../../three-instance.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { TORCH_REACH } from '../../lighting.js'
 import { ROCK_TILE_MEAN, LAYER } from '../../textures.js'
 import { buildMushroom } from '../../props/mushroom.js'
@@ -14,23 +15,29 @@ import { shoreMesh } from '../caves/water.js'
 import { WATER, RIPPLE_GLSL } from '../../water.js'
 import { stalagmite, stalagmiteCard } from '../caves/stalagmite.js'
 import { mouthFlare } from '../caves/field.js'
+import { TORCH_LEAN } from '../caves/props.js'
 import { SKY_GLSL } from '../../sky-glsl.js'
 import { buildFern } from '../../props/fern.js'
 import { shipFernParams, FERN_TIERS } from '../../props/fern-bank.js'
 import { buildBladeClump } from '../../props/grass-blades.js'
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
 import { rockParams } from '../../props/rock-bank.js'
-import { buildStickGeometry, LENGTH_M as STICK_M } from './sticks.js'
+import { buildStickGeometry, LENGTH_M as STICK_M, TINT } from './sticks.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { TORCH as HELD_FLAME } from './wildfire.js'
+import { rgb, IRON, WOOD_M } from './interior.js'
 import { buildPebble, STRETCH, FLAT, SINK, FULL_RADIUS, RADIUS as PEBBLE_REACH, REACH_SIZES } from './litter.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
 // A wall torch's stick: radians off upright, out from the rock, and its scale on the overworld's stick.
-const TORCH_LEAN = 0.6
 const TORCH_STICK = 1.1
 const STICK_TIP_DIR = new THREE.Vector3(0, 0, -1)
+const STICK_TINT = new THREE.Color(TINT).toArray()
+// A cellar door, hung as the house hangs its own (town-interior.js doorLeaf): its size, its foot `sunk` under the flare's floor, and its boards; the wood is doorLeaf's WOOD(0.4, -0.1).
+export const DOOR = { w: 1.2, h: 2.2, sunk: 0.35, boards: 5 }
+const DOOR_WOOD = rgb(0.079, 0.408, 0.152)
+const DOOR_IRON = [...IRON]
 const GLOW_GAIN = 3.2
 // Fog in the air, and in the water: density per metre, linear colour.
 export const CAVE_AIR = { density: 0.022, color: [0, 0, 0] }
@@ -106,6 +113,9 @@ varying float vLayer;
 attribute vec2 cardUv;
 varying vec2 vUv;
 #endif
+#ifdef WOOD
+varying vec2 vUv;
+#endif
 void main() {
   vec4 p = vec4(position, 1.0);
   vec3 n = normal;
@@ -135,6 +145,9 @@ void main() {
 #if defined(MUSH) || defined(FOLIAGE)
   vUv = uvProj;
   vLayer = texLayer;
+#endif
+#ifdef WOOD
+  vUv = uv;
 #endif
 #else
   vCol = color.rgb;
@@ -166,6 +179,10 @@ varying float vLayer;
 uniform sampler2D uCard;
 varying vec2 vUv;
 #endif
+#ifdef WOOD
+uniform sampler2D uGrain;
+varying vec2 vUv;
+#endif
 void main() {
   vec3 n = normalize(vNrm);
   if (!gl_FrontFacing) n = -n;
@@ -184,6 +201,8 @@ void main() {
   vec4 leaf = texture(uAtlas, vec3(vUv, vLayer));
   if (leaf.a < 0.5) discard;
   vec3 albedo = vCol * leaf.rgb;
+#elif defined(WOOD)
+  vec3 albedo = vCol * texture2D(uGrain, vUv).rgb;
 #else
   vec3 albedo = vCol;
 #endif
@@ -294,9 +313,10 @@ void main() {
 }`
 
 /** The shared uniforms: the torches by reference, the fog per room. */
-function caveUniforms(lighting, stone) {
+function caveUniforms(lighting, stone, grain) {
   return {
     uStone: { value: stone },
+    uGrain: { value: grain },
     uTorch: lighting.uniforms.uTorch,
     uTorchColor: lighting.uniforms.uTorchColor,
     uFogDensity: { value: CAVE_AIR.density },
@@ -305,6 +325,30 @@ function caveUniforms(lighting, stone) {
     uTime: { value: 0 },
     uDay: { value: new THREE.Color() },
   }
+}
+
+// A cellar door's geometry, foot at the origin, the cave side +Z: { wood: boards and battens, iron: straps and ring }. Each box's grain runs along its length at WOOD_M a repeat, shifted per box so the boards differ.
+function cellarDoor() {
+  const { w, h, sunk, boards } = DOOR, wood = [], iron = []
+  const box = (a, b, axis, out) => {
+    const g = new THREE.BoxGeometry(b[0] - a[0], b[1] - a[1], b[2] - a[2]).translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2)
+    const p = g.getAttribute('position'), n = g.getAttribute('normal'), uv = g.getAttribute('uv'), shift = out.length * 0.37
+    for (let i = 0; i < p.count; i++) {
+      const c = [p.getX(i), p.getY(i), p.getZ(i)], m = [n.getX(i), n.getY(i), n.getZ(i)]
+      const across = [0, 1, 2].find((k) => k !== axis && Math.abs(m[k]) < 0.5)
+      uv.setXY(i, c[axis] / WOOD_M + shift, c[across] / WOOD_M)
+    }
+    out.push(g)
+  }
+  for (let i = 0; i < boards; i++) box([-w / 2 + (w * i) / boards + 0.003, 0.01, -0.05], [-w / 2 + (w * (i + 1)) / boards - 0.003, h - 0.01, 0], 1, wood)
+  for (const y of [sunk + 0.35, h - 0.45]) {
+    box([-w / 2 + 0.05, y - 0.08, 0], [w / 2 - 0.05, y + 0.08, 0.035], 0, wood)
+    box([-w / 2 + 0.02, y - 0.03, 0.035], [w * 0.2, y + 0.03, 0.045], 0, iron)
+  }
+  iron.push(new THREE.TorusGeometry(0.07, 0.009, 6, 12).translate(w * 0.3, sunk + 0.93, 0.06))
+  const merged = { wood: mergeGeometries(wood), iron: mergeGeometries(iron) }
+  for (const g of [...wood, ...iron]) g.dispose()
+  return merged
 }
 
 // The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), capped from the cave sheet, each with a `cap` attribute (1 on the cap) and its built height.
@@ -380,9 +424,10 @@ const MIRROR_SIZE = 64
 const MIRROR_REACH = 30
 
 export class CaveRoom {
-  /** `plan` from planCave, `oy` the cave's world height, `lighting` the WorldLighting whose torches light it, `stone` the boulders' tile (rocks/stone.png, repeating, sRGB), `atlas` the props' texture array (textures.js) the mushrooms and ferns wear, `sky` the Sky's uniforms the mouths show. */
-  constructor(plan, oy, lighting, stone, atlas, sky) {
+  /** `plan` from planCave, `oy` the cave's world height, `lighting` the WorldLighting whose torches light it, `stone` the boulders' tile (rocks/stone.png, repeating, sRGB), `grain` the interiors' wood grain (repeating, sRGB) the torches' sticks and the cellar doors wear, `atlas` the props' texture array (textures.js) the mushrooms and ferns wear, `sky` the Sky's uniforms the mouths show. */
+  constructor(plan, oy, lighting, stone, grain, atlas, sky) {
     if (!(stone instanceof THREE.Texture)) throw new Error('CaveRoom: needs the stone tile')
+    if (!(grain instanceof THREE.Texture)) throw new Error('CaveRoom: needs the wood grain')
     if (!(atlas instanceof THREE.DataArrayTexture)) throw new Error('CaveRoom: needs the props\' texture array')
     if (!sky || !sky.uZenith) throw new Error('CaveRoom: needs the sky\'s uniforms')
     this.plan = plan
@@ -394,11 +439,12 @@ export class CaveRoom {
     this.group = new THREE.Group()
     this.group.name = 'cave-room'
     this.group.position.y = oy
-    this.uniforms = caveUniforms(lighting, stone)
+    this.uniforms = caveUniforms(lighting, stone, grain)
     this.mushUniforms = { ...this.uniforms, uAtlas: { value: atlas } }
     this.material = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { STONE: '' }, vertexColors: true })
     this.propMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '' }, side: THREE.DoubleSide })
     this.rockMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', STONE: '' }, side: THREE.DoubleSide })
+    this.woodMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', WOOD: '' }, side: THREE.DoubleSide })
     this.mushMaterial = new THREE.ShaderMaterial({ uniforms: this.mushUniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', MUSH: '' }, side: THREE.DoubleSide })
     this.foliageMaterial = new THREE.ShaderMaterial({ uniforms: this.mushUniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', FOLIAGE: '' }, side: THREE.DoubleSide })
     this.cards = dripCards()
@@ -422,7 +468,7 @@ export class CaveRoom {
     // key -> { x, y, z (the chunk's centre), lods: [meshes per LODS tier, null until it arrives or if empty there] }, a mesh per region.
     this.chunks = new Map()
     this.region = plan.graph.nodes[plan.doors[0].node].region
-    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.mirror]
+    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.woodMaterial,this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.mirror]
     this._props(plan.props)
     this._water(plan.waters)
     this._mouths(plan.graph)
@@ -446,12 +492,18 @@ export class CaveRoom {
       const at = (v) => (Math.floor(v / CHUNK) + 0.5) * CHUNK
       this.skies.push({ mesh, region: n.region, x: at(end.x), y: at((y0 + y1) / 2), z: at(end.z) })
     }
-    this._instanced(new THREE.PlaneGeometry(1.2, 2.2).translate(0, 1.1, 0), mouths.filter((m) => m.cellar), (n) => {
-      const { end } = mouthFlare(n)
+    const cellars = mouths.filter((m) => m.cellar), door = cellarDoor()
+    // A door wears the light of the rock it is set against: the passage's cap, marched to behind its middle.
+    const place = (color) => (n) => {
+      const { end } = mouthFlare(n), y = end.y + DOOR.h / 2 - DOOR.sunk
+      let s = 0
+      while (this.plan.field.at(end.x - n.dx * s, y, end.z - n.dz * s) <= 0) if ((s += 0.05) > 3) throw new Error(`CaveRoom: cellar ${n.i}'s door has no rock behind it`)
       tmpQ.setFromEuler(tmpE.set(0, Math.atan2(n.dx, n.dz), 0))
-      tmpM.compose(tmpP.set(end.x, end.y - 0.35, end.z), tmpQ, tmpS.set(1, 1, 1))
-      return { color: [0.16, 0.09, 0.045] }
-    }, this.propMaterial)
+      tmpM.compose(tmpP.set(end.x, end.y - DOOR.sunk, end.z), tmpQ, tmpS.set(1, 1, 1))
+      return { color, lit: this._rock(end.x - n.dx * s, y, end.z - n.dz * s) }
+    }
+    this._instanced(door.wood, cellars, place(DOOR_WOOD), this.woodMaterial)
+    this._instanced(door.iron, cellars, place(DOOR_IRON), this.propMaterial)
   }
 
   /** The hour on the mouths: `dayness` 0 (night) to 1 (day) tints the daylight baked round them from night blue to white. */
@@ -732,18 +784,21 @@ export class CaveRoom {
     this.pebbleReach = Float32Array.from(small, (p) => Math.min(PEBBLE_REACH, REACH_SIZES * p.s))
     this.pebbleRank = Float32Array.from(small, (p) => roll(p.seed, 53.1))
 
-    // Wall torches: the overworld's stick (sticks.js) leaning out of the rock, the held torch's flame (wildfire.js) on its tip.
-    const along = (t) => tmpV.set(t.nx * Math.sin(TORCH_LEAN), Math.cos(TORCH_LEAN), t.nz * Math.sin(TORCH_LEAN))
-    const tipOf = (t) => along(t).multiplyScalar(STICK_M * TORCH_STICK).add(tmpP.set(t.x - t.nx * 0.05, t.y, t.z - t.nz * 0.05))
+    // Wall torches: the overworld's stick (sticks.js) set in the rock from its foot (props.js), lengthened by its buried `out` and wearing the light of the wall where it leaves it, the held torch's flame (wildfire.js) on its tip.
+    const tilt = (t) => tmpV.set(t.nx * Math.sin(TORCH_LEAN), Math.cos(TORCH_LEAN), t.nz * Math.sin(TORCH_LEAN))
+    const along = (t, s) => tilt(t).multiplyScalar(s).add(tmpP.set(t.x, t.y, t.z))
+    const len = (t) => t.out + STICK_M * TORCH_STICK
     this._instanced(buildStickGeometry(), props.torches, (t) => {
-      tmpQ.setFromUnitVectors(STICK_TIP_DIR, along(t))
-      tmpM.compose(along(t).multiplyScalar(STICK_M * TORCH_STICK * 0.5).add(tmpP.set(t.x - t.nx * 0.05, t.y, t.z - t.nz * 0.05)), tmpQ, tmpS.setScalar(TORCH_STICK))
-      return { color: [0.3, 0.22, 0.14] }
-    }, this.propMaterial)
+      tmpQ.setFromUnitVectors(STICK_TIP_DIR, tilt(t))
+      tmpM.compose(along(t, len(t) / 2), tmpQ, tmpS.set(TORCH_STICK, TORCH_STICK, len(t) / STICK_M))
+      const wall = along(t, t.out)
+      return { color: STICK_TINT, lit: this._rock(wall.x, wall.y, wall.z) }
+    }, this.woodMaterial)
     this.flames = null
     if (props.torches.length > 0) {
       this.flames = new TriFlames(props.torches.length, TRI_TORCH)
-      props.torches.forEach((t, i) => { const p = tipOf(t); this.flames.place(i, p.x, p.y, p.z, { height: HELD_FLAME.height, radius: HELD_FLAME.radius }) })
+      // The flame shader skips the model matrix: its feet are in world space, so they take the group's `oy`.
+      props.torches.forEach((t, i) => { const p = along(t, len(t)); this.flames.place(i, p.x, p.y + this.oy, p.z, { height: HELD_FLAME.height, radius: HELD_FLAME.radius }) })
       this.group.add(this.flames.group)
       this.disposables.push(this.flames)
     }

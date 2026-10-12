@@ -2,8 +2,9 @@
 import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { bakeImpostor, impostorCardExtents } from '../../props/impostor.js'
-import { POST, POST_CARD_FRAME, TORCH_POLE, buildPalisadePost, buildTorchPole, tonePostCard } from '../../props/palisade.js'
-import { POST_R, POST_STRIDE } from '../layers/labyrinths.js'
+import { POST, POST_CARD_FRAME, RUNG, TORCH_POLE, buildLadder, buildPalisadePost, buildPlinth, buildTorchPole, buildTowerDeck, tonePostCard } from '../../props/palisade.js'
+import { ALTAR, BEACON, POST_HEIGHT, POST_R, POST_STRIDE, TOWER } from '../layers/labyrinths.js'
+import { EGG_ROUGHNESS, EGG_TINTS } from './roosts.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { PropArena } from './prop-arena.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
@@ -18,13 +19,23 @@ const VARIANTS = 4
 const CAPS = [600, 2000]
 // Metres the eye moves before the posts are rebucketed.
 const REBUCKET = 1
-const TORCHES = 6
+// Two gate torches and the beacon per labyrinth, three labyrinths in reach.
+const TORCHES = 9
 const FLAME = { height: 0.34, radius: 0.1 }
+// The towers' decks and ladders across the labyrinths in reach.
+const FIXTURES = 24
+// The ladder's rails stand this far over the deck, the handhold for stepping off.
+export const LADDER_OVER = 1
+// The egg's metres tall on the plinth.
+const EGG_TALL = 0.5
+// Metres under a post's top her feet may be and still stand on it rather than be walled by it.
+const ON_TOP = 0.05
+const DECK_THICK = 0.18
 export const GATE_LIGHT = 0.5
 // The walker's torch pole is a stake this wide.
 const POLE_R = 0.12
-// Each post's variety off its roll. Girth never under fat[0], so the widest crack stays under 5 cm (props/palisade.js POST.rough); the lean (radians) and the shift (metres) are across the wall only, since either along it would open a crack.
-export const POST_VARY = { height: [0.92, 1.06], fat: [0.97, 1.15], lean: 0.045, shift: 0.025, shade: [0.86, 1.12], warm: 0.1 }
+// Each post's variety off its roll; its girth and height share are the record's (layers/labyrinths.js POST_GIRTH, TOWER), and a tower's post stands plumb. The lean (radians) and shift (metres) are mostly across the wall: `along` leans it into a neighbour, so it stays small enough that the shafts only kiss.
+export const POST_VARY = { height: [0.9, 1.08], lean: 0.1, along: 0.02, shift: 0.04, shade: [0.84, 1.14], warm: 0.12 }
 const _m = new THREE.Matrix4()
 const _q = new THREE.Quaternion()
 const _ql = new THREE.Quaternion()
@@ -34,29 +45,36 @@ const _up = new THREE.Vector3(0, 1, 0)
 const _along = new THREE.Vector3()
 const _c = new THREE.Color()
 const _sites = []
+const _spanBuf = new Float64Array(8)
+const TAU = Math.PI * 2
 
 /** Post `i` of a Labyrinths.postsOf record standing on ground height `y`, into `matrix` and `color`; returns its variant. The bench places its wall through this too. */
 export function postPose(posts, i, y, matrix, color) {
   const k = i * POST_STRIDE
-  const tx = posts[k + 2], tz = posts[k + 3], roll = posts[k + 5]
+  const tx = posts[k + 2], tz = posts[k + 3], roll = posts[k + 5], tall = posts[k + 7]
   const V = POST_VARY
   const rand = mulberry32(Math.floor(roll * 0x7fffffff))
   const lerp = ([a, b], t) => a + (b - a) * t
-  const across = (rand() * 2 - 1) * V.shift
+  const wall = tall === 1 ? 1 : 0
+  const across = (rand() * 2 - 1) * V.shift * wall
   _p.set(posts[k] - tz * across, y, posts[k + 1] + tx * across)
-  _ql.setFromAxisAngle(_along.set(tx, 0, tz), (rand() * 2 - 1) * V.lean)
+  _ql.setFromAxisAngle(_along.set(tx, 0, tz), (rand() * 2 - 1) * V.lean * wall)
   _q.setFromAxisAngle(_up, posts[k + 4]).premultiply(_ql)
-  const fat = lerp(V.fat, rand())
-  matrix.compose(_p, _q, _s.set(fat, lerp(V.height, (roll * VARIANTS) % 1), fat))
+  _ql.setFromAxisAngle(_along.set(-tz, 0, tx), (rand() * 2 - 1) * V.along * wall)
+  _q.premultiply(_ql)
+  const fat = posts[k + 6]
+  matrix.compose(_p, _q, _s.set(fat, wall ? lerp(V.height, (roll * VARIANTS) % 1) : tall, fat))
   const shade = lerp(V.shade, rand()), warm = (rand() * 2 - 1) * V.warm
   color.setRGB(shade * (1 + warm), shade, shade * (1 - warm))
   return Math.floor(roll * VARIANTS)
 }
 
 export class Palisades {
-  /** `labyrinths` is the biome's Labyrinths, `field` the ground the posts stand on, `cards` the LitterCards that draw the far band. */
-  constructor(scene, { labyrinths, field, textures, patch, cards }) {
+  /** `labyrinths` is the biome's Labyrinths, `field` the ground the posts stand on, `cards` the LitterCards that draw the far band, `egg` the altars' egg (roosts.js loadEggBank). */
+  constructor(scene, { labyrinths, field, textures, patch, cards, egg }) {
     if (POST.radius !== POST_R) throw new Error(`Palisades: the post's radius ${POST.radius} is not the labyrinths' wall half width ${POST_R}`)
+    if (POST.height !== POST_HEIGHT) throw new Error(`Palisades: the post's height ${POST.height} is not the labyrinths' ${POST_HEIGHT}`)
+    if (!egg) throw new Error('Palisades: needs the egg the altars carry')
     this.labyrinths = labyrinths
     this.field = field
     this.textures = textures
@@ -78,9 +96,19 @@ export class Palisades {
     this._eye = new THREE.Vector3(Infinity, 0, Infinity)
 
     this.poles = new THREE.InstancedMesh(buildTorchPole(), this.material, TORCHES)
-    this.poles.count = 0
-    this.poles.frustumCulled = false
-    scene.add(this.poles)
+    this.beacons = new THREE.InstancedMesh(buildTorchPole(BEACON.height), this.material, 3)
+    this.decks = new THREE.InstancedMesh(buildTowerDeck(TOWER.deckHalf), this.material, FIXTURES)
+    this.ladders = new THREE.InstancedMesh(buildLadder(TOWER.deck + LADDER_OVER, TOWER.ladderHalf), this.material, FIXTURES)
+    this.plinths = new THREE.InstancedMesh(buildPlinth(ALTAR.half, ALTAR.height), this.material, 3)
+    this.eggMaterial = patch(new THREE.MeshStandardMaterial({ map: egg.map, roughness: EGG_ROUGHNESS, metalness: 0 }), 'v2-palisade-egg')
+    this.eggs = new THREE.InstancedMesh(egg.geometry, this.eggMaterial, 3)
+    this.eggScale = EGG_TALL / egg.bounds.height
+    this.fixtures = [this.poles, this.beacons, this.decks, this.ladders, this.plinths, this.eggs]
+    for (const f of this.fixtures) {
+      f.count = 0
+      f.frustumCulled = false
+      scene.add(f)
+    }
     this.flames = new TriFlames(TORCHES, { ...TRI_TORCH, ...FLAME })
     scene.add(this.flames.group)
     this.torches = []
@@ -104,7 +132,7 @@ export class Palisades {
       this.active.set(key, this._place(s))
       changed = true
     }
-    if (changed) this._placeTorches()
+    if (changed) this._placeFixtures()
     if (changed || Math.hypot(eye.x - this._eye.x, eye.z - this._eye.z) > REBUCKET) {
       this._eye.copy(eye)
       this._rebucket()
@@ -164,21 +192,86 @@ export class Palisades {
     this.stats.posts = posts
   }
 
-  _placeTorches() {
+  // The gate torches, the beacons, the towers' decks and ladders and the altars of the labyrinths placed.
+  _placeFixtures() {
     this.torches.length = 0
+    const c = { poles: 0, decks: 0, ladders: 0, beacons: 0, plinths: 0 }
     for (const a of this.active.values()) {
-      for (const [x, z] of this.labyrinths.mazeOf(a.site).torches) {
-        this.torches.push({ x, y: this.field.heightAt(x, z) + TORCH_POLE.height, z, phase: (x * 0.37 + z * 0.61) % (Math.PI * 2) })
+      const m = this.labyrinths.mazeOf(a.site)
+      for (const [x, z] of m.torches) {
+        const y = this.field.heightAt(x, z)
+        this.torches.push({ x, y: y + TORCH_POLE.height, z, phase: (x * 0.37 + z * 0.61) % TAU })
+        this.poles.setMatrixAt(c.poles++, _m.makeTranslation(x, y, z))
       }
+      const [bx, bz] = m.beacon
+      const by = this.field.heightAt(bx, bz)
+      this.torches.push({ x: bx, y: by + BEACON.height, z: bz, phase: (bx * 0.37 + bz * 0.61) % TAU })
+      if (c.beacons >= 3) throw new Error('Palisades: more than three labyrinths in reach')
+      this.beacons.setMatrixAt(c.beacons++, _m.makeTranslation(bx, by, bz))
+      for (const t of m.towers) {
+        if (c.decks >= FIXTURES) throw new Error(`Palisades: more than ${FIXTURES} towers in reach`)
+        const g = this.field.heightAt(t.x, t.z)
+        _q.setFromAxisAngle(_up, Math.atan2(-t.uz, t.ux))
+        this.decks.setMatrixAt(c.decks++, _m.compose(_p.set(t.x, g + TOWER.deck, t.z), _q, _s.set(1, 1, 1)))
+        // The ladder's plane is its local x-y: turned so x runs along the tower's v and it stands TOWER.ladderOut along u, its foot on the ground there.
+        _q.setFromAxisAngle(_up, Math.atan2(-t.uz, t.ux) + Math.PI / 2)
+        const lx = t.x + t.ux * TOWER.ladderOut, lz = t.z + t.uz * TOWER.ladderOut
+        this.ladders.setMatrixAt(c.ladders++, _m.compose(_p.set(lx, this.field.heightAt(lx, lz), lz), _q, _s.set(1, (g + TOWER.deck + LADDER_OVER - this.field.heightAt(lx, lz)) / (TOWER.deck + LADDER_OVER), 1)))
+      }
+      const al = m.altar, ay = this.field.heightAt(al.x, al.z)
+      _q.setFromAxisAngle(_up, Math.atan2(-al.uz, al.ux))
+      this.plinths.setMatrixAt(c.plinths, _m.compose(_p.set(al.x, ay, al.z), _q, _s.set(1, 1, 1)))
+      _q.setFromAxisAngle(_along.set(al.ux, 0, al.uz), 0.12)
+      this.eggs.setMatrixAt(c.plinths, _m.compose(_p.set(al.x, ay + ALTAR.height + EGG_TALL / 2 - 0.03, al.z), _q, _s.setScalar(this.eggScale)))
+      this.eggs.setColorAt(c.plinths, _c.setHex(EGG_TINTS[(a.site.rx * 7 + a.site.rz * 13 + 1000) % EGG_TINTS.length][1]))
+      c.plinths++
     }
-    if (this.torches.length > TORCHES) throw new Error(`Palisades: ${this.torches.length} gate torches in reach, room for ${TORCHES}`)
+    if (this.torches.length > TORCHES) throw new Error(`Palisades: ${this.torches.length} torches in reach, room for ${TORCHES}`)
     this.flames.count = 0
-    this.torches.forEach((t, i) => {
-      this.poles.setMatrixAt(i, _m.makeTranslation(t.x, t.y - TORCH_POLE.height, t.z))
-      this.flames.place(i, t.x, t.y, t.z, { ...FLAME, phase: t.phase })
-    })
-    this.poles.count = this.torches.length
-    this.poles.instanceMatrix.needsUpdate = true
+    this.torches.forEach((t, i) => this.flames.place(i, t.x, t.y, t.z, { ...FLAME, phase: t.phase }))
+    this.poles.count = c.poles
+    this.beacons.count = c.beacons
+    this.decks.count = c.decks
+    this.ladders.count = c.ladders
+    this.plinths.count = this.eggs.count = c.plinths
+    for (const f of this.fixtures) {
+      f.instanceMatrix.needsUpdate = true
+      if (f.instanceColor) f.instanceColor.needsUpdate = true
+    }
+  }
+
+  /** The tower whose ladder (x, z) stands at, as `{ x, z, ux, uz, bottom, top }`: its foot within `reach` of the climber's spot TOWER.foot out along u, `bottom` the ground there and `top` the deck. Else null. */
+  ladderAt(x, z, reach) {
+    const s = this.labyrinths.siteAt(x, z)
+    if (s === null || Math.hypot(x - s.cx, z - s.cz) > s.reach) return null
+    for (const t of this.labyrinths.mazeOf(s).towers) {
+      const fx = t.x + t.ux * TOWER.foot, fz = t.z + t.uz * TOWER.foot
+      if (Math.hypot(x - fx, z - fz) > reach) continue
+      return { x: fx, z: fz, ux: t.ux, uz: t.uz, bottom: this.field.heightAt(fx, fz), top: this.field.heightAt(t.x, t.z) + TOWER.deck }
+    }
+    return null
+  }
+
+  /** The rungs of the ladder nearest (x, y, z) within `reach`, as the ladder (ladderAt) with `rung` the grip height nearest y; else null. A hand's grab. */
+  rungAt(x, y, z, reach) {
+    const s = this.labyrinths.siteAt(x, z)
+    if (s === null || Math.hypot(x - s.cx, z - s.cz) > s.reach) return null
+    for (const t of this.labyrinths.mazeOf(s).towers) {
+      const lx = t.x + t.ux * TOWER.ladderOut, lz = t.z + t.uz * TOWER.ladderOut
+      const across = Math.abs(-(x - lx) * t.uz + (z - lz) * t.ux), out = Math.abs((x - lx) * t.ux + (z - lz) * t.uz)
+      if (across > TOWER.ladderHalf + reach || out > reach) continue
+      const ground = this.field.heightAt(lx, lz), top = this.field.heightAt(t.x, t.z) + TOWER.deck + LADDER_OVER
+      if (y < ground || y > top + reach) continue
+      const fx = t.x + t.ux * TOWER.foot, fz = t.z + t.uz * TOWER.foot
+      return { x: fx, z: fz, ux: t.ux, uz: t.uz, bottom: this.field.heightAt(fx, fz), top: top - LADDER_OVER, rung: ground + Math.max(1, Math.round((y - ground) / RUNG)) * RUNG }
+    }
+    return null
+  }
+
+  /** Whether her feet at `foot` on (x, z) are on a wall's top: then `out` is the unit across that wall. */
+  onWallTop(x, z, foot, out) {
+    if (!this.labyrinths.wallAcross(x, z, out)) return false
+    return foot >= this.field.heightAt(x, z) + POST.height - ON_TOP
   }
 
   /** The gate torches' lights for main.js updateFire, pushed onto `out` as its torch entries; `reach` is a hand torch's, a gate torch's is GATE_LIGHT of it. */
@@ -196,37 +289,57 @@ export class Palisades {
     this._eye.set(Infinity, 0, Infinity)
   }
 
-  // The top of the post or torch pole on (x, z), or null: a wall line within a post's radius, or a pole.
-  _standing(x, z) {
-    if (this.labyrinths.wallAt(x, z)) return POST.height
+  // Stone spans on (x, z) into `out` as [bottom, top] pairs, `foot` her foot height or undefined. A post or pole is sheer (DESIGN.md §41) while her feet are under its top: its span runs to Infinity, so no reach finds its top and no stride climbs it. Asked without a foot (ceilingAt, a teleport's landing), every top is its own.
+  _spans(x, z, foot, out) {
     const s = this.labyrinths.siteAt(x, z)
-    if (s === null || Math.hypot(x - s.cx, z - s.cz) > s.reach) return null
-    for (const [tx, tz] of this.labyrinths.mazeOf(s).torches) if ((x - tx) ** 2 + (z - tz) ** 2 < POLE_R * POLE_R) return TORCH_POLE.height
-    return null
+    if (s === null || Math.hypot(x - s.cx, z - s.cz) > s.reach || out.length < 2) return 0
+    const g = this.field.heightAt(x, z)
+    let n = 0
+    const put = (lo, hi, sheer) => {
+      if (n * 2 + 1 >= out.length) { n++; return }
+      out[n * 2] = lo
+      out[n * 2 + 1] = sheer && foot !== undefined && foot < hi - ON_TOP ? Infinity : hi
+      n++
+    }
+    if (this.labyrinths.wallAt(x, z)) put(g - POST.bury, g + POST.height, true)
+    const m = this.labyrinths.mazeOf(s)
+    for (const [tx, tz] of m.torches) if ((x - tx) ** 2 + (z - tz) ** 2 < POLE_R * POLE_R) put(g - TORCH_POLE.bury, g + TORCH_POLE.height, true)
+    if ((x - m.beacon[0]) ** 2 + (z - m.beacon[1]) ** 2 < POLE_R * POLE_R) put(g - TORCH_POLE.bury, g + BEACON.height, true)
+    const post = (POST_R * TOWER.girth) ** 2
+    for (const t of m.towers) {
+      const u = (x - t.x) * t.ux + (z - t.z) * t.uz, v = -(x - t.x) * t.uz + (z - t.z) * t.ux
+      if (Math.abs(u) > TOWER.deckHalf || Math.abs(v) > TOWER.deckHalf) continue
+      const deck = this.field.heightAt(t.x, t.z) + TOWER.deck
+      put(deck - DECK_THICK, deck, false)
+      for (const [cx, cz] of t.corners) if ((x - cx) ** 2 + (z - cz) ** 2 < post) put(g - POST.bury, g + TOWER.height, true)
+    }
+    const al = m.altar
+    const au = (x - al.x) * al.ux + (z - al.z) * al.uz, av = -(x - al.x) * al.uz + (z - al.z) * al.ux
+    if (Math.abs(au) < ALTAR.half && Math.abs(av) < ALTAR.half) put(g - 0.2, this.field.heightAt(al.x, al.z) + ALTAR.height, false)
+    return n
   }
 
-  // Sheer to the walker (DESIGN.md §41): a post's span runs to Infinity when asked so, so no reach finds its top and no stride climbs it.
-  columnAt(x, z, _minSize, out, sheer) {
-    const top = this._standing(x, z)
-    if (top === null || out.length < 2) return 0
-    const g = this.field.heightAt(x, z)
-    out[0] = g - POST.bury
-    out[1] = sheer ? Infinity : g + top
-    return 1
+  columnAt(x, z, _minSize, out, foot) {
+    return this._spans(x, z, foot, out)
   }
 
   blockTopAt(x, z) {
-    const top = this._standing(x, z)
-    return top === null ? -Infinity : this.field.heightAt(x, z) + top
+    const n = this._spans(x, z, undefined, _spanBuf)
+    let top = -Infinity
+    for (let i = 0; i < Math.min(n, _spanBuf.length / 2); i++) top = Math.max(top, _spanBuf[i * 2 + 1])
+    return top
   }
 
   dispose() {
     this.posts.removeFromParent()
-    this.poles.removeFromParent()
     this.flames.group.removeFromParent()
     this.posts.dispose()
     for (const tier of this.lods) for (const g of tier) g.dispose()
-    this.poles.geometry.dispose()
+    for (const f of this.fixtures) {
+      f.removeFromParent()
+      if (f !== this.eggs) f.geometry.dispose()
+    }
+    this.eggMaterial.dispose()
     this.flames.dispose()
     this.material.dispose()
   }

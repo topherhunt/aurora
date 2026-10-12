@@ -5,7 +5,8 @@ import THREE from '../three-instance.js'
 // flares (render/flares.js). Its record carries `charges`, `hue` (a PALETTE
 // index, null until first armed) and `armed` as scalars, so the backpack, the
 // save, a drop and the room all carry them with the gun. It starts safe: the
-// trigger only dry-clicks until A/X arms it (see pressSafety). Nothing in the
+// trigger on safe recalls the flare it is aimed at (RECALL_M, RECALL_DEG) for a
+// charge back, and otherwise dry-clicks; A/X arms it (see pressSafety). Nothing in the
 // world hands one out -- it starts in the backpack (main.js) -- so its source
 // picks nothing and takes nothing, and gives nothing back: a dropped gun lies
 // loose until a hand lifts it. It wears its generated mesh (FLAREGUN_GLB).
@@ -22,6 +23,9 @@ export const PALETTE = [0xff3020, 0x30ff50, 0xfff4e0, 0xffb020, 0x3080ff, 0xc050
 // A shot's target: this far down the barrel, and at least this far over the ground or the water under it.
 export const AIM_M = 100
 export const CLEAR_M = 20
+// On safe, the trigger recalls an arrived flare in her room within RECALL_M of the muzzle and RECALL_DEG of its aim.
+export const RECALL_M = 200
+export const RECALL_DEG = 5
 // The shipped pick (tools/props/gen/prop-roster.mjs 'flaregun'), drawn SIZE_M long in its own frame: barrel along -Z, grip down.
 export const FLAREGUN_GLB = 'gen-props/flaregun.glb'
 export const SIZE_M = 0.32

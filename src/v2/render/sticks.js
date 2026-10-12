@@ -29,6 +29,8 @@ export const TIP = new THREE.Vector3(0, 0, -LENGTH_M / 2)
 // Metres of the grain texture per repeat, as the interiors' carved wood.
 const WOOD_M = 0.6
 const RADIUS_M = 0.014
+// The colour the grain texture is multiplied by.
+export const TINT = 0x9a7a55
 
 /** The stick's geometry, deterministic: SIDES rings of SEGMENTS + 1 crooked, uneven rings along -Z..+Z, jagged at both ends. */
 export function buildStickGeometry(seed = 7) {
@@ -136,7 +138,7 @@ export class Sticks {
     this.radius = radius
     this.lies = true
     this.geometry = buildStickGeometry()
-    this.material = new THREE.MeshLambertMaterial({ map, color: 0x9a7a55 })
+    this.material = new THREE.MeshLambertMaterial({ map, color: TINT })
     this.batch = new THREE.InstancedMesh(this.geometry, this.material, cap)
     this.batch.name = 'v2-sticks'
     this.batch.frustumCulled = false

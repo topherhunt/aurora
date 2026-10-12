@@ -47,6 +47,8 @@ import { LAYER } from '../textures.js'
 // ---------------------------------------------------------------------------
 
 const TAU = Math.PI * 2
+const GILL_DEPTH_SCALE = 0.15
+const UNDER_SPLAY = 2.5
 
 export const MUSHROOM_DEFAULTS = {
   seed: 1,
@@ -75,20 +77,12 @@ export const MUSHROOM_DEFAULTS = {
   sweep: TAU,      // arc of the cap. < TAU with no stem is a BRACKET fungus
 
   // --- underside ------------------------------------------------------------
-  underside: false, // build the gilled underside at all. OFF by default, and that
-                   // is a DEFAULT rather than a tier setting: a forest-floor
-                   // mushroom is looked down on, so its gills are a third of its
-                   // triangles spent on the one face nobody sees. Turn it on for
-                   // anything you can walk under. "Off" leaves a cap that is a
-                   // single sheet, and since the prop material is DoubleSide and
-                   // re-flips the normal (src/material.js) that sheet reads as LIT
-                   // from below rather than shadowed -- fine until you stand under
-                   // it
-  gillDrop: 0.06,  // how far the underside hangs below the rim before running
-                   // back up to the stem. 0 = a flat disc, which reads as paper
-  gillBlades: 0,   // ACTUAL radial gill geometry, 0 = texture only. 2 triangles
-                   // each and worth it only on a cave mushroom you stand under
-  gillDepth: 0.5,  // how far a blade hangs, as a fraction of gillDrop
+  underside: true, // close the cap into a solid: without it the cap is one sheet,
+                   // a paper umbrella from any angle that sees under the rim
+  gillDrop: 0.09,  // how far the underside bulges down midway from rim to stem
+                   // top, x capRadius; negative arcs it up. Both ends stay put
+  gillBlades: 0,   // ACTUAL radial gill geometry, 0 = texture only. 2 triangles each
+  gillDepth: 0,    // how far a blade hangs below the underside, x capRadius x 0.15
 
   // --- stem -----------------------------------------------------------------
   stemHeight: 0.62,  // relative to total height. 0 = no stem at all (bracket)
@@ -97,12 +91,14 @@ export const MUSHROOM_DEFAULTS = {
   bulb: 0.0,         // abrupt swelling in the lowest fifth -- amanita's volva.
                      // Separate from taper because a bulb is a STEP, not a slope
   lean: 0.0,         // stem tilt off vertical at the base, radians
-  stemCurve: 0.3,    // additional bend accumulated up the stem, radians.
+  stemCurve: 0.35,   // additional bend accumulated up the stem, radians.
                      // Positive curves back toward upright, which is what a
                      // mushroom on a slope actually does. Non-zero by default
                      // because a dead-straight stalk is the single loudest tell
                      // that a prop was generated rather than grown
-  ring: 0.0,         // annulus skirt, 0..1 as a fraction of cap radius. 0 = none
+  stemReach: 0.0,    // how far the stem's top runs up inside the cap, x capRise.
+                     // 0 = it stops level with the rim
+  ring: 0.33,        // annulus skirt, 0..1 as a fraction of cap radius. 0 = none
   ringHeight: 0.72,  // where up the stem it sits
   ringDroop: 0.35,   // how far the skirt hangs, relative to its own width
 
@@ -136,21 +132,21 @@ export const MUSHROOM_DEFAULTS = {
                  // compromise between them. They are independent now, which is
                  // what makes both a finer near tier and a coarser far tier
                  // worth having
-  stemRadial: 7, // columns around the STEM and its ring, and deliberately not
+  stemRadial: 9, // columns around the STEM and its ring, and deliberately not
                  // the same number as the cap's. The two surfaces are looked at
                  // completely differently: a cap is a broad silhouette against
                  // the ground and every facet on it shows, while a stalk is a
                  // few millimetres wide and mostly in its own cap's shadow. 3 is
                  // the floor and reads as a stalk at range, but this is LOD0 and
                  // a triangular prism is a stalk with three flat sides at the
-                 // distance a player actually crouches over one. 7 is odd, so no
-                 // two of its faces are parallel and the silhouette turns as the
+                 // distance a player actually crouches over one. Odd, so no two
+                 // of its faces are parallel and the silhouette turns as the
                  // stem does
   capRings: 3,   // rings from apex to rim. 1 is a faceted cone, 2 carries the
                  // profile curve, 3 resolves it -- and `capCurve` is a power
                  // curve, so 2 rings sample the steepest part of it exactly once
-  underRings: 1, // rings from rim back to the stem
-  stemRings: 2,  // segments up the stem. 1 cannot show `stemCurve` at all
+  underRings: 3, // rings from rim back to the stem
+  stemRings: 4,  // segments up the stem. 1 cannot show `stemCurve` at all
 
   // --- material -------------------------------------------------------------
   capLayer: LAYER.MUSHROOM_CAP,
@@ -229,6 +225,17 @@ function capRadiusAt(t, theta, p) {
   return r
 }
 
+// The underside ends on the same curled rim, but t(1 - a t^k) only stays
+// monotonic while a(k+1) < 1. Past that the underside doubles back under the
+// lip, a strip whose normal points at the sky; so the exponent softens here.
+function underRadiusAt(t, theta, p) {
+  const k = p.inroll > 0 ? Math.max(0.05, Math.min(4, 0.8 / p.inroll - 1)) : 4
+  let r = p.capRadius * t
+  if (p.wavy !== 0) r *= 1 + p.wavy * Math.cos(p.lobes * theta) * t * t
+  if (p.inroll !== 0) r *= 1 - p.inroll * Math.pow(t, k)
+  return r
+}
+
 function capHeightAt(t, theta, p) {
   // The profile. `capRise` sets the apex, `capCurve` decides where the fall is.
   let y = p.capRise * (1 - Math.pow(t, p.capCurve))
@@ -245,20 +252,22 @@ function capHeightAt(t, theta, p) {
   return y
 }
 
-// The underside, as its own surface rather than as a mirrored cap. It hangs
-// `gillDrop` below the rim and runs back up to meet the stem, which is what
-// gives a mushroom the dark band under its edge that says "there is something
-// under here" from a metre away.
-// `t` is the cap parameter (stalk to rim) and `u` runs the other way, 1 at the
-// inner edge and 0 at the rim. They are handed in separately rather than as
-// `1 - t` because the underside does not start at the axis -- see `tFloor`.
-function underHeightAt(t, u, theta, p) {
+// The underside, as its own surface rather than as a mirrored cap. It runs from
+// the rim to `joinY`, the stem's top, and `gillDrop` arcs it downward between
+// the two without moving either end, so the cap is a closed solid whose
+// thickness is everything between the two surfaces.
+// Aiming the inner edge at the cap's apex height instead pokes it up through the
+// cap top wherever the dome has already fallen away at the stalk's radius.
+// A funnel's top falls toward the stalk faster than this curve rises to it, so
+// the result is also held a little under the top surface at the same `t`.
+// `t` is the cap parameter; `u` runs 1 at the inner edge to 0 at the rim.
+function underHeightAt(t, u, theta, p, joinY) {
   const rim = capHeightAt(1, theta, p)
-  const apexY = capHeightAt(0, theta, p) // where the flesh meets the stem
-  // Hang below the rim, then climb back to meet the stalk.
-  const hang = -p.gillDrop * p.capRadius * Math.pow(t, 0.6)
-  const climb = (apexY - p.gillDrop * p.capRadius * 0.35 - rim) * Math.pow(u, 1.7)
-  return rim + hang + climb
+  const bulge = -p.gillDrop * p.capRadius * 4 * u * (1 - u)
+  const y = rim + bulge + (joinY - rim) * Math.pow(u, 1.7)
+  // The gap leaves the rim flat: a sqrt(u) gap kinks every rim's last sliver
+  // straight down, a sideways normal no coarse underside face agrees with.
+  return Math.min(y, capHeightAt(t, theta, p) - 0.4 * p.capRadius * Math.pow(u, 1.5) * (1 - u))
 }
 
 // Central difference on whichever surface pair is handed in. Returns a unit
@@ -466,7 +475,7 @@ function addMushroom(out, p, place) {
     for (let j = 0; j < 8; j++) {
       lowest = Math.min(lowest, capHeightAt(tStalk, theta0 + (j / 8) * TAU, p))
     }
-    capLift = Math.max(0, -lowest)
+    capLift = Math.max(0, -lowest) - p.stemReach * Math.max(0, p.capRise)
   }
 
   // Map a local (radius, height) about the cap axis into world space.
@@ -495,18 +504,17 @@ function addMushroom(out, p, place) {
   const tFloor = p.stemHeight > 1e-4
     ? Math.min(0.6, (stalkR * 0.98) / Math.max(1e-4, p.capRadius))
     : 0
+  // -capLift is the stem's top in the cap's frame (toWorld adds capLift back).
   const underPoint = (t, theta, target) =>
     toWorld(
-      capRadiusAt(tFloor + (1 - tFloor) * t, theta, p),
-      // `1 - t`, not `1 - tt`, so the climb still reaches the flesh/stalk
-      // junction exactly at the trimmed inner edge instead of stopping short
-      // of it and opening a gap between the gills and the stalk.
-      underHeightAt(tFloor + (1 - tFloor) * t, 1 - t, theta, p),
+      underRadiusAt(tFloor + (1 - tFloor) * t, theta, p),
+      underHeightAt(tFloor + (1 - tFloor) * t, 1 - t, theta, p, -capLift),
       theta,
       target,
     )
 
   const tmp = new THREE.Vector3()
+  const radial = new THREE.Vector3()
 
   // --- cap top --------------------------------------------------------------
   const capRings = Math.max(1, Math.round(p.capRings))
@@ -557,7 +565,21 @@ function addMushroom(out, p, place) {
       for (let j = 0; j <= cols; j++) {
         const theta = theta0 + (closed ? (j / cols) * TAU : (j / cols) * arc - arc / 2)
         underPoint(t, theta, tmp)
+        // Tipped outward toward horizontal: facing straight down, the gills see
+        // only the hemisphere's ground colour and a creamy underside reads grey.
+        // Capped to tilt no further than a flat underside's, and to keep
+        // n . own > 0.2 where it already faces inward up to the stem; past
+        // either cap the winding the normal is checked against inverts.
         const n = surfaceNormal(underPoint, t, theta, true)
+        radial.copy(capSide).multiplyScalar(Math.cos(theta))
+          .addScaledVector(capFwd, Math.sin(theta))
+        const outward = n.dot(radial)
+        const splay = Math.min(
+          UNDER_SPLAY,
+          UNDER_SPLAY * -n.dot(capAxis) - outward,
+          outward < 0 ? 0.8 / -outward : Infinity,
+        )
+        n.addScaledVector(radial, Math.max(0, splay)).normalize()
         // v = 0 at the AXIS on the flesh sheet, so a gill drawn as a line of
         // constant u reaches the rim regardless of how many rings this tier has.
         const [u, v] = cellUV(p.fleshCell, j / cols, t)
@@ -584,20 +606,23 @@ function addMushroom(out, p, place) {
     const outer = new THREE.Vector3()
     const innerLow = new THREE.Vector3()
     const outerLow = new THREE.Vector3()
-    const drop = p.gillDrop * p.capRadius * p.gillDepth
+    const drop = GILL_DEPTH_SCALE * p.capRadius * p.gillDepth
     for (let g = 0; g < blades; g++) {
       const theta = theta0 + (closed ? (g / blades) * TAU : (g / blades) * arc - arc / 2)
       const tIn = Math.min(0.98, Math.max(0.05, stalkR / Math.max(1e-4, p.capRadius)) * 1.1)
       underPoint(tIn, theta, inner)
       underPoint(0.995, theta, outer)
       innerLow.copy(inner).addScaledVector(capAxis, -drop * 0.45)
-      outerLow.copy(outer).addScaledVector(capAxis, -drop)
+      // The deep corner sits back from the rim, so the blade's outer edge slopes
+      // up into the rim instead of hanging past it as a sawtooth silhouette.
+      underPoint(0.7, theta, outerLow).addScaledVector(capAxis, -drop)
 
       const nx = Math.cos(theta + Math.PI / 2)
       const nz = Math.sin(theta + Math.PI / 2)
+      // Splayed outward like the underside, or the blades' far faces go dark.
       const nrm = new THREE.Vector3()
-        .addScaledVector(capSide, nx)
-        .addScaledVector(capFwd, nz)
+        .addScaledVector(capSide, nx + UNDER_SPLAY * Math.cos(theta))
+        .addScaledVector(capFwd, nz + UNDER_SPLAY * Math.sin(theta))
         .normalize()
 
       const b = out.positions.length / 3

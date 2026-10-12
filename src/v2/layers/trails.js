@@ -1,4 +1,4 @@
-// The trail from each cave mouth to the road network (design/39-caves.md §2): one Dijkstra over the roads' 8 m grid outward from every road cell at once, then each mouth follows it back to the nearest road or to a trail already laid. Half a road wide, and no signpost where it joins. Three-free and a pure function of its inputs, like the roads.
+// The trail from each cave mouth (design/39-caves.md §2) and each labyrinth's gate (DESIGN.md §41) to the road network: one Dijkstra over the roads' 8 m grid outward from every road cell at once, then each end follows it back to the nearest road or to a trail already laid by the same `lay`. Half a road wide, and no signpost where it joins. Three-free and a pure function of its inputs, like the roads.
 import { smoothstep } from '../../sim/mathx.js'
 import { MOUTH } from '../caves/sites.js'
 import { Heap } from './route.js'
@@ -21,13 +21,17 @@ export const TRAIL = {
 
 const SQRT2 = Math.SQRT2
 
+// A cave mouth's trail is pinned from half a metre short of the wall, so the dirt runs up to the arch, and straight out across the floor to the approach, level all the way.
+export const mouthFoot = (m, out) => ({ pins: [out(0.5 - MOUTH.wall), out(MOUTH.floorOut - MOUTH.wall)], level: MOUTH.floorOut - 0.5 })
+
 /**
- * The cost field from the road network over the whole grid, as `{ start(m), lay(mouths) }`: `start` is the cell a trail from mouth `m` sets out from, or -1 where no road reaches it; `lay` returns `{ records, trails, failed }`, a road record per mouth (`trail<k>`), each mouth's `{ mouth, record, length, onto }` where `onto` is 'road' or the record it joins, and the mouths `start` refused.
- * `roadPlan` is planRoads' result, already added to `layers`.
+ * The cost field from the road network over the whole grid, as `{ start(m), lay(ends, opts) }`. An end `m` is `{ id, x, z, nx, nz, y }`, its foot and the unit out of it. `start` is the cell a trail from `m` sets out from, or -1 where no road reaches it; `lay` returns `{ records, trails, failed }`, a road record per end (`<prefix><k>`), each end's `{ mouth, record, length, onto }` where `onto` is 'road' or the record it joins, and the ends `start` refused.
+ * `opts.foot(m, out)` gives the pinned points the trail leaves from and the metres along them held level at `m.y` (a cave mouth's floor by default). `roadPlan` is planRoads' result, already added to `layers`; no trail crosses a grid cell whose centre `avoid` refuses.
  */
-export function routeTrails({ towns, roadPlan, surface, layers }) {
+export function routeTrails({ towns, roadPlan, surface, layers, avoid = null }) {
   // On the live surface, not the raw heightmap the roads route on: that misses the relief's cliffs, and a trail has no cut to take them.
   const { H, blocked, mul } = buildGrid(surface, surface, layers, towns)
+  if (avoid !== null) for (let c = 0; c < N * N; c++) if (avoid(cx(c), cz(c))) blocked[c] = 1
   // Every laid way's centreline as segments [ax, ay, az, bx, by, bz], and its cells as the search's sources.
   const segs = []
   for (const w of roadPlan.ways) {
@@ -95,11 +99,10 @@ export function routeTrails({ towns, roadPlan, surface, layers }) {
     }
     return c0
   }
-  const lay = (mouths) => {
+  const lay = (mouths, { prefix = 'trail', foot = mouthFoot } = {}) => {
     const trailAt = new Int32Array(N * N).fill(-1)
     const records = [], trails = [], failed = [], trailSegs = []
     for (const m of mouths) {
-      const out = (s) => [m.x + m.nx * s, m.z + m.nz * s]
       const [ax, az] = approach(m)
       const c0 = start(m)
       if (c0 < 0) { failed.push(m.id); continue }
@@ -108,8 +111,8 @@ export function routeTrails({ towns, roadPlan, surface, layers }) {
       while (g[c] > 0 && trailAt[c] < 0) { cells.push(c); c = came[c] }
       const onto = trailAt[c] >= 0 ? trails[trailAt[c]].record : 'road'
       const end = trailAt[c] >= 0 ? nearestOn(trailSegs[trailAt[c]], cx(c), cz(c)) : nearestOn(segs, cx(c), cz(c))
-      // Pinned from half a metre short of the wall, so the dirt runs up to the arch, straight out across the floor to the approach.
-      const pts = [[...out(0.5 - MOUTH.wall), true], [...out(MOUTH.floorOut - MOUTH.wall), true], [ax, az, true], ...cells.slice(1).map((q) => [cx(q), cz(q), false]), [end[0], end[2], true]]
+      const { pins, level } = foot(m, (s) => [m.x + m.nx * s, m.z + m.nz * s])
+      const pts = [...pins.map((p) => [...p, true]), [ax, az, true], ...cells.slice(1).map((q) => [cx(q), cz(q), false]), [end[0], end[2], true]]
       // Densify to half a cell, then relax toward the neighbours' mean with the pins held, and resample to TRAIL.spacing.
       const dense = [pts[0]]
       for (let k = 1; k < pts.length; k++) {
@@ -139,7 +142,7 @@ export function routeTrails({ towns, roadPlan, surface, layers }) {
       // Heights off the ground, Gaussian-averaged along the trail, level on the floor and easing into the junction.
       const s = [0]
       for (let k = 1; k < laid.length; k++) s.push(s[k - 1] + Math.hypot(laid[k][0] - laid[k - 1][0], laid[k][1] - laid[k - 1][1]))
-      const floorEnd = MOUTH.floorOut - 0.5 + 1e-6
+      const floorEnd = level + 1e-6
       const raw = laid.map(([x, z], k) => (s[k] <= floorEnd ? m.y : surface(x, z)))
       raw[raw.length - 1] = end[1]
       const ys = raw.map((y, k) => {
@@ -155,7 +158,7 @@ export function routeTrails({ towns, roadPlan, surface, layers }) {
         const toEnd = s.at(-1) - s[k]
         return toEnd < 2 * TRAIL.ySigma ? end[1] + (sum / wsum - end[1]) * smoothstep(0, 2 * TRAIL.ySigma, toEnd) : sum / wsum
       })
-      const id = `trail${records.length}`
+      const id = `${prefix}${records.length}`
       const k = trails.length
       records.push({ id, feather: TRAIL.feather, pts: laid.map(([x, z], i) => [x, ys[i], z, TRAIL.width]) })
       trails.push({ mouth: m.id, record: id, length: s.at(-1), onto })

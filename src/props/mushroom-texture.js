@@ -263,7 +263,7 @@ export const CAP_CAVE = [
 export const FLESH = [
   {
     // White gills on a white stalk. The default, and the partner to `scarlet`.
-    name: 'white', base: [226, 220, 206], gills: 42, dark: 0.42, grain: 0.07, pattern: 'gills', seed: 31,
+    name: 'white', base: [238, 230, 208], gills: 42, dark: 0.42, grain: 0.07, pattern: 'gills', seed: 31,
   },
   {
     // Cream stalk, buff gills -- the brown-cap partner.
@@ -500,11 +500,10 @@ export function fleshCell(spec) {
       const u = (x + 0.5) / CELL // around the axis, both for gills and for the stalk
       const v = (y + 0.5) / CELL // 0 = deep under the cap, 1 = rim / stem base
 
-      // Ambient occlusion, painted. The underside of a cap is genuinely dark
-      // where it meets the stalk and genuinely bright at the rim, and this
-      // gradient is doing the job a real AO term would -- which the prop
-      // material does not have and is not worth adding for one prop.
-      let shade = mix(0.46, 1.0, Math.pow(v, 0.75))
+      // Ambient occlusion, painted, and kept shallow: the underside already
+      // faces away from the sky and the lighting darkens it, so a deep ramp on
+      // top of that turned creamy gills charcoal.
+      let shade = mix(0.85, 1.0, Math.pow(v, 0.75))
       const n = wrapNoise(u, v, 10, 8, spec.seed) * 0.6 + wrapNoise(u, v, 30, 22, spec.seed + 4) * 0.4
       shade *= 1 + (n - 0.5) * 2 * spec.grain
 
@@ -515,7 +514,7 @@ export function fleshCell(spec) {
         // the axis, and soft stalk fibres in the band the stem samples.
         const t = u * spec.gills
         const d = Math.abs(t - Math.round(t)) * 2 // 0 at the groove, 1 between
-        const hardness = mix(1.0, 0.22, smoothstep(0.35, 0.95, v))
+        const hardness = mix(0.55, 0.22, smoothstep(0.35, 0.95, v))
         groove = (1 - smoothstep(0.1, 0.72, d)) * spec.dark * hardness
       } else if (spec.pattern === 'pores') {
         // A sponge, not a fan. Same v ramp so the stem band stays a stem: the
@@ -533,7 +532,7 @@ export function fleshCell(spec) {
         const cy = iv + 0.25 + hash2(iu, iv, spec.seed + 9) * 0.5
         const dot = 1 - smoothstep(0.26, 0.44, Math.hypot(u * PU - cx, v * PV - cy))
         const fibre = 1 - smoothstep(0.12, 0.6, Math.abs(u * 34 - Math.round(u * 34)) * 2)
-        const hardness = mix(1.0, 0.2, smoothstep(0.35, 0.95, v))
+        const hardness = mix(0.55, 0.2, smoothstep(0.35, 0.95, v))
         groove = mix(fibre * 0.4, dot, smoothstep(0.95, 0.35, v)) * spec.dark * hardness
       }
 

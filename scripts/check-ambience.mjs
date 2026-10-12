@@ -1549,6 +1549,33 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(threw === 1, 'a fiddler with no radius throws')
 }
 {
+  // A labyrinth's drums: one muffled loop, its pitch held, off with none heard or indoors, quiet and dull at the reach, loud and bright at the middle.
+  const D = RULES.drums
+  const engine = fakeEngine(), sense = scripted()
+  sense.s.aboveSnow = -300
+  let heard = null
+  const amb = new Ambience({ engine, sense, rand: mulberry32(15), drums: () => heard })
+  const d = amb.loops.drums, head = { x: 0, y: GROUND + 1.6, z: 0 }
+  check(d.name === 'drums' && 'drums' in SOUNDS && d.opts.muffle === true && d.opts.directional === true && d.opts.rate[0] === 1 && d.opts.rate[1] === 1 && d.opts.drift === 0, 'one muffled, placed loop, its pitch held')
+  run(amb, 1, { head })
+  check(!d.active, 'none heard, silent')
+  heard = { x: 30, y: GROUND + 1.6, z: 0, near: 0 }
+  run(amb, 1, { head })
+  const farLevel = d.level, farCut = d.cutoff
+  check(d.active && Math.abs(farLevel - D.level[0]) < 1e-9 && Math.abs(farCut - D.cutoff[0]) < 1e-6 && d.at.x === 30, 'at the reach, on at the quiet end and its dullest, placed at the middle', `level ${farLevel?.toFixed(3)}, ${farCut?.toFixed(0)} Hz`)
+  heard.near = 0.5
+  run(amb, 1, { head })
+  check(d.level > farLevel && d.cutoff > farCut && d.level < D.level[1] && d.cutoff < D.cutoff[1], 'halfway, louder and brighter')
+  heard.near = 1
+  run(amb, 1, { head })
+  check(Math.abs(d.level - D.level[1]) < 1e-9 && Math.abs(d.cutoff - D.cutoff[1]) < 1e-6, 'at the middle\'s edge, full and bright', `level ${d.level?.toFixed(3)}, ${d.cutoff?.toFixed(0)} Hz`)
+  run(amb, 1, { head, indoors: true })
+  check(!d.active, 'indoors, silent')
+  heard = null
+  run(amb, 1, { head })
+  check(!d.active, 'stilled, silent')
+}
+{
   // A campfire: its own loop over the four takes, placed at the flame, off out of reach, quiet at the edge, full beside it.
   const C = RULES.campfire
   const engine = fakeEngine(), sense = scripted()

@@ -283,12 +283,13 @@ const gemTeller = all.map((m) => {
 check(gemTeller !== undefined && new Conversation(t0.minds[0], gemTeller).menu().some((c) => c.topic === 'lore:gems'), 'told of traders and gems, she can ask anyone about gems after', gemTeller && [...gemTeller.known].join(', '))
 check(Object.values(LORE).every((fs) => fs.length > 0) && Object.keys(TOPICS).every((t) => LORE[t] !== undefined), 'every topic has lore')
 // Whatever a fact names, she can follow up: each topic its words name is in its `unlocks`.
-const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i }
+const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i, yetis: /\byetis?\b/i }
 const unnamed = Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => Object.entries(NAMES).filter(([k, re]) => k !== t && re.test(x.truth) && !x.unlocks.includes(k)).map(([k]) => `${t}.${x.id} names ${k}`)))
 check(unnamed.length === 0, 'every topic a fact names is one she may ask of next', unnamed.join(', '))
-const reach = new Set(Object.keys(TOPICS).filter((t) => !TOPICS[t].gated))
-for (let grew = true; grew;) { grew = false; for (const t of [...reach]) for (const x of LORE[t]) for (const u of x.unlocks) if (!reach.has(u)) { reach.add(u); grew = true } }
-check(Object.keys(TOPICS).every((t) => reach.has(t)), 'every gated topic can be heard of, starting from the open ones', Object.keys(TOPICS).filter((t) => !reach.has(t)).join(', '))
+const heard = new Set(Object.keys(TOPICS).filter((t) => !TOPICS[t].gated))
+for (let grew = true; grew;) { grew = false; for (const t of [...heard]) for (const x of LORE[t]) for (const u of x.unlocks) if (!heard.has(u)) { heard.add(u); grew = true } }
+check(Object.keys(TOPICS).every((t) => heard.has(t)), 'every gated topic can be heard of, starting from the open ones', Object.keys(TOPICS).filter((t) => !heard.has(t)).join(', '))
+const adults = all.filter((m) => m.kind === 'human' && m.cls !== 'child')
 const brews = LORE.alchemist.find((x) => x.id === 'brews').truth
 let brewed = null
 for (const m of adults) {
@@ -302,7 +303,6 @@ const stranger = brewed && all.find((m) => m.kind === 'human' && m.town !== brew
 check(brewed !== null && firstChips.includes('What are mushrooms good for?') && firstChips.includes('Can I eat wild things?') && new Conversation(stranger, brewed.ctx).menu().some((x) => x.topic === 'lore:mushrooms'), 'told the potion master brews from mushrooms, she is offered "What are mushrooms good for?" at once, and may ask anyone after', firstChips && firstChips.join(' / '))
 const leafLore = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 })).say('lore:alchemist')
 check(leafLore.claim === null, 'a leafkin has no words for the alchemist', leafLore.text)
-const adults = all.filter((m) => m.kind === 'human' && m.cls !== 'child')
 const striderTruths = new Set(LORE.striders.map((x) => x.truth))
 const striderTold = adults.filter((m) => striderTruths.has(asked(m, 'striders', STRAIGHT).claim))
 check(striderTold.length > adults.length * 0.85, 'nearly every grown-up can tell her something true about striders', `${striderTold.length} of ${adults.length}`)
@@ -313,6 +313,46 @@ for (const m of folk) {
   if (l.claim === null && /Ask /.test(l.text)) { referred = { l, menu: c.menu() }; break }
 }
 check(referred !== null && referred.menu.some((x) => x.topic === `where:person:${referred.l.about[0].id}`), 'one who does not know sends her to whoever in town knows best, and she can ask where they are', referred?.l.text)
+// Contested lore: the same honest asking draws belief, scoffing, and (from a witness who trusts her) a sighting.
+const yeti = LORE.yetis.find((x) => x.id === 'wastes')
+const yetiSay = (warmth) => adults.map((m) => {
+  const ctx = ctxAt(fire(world.townOf(m)))
+  ctx.rapport.warm(m.id, warmth)
+  const c = new Conversation(as(m, { ...STRAIGHT, greed: 0 }), ctx)
+  return { m, claims: LORE.yetis.map(() => c.say('lore:yetis').claim) }
+})
+const yetiCold = yetiSay(0), yetiWarm = yetiSay(0.5)
+const held = (rows, pred) => rows.filter((r) => r.claims.some(pred))
+const believers = held(yetiCold, (c) => c === yeti.truth), doubters = held(yetiCold, (c) => yeti.doubt.includes(c))
+check(believers.length > 0 && doubters.length > 0, 'honest folk split on yetis: some tell of them, some scoff', `${believers.length} believe, ${doubters.length} scoff`)
+const travelShare = (rows) => rows.filter((r) => r.m.cls === 'travel').length / rows.length
+check(travelShare(believers) > travelShare(doubters), 'travellers believe in yetis more than stay-at-homes do', `${travelShare(believers).toFixed(2)} of believers, ${travelShare(doubters).toFixed(2)} of doubters`)
+const witnesses = held(yetiWarm, (c) => c === yeti.seen)
+check(held(yetiCold, (c) => c === yeti.seen).length === 0 && witnesses.length > 0 && witnesses.every((r) => r.m.cls === 'travel' || r.m.body === 'hunter'), 'only a traveller or hunter tells of seeing a yeti, and only to someone they trust', `${witnesses.length} witnesses: ${witnesses.map((r) => r.m.body).join(', ')}`)
+
+// Sent on: a friendly speaker who cannot help names who can; asked who knows, they point; a scoffer still sends her to the tale-teller.
+const FRIENDLY = { ...STRAIGHT, boast: 0, kindness: 1, chattiness: 1 }, SURLY = { ...STRAIGHT, boast: 0, kindness: 0, chattiness: 0, wariness: 1 }
+const dunnoOf = (traits) => folk.map((m) => asked(m, 'labyrinths', traits)).filter((l) => l.moment === 'answer.unknown')
+check(dunnoOf(SURLY).every((l) => !/Ask |would know/.test(l.text)), 'a curt speaker who does not know sends her nowhere', dunnoOf(SURLY)[0]?.text)
+check(dunnoOf(FRIENDLY).every((l) => /Ask \w+ the \w+\.|would know/.test(l.text)), 'a friendly speaker who does not know names who would, by name and calling', dunnoOf(FRIENDLY)[0]?.text)
+const whoOf = (m, topic, traits, known = []) => {
+  const c = new Conversation(as(m, traits), ctxAt(fire(world.townOf(m)), { known: new Set(known) }))
+  return { c, l: c.say(`who:${topic}`) }
+}
+const pointer = folk.map((m) => ({ m, ...whoOf(m, 'ores', FRIENDLY) })).find(({ m, l }) => m.body !== 'blacksmith' && l.about.length > 0)
+check(pointer !== undefined && pointer.c.menu().some((x) => x.label === 'Who knows about striders?') && pointer.c.menu().some((x) => x.topic === `where:person:${pointer.l.about[0].id}`), 'asked who knows of ores, a friendly non-smith names the expert, and she can ask where they are', pointer?.l.text)
+const smiths = all.filter((m) => m.body === 'blacksmith').map((m) => whoOf(m, 'ores', FRIENDLY).l)
+check(smiths.length > 0 && smiths.every((l) => /looking at them/.test(l.text)), 'asked who knows of ores, the smith says they do', smiths[0]?.text)
+check(folk.every((m) => whoOf(m, 'ores', SURLY).l.mood === 'cold'), 'a surly speaker will not say who knows')
+const yetiScoffs = adults.map((m) => whoOf(m, 'yetis', FRIENDLY, ['yetis']).l).filter((l) => /no yetis/.test(l.text))
+check(yetiScoffs.length > 0 && yetiScoffs.some((l) => /tall tales you want, ask \w+/.test(l.text)), 'asked who knows of yetis, a doubter says nobody, and sends her to the tale-teller', yetiScoffs.find((l) => /tall tales/.test(l.text))?.text)
+const yetiDoubts = LORE.yetis.flatMap((x) => x.doubt)
+const scoffsOf = (traits) => adults.flatMap((m) => {
+  const c = new Conversation(as(m, traits), ctxAt(fire(world.townOf(m))))
+  return LORE.yetis.map(() => c.say('lore:yetis'))
+}).filter((l) => yetiDoubts.includes(l.claim))
+const talesTo = (ls) => ls.filter((l) => /tall tales you want/.test(l.text))
+check(talesTo(scoffsOf(FRIENDLY)).length > 0 && scoffsOf(SURLY).length > 0 && talesTo(scoffsOf(SURLY)).length === 0, 'a friendly scoffer at yetis points her to the tale-teller, a surly one does not', talesTo(scoffsOf(FRIENDLY))[0]?.text)
 
 // --- follow-ups and wording ---
 const grudger = all.find((m) => m.rival !== null && m.cls !== 'child')
@@ -386,7 +426,7 @@ check(bye.ended && bye.moment === 'bye.warm' && bye.alone >= CHAT.alone.bye, 'go
 // --- voices ---
 const table = JSON.parse(readFileSync(new URL('../public/sounds/voice/moments.json', import.meta.url), 'utf8'))
 const lines = new LinePicker(table, SEED)
-const speaker = all.find((m) => m.voice.pack === 'm-big')
+const speaker = all.find((m) => m.voice.pack === 'man')
 const heardLines = Array.from({ length: 6 }, (_, i) => lines.pick(speaker, 'greet.stranger', { now: i * 100 }).line)
 check(heardLines.every((l, i) => i === 0 || l !== heardLines[i - 1]) && table.human['greet.stranger'].includes(heardLines[0]), 'a speaker greets from their moment\'s pool, never the same line twice running', heardLines.join(' '))
 check(lines.pick(speaker, 'pass.nod', { now: 500.5 }) === null && lines.pick(speaker, 'pass.nod', { now: 500.5, force: true }) !== null, 'a speaker says nothing again within the gap, unless answering her')

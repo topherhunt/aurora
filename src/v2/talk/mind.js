@@ -27,14 +27,17 @@ const LEAN = {
 
 // Each body's baked voice (tools/voice/pack.mjs) and pronoun, as tools/characters/characters.json tags its avatar.
 const FEMALE = new Set(['farmer', 'fisherman', 'innkeeper', 'herbalist', 'alchemist', 'thief', 'healer', 'shieldmaiden', 'battlemage'])
+const GIRLS = new Set(['child-villager-1', 'child-villager-3'])
+const BOYS = new Set(['child-villager-2', 'child-traveler-1'])
 // A person's own sound over their body's voice: playbackRate within 1 +- `rate`, a treble tilt within +- `tilt` dB.
 export const VOICE = { rate: 0.05, tilt: 3, leafkinRate: 1.5 }
 
 /** The voice body `body` speaks with: `{ pack, he }`, `he` false for she. */
 export function bodyVoice(body) {
   if (body === 'leafkin') return { pack: 'leafkin', he: false }
-  if (body === 'child-villager-2') return { pack: 'teen-from-man', he: true }
-  return FEMALE.has(body) ? { pack: 'f-bright', he: false } : { pack: 'm-big', he: true }
+  if (GIRLS.has(body)) return { pack: 'girl', he: false }
+  if (BOYS.has(body)) return { pack: 'boy', he: true }
+  return FEMALE.has(body) ? { pack: 'woman', he: false } : { pack: 'man', he: true }
 }
 
 function voiceOf(rand, body) {

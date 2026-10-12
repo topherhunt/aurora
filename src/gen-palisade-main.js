@@ -1,4 +1,4 @@
-// The palisade bench (gen-palisade.html): a post at LOD0 and LOD1 and its card, then a curved run of wall at the labyrinths' spacing with the gate and its two torches, in the real prop material.
+// The palisade bench (gen-palisade.html): a post at LOD0 and LOD1 and its card, then a curved run of wall packed as the labyrinths pack theirs, with the gate and its two torches, in the real prop material.
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TEX_SIZE, buildTextureArray, loadImageLayers } from './textures.js'
@@ -6,12 +6,11 @@ import { createPropMaterial } from './material.js'
 import { grassTexture } from './preview-stage.js'
 import { bakeImpostor, flipY } from './props/impostor.js'
 import { POST, POST_CARD_FRAME, POST_LODS, TORCH_POLE, buildPalisadePost, buildTorchPole, tonePostCard } from './props/palisade.js'
-import { LABYRINTH, POST_SPACING, POST_STRIDE } from './v2/layers/labyrinths.js'
+import { LABYRINTH, Labyrinths, POST_GIRTH, POST_STRIDE } from './v2/layers/labyrinths.js'
 import { GATE_LIGHT, postPose } from './v2/render/palisades.js'
 import { TORCH_REACH } from './lighting.js'
 import { TriFlames, TRI_TORCH } from './v2/render/fire-tris.js'
 import { flicker } from './v2/render/fire.js'
-import { mulberry32 } from './sim/mathx.js'
 
 let seed = 1
 let spin = false
@@ -81,7 +80,7 @@ scene.add(...torchLights)
 const m4 = new THREE.Matrix4(), tint = new THREE.Color()
 let wallPosts = 0
 
-/** The arc's posts at the labyrinths' spacing, both sides of a gate LABYRINTH.gate wide, as palisades.js places them. */
+/** The arc's posts as Labyrinths.postsOf packs them, both sides of a gate LABYRINTH.gate wide, as palisades.js places them. */
 function buildWall() {
   for (const g of lods) if (g) g.dispose()
   lods[0] = buildPalisadePost({ lod: 0, seed })
@@ -91,17 +90,19 @@ function buildWall() {
   if (wall) { scene.remove(wall); wall.geometry.dispose() }
   const variants = Array.from({ length: VARIANTS }, (_, i) => buildPalisadePost({ lod: 0, seed: seed * 31 + i }))
   const gateHalf = LABYRINTH.gate / 2 / WALL_R
-  const arcLen = WALL_R * (WALL_SWEEP / 2 - gateHalf)
-  const count = Math.ceil(arcLen / POST_SPACING) + 1
-  const rand = mulberry32(seed)
-  // Records as Labyrinths.postsOf writes them.
-  const placed = []
-  for (const side of [-1, 1]) {
-    for (let i = 0; i < count; i++) {
-      const a = Math.PI / 2 + side * (gateHalf + (i * (WALL_SWEEP / 2 - gateHalf)) / (count - 1))
-      placed.push(wallCentre.x + Math.cos(a) * WALL_R, wallCentre.z + Math.sin(a) * WALL_R, -Math.sin(a), Math.cos(a), rand() * Math.PI * 2, rand())
+  // Records as Labyrinths.postsOf writes them, through it: a stand-in maze of the two arcs either side of the gate.
+  const lab = Object.create(Labyrinths.prototype)
+  lab.seed = seed
+  const lines = [-1, 1].map((side) => {
+    const xz = []
+    for (let a = gateHalf; a <= WALL_SWEEP / 2 + 1e-9; a += 0.4 / WALL_R) {
+      const b = Math.PI / 2 + side * a
+      xz.push(wallCentre.x + Math.cos(b) * WALL_R, wallCentre.z + Math.sin(b) * WALL_R)
     }
-  }
+    return { xz, closed: false }
+  })
+  lab.mazeOf = () => ({ lines, towers: [], _posts: null })
+  const placed = lab.postsOf({ rx: seed, rz: 0 })
   wallPosts = placed.length / POST_STRIDE
   const byVariant = variants.map(() => [])
   for (let i = 0; i < wallPosts; i++) {
@@ -154,8 +155,8 @@ function renderStats() {
     ['LOD0 tris', `${tris(lods[0])}`],
     ['LOD1 tris', `${tris(lods[1])}`],
     ['card tris', '2'],
-    ['spacing', `${POST_SPACING} m`],
-    ['posts / metre', (1 / POST_SPACING).toFixed(2)],
+    ['girth', `${POST_GIRTH[0]}-${POST_GIRTH[1]}`],
+    ['posts / metre', (wallPosts / (2 * WALL_R * (WALL_SWEEP / 2 - LABYRINTH.gate / 2 / WALL_R))).toFixed(2)],
     ['wall posts', `${wallPosts}`],
     ['gate', `${LABYRINTH.gate} m`],
   ]

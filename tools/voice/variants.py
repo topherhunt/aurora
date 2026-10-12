@@ -7,6 +7,7 @@
     uv run tools/voice/variants.py [take ...]
     uv run tools/voice/variants.py --reel variants/eleven-jessica.wav   # CHILD presets over an existing reel
     uv run tools/voice/variants.py --bake f-bright                       # every human take -> work/voices/f-bright/
+    uv run tools/voice/variants.py --bake boy girl                       # children from the tts.mjs adults
 
 Writes tools/voice/work/variants/<preset>.wav, each one reel of the same lines with a pause between, plus
 original.wav. Originals are only read. Presets move four knobs of Praat's Change Gender (PSOLA pitch plus a
@@ -37,6 +38,12 @@ PRESETS = {
     "m-lively": (1, 1.6, 1.03, 0.97),
     "kid-from-man": (10, 1.3, 1.28, 0.95),
     "teen-from-man": (4, 1.2, 1.10, 0.97),
+}
+
+# Children baked from a whole adult voice (tts.mjs): output -> (source voice, preset knobs or a playback-rate factor).
+FROM_VOICE = {
+    "boy": ("man", PRESETS["kid-from-man"]),
+    "girl": ("woman", 1.2),
 }
 
 # Applied to an already converted adult female reel: a child is a short step up from a young woman.
@@ -71,13 +78,27 @@ def reel(sounds, rate):
     return parselmouth.Sound(y, sampling_frequency=rate)
 
 
+def rate_up(snd, k):
+    # Pitch, formants and tempo all scale by k, as a faster playback would.
+    rate = snd.sampling_frequency
+    snd.override_sampling_frequency(rate * k)
+    return snd.resample(rate)
+
+
 def bake(name):
-    knobs = PRESETS[name]
+    if name in FROM_VOICE:
+        src, knobs = FROM_VOICE[name]
+        takes = sorted((WORK / "voices" / src).glob("*.wav"))
+        if not takes:
+            sys.exit(f"no {src} voice to bake {name} from: run tools/voice/tts.mjs")
+    else:
+        knobs = PRESETS[name]
+        takes = sorted(p for p in WORK.glob("*.base.wav") if not p.name.startswith("sp."))
     dest = WORK / "voices" / name
     dest.mkdir(parents=True, exist_ok=True)
-    takes = sorted(p for p in WORK.glob("*.base.wav") if not p.name.startswith("sp."))
     for p in takes:
-        out = convert(parselmouth.Sound(str(p)), *knobs)
+        snd = parselmouth.Sound(str(p))
+        out = rate_up(snd, knobs) if isinstance(knobs, float) else convert(snd, *knobs)
         out.scale_peak(0.89)
         out.save(str(dest / p.name.replace(".base.wav", ".wav")), "WAV")
     print(f"{name}: {len(takes)} takes -> {dest}")

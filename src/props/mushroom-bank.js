@@ -12,8 +12,8 @@ import { LAYER } from '../textures.js'
 // different here is the LADDER, and it is different because a mushroom is 8 to
 // 28 cm tall:
 //
-//   LOD0   the mesh at radial 16. 108 to 122 triangles.
-//   LOD1   the same mesh at radial 6. 58 to 72 triangles.
+//   LOD0   the mesh at radial 16. 248 to 266 triangles.
+//   LOD1   the same mesh at radial 6, no gill blades. 138 to 156 triangles.
 //   LOD2   the shared card quad, spun toward the eye, 2 triangles.
 //   gone   under 2 px, which for a 13 cm mushroom is 60 m.
 //
@@ -62,13 +62,10 @@ export const MUSHROOM_SPECIES = {
   'fly agaric': {
     impostorLayer: LAYER.IMPOSTOR_MUSHROOM_AGARIC,
     params: {
-      // Nearly a circle: `wavy` 0.02 on 2 lobes is a rim that is barely off
-      // round, which is what an amanita's is. The undulation knobs are still
-      // non-zero because a mathematically circular rim is the other tell.
-      height: 0.21, capRadius: 0.46, capRise: 0.30, capCurve: 2.4, margin: 0.02,
-      wavy: 0.02, lobes: 2, umbo: 0, inroll: 0.05,
-      stemHeight: 0.66, stemRadius: 0.052, stemTaper: 0.30, bulb: 0.55,
-      ring: 0.34, ringHeight: 0.74, ringDroop: 0.4,
+      height: 0.21, capRadius: 0.42, capRise: 0.26, capCurve: 2.2, margin: 0,
+      wavy: 0, lobes: 5, umbo: 0, inroll: 0,
+      stemHeight: 0.62, stemRadius: 0.062, stemTaper: 0.43, bulb: 0.76, stemCurve: 0.35,
+      ring: 0.33, ringHeight: 0.71, ringDroop: 0.3,
       cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 0, fleshCell: 0,
     },
   },
@@ -95,8 +92,8 @@ export const MUSHROOM_SPECIES = {
       // that read as a cup rather than a chanterelle.
       height: 0.12, capRadius: 0.44, capRise: -0.02, capCurve: 1.6, margin: 0.10,
       wavy: 0.30, lobes: 4, umbo: 0, inroll: 0,
-      stemHeight: 0.55, stemRadius: 0.075, stemTaper: -0.30, bulb: 0,
-      ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 3, fleshCell: 1,
+      stemHeight: 0.55, stemRadius: 0.075, stemTaper: -0.30, bulb: 0, gillDrop: 0.2,
+      ring: 0.23, ringHeight: 0.95, ringDroop: 0.4, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 3, fleshCell: 1,
     },
   },
   parasol: {
@@ -105,7 +102,7 @@ export const MUSHROOM_SPECIES = {
       height: 0.206, capRadius: 0.55, capRise: 0.16, capCurve: 5.2, margin: 0.01,
       wavy: 0.06, lobes: 7, umbo: 0.09, inroll: 0,
       stemHeight: 0.78, stemRadius: 0.032, stemTaper: 0.35, bulb: 0.35,
-      ring: 0.3, ringHeight: 0.66, ringDroop: 0.5,
+      ring: 0.3, ringHeight: 0.66, ringDroop: 0.5, gillDrop: -0.08,
       cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 2, fleshCell: 0,
     },
   },
@@ -121,8 +118,8 @@ export const MUSHROOM_SPECIES = {
       // a rim and start being a flower.
       height: 0.22, capRadius: 0.21, capRise: 0.55, capCurve: 1.3, margin: -0.03,
       wavy: 0.06, lobes: 8, umbo: 0, inroll: 0.12,
-      stemHeight: 0.82, stemRadius: 0.026, stemTaper: 0.2, bulb: 0.1,
-      ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 2, fleshCell: 3,
+      stemHeight: 0.82, stemRadius: 0.026, stemTaper: 0.2, bulb: 0.1, stemReach: 0.5,
+      ring: 0, cluster: 1, capLayer: LAYER.MUSHROOM_CAP, capCell: 2, fleshCell: 0,
     },
   },
 }
@@ -156,20 +153,20 @@ export const MUSHROOM_NAMES = Object.keys(MUSHROOM_SPECIES)
 // where the question "which proportions are worth baking" is asked, and the
 // answer being the middle cell does not make the question go away.
 
-// Columns around the cap, one entry per MESH tier, finest first. Everything else
-// about the two meshes is identical -- same species, same variant, same seed --
-// so the coarse tier is the same mushroom with a blockier rim rather than a
-// different prop.
+// Columns around the cap, one entry per MESH tier, finest first. The coarse tier
+// also drops gill blades (mushroomParams); everything else is identical -- same
+// species, same variant, same seed -- so it is the same mushroom with a blockier
+// rim rather than a different prop.
 //
 // 16 then 6, and the drop is that steep because of what each tier is looked at
 // from. At the near tier the rim is a curve a few metres from the eye and 16
 // columns is where it stops reading as a polygon; by the far tier the whole
 // mushroom is around 23 px tall and a 6-gon rim is under half a pixel of chord
-// error. `stemRadial` is NOT tiered with it, so BOTH tiers carry the 7-column
-// stem LOD0 was set for. That is a knowingly unpaid bill on the far tier -- it is
-// most of why the coarse mesh is 58 to 72 triangles rather than half of 108 to
-// 122 -- and it stands until there is a reason to believe the second mesh tier
-// earns its slot at all.
+// error. `stemRadial`, `stemRings` and `underRings` are NOT tiered with it, so
+// BOTH tiers carry the 9 x 4 stem and 3-ring underside LOD0 was set for. That is
+// a knowingly unpaid bill on the far tier -- it is most of why the coarse mesh
+// is 138 to 156 triangles rather than under half of 248 to 266 -- and it stands
+// until there is a reason to believe the second mesh tier earns its slot at all.
 export const MUSHROOM_MESH_RADIAL = [16, 6]
 
 // The distance ladder is the animals' arc rule over each variant's `span`, which
@@ -201,9 +198,10 @@ export function mushroomVariants() {
 /**
  * The full parameter set for one variant, ready for buildMushroom.
  *
- * `tier` indexes MUSHROOM_MESH_RADIAL and is the ONLY thing that differs between
- * the two mesh tiers -- same species, same variant, same seed, fewer columns --
- * so the coarse mesh cannot drift into being a different mushroom.
+ * `tier` indexes MUSHROOM_MESH_RADIAL. The tiers differ only in cap columns and
+ * in the coarse tier dropping gill blades, which are under the cap and sub-pixel
+ * at its range -- same species, same variant, same seed -- so the coarse mesh
+ * cannot drift into being a different mushroom.
  */
 export function mushroomParams(v, seed, tier = 0) {
   const radial = MUSHROOM_MESH_RADIAL[tier]
@@ -218,6 +216,7 @@ export function mushroomParams(v, seed, tier = 0) {
     stemCurve: v.stemCurve,
     lobes: v.lobes,
     radial,
+    ...(tier > 0 ? { gillBlades: 0 } : null),
     seed,
   }
 }

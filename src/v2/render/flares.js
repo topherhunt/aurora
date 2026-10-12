@@ -10,7 +10,8 @@
 // is a flickering dot, white at the heart, never under MIN_PX pixels in
 // radius, gone by FAR_M. How it looks is FLARE, live through Flares.set (test-flare.html tunes
 // it). The layer outlives the rooms; each flare names the room it was shot in
-// and only the current room's are drawn.
+// and only the current room's are drawn. A recalled flare flies its corkscrew
+// backwards into the muzzle that recalled it, shrinking, and is forgotten.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -71,6 +72,14 @@ export function fromWire(a) {
 
 const r2 = (v) => Math.round(v * 100) / 100
 export const toWire = (f) => [f.id, f.room, r2(f.ox), r2(f.oy), r2(f.oz), r2(f.tx), r2(f.ty), r2(f.tz), f.color, Math.round(f.seed * 1e4) / 1e4]
+
+/** A recall off the wire: `[id, mx, my, mz]`, the flare and the muzzle it flies back into. Throws on anything else. */
+export function recallFromWire(a) {
+  if (!Array.isArray(a) || a.length !== 4 || typeof a[0] !== 'string' || !ID_RE.test(a[0]) || !a.slice(1).every(Number.isFinite)) throw new Error(`flares: not a recall: ${JSON.stringify(a)}`)
+  return a
+}
+
+export const recallToWire = (id, muzzle) => [id, r2(muzzle.x), r2(muzzle.y), r2(muzzle.z)]
 
 /** Where a flare is a fraction `u` of the way through its flight, into `out`. Ends exactly at the target. */
 export function flightAt(f, u, out) {
@@ -303,9 +312,42 @@ export class Flares {
     return true
   }
 
-  /** Every flare, as a save writes them. */
+  /**
+   * The arrived, unrecalled flare in this room within `maxM` of `origin` nearest the ray down `dir` (unit), no more
+   * than acos(`minCos`) off it; null when there is none.
+   */
+  aimedAt(origin, dir, maxM, minCos) {
+    let best = null, bestCos = minCos
+    for (const f of this.list) {
+      if (f.room !== this.room || f.recalled !== undefined || this.now - f.born < FLIGHT_S) continue
+      _v.set(f.tx - origin.x, f.ty - origin.y, f.tz - origin.z)
+      const d = _v.length()
+      if (d > maxM || d < 1e-6) continue
+      const cos = _v.dot(dir) / d
+      if (cos >= bestCos) { best = f; bestCos = cos }
+    }
+    return best
+  }
+
+  /** The flare `id`, recalled `age` seconds ago into the muzzle at (mx, my, mz); one unknown or already recalled is left be. Returns whether it was. */
+  recall(id, mx, my, mz, age) {
+    const f = this.list.find((g) => g.id === id)
+    if (!f || f.recalled !== undefined) return false
+    // It flies back from wherever it is now, so one still in flight here turns round mid-air.
+    const was = this.now - f.born
+    f.size = sizeAt(was)
+    if (was < FLIGHT_S) {
+      flightAt(f, was / FLIGHT_S, _v)
+      f.tx = _v.x; f.ty = _v.y; f.tz = _v.z
+    }
+    f.ox = mx; f.oy = my; f.oz = mz
+    f.recalled = this.now - age
+    return true
+  }
+
+  /** Every flare not on its way back, as a save writes them. */
   save() {
-    return this.list.map(toWire)
+    return this.list.filter((f) => f.recalled === undefined).map(toWire)
   }
 
   /** A save's flares in place of these, all long arrived. */
@@ -329,6 +371,7 @@ export class Flares {
     this.material.uniforms.uPx.value = px
     let n = 0
     if (this.fadeS !== null) this.list = this.list.filter((f) => this.now - f.born < this.fadeS)
+    this.list = this.list.filter((f) => f.recalled === undefined || this.now - f.recalled < FLIGHT_S)
     for (const f of this.list) {
       if (f.room !== this.room) continue
       const age = this.now - f.born
@@ -337,6 +380,11 @@ export class Flares {
         _v.set(f.ox, f.oy, f.oz)
         size = this.sparkSize
         this.aSize.array[n * 3 + 2] = 1 - age / this.fadeS
+      } else if (f.recalled !== undefined) {
+        const u = 1 - (this.now - f.recalled) / FLIGHT_S
+        flightAt(f, u, _v)
+        size = MUZZLE_M + (f.size - MUZZLE_M) * u
+        this.aSize.array[n * 3 + 2] = 1
       } else {
         if (age < FLIGHT_S) flightAt(f, age / FLIGHT_S, _v)
         else _v.set(f.tx, f.ty, f.tz)
