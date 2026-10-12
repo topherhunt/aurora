@@ -5070,7 +5070,7 @@ async function buildRoom(room, at) {
   // trees and rocks already standing, like the mushrooms; every tile in a
   // village, and its gardens planted in rows on top of the wild bed.
   await bootStep('carrots')
-  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds, plots, cards: litterCards })
+  carrots = new Carrots(scene, height, waterSurfaces, layers, rocks, { seed, bank: await banks.carrots, keep: room.village ? 1 : undefined, bounds, plots, labyrinths: palisades === null ? null : palisades.labyrinths, cards: litterCards })
   for (const m of carrots.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-gen-prop' })
   carrots.bakeCards(renderer)
   carrots.place(spawn.x, spawn.z)

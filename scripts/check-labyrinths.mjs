@@ -17,7 +17,7 @@ import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { BiomeField } from '../src/v2/layers/biome.js'
-import { CRACK, POST_FACE, POST_GIRTH, POST_HEIGHT, POST_R, POST_STRIDE, TOWER } from '../src/v2/layers/labyrinths.js'
+import { CARROTS, CRACK, DEAD_ENDS_MAX, POST_FACE, POST_GIRTH, POST_HEIGHT, POST_R, POST_STRIDE, TOWER } from '../src/v2/layers/labyrinths.js'
 import { Palisades } from '../src/v2/render/palisades.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { LOCOMOTION, Player } from '../src/player.js'
@@ -48,7 +48,7 @@ check(sites.length >= MIN_LABYRINTHS, `the world holds at least ${MIN_LABYRINTHS
 console.log('\nthe maze and its posts')
 let worstGap = 0
 const girths = [Infinity, -Infinity]
-let towerCount = 0
+let towerCount = 0, carrotCount = 0, deadMost = 0
 // Half the widest crack, and 2 mm for the line bending between two posts.
 const HALF_CRACK = CRACK.width[1] / 2 + 0.002
 for (const s of sites) {
@@ -86,6 +86,20 @@ for (const s of sites) {
   towerCount += m.towers.length
   if (m.towers.length < TOWER.least || clash > 0) check(false, `${label}: at least ${TOWER.least} towers, their posts clear of the walls`, `${m.towers.length} towers, ${clash} posts in a wall`)
 
+  // The dead ends' carrots: 1 to CARROTS.most in each, on its node, clear of walls and tower posts.
+  const dead = m.cells.map((_, id) => id).filter((id) => m.ways[id].length === 1)
+  const per = new Map(dead.map((id) => [id, 0]))
+  let astray = 0
+  for (const [x, z] of labyrinths.carrotsOf(s)) {
+    const id = labyrinths.nodeAt(s, x, z)
+    if (per.has(id)) per.set(id, per.get(id) + 1)
+    if (!per.has(id) || labyrinths.wallAt(x, z, 0.05) || m.towers.some((t) => t.corners.some(([cx, cz]) => Math.hypot(x - cx, z - cz) < POST_R * TOWER.girth + 0.05))) astray++
+  }
+  const counts = [...per.values()]
+  carrotCount += counts.reduce((a, b) => a + b, 0)
+  deadMost = Math.max(deadMost, dead.length)
+  if (dead.length === 0 || dead.length > DEAD_ENDS_MAX || astray > 0 || counts.some((n) => n < 1 || n > CARROTS.most)) check(false, `${label}: 1 to ${CARROTS.most} carrots at every dead end, clear of walls and posts`, `${dead.length} dead ends, ${astray} astray, ${Math.min(...counts)}-${Math.max(...counts)} each`)
+
   // Every point of every wall line under a post's face (its mean radius at its girth) or in a crack at most CRACK.width wide, and no line's girths scaled far past POST_GIRTH to land it.
   const posts = labyrinths.postsOf(s)
   const H = 1, grid = new Map()
@@ -117,6 +131,7 @@ for (const s of sites) {
 }
 check(worstGap <= HALF_CRACK, `every labyrinth: every point of wall under a post or a crack at most ${CRACK.width[1]} m`, `widest ${(worstGap * 2).toFixed(3)} m`)
 check(true, 'every labyrinth: its towers', `${towerCount} in all`)
+check(true, `every labyrinth: 1 to ${CARROTS.most} carrots at every dead end, at most ${DEAD_ENDS_MAX} dead ends`, `${carrotCount} carrots, most dead ends ${deadMost}`)
 check(girths[0] > POST_GIRTH[0] * 0.7 && girths[1] < POST_GIRTH[1] * 1.3, 'every labyrinth: girths within 30% of POST_GIRTH (a metre-long line scales by up to a quarter)', `${girths[0].toFixed(2)}-${girths[1].toFixed(2)}`)
 
 // The drums' reach (ambience.js RULES.drums): along every eighth of a turn, heard just inside the reach and not just past it, rising toward the middle, and the middle only within it.

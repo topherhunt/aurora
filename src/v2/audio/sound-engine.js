@@ -485,17 +485,23 @@ export class SoundEngine {
  * after the level, its cutoff the caller's (setCutoff), for a sound heard
  * through a wall. `next`, if given, is asked before each cycle and may name the
  * clip to play in place of the draw (null for the draw): one take swapped into a bed.
+ *
+ * `exact` is for a rhythm: the one clip as a single source looping natively, so every pass is the clip's length to the
+ * sample, with no crossfade and its rate and gain as rolled at construction. The clip must already be whole bars that
+ * join seamlessly (tools/music/bar-loop.mjs).
  */
 export const LOOP_XFADE_S = [0.1, 1.0]
 export const LOOP_RATE = [0.9, 1.1]
 export const LOOP_STEP = 0.05
 
 export class LoopVoice {
-  constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rate = LOOP_RATE, drift = LOOP_STEP, muffle = false, next = null, rand = Math.random } = {}) {
+  constructor(engine, name, { bus = 'air', directional = false, gain = [0.7, 1.0], rate = LOOP_RATE, drift = LOOP_STEP, muffle = false, next = null, exact = false, rand = Math.random } = {}) {
     this.engine = engine
     this.next = next
     this.names = Array.isArray(name) ? name : [name]
     if (this.names.length === 0) throw new Error('LoopVoice: no clip named')
+    if (exact && (this.names.length !== 1 || next !== null)) throw new Error(`LoopVoice(${this.names.join('|')}): an exact loop plays one clip`)
+    this.exact = exact
     this.name = this.names.join('|')
     this.rand = rand
     this.gainRange = gain
@@ -533,6 +539,7 @@ export class LoopVoice {
     this.active = true
     this.nextAt = this.engine.ctx.currentTime + 0.01
     this.nextFadeIn = LOOP_XFADE_S[0]
+    if (this.exact) this._play(this.engine.buffer(this.names[0]), this.nextAt, this.cycleGain, true)
   }
 
   /** Fade `level` to zero over `fade` seconds and stop queuing cycles; the sources still queued are cut when the fade lands. */
@@ -570,7 +577,7 @@ export class LoopVoice {
   }
 
   _tick() {
-    if (!this.active) return
+    if (!this.active || this.exact) return
     const ctx = this.engine.ctx
     // A frame that stalled past the lookahead (a shader compile, entering VR)
     // has left a gap in the loop already; skip to now rather than queue the
@@ -584,8 +591,29 @@ export class LoopVoice {
     while (this.nextAt < ctx.currentTime + LOOP_LOOKAHEAD_S) this._cycle()
   }
 
-  _cycle() {
+  /** `buffer` from `start` at the voice's rate through a gain of its own into `level`, held in `sources` till it ends; `loop` repeats it natively. */
+  _play(buffer, start, gain, loop) {
     const ctx = this.engine.ctx
+    const src = ctx.createBufferSource()
+    src.buffer = buffer
+    src.loop = loop
+    src.playbackRate.value = this.rate
+    const env = ctx.createGain()
+    env.gain.value = gain
+    src.connect(env)
+    env.connect(this.level)
+    src.start(start)
+    this.sources.push(src)
+    src.onended = () => {
+      src.disconnect()
+      env.disconnect()
+      const i = this.sources.indexOf(src)
+      if (i >= 0) this.sources.splice(i, 1)
+    }
+    return { src, env }
+  }
+
+  _cycle() {
     const asked = this.next ? this.next() : null
     const buffer = this.engine.buffer(asked ?? (this.names.length === 1 ? this.names[0] : this.names[Math.floor(this.rand() * this.names.length)]))
     const start = this.nextAt
@@ -595,28 +623,14 @@ export class LoopVoice {
     let xfade = LOOP_XFADE_S[0] + this.rand() * (LOOP_XFADE_S[1] - LOOP_XFADE_S[0])
     if (xfade > dur / 2 - fadeIn / 2) xfade = Math.max(0.05, dur / 2 - fadeIn / 2)
 
-    const src = ctx.createBufferSource()
-    src.buffer = buffer
-    src.playbackRate.value = this.rate
-    const env = ctx.createGain()
     // Two curves and nothing between them: a curve occupies its whole span, and
     // any other event landing on its end point is an overlap the browser throws
     // on. The param holds the fade-in's last value (the cycle gain) until the
     // fade-out begins.
-    env.gain.value = 0
+    const { src, env } = this._play(buffer, start, 0, false)
     env.gain.setValueCurveAtTime(scaled(FADE_IN, this.cycleGain), start, fadeIn)
     env.gain.setValueCurveAtTime(scaled(FADE_OUT, this.cycleGain), start + dur - xfade, xfade)
-    src.connect(env)
-    env.connect(this.level)
-    src.start(start)
     src.stop(start + dur + 0.01)
-    this.sources.push(src)
-    src.onended = () => {
-      src.disconnect()
-      env.disconnect()
-      const i = this.sources.indexOf(src)
-      if (i >= 0) this.sources.splice(i, 1)
-    }
 
     this.nextAt = start + dur - xfade
     this.nextFadeIn = xfade

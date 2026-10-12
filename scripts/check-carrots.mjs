@@ -15,6 +15,7 @@ import { CARROT_TUNING, Carrots, carrotsBankFrom } from '../src/v2/render/carrot
 import { propCull } from '../src/v2/render/gen-props.js'
 import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { taken } from '../src/v2/taken.js'
+import { Labyrinths } from '../src/v2/layers/labyrinths.js'
 import { GEN_PROPS_DIR, readShippedAsset } from './lib/gen-prop-node.mjs'
 
 const T = CARROT_TUNING
@@ -167,6 +168,25 @@ console.log('carrots: the neighbours')
   const d = place(slab)
   const onStone = plantsOf(d).filter((p) => p.x > 0)
   check(onStone.length === 0 && d.rejected.rock > 0, 'no carrot grows out of a rock', `${d.rejected.rock} rejected`)
+}
+
+console.log('carrots: the labyrinth')
+{
+  // DESIGN.md §41: a bed over a labyrinth grows every dead end's carrots, on ground too steep for a wild clump.
+  const ground = {
+    scatterAt: (x, z, cell, out) => { out.h = 0; out.tan = 0; return out },
+    layers: { lakes: { levelAt: () => null }, paths: { riverLevelAt: () => null, nearest: () => null }, labyrinthSites: null },
+  }
+  const labyrinths = new Labyrinths({ seed: 11, ground })
+  const s = labyrinths.siteOf(0, 0)
+  const steep = { ...flatField(100), heightAndSlopeAt: () => ({ h: 100, tan: 5 }) }
+  taken.clear()
+  const c = new Carrots(new THREE.Scene(), steep, DRY, LAYERS, NO_ROCKS, { seed: 5, bank: bank(), labyrinths, cards: new LitterCards(4096) })
+  c.place(s.cx, s.cz)
+  const want = labyrinths.carrotsOf(s)
+  const grown = plantsOf(c)
+  const missing = want.filter(([x, z]) => !grown.some((p) => Math.abs(p.x - x) < 1e-4 && Math.abs(p.z - z) < 1e-4)).length
+  check(s !== null && want.length > 0 && missing === 0 && grown.length === want.length, 'every dead end\'s carrots grow, and no wild clump on the steep ground', `${grown.length} grown of ${want.length}`)
 }
 
 console.log('carrots: her hand')

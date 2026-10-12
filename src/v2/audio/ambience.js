@@ -107,7 +107,7 @@ export const SOUNDS = {
   roar: 'sounds/dragon-roar.mp3',
   growl: 'sounds/dragon-growl.mp3',
   fiddle: 'sounds/ambience-violin-playing.mp3',
-  drums: 'sounds/npc-yeti-drums.mp3',
+  drums: 'sounds/npc-yeti-drums-loop.wav',
   campfire1: 'sounds/ambience-campfire-1.mp3',
   campfire2: 'sounds/ambience-campfire-2.mp3',
   campfire3: 'sounds/ambience-campfire-3.mp3',
@@ -255,7 +255,7 @@ export const RULES = {
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A labyrinth's drums (design/41-palisade-labyrinths.md), looped from its middle while she is within `reach` metres of its outline and has not yet stood in its middle: `near` 0 at the reach to 1 at the middle's edge walks the level from `level[0]` to `level[1]` and the low-pass from `cutoff[0]` to `cutoff[1]` Hz, both geometrically, so far off they are a distant thump.
-  drums: { reach: 20, level: [0.03, 0.6], cutoff: [220, 9000], gain: [0.9, 1.0] },
+  drums: { reach: 20, level: [0.015, 0.3], cutoff: [220, 9000], gain: [0.9, 1.0] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.
   campfire: { reach: 16, near: 1.5, edge: 2, level: 0.25, gain: [0.8, 1.0] },
   // The flames a spark lit and the torches she and peers carry (wildfire.js): ONE loop over CAMPFIRES, placed at the nearest flame, each flame within `reach` metres adding its share of `level` (falling as near/distance, to nothing over the last `edge` metres) so more flames are louder, the sum's square root held under `cap`: a torch in the hand is faint, a blaze of dozens reaches level * cap. On the near bus, so the walls a house or a cave stands her behind (SoundEngine.setIndoors) do not smother the torch in her hand.
@@ -397,7 +397,7 @@ export class Ambience {
     this.loops.hearth = engine.loop(CAMPFIRES, { directional: true, bus: 'near', gain: RULES.campfire.gain })
     this.blazeAt = { x: 0, y: 0, z: 0 }
     this.drums = drums
-    this.loops.drums = engine.loop('drums', { directional: true, muffle: true, rate: [1, 1], drift: 0, gain: RULES.drums.gain })
+    this.loops.drums = engine.loop('drums', { directional: true, muffle: true, exact: true, rate: [1, 1], drift: 0, gain: RULES.drums.gain })
     this.leavesOn = false
     this.hushed = false
     this.windOn = false

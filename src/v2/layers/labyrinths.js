@@ -104,6 +104,21 @@ function hashedWallAt(h, seg, x, z, r) {
   return false
 }
 
+/** Each ring's cell count: at least 6 in ring 0, doubling where a cell would be wider than `split` along its inner wall. */
+function sectorsOf(rings) {
+  const P = LABYRINTH.pitch, C = LABYRINTH.centre
+  const sectors = [Math.max(6, Math.round((TAU * (C + P / 2)) / (1.6 * P)))]
+  for (let k = 1; k < rings; k++) {
+    const prev = sectors[k - 1]
+    sectors.push((TAU * (C + k * P)) / (2 * prev) >= LABYRINTH.split ? prev * 2 : prev)
+  }
+  return sectors
+}
+
+// Carrots at every dead end (carrotsOf): 1 to CARROTS.most a dead end, `back` metres from the cell's middle away from its way out and `spread` either side; under a tower, `under` either side of its posts' middle, since the rings' twist shears its square. DEAD_ENDS_MAX is the share of the largest labyrinth's cells render/carrots.js budgets dead ends for; check-labyrinths holds every one under it.
+export const CARROTS = { most: 3, back: 0.4, spread: 0.15, under: 0.1 }
+export const DEAD_ENDS_MAX = Math.ceil(0.2 * sectorsOf(Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)).reduce((a, b) => a + b, 0))
+
 /** Polar (r, a) before the warp to world xz into `out`. Bijective: the twist turns each radius rigidly and the swell scales each bearing's ray, so walls never cross. */
 export function warp(s, r, a, out) {
   const aw = a + LABYRINTH.twist * Math.sin((1.4 * Math.PI * r) / s.rOuter + s.phase)
@@ -315,11 +330,7 @@ export class Labyrinths {
     const { rings } = s
     const P = LABYRINTH.pitch, C = LABYRINTH.centre
     const bound = (k) => C + k * P
-    const sectors = [Math.max(6, Math.round((TAU * (C + P / 2)) / (1.6 * P)))]
-    for (let k = 1; k < rings; k++) {
-      const prev = sectors[k - 1]
-      sectors.push((TAU * bound(k)) / (2 * prev) >= LABYRINTH.split ? prev * 2 : prev)
-    }
+    const sectors = sectorsOf(rings)
     const offs = [0]
     for (let k = 0; k < rings; k++) offs.push(offs[k] + sectors[k])
     const total = offs[rings]
@@ -551,9 +562,36 @@ export class Labyrinths {
         if (k > 0 && !wallIn[k][j]) join(offs[k] + j, offs[k - 1] + Math.floor((j * sectors[k - 1]) / n), bound(k), j + 0.5, n)
       }
     }
-    m = { site: s, sectors, offs, wallCw, wallIn, wallOut, entrance, door, lines, segments, hash, cells, centre: [s.cx, s.cz], middle, ways, mouth, torches, towers, altar, beacon, _posts: null }
+    m = { site: s, sectors, offs, wallCw, wallIn, wallOut, entrance, door, lines, segments, hash, cells, centre: [s.cx, s.cz], middle, ways, mouth, torches, towers, altar, beacon, _posts: null, _carrots: null }
     this._mazes.set(key, m)
     return m
+  }
+
+  /** The carrots of footprint `s`'s dead ends (cells with one way out) as [[x, z]], memoized: 1 to CARROTS.most each, at its back or amid a tower's posts. */
+  carrotsOf(s) {
+    const m = this.mazeOf(s)
+    if (m._carrots !== null) return m._carrots
+    const rand = mulberry32(regionHash(s.rx, s.rz, this.seed ^ 0x43415252))
+    const out = []
+    const towers = new Map(m.towers.map((t) => [t.cell, t]))
+    for (let id = 0; id < m.cells.length; id++) {
+      if (m.ways[id].length !== 1) continue
+      const w = m.ways[id][0], t = towers.get(id)
+      let [x, z] = m.cells[id]
+      const d = Math.hypot(w.x - x, w.z - z), ux = (w.x - x) / d, uz = (w.z - z) / d
+      const back = t ? 0 : CARROTS.back, spread = t ? CARROTS.under : CARROTS.spread
+      if (t) {
+        x = t.corners.reduce((a, c) => a + c[0], 0) / 4
+        z = t.corners.reduce((a, c) => a + c[1], 0) / 4
+      }
+      const n = 1 + Math.floor(rand() * CARROTS.most)
+      for (let i = 0; i < n; i++) {
+        const side = n === 1 ? 0 : spread * ((2 * i) / (n - 1) - 1) + (rand() - 0.5) * 0.05
+        out.push([x - ux * back - uz * side, z - uz * back + ux * side])
+      }
+    }
+    m._carrots = out
+    return out
   }
 
   /**

@@ -11,6 +11,7 @@ import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { shade } from '../terrain/chunk-mesh-v2.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { CARROTS, DEAD_ENDS_MAX, LABYRINTH } from '../layers/labyrinths.js'
 
 // ---------------------------------------------------------------------------
 // Wild carrots: the shipped Tripo root (gen-props/carrot.glb, DESIGN.md §29)
@@ -226,8 +227,9 @@ export class Carrots {
    * @param rocks    Rocks. Needs blockTopAt; a carrot does not grow out of a stone.
    * @param bank     loadCarrotsBank's answer, with its map.
    * @param plots    Garden plots `[{ x, z, r, spots: [[x, z, grow?]] }]` planted on top of the wild bed, `grow` the fraction of full size (default 1).
+   * @param labyrinths  Labyrinths or null; a tile also grows the carrots of the dead ends it holds (Labyrinths carrotsOf).
    */
-  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [], cards = null } = {}) {
+  constructor(scene, field, water, layers, rocks, { seed = 1, radius = null, bank = null, keep = KEEP, bounds = null, plots = [], labyrinths = null, cards = null } = {}) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Carrots: needs the LitterCards its far card is drawn by')
     if (!bank || !Array.isArray(bank.tiers) || !bank.map) throw new Error('Carrots: needs the bank from loadCarrotsBank')
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function' || typeof field.snowLineAt !== 'function') {
@@ -284,7 +286,11 @@ export class Carrots {
     // Plus the most sown carrots resident at once: every plot near enough to any one plot that both fit inside the eviction disc.
     const span = 2 * (this.evictR + TILE)
     const sown = plots.reduce((most, p) => Math.max(most, plots.reduce((n, q) => (Math.hypot(p.x - q.x, p.z - q.z) <= span + p.r + q.r ? n + q.spots.length : n), 0)), 0)
-    this.maxInstances = bound * CLUMP_MAX + sown
+    // Plus every dead end's carrots in each labyrinth the disc can meet: one a region, and a disc under half a region across meets at most four.
+    if (labyrinths !== null && 2 * this.evictR >= LABYRINTH.region) throw new Error(`Carrots: an eviction disc ${this.evictR.toFixed(0)} m across meets more than four labyrinth regions`)
+    this.labyrinths = labyrinths
+    this._sites = []
+    this.maxInstances = bound * CLUMP_MAX + sown + (labyrinths === null ? 0 : 4 * DEAD_ENDS_MAX * CARROTS.most)
 
     const t0 = performance.now()
     this.variantCount = bank.tiers[0].geometries.length
@@ -442,17 +448,29 @@ export class Carrots {
     }
   }
 
-  /** Plant the tile's share of any garden, then roll its one wild clump and plant what passes. */
+  /** Plant the tile's share of any garden and labyrinth dead ends, then roll its one wild clump and plant what passes. */
   _growTile(key, tx, tz) {
-    const spots = this.plotSpots.get(key) ?? null
-    const tile = { tx, tz, ids: new Int32Array(CLUMP_MAX + (spots?.length ?? 0)), n: 0 }
+    const sown = this.plotSpots.get(key) ?? []
+    const dead = this.labyrinths === null ? [] : this._deadEndsIn(tx, tz)
+    const tile = { tx, tz, ids: new Int32Array(CLUMP_MAX + sown.length + dead.length), n: 0 }
     this.tiles.set(key, tile)
-    if (spots) this._growPlots(tile, spots)
+    if (sown.length > 0) this._growPlots(tile, sown, false)
+    // A labyrinth's siting holds its ground gentle at 4 m; at the carrot's own scale a dead end can read past maxSlopeDeg.
+    if (dead.length > 0) this._growPlots(tile, dead, true)
     this._growClump(tile, tx, tz)
     if (tile.n > 0) {
       this.clumps++
       this.rim.markDue(tile)
     }
+  }
+
+  /** The dead-end carrots standing in tile (tx, tz). */
+  _deadEndsIn(tx, tz) {
+    const out = []
+    for (const s of this.labyrinths.sitesIn(tx * TILE, tz * TILE, (tx + 1) * TILE, (tz + 1) * TILE, this._sites)) {
+      for (const spot of this.labyrinths.carrotsOf(s)) if (Math.floor(spot[0] / TILE) === tx && Math.floor(spot[1] / TILE) === tz) out.push(spot)
+    }
+    return out
   }
 
   /** The tile's one wild clump, where its roll keeps it and the ground takes it. */
@@ -493,8 +511,8 @@ export class Carrots {
   }
 
   /** The tile's share of a garden's rows (rooms/village.js gardenSpots): a carrot at every spot, standing plumb but for its own tilt. */
-  _growPlots(tile, spots) {
-    const env = { snowLine: this.field.snowLineAt(spots[0][0], spots[0][1]), road: null }
+  _growPlots(tile, spots, anySlope) {
+    const env = { snowLine: this.field.snowLineAt(spots[0][0], spots[0][1]), road: null, anySlope }
     for (const [x, z, grow = 1] of spots) {
       // Off the spot rather than off the tile: a plot straddles tiles and a row must not change where it crosses one.
       this._plant(tile, x, z, mulberry32(tileSeed(Math.round(x * 64), Math.round(z * 64), this.seed)), 0, 0, env, grow)
@@ -523,7 +541,7 @@ export class Carrots {
     if (taken.has('carrot', mx, mz)) return false
 
     const { h, tan } = this.field.heightAndSlopeAt(mx, mz)
-    if (tan > Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)) { this.rejected.slope++; return false }
+    if (!env.anySlope && tan > Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)) { this.rejected.slope++; return false }
     if (this.rocks.blockTopAt(mx, mz, 0) > -Infinity) { this.rejected.rock++; return false }
 
     if (this.freeCount === 0) {

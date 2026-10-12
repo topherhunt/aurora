@@ -73,13 +73,17 @@ One per 40 cells and at least 2, each in a dead end, spread by farthest point fr
 
 **Climbing** (src/v2/climb.js). On the desktop she walks into the ladder from its foot, facing in, and the walk keys climb at 0.9 m/s; from the deck, facing out, they climb down. In the headset an empty hand within 0.15 m of a rung grips it, and the rig moves against the hand so it stays on its rung; the last hand to grip leads. Either way `Player.hold(y)` keeps her height until her next walk or teleport, and the top steps her onto the deck.
 
+## Dead-end carrots
+
+1-3 carrots in every dead end (`CARROTS`, `carrotsOf`), in a row across the cell 0.4 m back from its way out; under a tower, in a row at its posts' middle. Carrots (render/carrots.js) grows them with its tiles and skips the slope test for them.
+
 ## The middle
 
 A stone plinth 0.64 m square and 1 m tall carrying a dragon egg, and behind it from the door a torch post 4 m tall (`ALTAR`, `BEACON`), tall enough to read from the towers' decks.
 
 ## The drums
 
-Within 20 m of a labyrinth's outline she hears `npc-yeti-drums.mp3` looped from its middle (ambience.js `RULES.drums`). `nearness` walks 0 at that reach to 1 at the middle's edge; the level runs 0.03 to 0.6 and the low-pass 220 to 9000 Hz, both geometrically, so far off they are a distant thump. Off indoors. Once she stands in the middle they stop for good: main.js `drumsStilled` holds its `rx,rz` and the save carries it.
+Within 20 m of a labyrinth's outline she hears `npc-yeti-drums-loop.wav` looped from its middle (ambience.js `RULES.drums`): two bars, 1.62696 s, cut from `npc-yeti-drums.mp3` by tools/music/bar-loop.mjs and played by one natively looping source (LoopVoice `exact`), so the beat never drifts at the join. `nearness` walks 0 at that reach to 1 at the middle's edge; the level runs 0.015 to 0.3 and the low-pass 220 to 9000 Hz, both geometrically, so far off they are a distant thump. Off indoors. Once she stands in the middle they stop for good: main.js `drumsStilled` holds its `rx,rz` and the save carries it.
 
 ## The green giant (src/v2/render/giants.js)
 
@@ -87,7 +91,7 @@ One per labyrinth: the yeti, 5 m tall (a metre over the posts), its fur tinted [
 
 **The round.** `roundOf` is an Euler walk of the graph's spanning tree from the middle, children shuffled per labyrinth, at 0.6 m/s, standing 2-5 s in each dead end and 8 s in the middle at the turn; a few tens of minutes long. `roundAt` is closed-form in the room's clock, so every client has it at the same pose, synced as the snowmen are (render/snowmen.js): anchors keyed `gg:rx,rz`, a peer's giant going live on the anchor's player.
 
-**Live.** It notices her within 10 m on the side it faces, unless she is more than 4 m over its feet (a tower's deck is safe), and this client becomes its authority, owing an anchor a second. It chases at 1 m/s (her walk is 1.45) by BFS along the graph to her node, or to the entrance cell when she is outside; within 2.2 m it swings (the threaten clip at 0.6 rate), and the blow lands halfway through for 25 HP if she is still within 2.7 m. Past 20 m, or a stale anchor, it forgets her, owes a rejoin anchor and walks back to where its round has got to. The chapter turn snaps a returning giant onto its round.
+**Live.** It notices her within 5 m in the quarter circle it faces, unless she is more than 4 m over its feet (a tower's deck is safe), and this client becomes its authority, owing an anchor a second. It chases at 1 m/s (her walk is 1.45) by BFS along the graph to her node, or to the entrance cell when she is outside; within 2.2 m it swings (the threaten clip at 0.6 rate), and the blow lands halfway through for 25 HP if she is still within 2.7 m. Past 10 m, or a stale anchor, it forgets her, owes a rejoin anchor and walks back to where its round has got to. The chapter turn snaps a returning giant onto its round.
 
 It shares the snowmen's visibility toggle and trace row, and treads through ambience's herd as `human`/`tread`/`thud`.
 
@@ -100,7 +104,7 @@ It shares the snowmen's visibility toggle and trace row, and treads through ambi
 
 ## The checks
 
-- **check-labyrinths** `[every]`, ~16 s. Every labyrinth: every cell reached from the one entrance, one door, two torches; wall covered by posts or cracks of at most 4 cm; girths in range; its towers; its drums' reach and rise; the giant's graph one piece, `nodeAt` finding every node, every leg 0.25 m clear of the walls. Walked: WalkSurface flooded on a 0.25 m grid with Palisades' own columnAt, every cell and the middle reached from outside, and with the gate plugged, none. Towers climbed, held and fallen from; wall tops found.
+- **check-labyrinths** `[every]`, ~16 s. Every labyrinth: every cell reached from the one entrance, one door, two torches; wall covered by posts or cracks of at most 4 cm; girths in range; its towers; its dead ends' carrots on their nodes, clear of walls and posts; its drums' reach and rise; the giant's graph one piece, `nodeAt` finding every node, every leg 0.25 m clear of the walls. Walked: WalkSurface flooded on a 0.25 m grid with Palisades' own columnAt, every cell and the middle reached from outside, and with the gate plugged, none. Towers climbed, held and fallen from; wall tops found.
 - **check-giants**: on flat ground with a stand-in skinned yeti: the round's coverage and pace, the closed-form pose across two frame rates, noticing, chase, swing and blows, forgetting and the walk back, a peer going live on an anchor.
 - **check-world-plan**: the boot reads the plan's footprints, and the gate trails reach the roads through no labyrinth.
 

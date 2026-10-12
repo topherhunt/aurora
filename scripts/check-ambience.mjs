@@ -210,6 +210,44 @@ console.log('loop voice')
 }
 
 {
+  // An exact loop: one source looping natively from start to stop, so every pass is the clip's length to the sample.
+  const ctx = fakeCtx()
+  const engine = new SoundEngine({ ctx })
+  engine.buffers.set('drums', { duration: 1.627 })
+  const voice = engine.loop('drums', { exact: true, rate: [1, 1], drift: 0, gain: [0.9, 1.0], rand: mulberry32(5) })
+  ctx.currentTime = 2
+  voice.start()
+  for (let i = 0; i < 60 * 30; i++) { ctx.currentTime = 2 + i / 60; engine.update() }
+  const [s] = ctx.sources
+  check(ctx.sources.length === 1 && s.loop === true && s.playbackRate.value === 1 && s.stopAt === null && Math.abs(s.startAt - 2.01) < 1e-9, 'thirty seconds of an exact loop is one source looping natively', `${ctx.sources.length} source(s)`)
+  check(s.env.log.length === 0 && within(s.env.gain.value, 0.9, 1.0), 'with no envelope, its gain held inside the voice range')
+  voice.stop(0.5)
+  check(s.stopAt === ctx.currentTime + 0.5 && !voice.active, 'stop cuts it when the fade lands')
+  voice.start()
+  check(ctx.sources.length === 2 && ctx.sources[1].loop === true, 'and a restart plays it afresh')
+  let threw = 0
+  try { engine.loop(['a', 'b'], { exact: true }) } catch { threw++ }
+  try { engine.loop('drums', { exact: true, next: () => null }) } catch { threw++ }
+  check(threw === 2, 'an exact loop over two clips, or with a swap, throws')
+}
+
+{
+  // The labyrinth drums' clip (tools/music/bar-loop.mjs): two whole bars whose last sample runs into the first, no jump at the join bigger than a typical step inside the clip.
+  const wav = fs.readFileSync(new URL(`../public/${SOUNDS.drums}`, import.meta.url))
+  let at = 12, data = null, fmt = null
+  while (at < wav.length) {
+    const id = wav.toString('ascii', at, at + 4), size = wav.readUInt32LE(at + 4)
+    if (id === 'fmt ') fmt = { channels: wav.readUInt16LE(at + 10), rate: wav.readUInt32LE(at + 12), bits: wav.readUInt16LE(at + 22) }
+    if (id === 'data') data = new Int16Array(wav.buffer.slice(wav.byteOffset + at + 8, wav.byteOffset + at + 8 + size))
+    at += 8 + size + (size & 1)
+  }
+  const steps = Array.from(data.subarray(1), (v, i) => Math.abs(v - data[i])).sort((a, b) => a - b)
+  const join = Math.abs(data[0] - data[data.length - 1])
+  check(SOUNDS.drums.endsWith('.wav') && fmt.channels === 1 && fmt.bits === 16 && Math.abs(data.length / fmt.rate - 1.627) < 0.01 && join <= steps[steps.length >> 1],
+    'the drums\' loop is a 1.627 s WAV whose end runs into its start', `${data.length} samples at ${fmt.rate} Hz, join ${join} against a median step ${steps[steps.length >> 1]}`)
+}
+
+{
   // A loop over a list of clips draws one each cycle, in no order, and joins the takes like a single clip's passes.
   const ctx = fakeCtx()
   const engine = new SoundEngine({ ctx })
@@ -1556,7 +1594,7 @@ for (const rule of ['voice', 'villagerVoice']) {
   let heard = null
   const amb = new Ambience({ engine, sense, rand: mulberry32(15), drums: () => heard })
   const d = amb.loops.drums, head = { x: 0, y: GROUND + 1.6, z: 0 }
-  check(d.name === 'drums' && 'drums' in SOUNDS && d.opts.muffle === true && d.opts.directional === true && d.opts.rate[0] === 1 && d.opts.rate[1] === 1 && d.opts.drift === 0, 'one muffled, placed loop, its pitch held')
+  check(d.name === 'drums' && 'drums' in SOUNDS && d.opts.muffle === true && d.opts.directional === true && d.opts.exact === true && d.opts.rate[0] === 1 && d.opts.rate[1] === 1 && d.opts.drift === 0, 'one muffled, placed, exact loop, its pitch held')
   run(amb, 1, { head })
   check(!d.active, 'none heard, silent')
   heard = { x: 30, y: GROUND + 1.6, z: 0, near: 0 }

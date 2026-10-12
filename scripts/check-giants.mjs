@@ -9,7 +9,7 @@
 
 import * as THREE from 'three'
 import { Labyrinths, POST_HEIGHT } from '../src/v2/layers/labyrinths.js'
-import { Giants, roundOf, roundAt, HEIGHT_M, NOTICE_M, FORGET_M, REACH_M, BLOW, CHASE_SPEED, ABOVE_M, ANCHOR_S } from '../src/v2/render/giants.js'
+import { Giants, roundOf, roundAt, HEIGHT_M, NOTICE_M, FORGET_M, REACH_M, BLOW, CHASE_SPEED, ABOVE_M, ANCHOR_S, NOTICE_HALF } from '../src/v2/render/giants.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
@@ -116,9 +116,9 @@ console.log('\nthe room clock')
   check(Math.hypot(ca.sx - r.x, ca.sz - r.z) < 1e-9, 'and that pose is its round, closed-form in world time')
 }
 
-// Her head `d` m along the line ahead of the giant (`side` 1) or behind it (-1).
-function herAt(c, side, d) {
-  return [c.sx + Math.cos(c.sh) * d * side, 1.6, c.sz - Math.sin(c.sh) * d * side]
+// Her head `d` m along the line ahead of the giant (`side` 1) or behind it (-1), turned `off` radians off its heading.
+function herAt(c, side, d, off = 0) {
+  return [c.sx + Math.cos(c.sh + off) * d * side, 1.6, c.sz - Math.sin(c.sh + off) * d * side]
 }
 
 console.log('\nher')
@@ -129,6 +129,10 @@ console.log('\nher')
   const behind = herAt(c, -1, NOTICE_M - 2)
   step(g, 1001, 1001.2, 30, behind)
   check(c.state === 'round', `${NOTICE_M - 2} m behind it, she is not noticed`, c.state)
+  for (const off of [NOTICE_HALF + 0.15, -NOTICE_HALF - 0.15]) step(g, 1001.2, 1001.4, 30, herAt(c, 1, NOTICE_M - 2, off))
+  check(c.state === 'round', `${NOTICE_M - 2} m off to either side past its quarter circle, she is not noticed`, c.state)
+  step(g, 1001.4, 1001.6, 30, herAt(c, 1, NOTICE_M + 1))
+  check(c.state === 'round', `${NOTICE_M + 1} m dead ahead, she is not noticed`, c.state)
   const g2 = make()
   step(g2, 1000, 1001, 30)
   const c2 = giantOf(g2)
@@ -145,14 +149,22 @@ console.log('\nher')
   const g4 = make()
   step(g4, 1000, 1001, 30)
   const c4 = giantOf(g4)
-  let target = null
-  for (let id = 0; id < total && target === null; id++) {
-    const d = Math.hypot(m.cells[id][0] - c4.sx, m.cells[id][1] - c4.sz)
-    if (d > 4 && d < NOTICE_M - 1 && Math.abs(Math.atan2(Math.sin(Math.atan2(-(m.cells[id][1] - c4.sz), m.cells[id][0] - c4.sx) - c4.sh), Math.cos(Math.atan2(-(m.cells[id][1] - c4.sz), m.cells[id][0] - c4.sx) - c4.sh))) < 1.2) target = m.cells[id]
+  // Along its round to a moment a cell a few openings from its own, so the way to her never runs past FORGET_M, lies in its quarter circle.
+  let target = null, t0 = 1001
+  for (; t0 < 1600 && target === null; t0 += 2) {
+    step(g4, t0, t0 + 2, 30)
+    const hops = new Map([[labyrinths.nodeAt(site, c4.sx, c4.sz), 0]])
+    for (const [id, h] of hops) if (h < 4) for (const w of m.ways[id]) if (!hops.has(w.to)) hops.set(w.to, h + 1)
+    for (const id of hops.keys()) {
+      if (id === total) continue
+      const d = Math.hypot(m.cells[id][0] - c4.sx, m.cells[id][1] - c4.sz)
+      const a = Math.atan2(-(m.cells[id][1] - c4.sz), m.cells[id][0] - c4.sx) - c4.sh
+      if (d > REACH_M + 0.5 && d < NOTICE_M - 0.3 && Math.abs(Math.atan2(Math.sin(a), Math.cos(a))) < NOTICE_HALF * 0.8) target = m.cells[id]
+    }
   }
   const her = [target[0], 1.6, target[1]]
   let out = 0, fast = 0, px = c4.sx, pz = c4.sz, pk = c4.rec.tick, walked = 0, swungAt = -1, blows = 0, anchors = 0
-  step(g4, 1001, 1121, 30, her, (t) => {
+  step(g4, t0, t0 + 120, 30, her, (t) => {
     if (labyrinths.nodeAt(site, c4.sx, c4.sz) === -1) out++
     const d = Math.hypot(c4.sx - px, c4.sz - pz)
     if (d > (CHASE_SPEED * (c4.rec.tick - pk)) / 20 + 1e-6) fast++
@@ -162,7 +174,7 @@ console.log('\nher')
     blows += g4.drainBlows()
     anchors += g4.pending().filter((x) => x[0] === c4.key).length
   })
-  check(swungAt > 0, 'it reaches her standing in a cell and swings', `${swungAt > 0 ? (swungAt - 1001).toFixed(1) : '-'} s, ${walked.toFixed(0)} m walked`)
+  check(swungAt > 0, 'it reaches her standing in a cell and swings', `${swungAt > 0 ? (swungAt - t0).toFixed(1) : '-'} s, ${walked.toFixed(0)} m walked`)
   check(out === 0, 'never out of the maze on the way', `${out} ticks out`)
   check(fast === 0 && CHASE_SPEED < LOCOMOTION.maxSpeed, `never faster than ${CHASE_SPEED} m/s, under her ${LOCOMOTION.maxSpeed}`, `${fast} frames too fast`)
   check(blows > 0 && blows % BLOW === 0, `its blows land on her ${BLOW} HP at a time`, `${blows} HP in 120 s`)
@@ -171,10 +183,10 @@ console.log('\nher')
 
   // She walks off past FORGET_M: forgotten, a rejoin owed, and it walks back to its round.
   const gone = [site.cx + FORGET_M + site.rOuter + 5, 1.6, site.cz]
-  step(g4, 1121.03, 1122, 30, gone)
+  step(g4, t0 + 120.03, t0 + 121, 30, gone)
   check(c4.state === 'back' && g4.pending().some((x) => x[0] === c4.key && x[7] === 'rejoin'), `past ${FORGET_M} m she is forgotten and a rejoin owed`, c4.state)
   let backOut = 0
-  step(g4, 1122.03, 1600, 10, gone, () => { if (labyrinths.nodeAt(site, c4.sx, c4.sz) === -1) backOut++ })
+  step(g4, t0 + 121.03, t0 + 600, 10, gone, () => { if (labyrinths.nodeAt(site, c4.sx, c4.sz) === -1) backOut++ })
   check(c4.state === 'round' && backOut === 0, 'and it walks back inside the maze to its round', `${c4.state}, ${backOut} ticks out`)
 
   // A peer hears the authority's anchor: its giant is put there, live on that client's player.

@@ -21,8 +21,10 @@ export const MAX = 4
 // Ground speeds: on its round, and after her or back to its round -- under her 1.45 walk (player.js LOCOMOTION.maxSpeed).
 export const ROUND_SPEED = 0.6
 export const CHASE_SPEED = 1.0
-export const NOTICE_M = 10
-export const FORGET_M = 20
+// It notices her within NOTICE_M inside the quarter circle it faces (NOTICE_HALF either side), and forgets her past FORGET_M.
+export const NOTICE_M = 5
+export const NOTICE_HALF = Math.PI / 4
+export const FORGET_M = 10
 export const ABOVE_M = 4
 // It swings within REACH_M; the blow lands BLOW_AT through the swing if she is still within REACH_M + SLACK_M.
 export const REACH_M = 2.2
@@ -485,7 +487,7 @@ export class Giants {
       if (c.clip !== clip) this._play(c, clip, k, ROUND_SPEED)
     }
     const dx = this.hx - c.sx, dz = this.hz - c.sz
-    if (dx * dx + dz * dz < NOTICE_M * NOTICE_M && this.hy - c.sy <= ABOVE_M && Math.abs(swing(c.sh, Math.atan2(-dz, dx))) < Math.PI / 2) this._golive(c, null, k)
+    if (dx * dx + dz * dz < NOTICE_M * NOTICE_M && this.hy - c.sy <= ABOVE_M && Math.abs(swing(c.sh, Math.atan2(-dz, dx))) < NOTICE_HALF) this._golive(c, null, k)
   }
 
   _pose(c) {
