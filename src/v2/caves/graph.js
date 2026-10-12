@@ -448,7 +448,7 @@ const RELIEF_SLOPE = 0.6
 
 /**
  * Rolls node n's floor relief, `n.relief = { x0, z0, nx, nz, cell, v, lo }`, v the metres over the nominal floor per grid corner over the node and its lobes, lo its least.
- * A tilt and mounds, held to zero where passages meet the rim (and under a drop's lip, so the fall stays over her reach), and out of a dish. A great cavern's is rolled bigger and rough, with a channel down its length, its hills free to run on up into its wall (its grid reaches past the cragged dome, field.js); each hollow in it deep enough is pushed to `pools`.
+ * A tilt and mounds, held to zero where passages meet the rim (and under a drop's lip, so the fall stays over her reach), and out of a dish. A great cavern's is rolled bigger and rough, with a channel down its length, its hills free to run on up into its wall (its grid reaches past its shape octaves' carve, field.js); each hollow in it deep enough is pushed to `pools`.
  */
 function relieve(n, edges, nooks, lobes, pools, rand) {
   const rr = (a, b) => a + (b - a) * rand()

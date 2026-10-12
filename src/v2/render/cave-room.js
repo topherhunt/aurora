@@ -420,25 +420,23 @@ export class CaveRoom {
     this._mouths(plan.graph)
   }
 
-  // Across the far end of each mouth's flare, the opening: a plane of the hour's sky, or for a cellar its door, lit by the torches like the rock.
+  // Across the far end of each mouth's flare, the opening: a plane of the hour's sky, or for a cellar its door, lit by the torches like the rock. update() hides a sky plane with the chunk it stands in, or it shows through the culled rock.
   _mouths(graph) {
     const mouths = graph.nodes.filter((n) => n.kind === 'mouth')
-    const pos = [], idx = []
+    this.skyMaterial = new THREE.ShaderMaterial({ uniforms: { ...this.sky }, vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.DoubleSide })
+    this.disposables.push(this.skyMaterial)
+    this.skies = []
     for (const n of mouths.filter((m) => !m.cellar)) {
       const { end, w, h } = mouthFlare(n)
       const lx = -n.dz * (w + 1.4), lz = n.dx * (w + 1.4), y0 = end.y - 1, y1 = end.y + h + 1.4
-      const v = pos.length / 3
-      pos.push(end.x - lx, y0, end.z - lz, end.x + lx, y0, end.z + lz, end.x + lx, y1, end.z + lz, end.x - lx, y1, end.z - lz)
-      idx.push(v, v + 1, v + 2, v, v + 2, v + 3)
-    }
-    this.skyMaterial = new THREE.ShaderMaterial({ uniforms: { ...this.sky }, vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.DoubleSide })
-    this.disposables.push(this.skyMaterial)
-    if (pos.length > 0) {
       const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-      g.setIndex(idx)
-      this.group.add(new THREE.Mesh(g, this.skyMaterial))
+      g.setAttribute('position', new THREE.Float32BufferAttribute([end.x - lx, y0, end.z - lz, end.x + lx, y0, end.z + lz, end.x + lx, y1, end.z + lz, end.x - lx, y1, end.z - lz], 3))
+      g.setIndex([0, 1, 2, 0, 2, 3])
+      const mesh = new THREE.Mesh(g, this.skyMaterial)
+      this.group.add(mesh)
       this.disposables.push(g)
+      const at = (v) => (Math.floor(v / CHUNK) + 0.5) * CHUNK
+      this.skies.push({ mesh, region: n.region, x: at(end.x), y: at((y0 + y1) / 2), z: at(end.z) })
     }
     this._instanced(new THREE.PlaneGeometry(1.2, 2.2).translate(0, 1.1, 0), mouths.filter((m) => m.cellar), (n) => {
       const { end } = mouthFlare(n)
@@ -695,9 +693,11 @@ export class CaveRoom {
       return { color: [0.13, 0.12, 0.105], lit: this._rock(b.x, b.y, b.z) }
     })
 
-    // Stones: a boulder row's `y` is 0.3 r under the floor it lies on, a pebble row's the floor. Both wear the rock under them, a shade either way, and update() re-picks which are drawn and at what rung.
-    const cells = new Map()
-    const stoneLit = (x, y, z, seed) => {
+    // Stones: a boulder row's `y` is 0.3 r under the floor it lies on, a pebble row's the floor. Both wear the rock surface under them, a shade either way, and update() re-picks which are drawn and at what rung. The sample climbs out of rock first: rockAt from inside the wall finds every light shadowed and its AO floored, so the stone goes dark beside a glowing floor.
+    const cells = new Map(), field = this.plan.field
+    const stoneLit = (x, y0, z, seed) => {
+      let y = y0
+      while (field.at(x, y, z) > 0 && y < y0 + 3) y += 0.1
       const key = `${Math.floor(x / STONE_LIT_M)},${Math.floor(y / STONE_LIT_M)},${Math.floor(z / STONE_LIT_M)}`
       if (!cells.has(key)) cells.set(key, this._rock(x, y, z).slice())
       const lit = cells.get(key), k = 0.92 + 0.16 * seed
@@ -709,7 +709,7 @@ export class CaveRoom {
     this.boulderSet = this._picked(rungs, big, (b) => {
       const k = (2 * b.r) / mm.width
       set(b.x, b.y + 0.3 * b.r - BOULDER_SINK * mm.height * k, b.z, b.yaw, 0, 0, k, k, k)
-      return stoneLit(b.x, b.y, b.z, b.seed)
+      return stoneLit(b.x, b.y + 0.3 * b.r, b.z, b.seed)
     })
     this.boulderSize = Float32Array.from(big, (b) => (rockLodSize(mm) * 2 * b.r) / mm.width)
     this.boulderRung = new Int8Array(big.length).fill(ROCK_LOD_AT.length)
@@ -846,6 +846,7 @@ export class CaveRoom {
       }
     }
     for (const mesh of this.mushGroups) mesh.visible = shown.has(mesh.userData.region)
+    for (const s of this.skies) s.mesh.visible = shown.has(s.region) && (flying || chunkGap(s, eye.x, ly, eye.z) < CULL_M)
     const e = this.dripEye
     if (e === null || (e.x - eye.x) ** 2 + (e.y - ly) ** 2 + (e.z - eye.z) ** 2 > DRIP_STEP * DRIP_STEP) {
       this.dripEye = { x: eye.x, y: ly, z: eye.z }

@@ -14,6 +14,8 @@ const DEEP = 14
  * Settles every pool and sump in `graph.pools` against the field: sets `shore` = { x0, z0, nx, nz, cell, s, floor }, s per grid corner being the floor's rise over level + TUCK: negative where the water reaches, the true rise on its shore, 0 in a wall, so the plane runs exactly into a wall corner. A pool a sump's water already covers takes the sump's level and shore null, so the two planes don't fight. Pure in the seed, so the worker and main thread settle the same water.
  */
 export function settleWaters(graph, field) {
+  // A great cavern's hollow its wall's shape octaves swallowed holds no water.
+  graph.pools = graph.pools.filter((p) => p.node === undefined || !graph.nodes[p.node].great || field.at(p.x, p.level - 0.05, p.z) < 0)
   for (const p of graph.pools) settle(p, graph, field)
   for (const sump of graph.pools) {
     if (sump.edge === undefined) continue
@@ -188,16 +190,36 @@ export function wetAt(shore, x, z) {
   return v < 0
 }
 
-/** The water plane over `shore` at `level`: each grid cell clipped to where its corners' rise interpolates under 0, as { position, index }. */
+// The widest quad (in cells) the open water is merged into, so the reflection's nearest-vertex pick stays a few metres off.
+const MERGE_CELLS = 32
+
+/** The water plane over `shore` at `level`, as { position, index }: the open water as merged rectangles, each cell along the shore clipped to where its corners' rise interpolates under 0. The rectangles' sides meet the shore cells in T-junctions, crack-free only because the plane is flat. */
 export function shoreMesh(shore, level) {
   const { x0, z0, nx, nz, cell, s } = shore
   const pos = [], idx = []
+  const wet = (i, k) => s[k * nx + i] < 0 && s[k * nx + i + 1] < 0 && s[(k + 1) * nx + i] < 0 && s[(k + 1) * nx + i + 1] < 0
+  const used = new Uint8Array(nx * nz)
+  for (let k = 0; k + 1 < nz; k++) {
+    for (let i = 0; i + 1 < nx; i++) {
+      if (used[k * nx + i] || !wet(i, k)) continue
+      let w = 1, h = 1
+      while (w < MERGE_CELLS && i + w + 1 < nx && !used[k * nx + i + w] && wet(i + w, k)) w++
+      for (let ok = true; ok && h < MERGE_CELLS && k + h + 1 < nz; ) {
+        for (let u = 0; u < w && ok; u++) ok = !used[(k + h) * nx + i + u] && wet(i + u, k + h)
+        if (ok) h++
+      }
+      for (let v = 0; v < h; v++) used.fill(1, (k + v) * nx + i, (k + v) * nx + i + w)
+      const base = pos.length / 3, xa = x0 + i * cell, xb = xa + w * cell, za = z0 + k * cell, zb = za + h * cell
+      pos.push(xa, level, za, xb, level, za, xb, level, zb, xa, level, zb)
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    }
+  }
   const poly = []
   for (let k = 0; k + 1 < nz; k++) {
     for (let i = 0; i + 1 < nx; i++) {
       const cs = [k * nx + i, k * nx + i + 1, (k + 1) * nx + i + 1, (k + 1) * nx + i]
       const xs = [i, i + 1, i + 1, i], zs = [k, k, k + 1, k + 1]
-      if (cs.every((c) => s[c] >= 0)) continue
+      if (used[k * nx + i] || cs.every((c) => s[c] >= 0)) continue
       poly.length = 0
       for (let j = 0; j < 4; j++) {
         const a = s[cs[j]], b = s[cs[(j + 1) % 4]]

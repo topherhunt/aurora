@@ -362,7 +362,7 @@ export function placeProps(graph, field, seed) {
     const c = columnAt(field, at.x, at.z, n.y + reliefAt(n, at.x, at.z) + 1.2)
     if (c === null) continue
     if (kind === 'pillar' || kind === 'column') {
-      // A giant stalagmite (slim for a column) at most 55% of the way to the roof, its giant stalactite over it. The roof is re-read from just over the found floor: the relief's guess can start above a crag's overhang.
+      // A giant stalagmite (slim for a column) at most 55% of the way to the roof, its giant stalactite over it. The roof is re-read from just over the found floor: the relief's guess can start above an overhang.
       const foot = columnAt(field, at.x, at.z, c.floor + 0.5)
       if (foot === null) continue
       const room2 = foot.roof - c.floor
@@ -453,8 +453,8 @@ export function placeProps(graph, field, seed) {
     }
     for (let u = -wide[0]; u <= wide[1]; u += 0.5) block(p.x - p.dz * u, p.z + p.dx * u, 0.4, col.floor - 1, col.roof + 1)
   }
-  // Seated, a floor cap may sink under a pool's edge, and is dropped.
-  out.mush = out.mush.filter((m) => m.up !== UP || (plant(field, m), !drowned(m.x, m.y, m.z)))
+  // Seated, a floor cap may sink under a pool's edge, and is dropped. A wall clump on rock that faces up is seated as one.
+  out.mush = out.mush.filter((m) => m.up[1] <= 0.9 || (plant(field, m), !drowned(m.x, m.y, m.z)))
   return out
 }
 
@@ -497,10 +497,10 @@ function plant(field, m) {
   const t1 = [uy, -ux, 0], tl = Math.hypot(uy, ux)
   t1[0] /= tl; t1[1] /= tl
   const t2 = [uy * t1[2] - uz * t1[1], uz * t1[0] - ux * t1[2], ux * t1[1] - uy * t1[0]]
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < 8; pass++) {
     let gap = 0
-    for (let k = 0; k < 24; k++) {
-      const ca = Math.cos((k / 24) * Math.PI * 2) * R, sa = Math.sin((k / 24) * Math.PI * 2) * R
+    for (let k = 0; k < 48; k++) {
+      const ca = Math.cos((k / 48) * Math.PI * 2) * R, sa = Math.sin((k / 48) * Math.PI * 2) * R
       gap = Math.max(gap, -field.at(m.x + ca * t1[0] + sa * t2[0], m.y + ca * t1[1] + sa * t2[1], m.z + ca * t1[2] + sa * t2[2]))
     }
     if (gap <= 0.02) break

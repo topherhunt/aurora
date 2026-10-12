@@ -1,6 +1,6 @@
 // The cave as a signed distance field (design/39-caves.md §4): positive in rock, negative in air, roughly metres. Pure, and deterministic from the graph, so the mesher (in a worker) and the walk surface (on the main thread) build identical copies and agree to the millimetre.
 //
-// Passages are vaults over a flat floor swept along each edge's samples, each edge in its own cross-section (passageForm). Nodes are ellipsoid domes cut by a floor, a great cavern's dome cragged metres deep. The pieces join by a smooth min, so every junction gets a fillet instead of a crease.
+// Passages are vaults over a flat floor swept along each edge's samples, each edge in its own cross-section (passageForm). Nodes are ellipsoid domes cut by a floor. Each piece is misshapen by as many shape octaves as its size holds. The pieces join by a smooth min, so every junction gets a fillet instead of a crease.
 
 import { Noise3 } from './noise3.js'
 import { reliefAt } from './graph.js'
@@ -62,9 +62,12 @@ export function mouthFlare(n) {
   return { pts, end: { x: end.x, y: end.y, z: end.z }, w: end.w, h: end.h }
 }
 
-/** Metres a great cavern's (or its lobe's) dome is cragged, at most 1.85 times this. */
-const CRAG_RISE = 5
-export const cragOf = (n) => Math.min(4.5, 0.1 * Math.min(n.rx, n.rz, 0.8 * n.h))
+// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose depth fits in an eighth of its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for.
+const SHAPE_BASE = 0.625, SHAPE_AMP = 0.45, SHAPE_OCT = 7, SHAPE_RISE = 5, SHAPE_CARVE = 2, SHAPE_BIAS = 0.2
+const octavesOf = (dim) => { let k = 0; while (k < SHAPE_OCT && SHAPE_AMP * SHAPE_BASE * 2 ** k <= dim / 8) k++; return k }
+// The most an octave count's sum reaches either way.
+const reachOf = (oct) => SHAPE_AMP * SHAPE_BASE * (2 ** oct - 1)
+const roomOct = (n) => octavesOf(Math.max(2 * n.rx, 2 * n.rz, 1.05 * n.h))
 
 export class CaveField {
   constructor(graph, seed) {
@@ -73,20 +76,22 @@ export class CaveField {
     this.floorNoise = new Noise3(seed ^ 0x7e1d)
     const prims = []
     for (const n of graph.nodes) {
-      const crag = n.great ? cragOf(n) : 0, r = Math.max(n.rx, n.rz) + 2 * crag
+      const oct = roomOct(n), reach = oct > 0 ? SHAPE_CARVE : 0, r = Math.max(n.rx, n.rz) + reach
       prims.push({
-        node: true, rough: 1, group: n.i, region: n.region, x: n.x, y: n.y, z: n.z, c: Math.cos(n.rot), s: Math.sin(n.rot), rx: n.rx, rz: n.rz, h: n.h, dish: n.dish, cavern: n.kind === 'cavern' && !n.great, owner: n, crag,
-        x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r, y0: n.y - Math.max(n.dish, -lowOf(n)) - 1, y1: n.y + n.h * 1.05 + 2 * crag,
+        node: true, rough: 1, group: n.i, region: n.region, x: n.x, y: n.y, z: n.z, c: Math.cos(n.rot), s: Math.sin(n.rot), rx: n.rx, rz: n.rz, h: n.h, dish: n.dish, cavern: n.kind === 'cavern' && !n.great, owner: n, oct, bias: SHAPE_BIAS * reachOf(oct), deep: (1 + SHAPE_BIAS) * reachOf(oct), rise: Math.min(SHAPE_RISE, 0.5 * n.h),
+        x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r, y0: n.y - Math.max(n.dish, -lowOf(n)) - 1, y1: n.y + n.h * 1.05 + reach,
       })
     }
+    // A passage's octaves are its widest cross-section's, the same along its whole run so its segments meet without a step.
     const run = (pts, group, regionAt, rough, form = null) => {
       const gw = form === null ? 1 : form.fw + form.lean + form.crumple, gh = form === null ? 1 : Math.hypot(1, form.lean)
+      const oct = rough < 1 ? 0 : octavesOf(Math.max(...pts.map((p) => Math.max(2 * p.w * gw, p.h * gh)))), reach = reachOf(oct)
       for (let k = 0; k + 1 < pts.length; k++) {
         const p = pts[k], q = pts[k + 1]
         const ex = q.x - p.x, ez = q.z - p.z
-        const w = Math.max(p.w, q.w) * gw, h = Math.max(p.h * gh, q.h * gh, form === null ? 0 : FORM_H_MIN)
+        const w = Math.max(p.w, q.w) * gw + reach, h = Math.max(p.h * gh, q.h * gh, form === null ? 0 : FORM_H_MIN) + reach
         prims.push({
-          node: false, rough, group, region: regionAt(k), ca: p.cut, cb: q.cut, form, sa: p.s, sb: q.s,
+          node: false, rough, group, region: regionAt(k), ca: p.cut, cb: q.cut, form, sa: p.s, sb: q.s, oct, reach,
           ax: p.x, az: p.z, ex, ez, il2: 1 / (ex * ex + ez * ez), len: Math.hypot(ex, ez), ya: p.y, yb: q.y, wa: p.w, wb: q.w, ha: p.h, hb: q.h,
           x0: Math.min(p.x, q.x) - w, x1: Math.max(p.x, q.x) + w, z0: Math.min(p.z, q.z) - w, z1: Math.max(p.z, q.z) + w,
           y0: Math.min(p.y, q.y) - 1, y1: Math.max(p.y, q.y) + h,
@@ -101,10 +106,10 @@ export class CaveField {
     }
     let group = graph.nodes.length + graph.edges.length
     for (const l of graph.lobes) {
-      const n = graph.nodes[l.node], crag = n.great ? cragOf(l) : 0, r = Math.max(l.rx, l.rz) + 2 * crag
+      const n = graph.nodes[l.node], oct = roomOct(l), reach = oct > 0 ? SHAPE_CARVE : 0, r = Math.max(l.rx, l.rz) + reach
       prims.push({
-        node: true, rough: 1, group: group++, region: l.region, x: l.x, y: l.y, z: l.z, c: Math.cos(l.rot), s: Math.sin(l.rot), rx: l.rx, rz: l.rz, h: l.h, dish: 0, cavern: false, owner: n, crag,
-        x0: l.x - r, x1: l.x + r, z0: l.z - r, z1: l.z + r, y0: l.y + lowOf(n) - 1, y1: l.y + l.h * 1.05 + 2 * crag,
+        node: true, rough: 1, group: group++, region: l.region, x: l.x, y: l.y, z: l.z, c: Math.cos(l.rot), s: Math.sin(l.rot), rx: l.rx, rz: l.rz, h: l.h, dish: 0, cavern: false, owner: n, oct, bias: SHAPE_BIAS * reachOf(oct), deep: (1 + SHAPE_BIAS) * reachOf(oct), rise: Math.min(SHAPE_RISE, 0.5 * l.h),
+        x0: l.x - r, x1: l.x + r, z0: l.z - r, z1: l.z + r, y0: l.y + lowOf(n) - 1, y1: l.y + l.h * 1.05 + reach,
       })
     }
     for (const o of graph.nooks) run(o.pts, group++, () => o.region, 1)
@@ -129,6 +134,8 @@ export class CaveField {
     })
     // Which prim the last at() call found nearest: the mesher reads it for the region colour.
     this.owner = -1
+    this._oct = new Float64Array(SHAPE_OCT)
+    this._octN = 0
   }
 
   /** The prims whose padded boxes overlap a box: the mesher's per-chunk short list. */
@@ -150,6 +157,7 @@ export class CaveField {
     this.owner = -1
     this._crumple = NaN
     this._bump = NaN
+    this._octN = 0
     if (ids === null) return FAR
     // ids ascend, so a passage's segments arrive together: a hard min within the group, the smooth min between groups.
     // sw, sWall: each prim's wall weight blended by its nearness, so the carve has no seam where the nearest prim changes.
@@ -198,18 +206,38 @@ export class CaveField {
     return this._bump
   }
 
+  // The first `oct` shape octaves summed at this at()'s point, each octave's noise read once however many prims ask.
+  _shape(x, y, z, oct) {
+    const o = this._oct
+    for (; this._octN < oct; this._octN++) {
+      const k = this._octN, f = 1 / (SHAPE_BASE * 2 ** k)
+      o[k] = SHAPE_AMP * SHAPE_BASE * 2 ** k * this.noise.at3(x * f + 61.3 * k + 90, y * f * 1.2 + 17.9 * k, z * f - 43.7 * k)
+    }
+    let sum = 0
+    for (let k = 0; k < oct; k++) sum += o[k]
+    return sum
+  }
+
   _node(p, x, y, z) {
     const dx = x - p.x, dz = z - p.z
     const lx = (dx * p.c + dz * p.s) / p.rx, lz = (dz * p.c - dx * p.s) / p.rz
     const ry = 0.8 * p.h
     const ly = (y - p.y - 0.25 * p.h) / ry
     const q = Math.sqrt(lx * lx + lz * lz + ly * ly)
-    let shell = (q - 1) * Math.min(p.rx, p.rz, ry)
-    // The crag fades in over CRAG_RISE above the nominal floor: there the dome's rim must stay where each passage's flat run ends, or her ramp starts with a ledge.
-    if (p.crag > 0 && y > p.y) {
-      const n = this.noise
-      shell -= p.crag * Math.min(1, (y - p.y) / CRAG_RISE) * (0.5 * (1 + n.at3(x * 0.045 + 90, y * 0.06, z * 0.045)) + 0.45 * Math.abs(n.at3(x * 0.12, y * 0.15 + 40, z * 0.12)) + 0.2 * (1 + n.at3(x * 0.3 + 7, y * 0.35, z * 0.3)))
+    const m = Math.min(p.rx, p.rz, ry)
+    let shell = (q - 1) * m
+    // Deeper than the octaves reach either way, the noise is skipped for the bound nearest the wall: a tracer only steps shorter.
+    if (p.oct > 0 && shell < -3 - p.deep) shell += p.deep
+    else if (p.oct > 0 && shell > 3 + SHAPE_CARVE) shell -= SHAPE_CARVE
+    else if (p.oct > 0) {
+      let s = this._shape(x, y, z, p.oct) - p.bias
+      if (s > 0) s = SHAPE_CARVE * Math.tanh(s / SHAPE_CARVE) * Math.max(0, Math.min(1, (y - p.y) / p.rise))
+      // In metres along the ray from the dome's centre: the shell's are its shortest axis's, which would stretch a carve along its longest.
+      const r = Math.sqrt(dx * dx + dz * dz + (y - p.y - 0.25 * p.h) ** 2)
+      shell -= r > 1e-6 ? (s * m * q) / r : s
     }
+    // The octaves steepen the shell to ~3.7 m per metre, past what a sphere tracer's 0.8 step trusts: one from deep in a room would cross a wall into the void outside every prim. Past a metre off the wall it is squeezed back under that.
+    if (p.oct > 0 && (shell < -1 || shell > 1)) shell = Math.sign(shell) * (1 + (Math.abs(shell) - 1) / (1.5 + 0.5 * p.oct))
     const rho2 = lx * lx + lz * lz
     let floor = p.y + this._floorBump(x, z) + reliefAt(p.owner, x, z)
     if (p.dish > 0) floor -= p.dish * Math.max(0, 1 - rho2 / 0.4356)
@@ -239,9 +267,10 @@ export class CaveField {
     if (cut > 0) floor -= cut * Math.max(0, 1 - (t / (0.55 * w)) ** 2)
     const v = y - floor
     this._v = v
+    const fade = p.oct === 0 ? 0 : Math.max(0, Math.min(1, v / Math.min(SHAPE_RISE, 0.5 * h)))
     if (k === 0) {
       const a = t / w, b = (v + over) / h
-      return Math.max((Math.sqrt(a * a + b * b) - 1) * Math.min(w, h), -v)
+      return Math.max(this._carve(p, fade, (Math.sqrt(a * a + b * b) - 1) * Math.min(w, h), x, y, z), -v)
     }
     // The vault's plan offset from the line: swayed by the lean, more the higher up it (her headroom over the line kept by h's hypot above), and folded by the crumple.
     const cross = ((x - p.ax) * p.ez - (z - p.az) * p.ex) / p.len
@@ -254,6 +283,13 @@ export class CaveField {
     // A tube's centre stands at 0.4 h, so its walls belly out over the floor.
     const c0 = f.tube ? 0.4 * h * k : 0
     const a = r / w, b = (v + over - c0) / (h - c0)
-    return Math.max((Math.sqrt(a * a + b * b) - 1) * Math.min(w, h - c0), -v)
+    return Math.max(this._carve(p, fade, (Math.sqrt(a * a + b * b) - 1) * Math.min(w, h - c0), x, y, z), -v)
+  }
+
+  // A passage's vault `e` carved by its shape octaves, which reach 0 to p.reach. Over 3 m from the wall the noise is skipped for the bound nearest it.
+  _carve(p, fade, e, x, y, z) {
+    if (fade === 0 || e < -3) return e
+    if (e > 3 + p.reach) return e - p.reach * fade
+    return e - 0.5 * fade * (p.reach + this._shape(x, y, z, p.oct))
   }
 }
