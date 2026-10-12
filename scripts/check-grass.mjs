@@ -52,9 +52,10 @@ import {
   buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
-import { Grass, GRASS_TUNING, shoreClumpAt } from '../src/v2/render/grass.js'
+import { Grass, GRASS_TUNING, shoreClumpAt, snowKeepAt } from '../src/v2/render/grass.js'
 import { RIM_AT, RIM_HYST, RIM_HYST_FRAC } from '../src/v2/render/rim.js'
-import { TREELINE } from '../src/v2/layers/forest.js'
+import { snowBandAt } from '../src/v2/terrain/chunk-mesh-v2.js'
+import { TREELINE_HALF, forestKeepAt } from '../src/v2/layers/forest.js'
 import {
   LAYER, LAYER_COUNT, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, buildTextureArray,
   shapeImageLayer, GRASS_FRAY_TUNING,
@@ -453,7 +454,8 @@ const flat = {
 const dry = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
 const clear = { nearest: () => null }
 // No sandy shore anywhere: Layers.shoreAt as the dry world answers it.
-const noSand = { shoreAt: () => 0, fields: { occupiesAt: () => false } }
+const SNOW_BAND = 47
+const noSand = { shoreAt: () => 0, fields: { occupiesAt: () => false }, snow: { band: SNOW_BAND } }
 
 // The camera has to stand ON the flat world, not at y = 1.6 in absolute terms:
 // the tier test is a 3D distance, so an eye 60 m under the ground puts every
@@ -998,9 +1000,10 @@ console.log('\n-- placement --')
 {
   const wet = { isSubmerged: (x, z, y) => y < 61, shoreDistAt: (x, z, reach) => reach }
   const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null) }
-  // Snow lines at, part-way past, and a full TREELINE.fade past the ground.
+  // The ground where the forest has halved and a whole band under the
+  // snowline (where the ground starts to whiten).
   const snowAt = (line) => ({ heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => line })
-  const snowy = snowAt(60 - TREELINE.fade)
+  const snowy = snowAt(60 - TREELINE_HALF)
   const cliff = { heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 9, gx: 9, gz: 0 }), snowLineAt: () => 9999 }
   const sunk = { heightAt: () => 1, heightAndSlopeAt: () => ({ h: 1, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 9999 }
 
@@ -1013,13 +1016,28 @@ console.log('\n-- placement --')
   }
   check(one(flat, wet, clear).placed === 0, 'no grass in a lake')
   check(one(flat, dry, roaded).placed === 0, 'no grass down the middle of a road')
-  check(one(snowy, dry, clear).placed === 0, 'no grass where the trees have thinned to scattered stunted ones')
+  const half = forestKeepAt(200 + TREELINE_HALF, 0, TREELINE_HALF, null, 0, 0)
+  check(Math.abs(half - 0.5) < 1e-6, 'TREELINE_HALF is where the forest has halved', `keep ${half} at ${TREELINE_HALF.toFixed(1)} m`)
+  check(one(snowy, dry, clear).placed === 0, 'no grass where the forest has halved')
   {
-    const atLine = one(snowAt(60), dry, clear).placed
+    const under = one(snowAt(60 + SNOW_BAND), dry, clear).placed
     const below = one(flat, dry, clear).placed
-    const partway = one(snowAt(60 - TREELINE.fade / 2), dry, clear).placed
-    check(atLine === below, 'grass at the snow line is at full density', `${atLine} vs ${below}`)
-    check(partway > 0.3 * below && partway < 0.7 * below, 'grass halfway up the tree thinning is at about half density', `${partway} of ${below}`)
+    check(under === below, 'full density below the snowline', `${under} vs ${below}`)
+  }
+  {
+    // Across the band at a few sites: 1 at the snowline, 0 where the forest has halved, never rising between.
+    let ok = true
+    for (const [x, z] of [[0, 0], [913, -2207], [-5120, 3301], [44000, 17]]) {
+      const lo = 200 - snowBandAt(SNOW_BAND, x, z) / 2
+      let prev = 1
+      const top = 200 + TREELINE_HALF
+      for (let i = 0; i <= 20; i++) {
+        const k = snowKeepAt(lo + (top - lo) * i / 20, 200, SNOW_BAND, x, z)
+        if (k > prev || (i === 0 && k !== 1) || (i === 20 && k !== 0)) ok = false
+        prev = k
+      }
+    }
+    check(ok, 'density falls from full at the snowline to none where the forest has halved')
   }
   check(one(cliff, dry, clear).placed === 0, 'no grass on a cliff')
   check(one(sunk, dry, clear).placed === 0, 'no grass below the minimum elevation')
@@ -1145,7 +1163,7 @@ console.log('\n-- placement --')
     for (const tile of g.tiles.values()) for (let k = 0; k < tile.n; k++) out.push(g.instX[tile.ids[k]])
     return out
   }
-  const beach = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 3 ? 1 : 0), fields: { occupiesAt: () => false } }, seed: 7, style: 'tufts' })
+  const beach = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 3 ? 1 : 0), fields: { occupiesAt: () => false }, snow: { band: SNOW_BAND } }, seed: 7, style: 'tufts' })
   beach.place(0, 0)
   const xs = posOf(beach)
   const on = xs.filter((x) => x >= 0 && x < 3).length
@@ -1153,7 +1171,7 @@ console.log('\n-- placement --')
   const east = xs.filter((x) => x >= 3 && x < 6).length
   check(on === 0 && west > 100 && east > 100, 'a sandy beach is bare of grass, with the carpet on either side of it', `${on} tufts on the sand, ${west} west of it, ${east} east`)
   check(beach.stats.rejected.sand > 100, 'and the drops are counted as sand', `${beach.stats.rejected.sand}`)
-  const ramp = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 6 ? x / 6 : 0), fields: { occupiesAt: () => false } }, seed: 7, style: 'tufts' })
+  const ramp = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: { shoreAt: (x) => (x >= 0 && x < 6 ? x / 6 : 0), fields: { occupiesAt: () => false }, snow: { band: SNOW_BAND } }, seed: 7, style: 'tufts' })
   ramp.place(0, 0)
   const rx = posOf(ramp)
   const edge = 6 * PLACEMENT.sandMax

@@ -26,7 +26,7 @@ On the one-handed desktop a torch cannot be lit with a flint in one hand and a s
 - Each second a flame has a 12% chance of lighting another flame on a flammable within 1 m.
 - A flame is a function of where and when. The lighting machine sends `[id, room, x, y, z, lifeS]`; the relay keeps `FLAME_CAP` and forwards each once with its age; a peer burns its copy and never spreads it, so flames do not double.
 - Every card that turns to face the player (trees' cards, critters, gen-props, wreaths) turns toward the head, not the eye being drawn, through `src/head-eye.js`; `main.js` sets it once a frame. In a headset `cameraPosition` is per-eye, so a card turned toward it doubles up close. New billboard shaders take `HEAD_EYE_DECL` / `bindHeadEye` / `HEAD_EYE_GLSL`; `check-flames` and `check-shaders` pin it.
-- The campfire loop (`RULES.blaze`) is one loop at the nearest flame. One flame in the hand is faint (level 0.0375); each flame in reach adds its share and the level grows with the square root of the sum, to 8x at a blaze of dozens.
+- The campfire loop (`RULES.blaze`) is one loop at the nearest flame. It plays on the `near` bus, so the walls a house or cave stands her behind (`setIndoors`) do not smother it. One flame in the hand is faint (level 0.01875); each flame in reach adds its share and the level grows with the square root of the sum, to 8x at a blaze of dozens.
 
 ## Torches
 

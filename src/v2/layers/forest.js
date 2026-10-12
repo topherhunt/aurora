@@ -61,15 +61,37 @@ export const BIOME = {
 export function forestKeepAt(h, tan, above, biome, x, z) {
   if (h < PLACEMENT.minElev) return 0
   if (tan > MAX_SLOPE_TAN) return 0
-  if (above > TREELINE.top) return 0
-  const snowT = smoothstep(0, TREELINE.fade, above)
-  let keep = (1 + (TREELINE.floor - 1) * snowT) * (1 - smoothstep(TREELINE.fade, TREELINE.top, above))
+  let keep = treelineKeep(above)
+  if (keep === 0) return 0
   if (biome) {
     const cover = smoothstep(BIOME.ramp[0], BIOME.ramp[1], biome.coverAt(x, z))
     keep *= BIOME.meadowKeep + (1 - BIOME.meadowKeep) * cover
   }
   return keep
 }
+
+/** The treeline's share of `forestKeepAt`: 1 below the snow line, easing to 0 at TREELINE.top. */
+function treelineKeep(above) {
+  if (above > TREELINE.top) return 0
+  const snowT = smoothstep(0, TREELINE.fade, above)
+  return (1 + (TREELINE.floor - 1) * snowT) * (1 - smoothstep(TREELINE.fade, TREELINE.top, above))
+}
+
+/**
+ * Metres above the local snow line where the treeline has halved the forest.
+ * The biome factor does not depend on height, so this holds everywhere. Solved
+ * by bisection because the curve is falling but has no closed-form inverse.
+ */
+export const TREELINE_HALF = (() => {
+  let lo = 0
+  let hi = TREELINE.top
+  for (let i = 0; i < 50; i++) {
+    const mid = (lo + hi) / 2
+    if (treelineKeep(mid) > 0.5) lo = mid
+    else hi = mid
+  }
+  return (lo + hi) / 2
+})()
 
 /** The height multiplier that goes with `forestKeepAt`, over the same two gradients. */
 export function forestScaleAt(above, biome, x, z) {

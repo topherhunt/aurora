@@ -1,6 +1,6 @@
 import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
-import { CHUNK_VERTS, CHUNK_INDICES } from '../config.js'
+import { CHUNK_VERTS, CHUNK_INDICES, CHUNK_RES, WORLD_SIZE, MAX_DEPTH } from '../config.js'
 import { forestKeepAt } from '../layers/forest.js'
 import { hearthGlowAt, hearthsReach } from '../hearth-light.js'
 
@@ -474,6 +474,22 @@ const BUMP_ROCK = 0.48 // slope added on rock, as dy/dx
 const BUMP_GRASS = 0.15
 const BUMP_SNOW = 0.12
 
+// ---- GRAIN: a brightness value in [-1, 1] per point of the finest vertex
+// lattice, hashed off its world lattice coordinates, so a vertex carries the same
+// value at every depth. It is the albedo detail below the mottle and the relief,
+// at the leaf's own 50 cm. A coarse chunk samples only every 2nd/4th/... point,
+// and the points a split adds are values the coarse chunk never drew, so the
+// grain pops on every split it is visible across -- terrain-material.js fades it
+// out by eye distance inside the leaf band for that reason. Kept out of vColor
+// so that fade can happen per vertex on the GPU; zero on snow.
+const GRAIN_CELL = WORLD_SIZE / 2 ** MAX_DEPTH / CHUNK_RES
+function grainAt(wx, wz) {
+  let h = Math.imul(Math.round(wx / GRAIN_CELL), 0x27d4eb2d) ^ Math.imul(Math.round(wz / GRAIN_CELL), 0x165667b1)
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b)
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35)
+  return ((h ^ (h >>> 16)) >>> 0) / 2147483647.5 - 1
+}
+
 // How wide the snow's soft edge is HERE. The document's `snow.band` is the
 // width at the centre of the swing: this is band * 2^n for a simplex n in
 // [-1, 1], so a 10 m band runs 5..20 m along the line and spends most of its
@@ -601,7 +617,7 @@ function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, w
  *   the gates measure against. The shipped worker passes the real field.
  * @param ground GroundTint, or null for a world whose ground is grass everywhere; see layers/ground.js.
  * @param hearths town hearth flames `{x, y, z}` whose glow is baked per vertex; see v2/hearth-light.js.
- * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, stipFloor:Float32Array, forest:Float32Array, hearth:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
+ * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, stipFloor:Float32Array, forest:Float32Array, hearth:Float32Array, grain:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
 export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null, hearths = []) {
   if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
@@ -745,6 +761,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // bed's tint is under the lake.
   const forest = new Float32Array(total)
   const hearth = new Float32Array(total)
+  const grain = new Float32Array(total)
   const glows = hearthsReach(hearths, ox, oz, size, step)
 
   let minY = Infinity
@@ -846,6 +863,8 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o, tint)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
       if (glows) hearth[vi] = hearthGlowAt(hearths, wx, h, wz, step)
+      // shade()'s snow cover, slide-off included, so a bare cliff above the line keeps its grain.
+      grain[vi] = grainAt(wx, wz) * (1 - snowHere * (1 - smoothstep(0.86, 0.62, nyClass) * 0.85))
 
       // See the STIPPLE FRAME block. The plane is the one the GEOMETRIC normal
       // (-dx, 1, -dz) most faces -- not the bumped shading normal above, whose
@@ -894,6 +913,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       for (let c = 0; c < 4; c++) stipple[sv * 4 + c] = stipple[vi * 4 + c]
       forest[sv] = forest[vi]
       hearth[sv] = hearth[vi]
+      grain[sv] = grain[vi]
       row.push(sv)
       sv++
     }
@@ -948,7 +968,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // `culled` travels with the mesh so the panel and the gate can report the
   // fraction of chunks that took the cheap path -- §18 puts a number on that
   // claim rather than asserting it.
-  return { positions, normals, colors, stipple, stipFloor, forest, hearth, indices, minY, maxY, skirtDepth, culled: !touched }
+  return { positions, normals, colors, stipple, stipFloor, forest, hearth, grain, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
 // C_GRASS is exported because the quest flat-ground card has to paint itself the
@@ -957,4 +977,4 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
 // that is a shade off classifies as something else and the card comes out with
 // the wrong grain.
 // PEAKS_TAPS_MAX: DEAD CODE (peaks).
-export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, PEAKS_TAPS_MAX, cullMargin, shade, C_GRASS }
+export { CLASS_EPS, CREST_CELL_LO, CREST_CELL_HI, PEAKS_TAPS_MAX, cullMargin, shade, snowBandAt, C_GRASS }

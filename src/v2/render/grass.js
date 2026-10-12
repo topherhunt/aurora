@@ -16,7 +16,8 @@ import {
 } from '../../material.js'
 import { RimFade, RIM_PHASES } from './rim.js'
 import { InstancedArena } from './instanced-arena.js'
-import { TREELINE } from '../layers/forest.js'
+import { snowBandAt } from '../terrain/chunk-mesh-v2.js'
+import { TREELINE_HALF } from '../layers/forest.js'
 import { smoothstep } from '../../sim/mathx.js'
 
 // ---------------------------------------------------------------------------
@@ -311,12 +312,6 @@ const PLACEMENT = {
   // water's edge; the water test below is what actually keeps it dry, and this
   // only stops the carpet walking out to sea.
   minElev: 20,
-  // THINNING INTO THE SNOW. Past the snow line a tuft's keep-probability eases
-  // from 1 to 0 over the same TREELINE.fade metres the forest thins over, so
-  // grass is the last green thing on a hillside and gives out where the trees
-  // have dwindled to scattered stunted ones. The roll is a position hash, not a
-  // `rand()`, so it leaves the tile's draw stream alone.
-  snowFade: TREELINE.fade,
   // NOT ON CLIFFS, but a steeper limit than the 32 degrees trees and ferns
   // share. Grass really does hold ground that will not carry a tree, and the
   // failure mode is asymmetric: bare rock where there should be grass reads as
@@ -761,8 +756,15 @@ export function shoreClumpAt(x, z, seed) {
   return tileSeed(cx, cz, (seed | 0) ^ 0x5bd1e995) / 4294967296 < SHORE.clumpFrac
 }
 
-// A snow line no ground reaches, for asking the tint what the turf under the snow looks like.
-const NO_SNOW = 1e9
+/**
+ * THINNING INTO THE SNOW: a tuft's keep-probability at height h. Full below the
+ * snowline, where the ground starts to whiten (the bottom of shade's snow band
+ * in chunk-mesh-v2.js, so it wanders with the band), easing to 0 where the
+ * treeline has halved the forest (TREELINE_HALF above `snowLineAt`).
+ */
+export function snowKeepAt(h, snowLine, band, x, z) {
+  return 1 - smoothstep(snowLine - snowBandAt(band, x, z) / 2, snowLine + TREELINE_HALF, h)
+}
 
 /** A uniform [0, 1) roll for the snow thinning, hashed from position at 1/64 m so it is fixed per tuft. */
 function snowKeepRoll(x, z, seed) {
@@ -863,8 +865,8 @@ export class Grass {
     if (!paths || typeof paths.nearest !== 'function') {
       throw new Error('Grass: needs a PathSet with nearest')
     }
-    if (!layers || typeof layers.shoreAt !== 'function' || !layers.fields) {
-      throw new Error('Grass: needs a Layers with shoreAt and fields, to keep off the sand and the farm fields')
+    if (!layers || typeof layers.shoreAt !== 'function' || !layers.fields || typeof layers.snow?.band !== 'number') {
+      throw new Error('Grass: needs a Layers with shoreAt, fields and snow.band, to keep off the sand and the farm fields and thin into the snow')
     }
 
     this.field = field
@@ -1789,7 +1791,9 @@ export class Grass {
       // API. Covers lakes and river channels alike.
       if (this.water.isSubmerged(x, z, h - PLACEMENT.freeboard)) { rej.water++; continue }
       const snowLine = this.field.snowLineAt(x, z)
-      if (h > snowLine && snowKeepRoll(x, z, this.seed) >= 1 - smoothstep(0, PLACEMENT.snowFade, h - snowLine)) { rej.snow++; continue }
+      // `band` bounds the wandered half-band, so below it the noise is not worth asking.
+      const band = this.layers.snow.band
+      if (h > snowLine - band && snowKeepRoll(x, z, this.seed) >= snowKeepAt(h, snowLine, band, x, z)) { rej.snow++; continue }
       // NOT ON SAND. Cheap inland: a height test against whatever lake plane
       // covers the point and a river index lookup that misses; the sand noise is
       // only asked once a band is found.
@@ -1936,10 +1940,9 @@ export class Grass {
         // look: the instance colour lands on the base vertices unmodified (they
         // are (1,1,1)) and the tip ramp lifts or drops it from there. Anything
         // drawn from a palette instead reads as a green carpet laid over the
-        // terrain rather than as the terrain growing. The ground is asked for
-        // WITHOUT its snow, so a blade past the snow line is green poking
-        // through white rather than white itself.
-        this.tint.groundAt(this._rgb, x, z, h, 1 / Math.hypot(tan, 1), NO_SNOW)
+        // terrain rather than as the terrain growing -- white on snow, and
+        // part-way there across the snow band.
+        this.tint.groundAt(this._rgb, x, z, h, 1 / Math.hypot(tan, 1), snowLine)
         this._c.setRGB(this._rgb[0], this._rgb[1], this._rgb[2], THREE.LinearSRGBColorSpace)
         this.batch.setAttrAt(this.tipMul, id, tipRoll)
       } else {

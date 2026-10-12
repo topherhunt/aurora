@@ -258,13 +258,14 @@ self.onmessage = (e) => {
         stipFloor: r.stipFloor,
         forest: r.forest,
         hearth: r.hearth,
+        grain: r.grain,
         indices: r.indices,
         minY: r.minY,
         maxY: r.maxY,
         skirtDepth: r.skirtDepth,
         ms: performance.now() - t0,
       },
-      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.stipFloor.buffer, r.forest.buffer, r.hearth.buffer, r.indices.buffer]
+      [r.positions.buffer, r.normals.buffer, r.colors.buffer, r.stipple.buffer, r.stipFloor.buffer, r.forest.buffer, r.hearth.buffer, r.grain.buffer, r.indices.buffer]
     )
     return
   }

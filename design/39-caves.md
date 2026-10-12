@@ -77,7 +77,7 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 
 ## 7. Walking
 
-`CaveWalk` gives Player the WalkSurface contract read off the field. A cave stacks floors over floors, so every question is asked from a height: her foot height, or `hintY`, which main sets to her feet each frame for the rest. A rock column from over her reach down past her feet is a wall. The gate times a walk step under 50 us. **Flying** in a cave (`_flyPorous`, player.js) treats roofs as porous: she rises through rock and sinks back out of it, but floors and walls still stop her while she is in air, and landing from inside rock first steps her down into air. A landing with no floor within `landDepth` (100 m) under her is refused with a pop, and she keeps flying.
+`CaveWalk` gives Player the WalkSurface contract read off the field. A cave stacks floors over floors, so every question is asked from a height: her foot height, or `hintY`, which main sets to her feet each frame for the rest. A rock column from over her reach down past her feet is a wall. The gate times a walk step under 50 us. **Flying** in a cave (`_flyPorous`, player.js) treats roofs as porous: she rises through rock and sinks back out of it, but floors and walls still stop her while she is in air, and landing from inside rock first steps her down into air. A landing with no floor within `landDepth` (100 m) under her is refused with a pop, and she keeps flying. While she flies, `CaveRoom.update` draws every region at no further LOD than the last, without fog, and lights every surface at least `FLY_LIT` (0.1), so the whole layout reads at any distance.
 
 ## 8. Drawing, light and chalk
 

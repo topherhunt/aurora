@@ -20,14 +20,15 @@ import { shade } from '../v2/terrain/chunk-mesh-v2.js'
 // is a different chain per rung and a prop painted from the wrong one is wrong by
 // a visible amount. `chain` selects, and the two are:
 //
-//   'plain' -- what the headset draws. HALF of uGrassTone, on the same green
-//     mask, and nothing else, which is the entire fragment stage of
+//   'plain' -- what the headset draws. HALF of uGrassTone on the green mask and
+//     uSnowAlbedo on the vertex snow mask, which is the entire colour stage of
 //     createPlainTerrainMaterial.
 //   'shader' -- axis, grain, and anything else this factory compiles. The three
 //     stages that MOVE THE AVERAGE: the region layer, one kilometre per tile, a
 //     value swing plus a pull toward dirt at its high end and deep green at its
 //     low; the mid-range mottle, 137 m per tile and rotated, the same shape with
-//     a dry ochre at its high end; and uGrassTone whole, landing last.
+//     a dry ochre at its high end; the snow albedo and its exposure on the
+//     dithered snow mask; and uGrassTone whole, landing last.
 //
 // The two are far apart, and the gap is the bug this exists to close: under
 // 'plain' the ground has no region and no macro layer AT ALL, so a bed replaying
@@ -37,15 +38,15 @@ import { shade } from '../v2/terrain/chunk-mesh-v2.js'
 // The amplitudes and the palette are READ LIVE off the terrain's own uniforms,
 // so retuning the ground retunes everything painted from it. What is duplicated
 // here is only the geometry of the thing -- the two tile sizes, the rotation and
-// the four thresholds -- which live at MACRO_METRES, MACRO_FINE_METRES and ROT
-// in terrain-material.js, and in the two blocks there that read `auroraM.r` and
-// `auroraMF.r`. Grep those three names to find what this has to agree with.
+// the thresholds -- which live at MACRO_METRES, MACRO_FINE_METRES and ROT in
+// terrain-material.js, and in the blocks there that read `auroraM`, `auroraMF`
+// and `auroraVertexSnow`. Grep those names to find what this has to agree with.
 //
 // WHAT IS DELIBERATELY LEFT OUT, because none of it moves a prop's average: the
 // ground photograph is divided by its own mean and so is mean-preserving by
 // construction; the grit layers are 11.7 m and 2.3 m per tile, which is finer
-// than a clump of grass and averages out under one; and the snow and rock mixes
-// are skipped because every caller so far either rejects placement near the snow line or asks for the ground without its snow.
+// than a clump of grass and averages out under one; and the snow sparkle, frost
+// flecks and relief are near-field detail with no colour of their own to give.
 //
 // It is a handful of array reads and a dozen multiplies per call -- 3.1 ms per
 // 20,000 -- which is noise next to the two path queries a scatter already runs.
@@ -61,6 +62,7 @@ const MOTTLE_METRES = 137
 const NEEDED = [
   'uRegionValue', 'uRegionTint', 'uMacroValue', 'uMacroTint',
   'uDirt', 'uDeep', 'uDry', 'uGrassTone',
+  'uSnow', 'uRock', 'uBoundary', 'uSnowAlbedo',
 ]
 
 /** GLSL smoothstep, including the descending form where e1 < e0. */
@@ -123,11 +125,11 @@ export class TerrainTint {
   }
 
   /**
-   * The macro field's red channel, bilinear and wrapping -- the same fetch the
+   * One channel of the macro field (0 = r, 3 = a), bilinear and wrapping -- the same fetch the
    * shader's textureGrad makes, minus the mip selection, which at a metre-scale
    * lookup on a 4 m texel is the full-resolution level anyway.
    */
-  _macroR(u, v) {
+  _macro(u, v, ch) {
     const s = this.size
     const d = this.data
     const px = u * s - 0.5
@@ -140,10 +142,10 @@ export class TerrainTint {
     const ya = ((y0 % s) + s) % s
     const xb = (xa + 1) % s
     const yb = (ya + 1) % s
-    const c00 = d[(ya * s + xa) * 4]
-    const c10 = d[(ya * s + xb) * 4]
-    const c01 = d[(yb * s + xa) * 4]
-    const c11 = d[(yb * s + xb) * 4]
+    const c00 = d[(ya * s + xa) * 4 + ch]
+    const c10 = d[(ya * s + xb) * 4 + ch]
+    const c01 = d[(yb * s + xa) * 4 + ch]
+    const c11 = d[(yb * s + xb) * 4 + ch]
     const top = c00 + (c10 - c00) * fx
     const bot = c01 + (c11 - c01) * fx
     return (top + (bot - top) * fy) / 255
@@ -166,24 +168,41 @@ export class TerrainTint {
     // How green the vertex tint is, which is the mask every colour stage below
     // is weighted by -- terrain-material.js computes exactly this from vColor.
     const green = smoothstep(0.004, 0.030, rgb[1] - Math.max(rgb[0], rgb[2]))
+    // The vertex's snow cover, read off its blue -- also from the shader.
+    const vertexSnow = smoothstep(0.30, 0.60, rgb[2])
 
-    if (this.chain === 'plain') return this._tone(rgb, green * PLAIN_GRASS_TONE)
+    if (this.chain === 'plain') {
+      scaleRGB(rgb, 1 + (u.uSnowAlbedo.value - 1) * vertexSnow)
+      return this._tone(rgb, green * PLAIN_GRASS_TONE)
+    }
 
-    const region = this._macroR(x / REGION_METRES, z / REGION_METRES)
-    scaleRGB(rgb, 1 + (region - 0.5) * u.uRegionValue.value)
-    mixRGB(rgb, u.uDirt.value, smoothstep(0.752, 1.0, region) * green * u.uRegionTint.value)
-    mixRGB(rgb, u.uDeep.value, smoothstep(0.285, 0.0, region) * green * u.uRegionTint.value)
-
+    // The boundary dither, at full detail: both macro fetches' alpha wander the
+    // snow edge, and the sharpened result is the snow decision every later stage reads.
+    const ru = x / REGION_METRES
+    const rv = z / REGION_METRES
+    const region = this._macro(ru, rv, 0)
     // ROT, column-major as GLSL reads mat2( 0.80, 0.60, -0.60, 0.80 ): the two
     // macro fetches share one texture, and turning the fine one keeps its
     // pattern from lining up with the coarse one's.
     const fu = x / MOTTLE_METRES
     const fv = z / MOTTLE_METRES
-    const mottle = this._macroR(0.8 * fu - 0.6 * fv, 0.6 * fu + 0.8 * fv)
-    scaleRGB(rgb, 1 + (mottle - 0.5) * u.uMacroValue.value)
+    const mu = 0.8 * fu - 0.6 * fv
+    const mv = 0.6 * fu + 0.8 * fv
+    const mottle = this._macro(mu, mv, 0)
+    const bn = 0.5 + (this._macro(ru, rv, 3) - 0.5) * 0.72 + (this._macro(mu, mv, 3) - 0.5) * 0.28
+    const snow = smoothstep(0.25, 0.75, Math.min(1, Math.max(0, vertexSnow + (bn - 0.5) * u.uBoundary.value)))
+    mixRGB(rgb, u.uSnow.value, snow)
+    mixRGB(rgb, u.uRock.value, Math.max(0, vertexSnow - snow) * (1 - green))
+
+    scaleRGB(rgb, 1 + (region - 0.5) * u.uRegionValue.value * (1 - snow * 0.5))
+    mixRGB(rgb, u.uDirt.value, smoothstep(0.752, 1.0, region) * green * u.uRegionTint.value)
+    mixRGB(rgb, u.uDeep.value, smoothstep(0.285, 0.0, region) * green * u.uRegionTint.value)
+
+    scaleRGB(rgb, 1 + (mottle - 0.5) * u.uMacroValue.value * (1 - snow * 0.6))
     mixRGB(rgb, u.uDry.value, smoothstep(0.856, 1.0, mottle) * green * u.uMacroTint.value)
     mixRGB(rgb, u.uDeep.value, smoothstep(0.218, 0.0, mottle) * green * u.uMacroTint.value)
 
+    scaleRGB(rgb, 1 + (u.uSnowAlbedo.value - 1) * snow)
     return this._tone(rgb, green)
   }
 

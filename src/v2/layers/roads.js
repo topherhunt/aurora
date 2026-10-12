@@ -38,8 +38,8 @@ export const ROAD = {
   riverPad: 6,
   // Crossings are tried every `every` metres of river, where the shipped bridge (design/34-bridges.md §The shipped mesh) spans the drawn water at an x scale of scale[0] to `stretch`, chaining spans end to end where one would stretch further; y keeps within `scale`. The road runs `approach` metres straight out from each of its tips, and the river must turn less than `turn` radians over 20 m either side. A tip must stand `bank` metres over the water. `penalty` is the metres of travel each span of a new bridge costs, so a long lake chain is laid only where going round is far worse; one already built costs only its length.
   cross: { every: 12, scale: [0.7, 1.3], stretch: 1.8, approach: 10, turn: 0.2, bank: 0.4, grade: 0.3, penalty: 150 },
-  // A lake is crossed on a straight chain of shipped bridges end to end, at most `max` m of water, tried along `dirs` headings from one shore cell in every `step` cells square.
-  lake: { max: 160, dirs: 16, step: 3 },
+  // A lake is crossed on a straight chain of shipped bridges end to end, at most `max` m of water (two spans), tried along `dirs` headings from one shore cell in every `step` cells square. A longer chain is never laid: `penalty` alone cannot keep one off, since going round hilly ground costs several times its metres.
+  lake: { max: 40, dirs: 16, step: 3 },
   // The laid road: control points every `spacing` m after `smooth` passes of neighbour averaging, then meandered like the town roads, the sway fading in over `envelope` m from each end.
   spacing: 12,
   smooth: 8,
@@ -440,11 +440,11 @@ export function planRoads({ towns, ground, surface, layers, seed }) {
     return id
   }
 
-  // Ports: each town stub's end, and the first open cell within 5 cells on along it. A stub ending within fork.cells of another of its town's ports gets none: their roads would leave side by side. A town left with no port at all (its stubs end deep in its disc, facing water) searches on until each stub clears the disc.
+  // Ports: each town stub's end, and the first open cell within 5 cells on along it. A stub ending within fork.cells of another of its town's ports gets none: their roads would leave side by side. A stub left without a port (it ends deep in its disc, where the town grew out along another stub) searches on until it clears the disc; skipping it would silently take a way out from its town.
   const ports = []
   for (const wide of [false, true]) towns.forEach((t, ti) => {
-    if (wide && ports.some((o) => nodes[o].town === ti)) return
     t.roads.forEach((pts, pi) => {
+      if (wide && ports.some((o) => nodes[o].town === ti && nodes[o].port.stub === pi)) return
       const e = pts.at(-1)
       const p = pts.at(-2)
       const len = Math.hypot(e[0] - p[0], e[2] - p[2]) || 1

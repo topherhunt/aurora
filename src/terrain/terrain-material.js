@@ -1698,6 +1698,11 @@ export const PLAIN_GRASS_TONE = 0.5
 export const FOREST_TINT = [0.0336, 0.0595, 0.0182]
 export const FOREST_TINT_NEAR = 100
 export const FOREST_TINT_FAR = 250
+// The 50 cm brightness grain (chunk-mesh-v2 GRAIN), faded out by eye distance.
+// GRAIN_FAR must stay inside the leaf band (a median 19.4 m ahead on the XR
+// route): past it a coarser chunk shows a sparser lattice, and a split pops.
+export const GRAIN_NEAR = 8
+export const GRAIN_FAR = 16
 
 /**
  * @param {THREE.Material} source  the material createTerrainMaterial built, for
@@ -1719,6 +1724,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
     uGrassTone: src.uGrassTone,
     uSnowAlbedo: src.uSnowAlbedo,
     uForestTint: { value: new THREE.Color(...FOREST_TINT) },
+    // +/- brightness of the grain at full strength.
+    uGrain: { value: 0.15 },
   }
   if (stipple) {
     Object.assign(material.userData.uniforms, {
@@ -1747,7 +1754,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         uniform vec3 uGrassTone;
         uniform float uSnowAlbedo;
         uniform vec3 uForestTint;
-        attribute float forest;${stipple ? `
+        uniform float uGrain;
+        attribute float forest;
+        attribute float grain;${stipple ? `
         attribute vec4 stipple;
         flat varying vec4 vStipFrame;
         flat varying vec3 vStipAnchor;
@@ -1775,6 +1784,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         vColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase * ${PLAIN_GRASS_TONE.toFixed(2)} );
         vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );${stipple ? `
         vStipSnow = auroraVertexSnow;` : ''}
+        // After both masks, which a grain-scaled vColor would move.
+        vColor.rgb *= 1.0 + grain * uGrain * ( 1.0 - smoothstep( ${GRAIN_NEAR.toFixed(1)}, ${GRAIN_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );
         // THE FOREST TINT LAST, past both exposure stages, so uForestTint IS the
         // colour the far wood's ground is drawn in and neither mask reads it.
         vColor.rgb = mix( vColor.rgb, uForestTint, forest * smoothstep( ${FOREST_TINT_NEAR.toFixed(1)}, ${FOREST_TINT_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );`)

@@ -489,7 +489,8 @@ const withJ = () => new TownLife(t, { index: 0, seed: SEED, bodies, seats, heigh
 const watched = withJ(), jumped = withJ()
 for (let s = 0; s <= 590; s += 2) watched.advance(T0 + s)
 jumped.advance(T0 + 590)
-const same = (p, q) => p.x === q.x && p.z === q.z && p.state === q.state
+// A gone strider keeps whatever position it left from, which the jumped town never walked it to.
+const same = (p, q) => p.state === q.state && (p.state === 'gone' || (p.x === q.x && p.z === q.z))
 check(watched.all.every((c, i) => same(c, jumped.all[i])) && watched.mounts.every((m, i) => same(m, jumped.mounts[i])), 'a town with striders woken late replays to the same day as one watched throughout', JSON.stringify(watched.stats.mounts))
 check(tally.twins.length === 0, 'no town holds two of one body while it holds no more than there are bodies, its travellers included', `${tally.twins.join(', ')} (${tally.full} town-seconds over-full)`)
 check(Object.values(tally.rounds).every((n) => n > 0) && tally.strikes > 0, 'the smith works the smithy, the farmers their fields and the woodcutter the stump, striking at anvil and stump', JSON.stringify({ ...tally.rounds, strikes: tally.strikes }))

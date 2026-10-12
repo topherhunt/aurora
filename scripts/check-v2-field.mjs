@@ -1106,9 +1106,14 @@ export async function run({ heightmap } = {}) {
     if (!knee) {
       throw new Error('check-v2-field: the plain rung no longer emits the auroraGreenBase line this section reads its knee out of')
     }
+    const snowKnee = src.vertexShader.match(/auroraVertexSnow = smoothstep\( ([0-9.]+), ([0-9.]+), vColor\.b \)/)
+    if (!snowKnee) {
+      throw new Error('check-v2-field: the plain rung no longer emits the auroraVertexSnow line this section reads its knee out of')
+    }
 
     const tint = new TerrainTint(shaded, layers, bands, 'plain')
     const tone = shaded.userData.uniforms.uGrassTone.value
+    const snowAlbedo = shaded.userData.uniforms.uSnowAlbedo.value
     const out = [0, 0, 0]
     const nyAt = (x, z) => {
       const gx = (field.heightAt(x + CLASS_EPS, z, CLASS_EPS) - field.heightAt(x - CLASS_EPS, z, CLASS_EPS)) / (2 * CLASS_EPS)
@@ -1124,6 +1129,7 @@ export async function run({ heightmap } = {}) {
     let lowVeg = 1
     let meadow = 0
     let moved = 0
+    let snowy = 0
     const rgb = [0, 0, 0]
     for (let i = 0; i < 6000; i++) {
       const p = site(i + 4200000)
@@ -1134,10 +1140,13 @@ export async function run({ heightmap } = {}) {
       // What the mesher writes, and then what the GLSL above does to it.
       shade(h, ny, snowLine, layers.snow.band, 0, 0, bands.altLo, bands.altSpan, p.x, p.z, out, 0)
       const green = smoothstep(Number(knee[1]), Number(knee[2]), out[1] - Math.max(out[0], out[2]))
+      const vSnow = smoothstep(Number(snowKnee[1]), Number(snowKnee[2]), out[2])
+      if (vSnow > 0.5) snowy++
+      const exposure = 1 + (snowAlbedo - 1) * vSnow
       const drawn = [
-        out[0] * (1 + (tone.r - 1) * green * toneK),
-        out[1] * (1 + (tone.g - 1) * green * toneK),
-        out[2] * (1 + (tone.b - 1) * green * toneK),
+        out[0] * (1 + (tone.r - 1) * green * toneK) * exposure,
+        out[1] * (1 + (tone.g - 1) * green * toneK) * exposure,
+        out[2] * (1 + (tone.b - 1) * green * toneK) * exposure,
       ]
 
       // And what a blade planted there is painted.
@@ -1153,6 +1162,7 @@ export async function run({ heightmap } = {}) {
     check(worst < 1e-12, "a blade's foot is painted the colour the plain rung draws that ground",
       `worst channel disagreement ${worst.toExponential(1)}`)
     check(meadow > 50, 'there is meadow in this world to run the classification on', `${meadow} of 6000 sites`)
+    check(snowy > 50, 'and snow, so a blade on snow is held to the same colour as the snow it stands in', `${snowy} of 6000 sites`)
     check(moved === meadow, 'and the instrument can see a disagreement -- the tone moves every one of them',
       `${moved}/${meadow} moved by the tone`)
     // 0.75 AND NOT THE MEASURED 0.89. What is being defended is that the mottle
