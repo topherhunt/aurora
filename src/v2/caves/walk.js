@@ -67,6 +67,11 @@ export class CaveWalk {
     }
   }
 
+  /** Whether world point (x, y, z) is in rock. Player's flight asks it to let her through a roof. */
+  solidAt(x, y, z) {
+    return this.field.at(x, y, z) > 0
+  }
+
   /** The rock over (x, z) from `y` up, or -Infinity when `y` is in rock. */
   ceilingAt(x, z, y) {
     const f = this.field
@@ -169,21 +174,31 @@ export class CaveWalk {
     return null
   }
 
-  /** The nearest point of any water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null: a pool or sump by its shore grid's box, a river along its line wherever it carries water. */
+  /** The nearest point of any water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null: a pool or sump at a wet node of its shore grid (the nearest on a 1 m lattice, then the nearest round that), a river along its line wherever it carries water. Run every frame for the drip, hence the lattice. */
   nearestWater(x, y, z, reach, out) {
     let best = reach
     let found = false
     const take = (px, py, pz) => {
       const d = Math.hypot(px - x, py - y, pz - z)
-      if (d >= best) return
+      if (d >= best) return false
       best = d
       out.x = px; out.y = py; out.z = pz
       found = true
+      return true
     }
     for (const b of this._waters) {
       if (x < b.x0 - reach || x > b.x1 + reach || z < b.z0 - reach || z > b.z1 + reach) continue
       if (b.kind !== 'river') {
-        take(Math.min(b.x1, Math.max(b.x0, x)), b.level + this.oy, Math.min(b.z1, Math.max(b.z0, z)))
+        const { x0, z0, nx, nz, cell, s } = b.shore
+        const lattice = Math.max(1, Math.round(1 / cell))
+        let hi = -1, hk = -1
+        const scan = (i0, i1, k0, k1, step) => {
+          for (let k = Math.max(0, k0); k <= Math.min(nz - 2, k1); k += step) {
+            for (let i = Math.max(0, i0); i <= Math.min(nx - 2, i1); i += step) if (s[k * nx + i] < 0 && take(x0 + i * cell, b.level + this.oy, z0 + k * cell)) { hi = i; hk = k }
+          }
+        }
+        scan(Math.floor((x - best - x0) / cell), Math.ceil((x + best - x0) / cell), Math.floor((z - best - z0) / cell), Math.ceil((z + best - z0) / cell), lattice)
+        if (hi >= 0) scan(hi - lattice, hi + lattice, hk - lattice, hk + lattice, 1)
         continue
       }
       const q = { y: 0, w: 0, cut: 0 }

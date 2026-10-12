@@ -1004,11 +1004,23 @@ for (const rule of ['voice', 'villagerVoice']) {
   const out = { voices(into) { into.push({ sound: 'leafkinChatter2', x: HEAD.x + 3, y: HEAD.y, z: HEAD.z }); return into } }
   const engine = fakeEngine(), sense = scripted()
   sense.s.aboveSnow = -200
-  const amb = new Ambience({ engine, sense, rand: mulberry32(34), voiced: [{ layer: home, rule: 'villagerVoice', bus: 'near' }, { layer: out, rule: 'villagerVoice' }], herds: [{ layer: home, clips: 'human', bus: 'near' }] })
+  const amb = new Ambience({ engine, sense, rand: mulberry32(34), voiced: [{ layer: home, rule: 'villagerVoice', bus: 'near' }, { layer: out, rule: 'villagerVoice' }], herds: [{ layer: home, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }] })
   said.push({ sound: 'leafkinChatter1', x: HEAD.x + 2, y: HEAD.y, z: HEAD.z })
   run(amb, 3, {})
-  const mine = engine.plays.filter((p) => p.name === 'leafkinChatter1' || p.name === 'footfall'), theirs = engine.plays.filter((p) => p.name === 'leafkinChatter2')
-  check(mine.some((p) => p.name === 'footfall') && mine.every((p) => p.bus === 'near') && theirs.length > 0 && theirs.every((p) => p.bus === undefined && p.walled === true) && mine.every((p) => p.walled !== true), 'a layer given the near bus mutters and steps on it; one not given it stays on air, its voices walled', `${mine.length} near, ${theirs.length} air`)
+  const mine = engine.plays.filter((p) => p.name === 'leafkinChatter1' || p.name === 'footstep'), theirs = engine.plays.filter((p) => p.name === 'leafkinChatter2')
+  check(mine.some((p) => p.name === 'footstep') && mine.every((p) => p.bus === 'near') && theirs.length > 0 && theirs.every((p) => p.bus === undefined && p.walled === true) && mine.every((p) => p.walled !== true), 'a layer given the near bus mutters and steps on it; one not given it stays on air, its voices walled', `${mine.length} near, ${theirs.length} air`)
+}
+{
+  // A townsman and a leafkin villager walking, as main.js herds them: each lands her own footstep clip from where it is, the man at its natural pitch and the leafkin lighter and higher.
+  const at = (size, z) => ({ x: HEAD.x + 3, y: HEAD.y, z: HEAD.z + z, size, clip: 'walk', cycle: 1, speed: 1 })
+  const man = at(RULES.villagerStep.size, 0.1), kin = at(1, -0.1)
+  const engine = fakeEngine(), sense = scripted()
+  const amb = new Ambience({ engine, sense, rand: mulberry32(37), herds: [{ layer: { bodies: (into) => { into.push(man, kin); return into } }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }] })
+  run(amb, 4, {})
+  const of = (z) => engine.plays.filter((p) => p.name === 'footstep' && p.at && Math.sign(p.at.z - HEAD.z) === Math.sign(z))
+  const mans = of(1), kins = of(-1)
+  const rate = (ps) => ps.reduce((a, p) => a + p.rate, 0) / ps.length, gain = (ps) => ps.reduce((a, p) => a + p.gain, 0) / ps.length
+  check(mans.length >= 6 && kins.length >= 6 && within(rate(mans), 0.9, 1.1) && rate(kins) > rate(mans) && gain(kins) < gain(mans), 'a walking villager steps on her own footstep clip, a man at its pitch, a leafkin lighter and higher', `${mans.length} man at ${rate(mans).toFixed(2)}, ${kins.length} leafkin at ${rate(kins).toFixed(2)}`)
 }
 {
   // A snowman's feet beside a strider's, each as main.js herds them, the same distance off: the tread, deeper and louder.
@@ -1049,7 +1061,7 @@ for (const rule of ['voice', 'villagerVoice']) {
   const doors = engine.plays.filter((p) => p.name === 'door')
   const fallAt = (d) => (D.near / Math.max(D.near, d)) * Math.min(1, (D.reach - d) / D.edge)
   const near = doors.find((p) => p.at.x === HEAD.x + D.near + 2), far = doors.find((p) => p.at.x === HEAD.x + RULES.villagerVoice.reach + 2)
-  check(D.reach === 15 && doors.length === 2 && near && far, `a door is heard within ${D.reach} m, past the villagers' ${RULES.villagerVoice.reach} m, from where it was said, and not past its reach`, `${doors.length} of 3`)
+  check(D.reach === 30 && doors.length === 2 && near && far, `a door is heard within ${D.reach} m, past the villagers' ${RULES.villagerVoice.reach} m, from where it was said, and not past its reach`, `${doors.length} of 3`)
   check(near && within(near.gain, D.level * fallAt(D.near + 2) * D.gain[0], D.level * fallAt(D.near + 2) * D.gain[1]) && far.gain < near.gain, 'at the door level over its distance, fainter farther', doors.map((p) => p.gain.toFixed(3)).join(','))
   said.push({ sound: 'door', rule: 'crawl', x: HEAD.x, y: HEAD.y, z: HEAD.z })
   let threw = false

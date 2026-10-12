@@ -176,7 +176,56 @@ function cluster(pos, cell, index, k, CELLS) {
   return { pos: out, index: tris }
 }
 
-// Keeps only the vertices a triangle uses, then shades them: normal, region colour, occlusion, and the baked lights.
+/** The lights whose reach touches the CHUNK cube at (ox, oy, oz). */
+export function lightsIn(lights, ox, oy, oz) {
+  return lights.filter((l) => l.x + l.reach > ox && l.x - l.reach < ox + CHUNK && l.y + l.reach > oy && l.y - l.reach < oy + CHUNK && l.z + l.reach > oz && l.z - l.reach < oz + CHUNK)
+}
+
+// Floats rockAt writes: normal, colour, glow, daylight.
+export const ROCK_AT = 10
+
+/** The rock as baked at surface point (x, y, z): into `out` its normal, region colour under occlusion and grain, the glow of the lights in `near` and their daylight (out[9]). Returns its region. The room asks it at a prop's foot, so the prop wears the rock it stands on. */
+export function rockAt(field, x, y, z, near, out, list) {
+  const e = 0.25
+  let nx = field.at(x - e, y, z, list) - field.at(x + e, y, z, list)
+  let ny = field.at(x, y - e, z, list) - field.at(x, y + e, z, list)
+  let nz = field.at(x, y, z - e, list) - field.at(x, y, z + e, list)
+  const nl = Math.hypot(nx, ny, nz) || 1
+  nx /= nl; ny /= nl; nz /= nl
+  out[0] = nx; out[1] = ny; out[2] = nz
+
+  // Occlusion: how much rock crowds the open air just off the wall.
+  let occ = 0
+  for (const s of [0.5, 1.2, 2.4]) occ += Math.max(0, s + field.at(x + nx * s, y + ny * s, z + nz * s, list)) / s
+  const ao = Math.max(0.35, 1 - occ * 0.32)
+
+  field.at(x, y, z, list)
+  const region = field.owner < 0 ? 0 : field.prims[field.owner].region
+  const pal = PALETTES[field.graph.regions[region].palette]
+  const band = Math.sin(y * 1.9 + 2.2 * field.noise.at3(x * 0.15, y * 0.3, z * 0.15))
+  const base = ny > 0.65 ? pal.floor : band > 0.55 ? pal.vein : pal.rock
+  const grain = 0.85 + 0.3 * (0.5 + 0.5 * field.floorNoise.at2(x * 3.1 + y * 1.7, z * 3.1 - y * 1.3))
+  out[3] = base[0] * ao * grain; out[4] = base[1] * ao * grain; out[5] = base[2] * ao * grain
+
+  let gr = 0, gg = 0, gb = 0, gd = 0
+  for (const l of near) {
+    const lx = l.x - x, ly = l.y - y, lz = l.z - z
+    const d = Math.hypot(lx, ly, lz)
+    if (d >= l.reach) continue
+    const facing = (lx * nx + ly * ny + lz * nz) / (d || 1)
+    if (facing <= 0) continue
+    let lit = 1
+    for (let s = 1; s < 5 && lit > 0; s++) if (field.at(x + (lx * s) / 5, y + (ly * s) / 5, z + (lz * s) / 5) > 0.25) lit = 0
+    const fall = (1 - d / l.reach) ** 2 * facing * lit * l.power
+    if (l.day) gd += fall
+    else { gr += l.color[0] * fall; gg += l.color[1] * fall; gb += l.color[2] * fall }
+  }
+  out[6] = gr * ao; out[7] = gg * ao; out[8] = gb * ao
+  out[9] = gd * ao
+  return region
+}
+
+// Keeps only the vertices a triangle uses, then shades them (rockAt).
 function shade(field, list, lights, ox, oy, oz, pos, index) {
   const used = new Uint8Array(pos.length / 3)
   for (const v of index) used[v] = 1
@@ -189,49 +238,18 @@ function shade(field, list, lights, ox, oy, oz, pos, index) {
   const glow = new Float32Array(count * 3)
   const day = new Float32Array(count)
   const regionOf = new Int32Array(count)
-  const e = 0.25
-  const near = lights.filter((l) => l.x + l.reach > ox && l.x - l.reach < ox + CHUNK && l.y + l.reach > oy && l.y - l.reach < oy + CHUNK && l.z + l.reach > oz && l.z - l.reach < oz + CHUNK)
+  const near = lightsIn(lights, ox, oy, oz)
+  const rock = new Float32Array(ROCK_AT)
   for (let v = 0; v < used.length; v++) {
     const o = remap[v]
     if (o < 0) continue
     const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2]
     position[o * 3] = x; position[o * 3 + 1] = y; position[o * 3 + 2] = z
-    let nx = field.at(x - e, y, z, list) - field.at(x + e, y, z, list)
-    let ny = field.at(x, y - e, z, list) - field.at(x, y + e, z, list)
-    let nz = field.at(x, y, z - e, list) - field.at(x, y, z + e, list)
-    const nl = Math.hypot(nx, ny, nz) || 1
-    nx /= nl; ny /= nl; nz /= nl
-    normal[o * 3] = nx; normal[o * 3 + 1] = ny; normal[o * 3 + 2] = nz
-
-    // Occlusion: how much rock crowds the open air just off the wall.
-    let occ = 0
-    for (const s of [0.5, 1.2, 2.4]) occ += Math.max(0, s + field.at(x + nx * s, y + ny * s, z + nz * s, list)) / s
-    const ao = Math.max(0.35, 1 - occ * 0.32)
-
-    field.at(x, y, z, list)
-    const region = field.owner < 0 ? 0 : field.prims[field.owner].region
-    regionOf[o] = region
-    const pal = PALETTES[field.graph.regions[region].palette]
-    const band = Math.sin(y * 1.9 + 2.2 * field.noise.at3(x * 0.15, y * 0.3, z * 0.15))
-    const base = ny > 0.65 ? pal.floor : band > 0.55 ? pal.vein : pal.rock
-    const grain = 0.85 + 0.3 * (0.5 + 0.5 * field.floorNoise.at2(x * 3.1 + y * 1.7, z * 3.1 - y * 1.3))
-    color[o * 3] = base[0] * ao * grain; color[o * 3 + 1] = base[1] * ao * grain; color[o * 3 + 2] = base[2] * ao * grain
-
-    let gr = 0, gg = 0, gb = 0, gd = 0
-    for (const l of near) {
-      const lx = l.x - x, ly = l.y - y, lz = l.z - z
-      const d = Math.hypot(lx, ly, lz)
-      if (d >= l.reach) continue
-      const facing = (lx * nx + ly * ny + lz * nz) / (d || 1)
-      if (facing <= 0) continue
-      let lit = 1
-      for (let s = 1; s < 5 && lit > 0; s++) if (field.at(x + (lx * s) / 5, y + (ly * s) / 5, z + (lz * s) / 5) > 0.25) lit = 0
-      const fall = (1 - d / l.reach) ** 2 * facing * lit * l.power
-      if (l.day) gd += fall
-      else { gr += l.color[0] * fall; gg += l.color[1] * fall; gb += l.color[2] * fall }
-    }
-    glow[o * 3] = gr * ao; glow[o * 3 + 1] = gg * ao; glow[o * 3 + 2] = gb * ao
-    day[o] = gd * ao
+    regionOf[o] = rockAt(field, x, y, z, near, rock, list)
+    normal.set(rock.subarray(0, 3), o * 3)
+    color.set(rock.subarray(3, 6), o * 3)
+    glow.set(rock.subarray(6, 9), o * 3)
+    day[o] = rock[9]
   }
   // Triangles grouped by their first vertex's region, so the room can draw a region's share of the chunk alone.
   const byRegion = new Map()

@@ -123,3 +123,10 @@ export function eyeLift(field, x, y, z, reach) {
   }
   return y <= top ? 0 : Math.floor((y - top) / LIFT_STEP) * LIFT_STEP
 }
+
+// The trees' and rocks' eyeLift reach. Their discs run far past it, so the lift joins only the thinning and near-set
+// distances of tiles inside it less two tiles: past that, ground outside the reach can stand higher than the lift
+// assumes. STONE_PAD comes off the lift for the near set, which must hold every instance a mesh tier can want, and an
+// instance's root can perch on a rock over eyeLift's ground.
+export const LIFT_REACH = 600
+export const STONE_PAD = 16

@@ -1,4 +1,4 @@
-// What stands in the cave (design/39-caves.md §6): dripstone, mushrooms, ruin columns, chalk, each region's landmark, and the spots fish and crabs keep to. Pure and seeded.
+// What stands in the cave (design/39-caves.md §6): dripstone, mushrooms and the ferns in their light, ruin columns, chalk, each region's landmark, the mouths' boulders and greenery, and the spots crabs keep to. Pure and seeded.
 //
 // Anything she cannot step past (a stalagmite over a metre, a column, a giant stem) is kept CLEAR of every passage line into its node, so dressing can never close a route the graph promised; check-caves.mjs walks the routes to prove it.
 
@@ -6,6 +6,8 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { PALETTES, GLOWS } from './regions.js'
 import { onRock, rayRock } from './chalk.js'
 import { reliefAt } from './graph.js'
+import { mouthFlare, FLARE_M } from './field.js'
+import { waterBodies } from './walk.js'
 
 // A stalagmite this tall is a trunk to her.
 export const MITE_BLOCKS = 1.0
@@ -31,7 +33,7 @@ function surface(field, x, z, y, dir, reach) {
 export function placeProps(graph, field, seed) {
   const rand = mulberry32(seed ^ 0x9f05)
   const rr = (a, b) => a + (b - a) * rand()
-  const out = { mites: [], tites: [], mush: [], boulders: [], torches: [], ruins: [], chalk: [], fish: [], crabs: [], obstacles: [], lights: [] }
+  const out = { mites: [], tites: [], mush: [], boulders: [], ferns: [], grass: [], torches: [], ruins: [], chalk: [], crabs: [], obstacles: [], lights: [] }
   const lines = graph.nodes.map(() => [])
   for (const e of graph.edges) { lines[e.a].push(e.pts); lines[e.b].push(e.pts) }
   const clear = (n, x, z, pad) => lines[n.i].every((pts) => pts.every((p, k) => k + 1 >= pts.length || segDist(x, z, p, pts[k + 1]) > CLEAR + pad))
@@ -40,6 +42,13 @@ export function placeProps(graph, field, seed) {
   const regionGlow = graph.regions.map((r) => GLOWS[(r.i * 7 + seed) % GLOWS.length])
   for (const g of [...graph.glows].reverse()) regionGlow[graph.nodes[g.node].region] = g.color
   const hit = [0, 0, 0], nrm = [0, 0, 0], at = [0, 0, 0]
+  // Under a pool's or river's surface, where nothing that grows is placed. Floors stack, so a body counts only down to a little under its own bed.
+  const waters = waterBodies(graph)
+  const drowned = (x, y, z) => waters.some((b) => {
+    if (x < b.x0 || x > b.x1 || z < b.z0 || z > b.z1) return false
+    const level = b.levelAt(x, z)
+    return level !== null && y < level && y > b.bed - 1.5
+  })
 
   // Node n's floor at (x, z), or null where that is rock, a pit, or under 2 m of headroom.
   const stand = (n, x, z) => {
@@ -73,9 +82,41 @@ export function placeProps(graph, field, seed) {
     }
   }
 
+  // A sky mouth's way out: small boulders against the flare's walls by the exit and round the opening, grass and ferns on its floor thickening toward the sky, a few on this side of the exit. None blocks: she leaves at the exit.
+  const mouthDressing = (n) => {
+    const pts = mouthFlare(n).pts
+    const floorAt = (x, z, y) => {
+      const col = columnAt(field, x, z, y + 1)
+      return col === null ? null : col.floor
+    }
+    for (let k = 0; k < 10; k++) {
+      const p = alongPts(pts, k < 3 ? rr(0.5, 3) : rr(FLARE_M * 0.55, FLARE_M - 0.5))
+      const side = k % 2 === 0 ? 1 : -1
+      if (p === null || !rayRock(field, p.x, p.y + 0.4, p.z, -p.dz * side, 0, p.dx * side, 5, hit)) continue
+      const r = rr(0.2, 0.55)
+      const x = hit[0] + p.dz * side * r * 0.5, z = hit[2] - p.dx * side * r * 0.5
+      const y = floorAt(x, z, p.y)
+      if (y !== null) out.boulders.push({ x, y: y - 0.3 * r, z, r, yaw: rand() * 6.28, seed: rand() })
+    }
+    for (let k = 0; k < 46; k++) {
+      // Metres outward from the exit, negative inside it.
+      const at = k < 6 ? -rr(0.3, 3) : FLARE_M * Math.sqrt(rand())
+      const p = at < 0 ? { x: n.x - n.dx * at, y: n.y, z: n.z - n.dz * at, dx: -n.dx, dz: -n.dz } : alongPts(pts, at)
+      if (p === null) continue
+      const off = rr(-1, 1) * (at < 0 ? 0.8 : 1.1 + at * 0.04)
+      const x = p.x - p.dz * off, z = p.z + p.dx * off
+      const y = floorAt(x, z, p.y)
+      if (y === null || y < p.y - 0.8) continue
+      const row = { x, y: y - 0.02, z, yaw: rand() * 6.28, s: rr(0.6, 1.15) }
+      if (rand() < 0.3) out.ferns.push(row)
+      else out.grass.push(row)
+    }
+  }
+
   for (const n of graph.nodes) {
     if (n.kind === 'mouth') {
       if (n.cellar) cellarTorches(n)
+      else mouthDressing(n)
       continue
     }
     const pal = PALETTES[graph.regions[n.region].palette]
@@ -108,18 +149,21 @@ export function placeProps(graph, field, seed) {
 
     // Mushrooms: carpets of small ones, a few huge. The second `caps` rolls keep only the glowing, so glowing caps come twice as often as plain ones.
     const caps = Math.round(area * 0.1 * (0.3 + pal.mush))
+    const glowing = []
     for (let k = 0; k < caps * 2; k++) {
       const glow = rand() < 0.2 + pal.glow * 0.6 ? regionGlow[n.region] : null
       if (k >= caps && glow === null) continue
       const p = spot(n, 0.5, 0.97)
-      if (p === null) continue
+      if (p === null || drowned(p.x, p.y, p.z)) continue
       const huge = rand() < 0.18
       const h = huge ? Math.min(p.roof - p.y - 0.4, rr(1.8, big ? 6 : 3.6)) : rr(0.1, 0.5)
       if (huge && (h < 1.5 || !clear(n, p.x, p.z, h * 0.6))) continue
       out.mush.push({ x: p.x, y: p.y, z: p.z, h, lean: rr(-0.15, 0.15), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: UP })
       if (huge) block(p.x, p.z, Math.max(0.12, h * 0.07), p.y, p.y + h)
-      // Every glowing cap tints the rock round it, the small ones a pace or two of floor and wall.
-      if (glow) out.lights.push({ x: p.x, y: p.y + h, z: p.z, color: glow, reach: huge ? 6 + h : 1.6 + 2.5 * h, power: huge ? 0.35 : 0.14 })
+      // Every glowing cap tints the rock round it, the small ones a few paces of floor and wall.
+      if (!glow) continue
+      glowing.push(p)
+      out.lights.push({ x: p.x, y: p.y + h, z: p.z, color: glow, reach: huge ? 9 + 1.5 * h : 3 + 5 * h, power: huge ? 0.5 : 0.22 })
     }
 
     // Wall clumps: a few small glowing caps standing out of the rock, each lighting its own patch of wall faintly.
@@ -142,9 +186,23 @@ export function placeProps(graph, field, seed) {
         const y = hit[1] + nrm[1] * 0.15 + t1[1] * u + t2[1] * v
         const z = hit[2] + nrm[2] * 0.15 + t1[2] * u + t2[2] * v
         if (!onRock(field, x, y, z, 0.5, at)) continue
-        out.mush.push({ x: at[0] - nrm[0] * 0.02, y: at[1] - nrm[1] * 0.02, z: at[2] - nrm[2] * 0.02, h: rr(0.07, 0.24), lean: rr(-0.35, 0.35), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: [nrm[0] * 0.8, nrm[1] * 0.8 + 0.2, nrm[2] * 0.8] })
+        const mx = at[0] - nrm[0] * 0.02, my = at[1] - nrm[1] * 0.02, mz = at[2] - nrm[2] * 0.02
+        if (drowned(mx, my, mz)) continue
+        out.mush.push({ x: mx, y: my, z: mz, h: rr(0.07, 0.24), lean: rr(-0.35, 0.35), yaw: rand() * 6.28, glow, seed: rand(), region: n.region, up: [nrm[0] * 0.8, nrm[1] * 0.8 + 0.2, nrm[2] * 0.8] })
       }
-      out.lights.push({ x: hit[0] + nrm[0] * 0.3, y: hit[1] + nrm[1] * 0.3, z: hit[2] + nrm[2] * 0.3, color: glow, reach: 2.8, power: 0.2 })
+      out.lights.push({ x: hit[0] + nrm[0] * 0.3, y: hit[1] + nrm[1] * 0.3, z: hit[2] + nrm[2] * 0.3, color: glow, reach: 5, power: 0.3 })
+    }
+
+    // Where the caps glow thick: their light filling the chamber, and now and then a fern grown in it.
+    if (glowing.length >= FILL_GLOWS) {
+      const col = columnAt(field, n.x, n.z, n.y + reliefAt(n, n.x, n.z) + 1.2)
+      if (col !== null) out.lights.push({ x: n.x, y: col.floor + Math.min(2.5, (col.roof - col.floor) * 0.5), z: n.z, color: regionGlow[n.region], reach: Math.min(FILL_REACH, Math.max(n.rx, n.rz) + 4), power: Math.min(0.5, 0.05 * glowing.length) })
+      for (const g of glowing) {
+        if (rand() > 0.3) continue
+        const a = rand() * 6.28, d = rr(0.4, 1.4)
+        const p = stand(n, g.x + Math.cos(a) * d, g.z + Math.sin(a) * d)
+        if (p !== null && !drowned(p.x, p.y, p.z)) out.ferns.push({ x: p.x, y: p.y - 0.02, z: p.z, yaw: rand() * 6.28, s: rr(0.6, 1.1) })
+      }
     }
 
     // Ruins: stacked blocks in columns, some fallen.
@@ -176,16 +234,15 @@ export function placeProps(graph, field, seed) {
       if (p !== null) out.chalk.push({ x: p.x, y: p.y, z: p.z, yaw: rand() * 6.28 })
     }
 
-    // Wildlife spots: fish over a pool's deep middle, crabs round its shore.
+    // Crabs round a pool's shore (its fish are the rivers' own, render/fish.js).
     if (n.dish > 1.2) {
-      for (let k = 0; k < Math.round(rr(2, big ? 9 : 5)); k++) out.fish.push({ node: n.i, x: n.x, z: n.z, y: n.y - 0.25 - rr(0.4, n.dish * 0.7), r: Math.min(n.rx, n.rz) * rr(0.15, 0.45), phase: rand() * 6.28, speed: rr(0.25, 0.6) })
       for (let k = 0; k < Math.round(rr(1, 4)); k++) {
         const p = spot(n, 0.6, 0.85)
         if (p !== null) out.crabs.push({ x: p.x, y: p.y, z: p.z, yaw: rand() * 6.28, seed: rand() })
       }
     }
 
-    // A great cavern: groves of giant glowing mushrooms on its dry ground, boulders strewn between, fish in its hollows' pools.
+    // A great cavern: groves of giant glowing mushrooms on its dry ground, boulders strewn between.
     if (n.great) {
       let lit = 0
       for (let g = Math.round(area / 200); g > 0; g--) {
@@ -198,13 +255,13 @@ export function placeProps(graph, field, seed) {
           // Low ground is where the river and the pools lie.
           if (reliefAt(n, x, z) < -0.5) continue
           const p = stand(n, x, z)
-          if (p === null) continue
+          if (p === null || drowned(x, p.y, z)) continue
           const h = Math.min(p.roof - p.y - 1, 1.5 + 10.5 * rand() ** 2.2)
           if (h < 1.5 || !clear(n, x, z, Math.max(0.6, h * 0.1))) continue
           const glow = rand() < 0.8 ? regionGlow[n.region] : null
           out.mush.push({ x, y: p.y, z, h, lean: rr(-0.12, 0.12), yaw: rand() * 6.28, glow, seed: rand(), giant: h > 5, region: n.region, up: UP })
           block(x, z, Math.max(0.12, h * 0.07), p.y, p.y + h)
-          if (glow !== null && h > 4 && lit++ < GROVE_LIGHTS) out.lights.push({ x, y: p.y + h, z, color: glow, reach: 6 + h, power: 0.35 })
+          if (glow !== null && h > 4 && lit++ < GROVE_LIGHTS) out.lights.push({ x, y: p.y + h, z, color: glow, reach: 9 + 1.5 * h, power: 0.5 })
         }
       }
       for (let k = Math.round(area / 50); k > 0; k--) {
@@ -214,10 +271,6 @@ export function placeProps(graph, field, seed) {
         if (r > 0.5 && !clear(n, p.x, p.z, r)) continue
         out.boulders.push({ x: p.x, y: p.y - 0.3 * r, z: p.z, r, yaw: rand() * 6.28, seed: rand() })
         if (r > 0.5) block(p.x, p.z, r * 0.9, p.y, p.y + r)
-      }
-      for (const pl of graph.pools) {
-        if (pl.node !== n.i) continue
-        for (let k = Math.round(rr(1, 2 + pl.r)); k > 0; k--) out.fish.push({ node: n.i, x: pl.x, z: pl.z, y: pl.level - 0.25 - rr(0.2, pl.depth * 0.7), r: pl.r * rr(0.15, 0.45), phase: rand() * 6.28, speed: rr(0.25, 0.6) })
       }
     }
   }
@@ -245,11 +298,12 @@ export function placeProps(graph, field, seed) {
       out.mites.push({ x: at.x, y: c.floor, z: at.z, len: c.roof - c.floor + 0.3, r: r0, seed: rand(), pillar: true, fluted: kind === 'column' })
       block(at.x, at.z, r0, c.floor, c.roof)
     } else if (kind === 'giant') {
+      if (drowned(at.x, c.floor, at.z)) continue
       const h = Math.min(room - 0.6, rr(6, 9))
       const glow = regionGlow[r.i]
       out.mush.push({ x: at.x, y: c.floor, z: at.z, h, lean: rr(-0.1, 0.1), yaw: rand() * 6.28, glow, seed: rand(), giant: true, region: r.i, up: UP })
       block(at.x, at.z, h * 0.08, c.floor, c.floor + h)
-      out.lights.push({ x: at.x, y: c.floor + h, z: at.z, color: glow, reach: 18, power: 0.5 })
+      out.lights.push({ x: at.x, y: c.floor + h, z: at.z, color: glow, reach: 24, power: 0.7 })
     } else {
       // An arch, or a colonnade: columns in a row with lintels across.
       const yaw = rand() * 3.14
@@ -276,14 +330,15 @@ export function placeProps(graph, field, seed) {
     const col = columnAt(field, g.x, g.z, n.y + reliefAt(n, g.x, g.z) + 1.2)
     if (col === null || !clear(n, g.x, g.z, 0.5)) continue
     const h = Math.min(col.roof - col.floor - 0.5, rr(1.2, n.kind === 'cavern' ? 4.5 : 2.6))
-    if (h < 0.8) continue
+    if (h < 0.8 || drowned(g.x, col.floor, g.z)) continue
     out.mush.push({ x: g.x, y: col.floor, z: g.z, h, lean: rr(-0.12, 0.12), yaw: rand() * 6.28, glow: g.color, seed: rand(), region: n.region, up: UP })
     for (let k = 0; k < 6; k++) {
       const a = rand() * 6.28, d = rr(0.4, 1.6)
-      out.mush.push({ x: g.x + Math.cos(a) * d, y: col.floor, z: g.z + Math.sin(a) * d, h: rr(0.15, 0.6), lean: rr(-0.2, 0.2), yaw: rand() * 6.28, glow: g.color, seed: rand(), region: n.region, up: UP })
+      const x = g.x + Math.cos(a) * d, z = g.z + Math.sin(a) * d
+      if (!drowned(x, col.floor, z)) out.mush.push({ x, y: col.floor, z, h: rr(0.15, 0.6), lean: rr(-0.2, 0.2), yaw: rand() * 6.28, glow: g.color, seed: rand(), region: n.region, up: UP })
     }
     if (h > MITE_BLOCKS) block(g.x, g.z, h * 0.07, col.floor, col.floor + h)
-    out.lights.push({ x: g.x, y: col.floor + h, z: g.z, color: g.color, reach: g.reach, power: 0.45 })
+    out.lights.push({ x: g.x, y: col.floor + h, z: g.z, color: g.color, reach: g.reach * 1.4, power: 0.6 })
   }
   return out
 }
@@ -291,7 +346,10 @@ export function placeProps(graph, field, seed) {
 const UP = [0, 1, 0]
 const TORCHLIGHT = { color: [0.9, 0.55, 0.25], reach: 7, power: 0.7 }
 // Lights one great cavern's groves may bake into the rock.
-const GROVE_LIGHTS = 16
+const GROVE_LIGHTS = 24
+// Glowing floor caps a chamber needs for a fill light and ferns, and the fill's longest reach.
+const FILL_GLOWS = 5
+const FILL_REACH = 20
 
 // The unit normal out of the rock at p (the field is positive in rock), into `out`.
 function outward(field, p, out) {

@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
+import { LIFT_REACH, QUANT, STONE_PAD, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildRockBank, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINT_GAIN } from '../../props/rock-bank.js'
 import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, ROCK_LOD_FAR_MAX, ROCK_LOD_GONE_MAX, rockLodSize } from '../../props/rock.js'
@@ -1780,9 +1780,8 @@ class RockBed {
     // mesh tier can still be worn.
     this.maxLod = maxLod
     const maxFarAt = farAt(maxLod)
-    // The margin is the guarantee the bucketed walk leans on: a tile joins the
-    // near set before any rock inside can need a mesh tier, so a bucket is
-    // pulled forward off its turn once the camera has covered it. See STILL_M.
+    // The margin is the guarantee `_walkNear` keeps: a tile joins the near set
+    // before any rock inside can need a mesh tier.
     this.nearMargin = tile * 1.5
     this.nearSq = (maxFarAt + this.nearMargin) ** 2
 
@@ -1984,6 +1983,10 @@ class RockBed {
     // Height above ground the live reach was last computed for, quantised to
     // whole tiles. Null so the first `_reseat` cannot be skipped.
     this.camAglQ = null
+    // This frame's eyeLift squared and its share past STONE_PAD; see LIFT_REACH.
+    this.lift2 = 0
+    this.liftNear2 = 0
+    this.liftNearSq = Math.max(0, LIFT_REACH - tile * 2) ** 2
 
     this._m = new THREE.Matrix4()
     // The rolled, squashed, scaled box `_m` is composed over; see `_growTile`.
@@ -2012,12 +2015,12 @@ class RockBed {
     // swap-removal. See STILL_M.
     this.buckets = Array.from({ length: RIM_PHASES }, () => [])
     this.due = []
-    // Per bucket: where the camera stood, the rim's `need` and the ground
-    // version at its last walk -- what decides whether the next can be skipped.
+    // Per bucket: where the camera stood, the rim's slack and the ground version
+    // at its last walk -- what decides whether the next can be skipped.
     this.bucketX = new Float64Array(RIM_PHASES)
     this.bucketY = new Float64Array(RIM_PHASES)
     this.bucketZ = new Float64Array(RIM_PHASES)
-    this.bucketNeed = new Float32Array(RIM_PHASES)
+    this.bucketSlack = new Float64Array(RIM_PHASES)
     this.bucketGver = new Int32Array(RIM_PHASES).fill(-1)
     // The first update walks every tile, as does the one after a `place`: that is
     // a jump, on a frame already spent rebuilding. A budgeted reseat evicts and
@@ -2167,6 +2170,11 @@ class RockBed {
 
   _levelFor(d2) {
     return levelFor(d2, this.fullSq, this.fullRadius, this.maxQ)
+  }
+
+  /** A horizontal tile distance squared with the eye's lift added where the lift's reach vouches for it. */
+  _lifted(d2) {
+    return d2 < this.liftNearSq ? d2 + this.lift2 : d2
   }
 
   /**
@@ -2792,6 +2800,7 @@ class RockBed {
     const t0 = performance.now()
     // Standing on the ground, so the full reach: a synchronous place is asked for
     // when something wants the bed complete, not when something is flying over it.
+    this.lift2 = this.liftNear2 = 0
     this._reseat(cx, this.field.heightAt(cx, cz), cz)
     while (this.queue.length) this._growTile(this.queue.pop())
     this.walkAll = true
@@ -2799,7 +2808,10 @@ class RockBed {
     return this.placed
   }
 
-  update(camX, camY, camZ, budgetMs, walkMs) {
+  /** `lift` is the Rocks' eyeLift this frame. */
+  update(camX, camY, camZ, budgetMs, walkMs, lift) {
+    this.lift2 = lift * lift
+    this.liftNear2 = Math.max(0, lift - STONE_PAD) ** 2
     this._reseat(camX, camY, camZ)
 
     const t0 = performance.now()
@@ -2828,14 +2840,13 @@ class RockBed {
       const moved2 = mx * mx + my * my + mz * mz
       const walk = this.walkAll
         || (p === turn && (moved2 >= STILL_M * STILL_M || this.bucketGver[p] !== gver))
-        || moved2 >= this.nearMargin * this.nearMargin
-        || (need > this.bucketNeed[p] && performance.now() - tWalk < walkMs)
+        || (need > this.bucketSlack[p] && performance.now() - tWalk < walkMs)
       if (!walk) continue
       this.bucketX[p] = camX
       this.bucketY[p] = camY
       this.bucketZ[p] = camZ
-      this.bucketNeed[p] = need
       this.bucketGver[p] = gver
+      this.bucketSlack[p] = this.rim.slack
       const bucket = this.buckets[p]
       for (let k = 0; k < bucket.length; k++) this._walkTile(bucket[k], camX, camY, camZ, gver, now)
     }
@@ -2845,11 +2856,14 @@ class RockBed {
     // walk finds nothing to do.
     const due = this.due
     for (let k = 0; k < due.length; k++) {
-      due[k].due = false
-      if (!this.walkAll) this._walkTile(due[k], camX, camY, camZ, gver, now)
+      const t = due[k]
+      t.due = false
+      if (!this.walkAll) this._walkTile(t, camX, camY, camZ, gver, now)
+      this.bucketSlack[t.phase] = Math.min(this.bucketSlack[t.phase], this.rim.slack)
     }
     due.length = 0
     this.walkAll = false
+    this._walkNear(camX, camY, camZ, gver, now)
 
     // The duplicates are drawn too; `tileTierN` is exact as of each tile's last
     // walk, so up to RIM_PHASES frames stale.
@@ -2862,9 +2876,13 @@ class RockBed {
    * One tile's share of an update: follow the terrain if it has changed, queue
    * a level change, give the rim its sweep, and tier its rocks -- the
    * per-instance ladder if the tile is near, all onto the coarsest mesh if not.
-   * Runs on the tile's bucket turn, or off the due list -- see STILL_M.
+   * Runs on the tile's bucket turn, off the due list, or from `_walkNear` -- see
+   * STILL_M.
    */
   _walkTile(t, camX, camY, camZ, gver, now) {
+    t.wx = camX
+    t.wy = camY
+    t.wz = camZ
     const tile = this.tile
     // The chunk under the tile's centre, re-asked only when a chunk over it has
     // entered or left the render set since this tile last asked. A rock follows
@@ -2884,7 +2902,7 @@ class RockBed {
 
     const nx = Math.max(t.tx * tile, Math.min(camX, (t.tx + 1) * tile))
     const nz = Math.max(t.tz * tile, Math.min(camZ, (t.tz + 1) * tile))
-    const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+    const near2 = this._lifted((nx - camX) ** 2 + (nz - camZ) ** 2)
 
     const tileHidden = this.rim.sweepTile(t, this.instX, this.instY, this.instZ, camX, camY, camZ)
 
@@ -2899,7 +2917,7 @@ class RockBed {
     const coarse = ROCK_BAND_COUNT - 1
     const dx = (t.tx + 0.5) * tile - camX
     const dz = (t.tz + 0.5) * tile - camZ
-    const near = dx * dx + dz * dz < this.nearSq
+    const near = dx * dx + dz * dz + this.liftNear2 < this.nearSq
     const cnt = this._walkN
     cnt.fill(0)
     if (!near) {
@@ -2963,6 +2981,34 @@ class RockBed {
     for (let b = 0; b < ROCK_BAND_COUNT; b++) {
       this.tileTierN[b] += cnt[b] - tierN[b]
       tierN[b] = cnt[b]
+    }
+  }
+
+  /** Trees' `_walkNear`, on this bed's tile and `nearMargin`. */
+  _walkNear(camX, camY, camZ, gver, now) {
+    const r2 = this.nearSq - this.liftNear2
+    if (r2 <= 0) return
+    const tile = this.tile
+    const margin = this.nearMargin
+    const reach = Math.sqrt(r2) + margin
+    const x1 = Math.floor((camX + reach) / tile)
+    const z0 = Math.floor((camZ - reach) / tile)
+    const z1 = Math.floor((camZ + reach) / tile)
+    for (let tx = Math.floor((camX - reach) / tile); tx <= x1; tx++) {
+      for (let tz = z0; tz <= z1; tz++) {
+        const t = this.tiles.get(tx * 0x10000 + tz)
+        if (!t) continue
+        const dx = (tx + 0.5) * tile - camX
+        const dz = (tz + 0.5) * tile - camZ
+        const c2 = dx * dx + dz * dz
+        if (c2 >= reach * reach) continue
+        const mx = camX - t.wx
+        const my = camY - t.wy
+        const mz = camZ - t.wz
+        if ((!t.near && c2 < r2) || mx * mx + my * my + mz * mz >= margin * margin) {
+          this._walkTile(t, camX, camY, camZ, gver, now)
+        }
+      }
     }
   }
 
@@ -3052,7 +3098,7 @@ class RockBed {
       // boundary is not cut and regrown by one step across a tile line.
       const nx = Math.max(t.tx * tile, Math.min(cx, (t.tx + 1) * tile))
       const nz = Math.max(t.tz * tile, Math.min(cz, (t.tz + 1) * tile))
-      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      const q = this._levelFor(this._lifted((nx - cx) ** 2 + (nz - cz) ** 2))
       if (q >= t.q + 2) this._growTile({ key, tx: t.tx, tz: t.tz, q })
     }
 
@@ -3072,7 +3118,7 @@ class RockBed {
         if (this.tiles.has(key)) continue
         const nx = Math.max(gx * tile, Math.min(cx, (gx + 1) * tile))
         const nz = Math.max(gz * tile, Math.min(cz, (gz + 1) * tile))
-        this.queue.push({ key, tx: gx, tz: gz, d2, q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2) })
+        this.queue.push({ key, tx: gx, tz: gz, d2, q: this._levelFor(this._lifted((nx - cx) ** 2 + (nz - cz) ** 2)) })
       }
     }
     this.queue.sort((a, b) => b.d2 - a.d2)
@@ -3773,6 +3819,10 @@ class RockBed {
         phase,
         bi: bucket.length,
         tierN: new Int32Array(ROCK_BAND_COUNT),
+        // Where the camera stood at the tile's last walk; see _walkNear.
+        wx: 0,
+        wy: 0,
+        wz: 0,
         // The terrain chunk covering this tile's CENTRE when its rocks were last
         // grounded, or null if none was resident, and the ground version it was
         // read at. The walk re-asks only once the version has moved on.
@@ -4615,6 +4665,7 @@ export class Rocks {
     // Every other bed keeps clear of the entrance boulders' ground: see HOLLOW_CLEAR_M.
     let hollow = null
     const clear = (x, z, r) => (keepOut !== null && keepOut(x, z, r)) || hollow.crowdsHollow(x, z, r)
+    this.field = field
     this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds, keepOut: hollows && !cfg.hollow ? clear : keepOut }))
     hollow = hollows ? this.beds.find((b) => b.cfg.hollow) : null
     this._hollowCol = new Float64Array(SPAN_STRIDE)
@@ -4675,7 +4726,8 @@ export class Rocks {
     const tStart = performance.now()
     const slice = this.buildBudgetMs / this.beds.length
     const walkSlice = this.walkBudgetMs / this.beds.length
-    for (const bed of this.beds) bed.update(camX, camY, camZ, slice, walkSlice)
+    const lift = eyeLift(this.field, camX, camY, camZ, LIFT_REACH)
+    for (const bed of this.beds) bed.update(camX, camY, camZ, slice, walkSlice, lift)
     // The whole of this call, smoothed over ~20 frames: the layer's main-thread
     // bill, which the headset cannot otherwise separate from its draw cost.
     this.updateMs += (performance.now() - tStart - this.updateMs) * 0.05

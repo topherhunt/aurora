@@ -4360,6 +4360,62 @@ console.log('\nscatter')
     r.dispose(); again.dispose(); whole.dispose()
   }
 
+  // --- from the air: the lift thins only what the rim hides, and walks fewer rocks for mesh tiers ---
+  console.log('\nfrom the air')
+  {
+    // 200 m over the forest floor, one Rocks with the lift and one with it pinned to 0 on every bed.
+    const UP = 60 + 200
+    const aloft = build(forest)
+    const level = build(forest)
+    for (const bed of level.beds) for (const k of ['lift2', 'liftNear2']) Object.defineProperty(bed, k, { get: () => 0, set() {} })
+    for (const r of [aloft, level]) for (let i = 0; i < 240; i++) { setPropClock(i / 72); r.update(0, UP, 0) }
+    const placed = (r) => r.beds.reduce((s, b) => s + b.placed, 0)
+    const near = (r) => r.beds.reduce((s, b) => s + [...b.tiles.values()].filter((t) => t.near).length, 0)
+    check(placed(aloft) < placed(level), 'from 200 m up the beds grow thinned for their true distance', `${placed(aloft)} placed against ${placed(level)}`)
+    // Not none: a giant can want a mesh tier from 200 m.
+    check(near(aloft) < near(level), 'and fewer tiles under it are walked for mesh tiers', `${near(aloft)} near tiles against ${near(level)}`)
+    let shown = 0, lost = 0
+    aloft.beds.forEach((bed, b) => {
+      const standing = new Set()
+      for (const t of bed.tiles.values()) for (let k = 0; k < t.n; k++) standing.add(`${bed.instX[t.ids[k]]},${bed.instZ[t.ids[k]]}`)
+      const ref = level.beds[b]
+      for (const t of ref.tiles.values()) {
+        for (let k = 0; k < t.n; k++) {
+          const id = t.ids[k]
+          if (ref.rim.isHidden(id)) continue
+          shown++
+          if (!standing.has(`${ref.instX[id]},${ref.instZ[id]}`)) lost++
+        }
+      }
+    })
+    check(shown > 0 && lost === 0, 'and every rock the rim would still draw from there is standing', `${lost} of ${shown} lost`)
+    aloft.dispose(); level.dispose()
+  }
+
+  // --- the walk in flight: a tile joins the near set the frame it comes inside, not on its bucket's turn ---
+  console.log('\nthe walk in flight')
+  {
+    // Low over the forest floor at 6 m a frame, faster than flight allows there.
+    const r = build(forest)
+    let x = 0, late = 0, seen = 0
+    for (let i = 0; i < 160; i++) {
+      setPropClock(i / 72)
+      r.update((x += 6), 61.6, 0)
+      if (i < 40) continue
+      for (const bed of r.beds) {
+        for (const t of bed.tiles.values()) {
+          const dx = (t.tx + 0.5) * bed.tile - x
+          const dz = (t.tz + 0.5) * bed.tile
+          if (dx * dx + dz * dz + bed.liftNear2 >= bed.nearSq) continue
+          seen++
+          if (!t.near) late++
+        }
+      }
+    }
+    check(seen > 0 && late === 0, 'at speed, every tile inside a bed\'s near reach is in its near set that frame', `${late} of ${seen} late`)
+    r.dispose()
+  }
+
   for (const r of [forestRocks, cliffRocks, peakRocks, riverRocks]) r.dispose()
 }
 

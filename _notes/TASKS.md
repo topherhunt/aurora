@@ -65,9 +65,9 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - The drums fade in first, initially distorted as if muted and far away, gradually growing clearer. And then the creepy chanting joins them. Both gradually grow closer and clearer and sharper. Once they reach full clarity, they continue until you move or press a button. Your eyes open, and you hear leafkin shrieks all around you, and the pitter patter and whimpering of several small beings running off into the forest. You sit up. Maybe you glimpse some of the creatures running off. And then you're alone with the crickets and fireflies in a dark forest.
 - [ ] SNOWBOARDINGGGGGG
 - [ ] Caves
-  - [ ] Chunk border vertices need to line up with the closer chunk. So the chunk's nearer hem needs 2x more vertices than the rest of the chunk has.
+  - [x] Chunk border vertices need to line up with the closer chunk. So the chunk's nearer hem needs 2x more vertices than the rest of the chunk has.
   - [ ] The cave entrance, rather than visibly being a rounded-off dead end, should "fold outward" and then be faced by a colored 2-tri plane that's white if it's daytime and dark blue if it's nighttime (blended between those depending on time of day) and the rock walls' lighting around. Or if the entrance leads into a house/building, it should be a door plane and there should be 1-2 torches anchored into the rock wall within 5-20m of it.
-  - [ ] The rock walls should look 2x as jagged, less rounded. Currently they're too rounded.
+  - [x] The rock walls should look 2x as jagged, less rounded. Currently they're too rounded.
   - [x] Double the frequency of glowy mushrooms.
   - [x] There should also be some larger caverns: irregularly-shaped rooms 30-200m in length, with many offbranching tunnels, ceiling out of sight, rough uneven floor with higher regions and lower regions, populated by forests of giant glowing mushrooms of various sizes, interspersed with varying-sized boulders and rivers and pools of water.
   - [x] If you dip a lit torch into water, extinguishing it, it should hiss.

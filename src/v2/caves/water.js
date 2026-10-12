@@ -29,10 +29,14 @@ export function settleWaters(graph, field) {
 
 function settle(p, graph, field) {
   const homes = []
+  // A drowned passage's wet stretch runs under the cavern's dry rim, so its floor is read from under the surface, not over it.
+  const under = []
   let seed
   if (p.node !== undefined) {
     const n = graph.nodes[p.node]
     homes.push(ellipse(n, HOME))
+    for (const i of p.drowned) under.push(line(graph.edges[i].pts.filter((q) => q.y < p.level), 0))
+    homes.push(...under)
     seed = [p.x, p.z]
   } else {
     const e = graph.edges[p.edge]
@@ -40,7 +44,7 @@ function settle(p, graph, field) {
     const dip = e.pts.reduce((a, b) => (b.y < a.y ? b : a))
     seed = [dip.x, dip.z]
   }
-  const ref = p.level + 0.3
+  const refAt = (x, z) => (under.some((h) => h.has(x, z)) ? p.level - 0.3 : p.level + 0.3)
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
   for (const h of homes) { x0 = Math.min(x0, h.x0); x1 = Math.max(x1, h.x1); z0 = Math.min(z0, h.z0); z1 = Math.max(z1, h.z1) }
   x0 -= CELL; z0 -= CELL
@@ -49,7 +53,9 @@ function settle(p, graph, field) {
   const key = new Float32Array(nx * nz).fill(Infinity)
   const done = new Uint8Array(nx * nz)
   const floorOf = (c) => {
-    if (Number.isNaN(floor[c])) floor[c] = floorUnder(field, x0 + (c % nx) * CELL, z0 + Math.floor(c / nx) * CELL, ref)
+    if (!Number.isNaN(floor[c])) return floor[c]
+    const x = x0 + (c % nx) * CELL, z = z0 + Math.floor(c / nx) * CELL
+    floor[c] = floorUnder(field, x, z, refAt(x, z))
     return floor[c]
   }
   const home = (c) => {
@@ -89,11 +95,11 @@ function settle(p, graph, field) {
     else if (floor[c] === Infinity) s[c] = 0
     else s[c] = Math.max(floor[c] - level - TUCK, 0)
   }
-  p.shore = refine({ x0, z0, nx, nz, cell: CELL, s, floor }, field, level, ref)
+  p.shore = refine({ x0, z0, nx, nz, cell: CELL, s, floor }, field, level, refAt)
 }
 
 // The shore at half the flood's cell: interpolated inside the water and on dry ground, sampled afresh only in the cells the shoreline crosses, where a dip between two corners would leave the plane's edge in the air.
-function refine(sh, field, level, ref) {
+function refine(sh, field, level, refAt) {
   const NX = 2 * sh.nx - 1, NZ = 2 * sh.nz - 1, cell = sh.cell / 2
   const s = new Float32Array(NX * NZ), floor = new Float32Array(NX * NZ)
   const corners = [0, 0, 0, 0]
@@ -110,7 +116,7 @@ function refine(sh, field, level, ref) {
         continue
       }
       const x = sh.x0 + I * cell, z = sh.z0 + K * cell
-      const f = floorUnder(field, x, z, ref)
+      const f = floorUnder(field, x, z, refAt(x, z))
       floor[C] = f
       const reached = f < level && corners.some((c) => sh.s[c] < 0 && open(field, x, z, sh.x0 + (c % sh.nx) * sh.cell, sh.z0 + Math.floor(c / sh.nx) * sh.cell, Math.max(f, sh.floor[c]) + LIP))
       s[C] = reached ? f - level - TUCK : f === Infinity ? 0 : Math.max(f - level - TUCK, 0)

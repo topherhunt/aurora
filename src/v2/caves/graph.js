@@ -26,6 +26,12 @@ export const RIVER_DEPTH = 0.6
 export const RIVER_FREEBOARD = 0.15
 // Steepest flank of a sump's dip: a swimmer stands up out of it and climbs on.
 const SUMP_GRADE = 0.75
+// A drowned passage: out of a pool at least DROWN_DISH deep, DROWN_H high with its roof DROWN_ROOF under the surface until it is DROWN_OUT of the cavern's radius out, under the dry rim.
+const DROWN_DISH = 6
+const DROWN_H = 2.3
+const DROWN_ROOF = 1
+const DROWN_OUT = 1.15
+const drownedFloor = (A) => A.y - 0.25 - DROWN_ROOF - DROWN_H
 // Passage profile samples, metres apart.
 const SAMPLE = 2
 
@@ -77,6 +83,13 @@ export function buildGraph({ seed, entries }) {
       n.rx = Math.min(len, fromMouth(n) - 35); n.rz = Math.max(12, n.rx * rr(0.35, 0.7)); n.h = rr(40, 70)
     } else {
       n.rx = rr(17, 25); n.rz = rr(14, 21); n.h = rr(30, 48)
+      // A pool's cavern is two to four times the size, as far as the mouths and the caverns before it leave room.
+      n.pool = rand() < 0.65
+      if (n.pool) {
+        const room = Math.min(fromMouth(n) - 35, ...caverns.map((c) => Math.hypot(c.x - n.x, c.z - n.z) - Math.max(c.rx, c.rz) - 20))
+        const k = Math.max(1, Math.min(rr(2, 4), room / Math.max(n.rx, n.rz)))
+        n.rx *= k; n.rz *= k; n.h = Math.min(70, n.h * Math.sqrt(k))
+      }
     }
     caverns.push(n)
   }
@@ -283,8 +296,23 @@ export function buildGraph({ seed, entries }) {
   // A dish no deeper than a third of its node's radius: its wall then stays a climb out where the water is too shallow to float her up it.
   for (const n of nodes) {
     if (n.kind === 'chamber' && rand() < 0.22) n.dish = Math.min(rr(1.6, 3.6), 0.33 * Math.min(n.rx, n.rz))
-    if (n.kind === 'cavern' && !n.great && rand() < 0.65) n.dish = Math.min(rr(3, 7), 0.33 * Math.min(n.rx, n.rz))
+    if (n.pool) n.dish = Math.min(rr(3, 7) * rr(2, 4), 0.33 * Math.min(n.rx, n.rz))
     if (n.dish > 0) pools.push({ node: n.i, x: n.x, z: n.z, level: n.y - 0.25, r: Math.min(n.rx, n.rz) * (n.kind === 'cavern' ? 0.62 : 0.66), depth: n.dish })
+  }
+  // Drowned passages: now and then a deep pool's bowl opens under its surface onto a braid that swims out under the rim and climbs to a higher node, its floor walkable once it is out of the water.
+  for (const A of nodes) {
+    if (!A.pool || A.dish < DROWN_DISH || degree[A.i] >= cap(A) || rand() > 0.5) continue
+    const yd = drownedFloor(A)
+    for (const c of extra) {
+      if (c.a !== A.i && c.b !== A.i) continue
+      const B = nodes[c.a === A.i ? c.b : c.a]
+      if (B.kind === 'mouth' || B.y < A.y + 0.5 || degree[B.i] >= cap(B) || edges.some((e) => (e.a === A.i && e.b === B.i) || (e.a === B.i && e.b === A.i)) || tangles(A.i, B.i)) continue
+      const climb = Math.hypot(B.x - A.x, B.z - A.z) - (DROWN_OUT * flatOf(A, B.x, B.z)) / FLAT_IN - flatOf(B, A.x, A.z)
+      if (climb * GRADE_MAX * 0.8 < B.y - yd) continue
+      link(A.i, B.i, false).kind = 'drowned'
+      degree[A.i]++; degree[B.i]++
+      break
+    }
   }
 
   // Passages that would breach another's floor or a foreign node: a tree passage rerolls its bend, unwandering and unbellied after 8 tries; a braid is given up.
@@ -296,6 +324,7 @@ export function buildGraph({ seed, entries }) {
   }
   for (let k = edges.length - 1; k >= 0; k--) if (edges[k].pts === null) edges.splice(k, 1)
   edges.forEach((e, i) => { e.i = i })
+  for (const p of pools) p.drowned = edges.filter((e) => e.kind === 'drowned' && e.a === p.node).map((e) => e.i)
   for (const e of edges) if (e.kind === 'sump') pools.push({ edge: e.i, level: e.sump.level, depth: e.sump.dip })
   for (const e of edges) if (e.river) rivers.push(e.i)
   const { lobes, nooks } = lobesAndNooks(nodes, edges, rand)
@@ -539,7 +568,7 @@ function hollows(n, pools) {
     const spill = fill[low], min = v[low]
     if (spill - min < 1.5 || basin.length < 12) continue
     const level = n.y + min + 0.6 * (spill - min) - 0.3
-    pools.push({ node: n.i, x: x0 + (low % nx) * cell, z: z0 + Math.floor(low / nx) * cell, level, r: Math.sqrt(basin.length / Math.PI) * cell, depth: level - n.y - min })
+    pools.push({ node: n.i, x: x0 + (low % nx) * cell, z: z0 + Math.floor(low / nx) * cell, level, r: Math.sqrt(basin.length / Math.PI) * cell, depth: level - n.y - min, drowned: [] })
   }
 }
 
@@ -677,7 +706,7 @@ function profile(e, nodes, rand, plain) {
   const cells = []
   for (let s = 0; s < run + 10;) {
     const len = rr(3, 8), q = rand()
-    cells.push({ s0: s, s1: s + len, f: mouth || plain || e.kind === 'sump' ? 1 : q < 0.25 ? 0.72 : q < 0.6 ? 1 : q < 0.88 ? 1.55 : 2.1 })
+    cells.push({ s0: s, s1: s + len, f: mouth || plain || e.kind === 'sump' || e.kind === 'drowned' ? 1 : q < 0.25 ? 0.72 : q < 0.6 ? 1 : q < 0.88 ? 1.55 : 2.1 })
     s += len
   }
   const cellAt = (s) => {
@@ -693,10 +722,13 @@ function profile(e, nodes, rand, plain) {
   const short = e.kind === 'walk' ? Math.abs(yB - A.y) / GRADE_MAX - (total - flatA - flatB) : 0
   if (short > 0 && A.y > yB) flatA = Math.max(0, flatA - short)
   else if (short > 0) flatB = Math.max(0, flatB - short)
-  const lo = flatA, hi = total - flatB
+  // A drowned passage holds its pool's depth from the bowl out past the rim, then climbs.
+  const drowned = e.kind === 'drowned'
+  const lo = drowned ? pts.find((p) => rhoOf(A, p) >= DROWN_OUT).s : flatA, hi = total - flatB
+  const yA = drowned ? drownedFloor(A) : A.y
   for (const p of pts) {
     const t = p.s <= lo ? 0 : p.s >= hi ? 1 : (p.s - lo) / (hi - lo)
-    p.y = A.y + (yB - A.y) * t
+    p.y = yA + (yB - yA) * t
     if (e.kind === 'drop' && p.s >= hi) p.y = yB
     // A river's channel fades out over 3 m before each node's floor, so it never ends in a step.
     p.cut = e.river ? RIVER_DEPTH * Math.min(1, Math.max(0, Math.min(p.s - lo, hi - p.s) / 3)) : 0
@@ -715,6 +747,7 @@ function profile(e, nodes, rand, plain) {
       p.y -= e.sump.dip * (0.5 - 0.5 * Math.cos(2 * Math.PI * t))
       p.h = 2.3
     }
+    if (drowned && t === 0) p.h = DROWN_H
   }
   pts[0].w = pts[pts.length - 1].w = Math.max(pts[0].w, 1.1)
   return pts

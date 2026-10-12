@@ -36,7 +36,7 @@ import { Census } from './perf-census.js'
 import { halveDraw, dropDiscard } from './render/ab-switch.js'
 import { UploadCounter } from './gl-uploads.js'
 import { UniformLatch } from '../uniform-latch.js'
-import { installMultiviewShim, failedPrograms } from './render/multiview-shim.js'
+import { installMultiviewShim, failedPrograms, multiviewSelfTest } from './render/multiview-shim.js'
 import { BuildScheduler } from './build-budget.js'
 
 // Ms of a frame the tile layers' builds share, nearest tile first (build-budget.js). Infinity builds every queued tile the frame it is queued; a finite value spreads them.
@@ -3304,12 +3304,51 @@ const perfTrace = new PerfTrace({
   pulse: (intensity, ms) => { questPulse('left', intensity, ms); questPulse('right', intensity, ms) },
   refresh: () => refreshQuestRow('perfTrace'),
 })
+const GL_ERRORS = { 1280: 'INVALID_ENUM', 1281: 'INVALID_VALUE', 1282: 'INVALID_OPERATION', 1285: 'OUT_OF_MEMORY', 1286: 'INVALID_FRAMEBUFFER_OPERATION' }
+/** GL errors raised by the draw calls of the next renderer.render, counted by call, error and program; the headset has no console. */
+function captureDrawErrors() {
+  const gl = renderer.getContext()
+  const names = new Map(renderer.info.programs.map((p) => [p.program, p.name]))
+  const found = {}
+  const patched = []
+  const hook = (target, name) => {
+    const orig = target[name]
+    target[name] = function (...args) {
+      const r = orig.apply(this, args)
+      const e = gl.getError()
+      if (e) {
+        const key = `${name} ${GL_ERRORS[e] ?? e} ${names.get(gl.getParameter(gl.CURRENT_PROGRAM)) ?? '?'}`
+        found[key] = (found[key] ?? 0) + 1
+      }
+      return r
+    }
+    patched.push(() => { target[name] = orig })
+  }
+  const proto = Object.getPrototypeOf(gl)
+  for (const n of ['drawElements', 'drawElementsInstanced', 'drawArrays', 'drawArraysInstanced', 'drawRangeElements']) hook(proto, n)
+  const md = renderer.extensions.get('WEBGL_multi_draw')
+  if (md) for (const n of ['multiDrawElementsWEBGL', 'multiDrawArraysWEBGL']) hook(md, n)
+  while (gl.getError());
+  return new Promise((done) => {
+    const render = renderer.render
+    renderer.render = function (...args) {
+      renderer.render = render
+      try { return render.apply(this, args) } finally {
+        for (const undo of patched) undo()
+        done(found)
+      }
+    }
+  })
+}
 let programCheckLabel = 'idle'
 async function sendProgramCheck() {
   programCheckLabel = 'sending'
   refreshQuestRow('programCheck')
   try {
-    const context = { ...perfTrace.host.context(), failedPrograms: failedPrograms(renderer), programCount: renderer.info.programs.length }
+    const drawErrors = await captureDrawErrors()
+    const views = {}
+    for (const p of renderer.info.programs) views[p.numMultiviewViews] = (views[p.numMultiviewViews] ?? 0) + 1
+    const context = { ...perfTrace.host.context(), failedPrograms: failedPrograms(renderer), programCount: renderer.info.programs.length, programViews: views, drawErrors, selfTest: multiviewSelfTest() }
     const id = await postTrace({ mode: 'programs', startedAt: new Date().toISOString(), seconds: 0, samples: [], context })
     programCheckLabel = `${context.failedPrograms.length} bad`
     console.log('program check filed as', id)
@@ -3888,6 +3927,7 @@ async function openHouse(e) {
   const view = new InteriorView(room, await loadInteriorTextures(), ox, oy, oz, mushrooms, lighting.uniforms.uTorch)
   scene.add(view.group)
   const inner = new WalkSurface(flatField(oy), new InteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: herScale() })
+  inner.flyThrough = true
   const home = villagers.graph.doorNodes[e.k]
   const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace, feast: c.feast }))
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz, hands, mushrooms, hour: () => clock.hour })
@@ -3924,6 +3964,7 @@ async function openTownHouse(t, i) {
   const view = new TownInteriorView(room, await loadInteriorTextures(), ox, oy, oz, lighting.uniforms.uTorch)
   scene.add(view.group)
   const inner = new WalkSurface({ heightAt: (x, z) => oy + townFloorAt(room, x - ox, z - oz) }, new TownInteriorStone(room, ox, oy, oz), { trunkAt: () => null }, { scale: herScale() })
+  inner.flyThrough = true
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
   const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz, hour: () => clock.hour })
   const e = townDoor(t, i)
@@ -4068,7 +4109,7 @@ function buildCave(sys, door) {
   const t0 = performance.now()
   const entries = caveEntries(sys, caveSites.mouths, caveSites.cellars)
   const plan = planCave({ seed: sys.seed, entries })
-  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone, propTextures)
+  const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone, propTextures, sky.uniforms)
   chalkStones.setRoom(room)
   chalkShown = -1
   const id = ++caveJob
@@ -4156,6 +4197,8 @@ async function enterCave(sys, door, back) {
   player.setGround(inner)
   hands.walk = inner
   hands.water = caveWater
+  cave.fishSeed = fish.seed
+  aimFish(caveFishBed, caveFishWater, sys.seed, d.x, d.z)
   player.teleportTo(d.x, d.z, d.y + CAVE_OY)
   faceAlong(d.dx, d.dz)
   console.log(`[v2] into cave ${sys.id} by door ${door} of ${sys.mouths.length} mouths and ${sys.cellars.length} cellars`)
@@ -4207,6 +4250,8 @@ function closeCave() {
     hands.walk = walk
     hands.water = waterSurfaces
   }
+  const feet = player.originPosition()
+  aimFish(height, waterSurfaces, cave.fishSeed, feet.x, feet.z)
   cave = null
 }
 
@@ -4239,7 +4284,7 @@ function stepIndoors() {
 /** Each frame underground, after every layer's own update: the overworld out of the draw, and the cave's fog, culling and creatures. */
 function stepCave(head, t) {
   caveKeep.clear()
-  keepUnderRoof(caveKeep).add(caveBuild.room.group)
+  keepUnderRoof(caveKeep).add(caveBuild.room.group).add(fish.batch)
   hideOutside(caveKeep, caveHidden)
   caveBuild.room.setDay(dayness)
   caveBuild.room.update(head, submerged, t)
@@ -4299,6 +4344,29 @@ function darkCave() {
 const caveAir = new THREE.Vector3()
 // The cave's water as hands.js asks it of a dropped thing.
 const caveWater = { levelAt: (x, z) => cave.walk.trueWaterAt(x, z, cave.walk.hintY) }
+// The rivers' fish in the cave's pools: the surface held under a sump's roof, and the bed under the surface rather than under her feet.
+const caveFishWater = {
+  levelAt(x, z) {
+    const level = caveWater.levelAt(x, z)
+    if (level === null) return null
+    const roof = cave.walk.ceilingAt(x, z, cave.walk.heightAt(x, z, level) + 0.05)
+    return roof === -Infinity ? level : Math.min(level, roof - 0.4)
+  },
+}
+const caveFishBed = {
+  heightAt(x, z) {
+    const level = caveWater.levelAt(x, z)
+    return cave.walk.heightAt(x, z, level === null ? cave.walk.hintY : level)
+  },
+}
+
+/** The fish layer's beds over `water` and `bed` from `seed`, rebuilt round (x, z): the cave's pools on the way in, the overworld's on the way out. */
+function aimFish(bed, water, seed, x, z) {
+  fish.height = bed
+  fish.water = water
+  fish.seed = seed
+  if (animalOn('fish')) fish.place(x, z)
+}
 
 /** Whether (x, y, z) is under water: the cave's while she is in one, the overworld's otherwise. */
 function underWater(x, y, z) {
@@ -5102,6 +5170,7 @@ async function buildRoom(room, at) {
     // A drop meeting the ground: an animal's footfall where it lands. `ambience` stands for the clips having loaded.
     thud: (x, y, z) => { if (ambience) sound.play('footfall', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: heardAt({ x, y, z }) }) },
     splash: (x, y, z) => { if (ambience) sound.play('splash', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
+    douse: (x, y, z) => { if (ambience) sound.play('extinguish', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
     // A creature eating from her hand: deeper from a strider or a stag.
     eaten: (lure, eater) => { if (ambience) sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) }) },
     scale: herScale(),
@@ -5205,7 +5274,7 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, ...[leafkin, villagers].filter(Boolean).map((layer) => ({ layer, clips: 'human' })), { layer: atHome, clips: 'human', bus: 'near' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
       voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
@@ -5314,6 +5383,8 @@ async function buildRoom(room, at) {
   terrain.batch.perObjectFrustumCulled = false
   terrain.batch.sortObjects = false
   terrain.cullDeg = (70 * Math.PI) / 180
+  // `?multiview&tbasic`: draws the same BatchedMesh with a stock material, to tell three's batching under multiview from the terrain shader.
+  if (MULTIVIEW && new URLSearchParams(location.search).has('tbasic')) terrain.batch.material = new THREE.MeshBasicMaterial({ vertexColors: true })
   // The first build reports from bootDone, which has the overlay to take down
   // and a save to apply after this returns; a swap has nothing after it.
   if (build > 1) bootReport(false)
@@ -5888,9 +5959,10 @@ let lastSpaceTap = -Infinity
 // inside a session, and the menu's layer rows are only worth pressing from
 // somewhere specific. `want && !renderer.xr.isPresenting` is the line that
 // takes it away again. Every path into flight goes through here so the menu's
-// `fly` row is never showing the wrong state.
+// `fly` row is never showing the wrong state. A landing with no floor under
+// her (Player._landingFloor) is refused with a pop.
 function setFlying(want) {
-  player.setFlying(want)
+  if (!player.setFlying(want) && ambience) sound.play('uiPop', { bus: 'near', rate: 0.5, gain: 0.4 })
   refreshQuestRow('fly')
 }
 

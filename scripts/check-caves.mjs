@@ -133,6 +133,12 @@ for (const sys of SYSTEMS) {
     check(ok, `${tag}: mouth ${doors.indexOf(d)} lands her standing and dry, clear of the exit`)
   }
 
+  const drowned = props.mush.filter((m) => { const l = walk.trueWaterAt(m.x, m.z, m.y); return l !== null && m.y < l })
+  check(drowned.length === 0, `${tag}: no mushroom grows under water`, `${drowned.length} drowned`)
+  // The drip is placed on water itself, not on the dry corner of a pool's box.
+  const dry = walk.waters.filter((b) => b.kind !== 'river').filter((b) => { const q = walk.nearestWater(b.x0, b.level + 1, b.z0, 10, {}); return q !== null && walk.trueWaterAt(q.x, q.z, q.y) === null })
+  check(dry.length === 0, `${tag}: nearestWater from a pool's box corner lands on its water`, `${dry.length} on dry ground`)
+
   // main.js asks the ground under her whichever it is: a query WalkSurface answers that CaveWalk lacks is a TypeError the first time she aims a teleport underground.
   const walkQueries = (C) => Object.getOwnPropertyNames(C.prototype).filter((k) => !['constructor', 'setScale', 'setWater', 'addStone', 'addBody', 'removeBody'].includes(k))
   const missing = walkQueries(WalkSurface).filter((k) => typeof walk[k] !== 'function')
@@ -162,6 +168,14 @@ for (const sys of SYSTEMS) {
     const near = deep.nearestWater(mid.x, level + OY + 3, mid.z, 15, {})
     const far = deep.nearestWater(mid.x, level + OY + 3, mid.z, 2, {})
     check(near !== null && Math.abs(Math.hypot(near.x - mid.x, near.y - level - OY - 3, near.z - mid.z) - 3) < 0.01 && far === null, `${tag}: 3 m over sump ${e.i}'s water, nearestWater finds it 3 m off, and nothing within 2 m`, near === null ? 'none' : `${near.x.toFixed(1)},${near.y.toFixed(1)},${near.z.toFixed(1)}`)
+  }
+
+  // Every drowned passage is its pool's water to the roof where it leaves the cavern's rim.
+  for (const e of graph.edges.filter((q) => q.kind === 'drowned')) {
+    const q = e.pts.filter((p) => p.y === e.pts[0].y).pop()
+    const level = walk.trueWaterAt(q.x, q.z, q.y + 1)
+    const roof = walk.ceilingAt(q.x, q.z, q.y + 0.5)
+    check(level !== null && roof < level, `${tag}: drowned passage ${e.i} is flooded to the roof under its cavern's rim`, `level ${level === null ? 'none' : level.toFixed(1)} roof ${roof.toFixed(1)}`)
   }
 
   // The mesh: every chunk at every LOD, timed; then the triangles CaveRoom draws standing at each node, within a budget.
@@ -198,7 +212,7 @@ for (const sys of SYSTEMS) {
   check(worst < DRAWN_MAX, `${tag}: under ${DRAWN_MAX / 1000}k triangles drawn from any node`, `${(worst / 1000).toFixed(0)}k at node ${at}, ${(tris / 1000).toFixed(0)}k near-LOD in ${chunks.length} chunks, plan ${planMs.toFixed(0)} ms, mesh ${(meshMs / 1000).toFixed(1)} s`)
   const kinds = {}
   for (const n of graph.nodes) kinds[n.kind] = (kinds[n.kind] || 0) + 1
-  console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.rivers.length} rivers) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} lights ${cave.lights.length}`)
+  console.log(`       ${JSON.stringify(kinds)} edges ${graph.edges.length} (${drops.length} drops, ${graph.edges.filter((q) => q.kind === 'sump').length} sumps, ${graph.edges.filter((q) => q.kind === 'drowned').length} drowned, ${graph.rivers.length} rivers) pools ${graph.pools.length} regions ${graph.regions.length} depth ${Math.min(...graph.nodes.map((n) => n.y)).toFixed(0)} m; props mites ${props.mites.length} tites ${props.tites.length} mush ${props.mush.length} ruins ${props.ruins.length} chalk ${props.chalk.length} lights ${cave.lights.length}`)
 }
 
 // Chalk: the codec, the store, the pen, and the ribbon on real rock.

@@ -1542,6 +1542,17 @@ export class Townsfolk {
     return into
   }
 
+  /** The people drawn this frame walking or running afoot, for their footfalls (ambience.js herds, by main.js): one record each, rewritten per call. */
+  walkers(into) {
+    for (const c of this.shown) {
+      const p = c.pose
+      if (p.speed <= 0 || (p.clip !== 'walk' && p.clip !== 'run')) continue
+      c.ear ??= { x: 0, y: 0, z: 0, size: 0, clip: '', cycle: 0, speed: 0 }
+      into.push(Object.assign(c.ear, { x: p.x, y: p.y, z: p.z, size: c.size, clip: p.clip, cycle: this.bodies[c.body].durations[p.clip] / (c.pace * p.scale), speed: p.speed }))
+    }
+    return into
+  }
+
   _poseMount(m, a) {
     const pose = m.pose
     pose.x = m.px + (m.x - m.px) * a

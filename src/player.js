@@ -83,6 +83,8 @@ export const LOCOMOTION = {
   flyHighAlt: 500,
   flyHighSpeed: 1000,
   flyClearance: 2.0, // stay this far above ground, so she cannot fly inside a mountain
+  caveFlyClearance: 0.5, // over a cave or room floor, where 2 m would put her head in the roof of most passages
+  landDepth: 100, // a flight ends only over a floor within this far under her (_landingFloor)
 
   // --- travel mode: double-click the ground to go there --------------------
   // Free flight at 29 m/s still makes crossing the world a two-minute commute,
@@ -362,19 +364,41 @@ export class Player {
   }
 
   // Desktop only. Leaves her at her current altitude on entry so the view does
-  // not jump, and drops her back onto the ground on exit.
+  // not jump, and drops her back onto the ground on exit. Returns false, still
+  // flying, where there is no floor to land on (_landingFloor).
   setFlying(on) {
-    if (this.flying === on) return
+    if (this.flying === on) return true
+    if (!on) {
+      const origin = this.originPosition()
+      const ground = this._landingFloor(origin.x, origin.y, origin.z)
+      if (ground === null) return false
+      this._landAt(ground)
+    }
     this.flying = on
     this.speed = 0
     this.blocked = false
     if (on) this.swimming = false
-    else {
-      // Asked from where she is hovering, so a landing under an overhang is on
-      // the ground beneath it rather than on top of the stone.
-      const origin = this.originPosition()
-      this._landAt(this.th.heightAt(origin.x, origin.z, origin.y))
+    return true
+  }
+
+  /**
+   * The floor a landing from (x, y, z) stands on, asked from her height so a landing under an overhang is on the ground beneath it. Where floors stack (solidAt, the caves) it is the first floor under her, through any rock she has flown into, and null with none within LOCOMOTION.landDepth: heightAt there answers a sentinel, not a floor, over a void or inside rock.
+   */
+  _landingFloor(x, y, z) {
+    const th = this.th
+    if (typeof th.solidAt !== 'function') return th.heightAt(x, z, y)
+    const lim = y - LOCOMOTION.landDepth * this.scale
+    while (y > lim) {
+      if (th.solidAt(x, y + 0.3 * this.scale, z)) {
+        y -= 0.25 * this.scale
+        continue
+      }
+      const ground = th.heightAt(x, z, y)
+      if (ground < lim) return null
+      if (th.solidAt(x, ground - 0.1 * this.scale, z)) return ground
+      y = Math.min(ground, y - 0.25 * this.scale)
     }
+    return null
   }
 
   // Fly to (x, z) at travelSpeed and land there walking. Returns false if she is
@@ -670,6 +694,20 @@ export class Player {
     p.z = THREE.MathUtils.clamp(p.z + this._step.z, -WORLD_HALF + 32, WORLD_HALF - 32)
     p.y += this._step.y
 
+    if (typeof this.th.solidAt === 'function') {
+      this._flyPorous(x0, y0, z0)
+      return
+    }
+    // A room (a ground with flyThrough, a house's walk): no wall or roof bars her, but the floor under her holds, read from her height, so a loft's deck holds her from above and lets her up through it from below.
+    if (this.th.flyThrough === true) {
+      const origin = this.originPosition()
+      const floor = this.th.heightAt(origin.x, origin.z, y0) + LOCOMOTION.caveFlyClearance * this.scale
+      if (p.y < floor) p.y = floor
+      this.blocked = false
+      this.smoothY = p.y
+      return
+    }
+
     // Never below the ground. Flying inside a mountain is disorienting and the
     // only way out is guesswork, so the floor just pushes her back up. On the
     // origin, not the head: a floor that tracked the head would lift the rig
@@ -692,6 +730,32 @@ export class Player {
     this.blocked = false
     if (p.y > ceiling) p.y = ceiling
     if (p.y < floor) p.y = floor
+    this.smoothY = p.y
+  }
+
+  /**
+   * Flight where a roof is no bar (a ground with solidAt, the caves): she rises through rock into whatever lies above and sinks back out of it, but from the open air a floor still holds her up and a wall still stops her. Inside rock she moves freely; once out, the floor under her holds. Heights are asked from her own height, since a cave stacks floors over floors.
+   */
+  _flyPorous(x0, y0, z0) {
+    const p = this.rig.position, th = this.th
+    const clear = LOCOMOTION.caveFlyClearance * this.scale
+    const origin = this.originPosition()
+    const ox = origin.x - p.x, oz = origin.z - p.z
+    if (!th.solidAt(x0 + ox, y0 + 0.3 * this.scale, z0 + oz)) {
+      // heightAt answers a wall far over her.
+      if (th.heightAt(origin.x, origin.z, y0) > y0 + 2 * this.scale) {
+        p.x = x0
+        p.z = z0
+        origin.x = x0 + ox
+        origin.z = z0 + oz
+      }
+      const floor = th.heightAt(origin.x, origin.z, y0) + clear
+      if (p.y < floor) p.y = floor
+    } else if (!th.solidAt(origin.x, p.y + 0.3 * this.scale, origin.z)) {
+      const floor = th.heightAt(origin.x, origin.z, p.y) + clear
+      if (p.y < floor) p.y = floor
+    }
+    this.blocked = false
     this.smoothY = p.y
   }
 

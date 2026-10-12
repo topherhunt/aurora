@@ -185,8 +185,10 @@ export const RULES = {
   stroke: { interval: [2, 6], gain: [0.4, 0.7], splash: [0.3, 0.5] },
   // The animals' feet: every walking, trotting or running body within `reach` lands a step on each beat of its gait (FOOTFALLS), each within `jitter` of a cycle of its beat. A `size`-metre body at `near` metres or closer plays at `level` and at rate 1 (a hare at arm's length, a quarter as loud as her own step); the level grows with the body's length up to `max` and falls off as near/distance, and the rate falls as (size/length)^deep, so a stag is slower and deeper than a hare. `gain` is the roll on top.
   footfall: { reach: 40, near: 1, size: 0.5, level: 0.25, max: 1, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  // A villager's or a townsman's feet on the same clock, her own footstep clip: at `level` and rate 1 for a `size`-metre body at `near` m, so a leafkin's step is lighter and higher than a man's.
+  villagerStep: { reach: 20, near: 1, size: 1.7, level: 0.5, max: 0.6, deep: 0.3, jitter: 0.1, gain: [0.7, 1.0] },
   // A strider's feet on the same clock, the large animal's step: at `level` and rate 1 for a `size`-metre body at `near` m.
-  stride: { reach: 40, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
+  stride: { reach: 80, near: 2, size: 2.2, level: 0.5, max: 0.7, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0] },
   // A stag's hooves: the strider's tread quieter, given the far treatment as though `far` metres further off (dulled and wetted, and that much late at the speed of sound).
   hoof: { reach: 40, near: 2, size: 2.2, level: 0.25, max: 0.3, deep: 0.5, jitter: 0.1, gain: [0.7, 1.0], far: 15 },
   // A snowman's: the same tread deeper and louder, carrying farther, so a 2-6 m body thuds where a strider steps.
@@ -204,13 +206,13 @@ export const RULES = {
   // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A strider's chirp or fidget flutter, heard across a town's rails.
-  striderCall: { reach: 30, near: 3, edge: 8, level: 0.6, gain: [0.8, 1.0] },
+  striderCall: { reach: 60, near: 3, edge: 16, level: 0.6, gain: [0.8, 1.0] },
   // A tamed stag's or hare's contented grunt as it eats from her hand (wildlife.js voices()), pitched up; the grunt is mastered hot.
   contented: { reach: 15, near: 2, edge: 5, level: 0.25, gain: [0.8, 1.0] },
   // A stag's cry as it bolts from her (wildlife.js voices()): its grunt, heard as the herd's grunt is.
   alarm: { reach: 25, near: 4, edge: 8, level: 0.25, gain: [0.7, 1.0] },
   // A villager's door as it goes in or comes out, heard farther than its voice. The clip is mastered 23 dB hotter than the chatter, which is why the level is low.
-  door: { reach: 15, near: 2, edge: 6, level: 0.3, gain: [0.8, 1.0] },
+  door: { reach: 30, near: 2, edge: 12, level: 0.3, gain: [0.8, 1.0] },
   // Each frog within reach croaks on average once per `every` seconds; the croak fades linearly to nothing at FROG_REACH.
   frog: { every: 16, gain: [0.4, 1.0] },
   // A frog's hop (frogs.js voices()), heard only within arm's reach or so and quietly: the clip is mastered 8 dB hotter than the chatter.
@@ -248,7 +250,7 @@ export const RULES = {
   // Underground, dry: the cave bed loops on the near bus (the house walls are not the rock), and every `swap` seconds one pass of it is one of CAVE_TAKES instead. The clips are mastered ~18 dB hotter than the brook, which is why the level is low.
   cave: { level: 0.3, gain: [0.8, 1.0], swap: [30, 60] },
   // A drop into the cave's water every `interval` seconds while a pool, sump or river is within `reach` metres of her head (CaveWalk.nearestWater), from that nearest point: `level` up to `near` metres off, falling as near/distance past it.
-  caveDrip: { interval: [10, 15], reach: 15, near: 3, level: 0.4, gain: [0.7, 1.0] },
+  caveDrip: { interval: [10, 15], reach: 10, near: 3, level: 0.4, gain: [0.7, 1.0] },
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A fire burning in a hearth (hearth.js, the room's campfires): a loop of its own per fire over CAMPFIRES, the takes in no order, placed at the flame, on within `reach` metres of it, at `level` up to `near` off and falling as near/distance past, fading to nothing over the last `edge` metres. Not on the world clock and not synced: two players by one fire hear two crackles.

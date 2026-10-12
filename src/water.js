@@ -593,12 +593,7 @@ const layerTerm = ({ wavelength, slope, rotate, offset, heading, speed }, fadeEx
     }`
 }
 
-const WAVE_GLSL = /* glsl */ `
-  uniform float uTime;
-  uniform float uChop;
-  uniform float uFlow;
-  uniform float uWarp;
-
+const NOISE_GLSL = /* glsl */ `
   // A hash over the integer lattice. It must not go periodic at range: this
   // project has already shipped one hash that quietly collapsed at 6 km, and
   // the largest lattice coordinate here is world position over the smallest
@@ -643,6 +638,14 @@ const WAVE_GLSL = /* glsl */ `
       ga + u.x * ( gb - ga ) + u.y * ( gc - ga ) + u.x * u.y * ( ga - gb - gc + gd )
          + du * vec2( k1 + k3 * u.y, k2 + k3 * u.x ) );
   }
+`
+
+const WAVE_GLSL = /* glsl */ `
+  uniform float uTime;
+  uniform float uChop;
+  uniform float uFlow;
+  uniform float uWarp;
+  ${NOISE_GLSL}
 
   // Gradient of the summed height field, which is all that is wanted: the plane
   // is never displaced. 'near' fades the two detail layers; 'far' relaxes
@@ -691,6 +694,20 @@ const WAVE_GLSL = /* glsl */ `
       g = dir * gr.x + vec2( -dir.y, dir.x ) * gr.y;
       if ( flow.z < 1.0 ) g = mix( waveGrad( p, 0.0, near, far ), g, flow.z );
     }
+    return normalize( vec3( -g.x * uChop, 1.0, -g.y * uChop ) );
+  }
+`
+
+// The detail layers alone, unfaded and unwarped: water too small to carry a swell (a cave pool). Declares uTime, uChop and uFlow.
+export const RIPPLE_GLSL = /* glsl */ `
+  uniform float uTime;
+  uniform float uChop;
+  uniform float uFlow;
+  ${NOISE_GLSL}
+  vec3 rippleNormal( vec2 p ) {
+    vec2 g = vec2( 0.0 );
+    float river = 0.0;
+    ${WAVE_LAYERS.filter((l) => l.detail).map((l) => layerTerm(l, '1.0', '')).join('')}
     return normalize( vec3( -g.x * uChop, 1.0, -g.y * uChop ) );
   }
 `

@@ -161,17 +161,17 @@ export class Hands {
    * thing lands on; `water.levelAt(x, z)` is where a falling thing meets the
    * lake. `haptic(key, intensity, ms)` buzzes a hand; `stow(rec)` takes a
    * record into the backpack and says whether it fit; `thud(x, y, z)` is a
-   * dropped thing meeting the ground, and `splash(x, y, z)` one falling into
-   * the water from above it. `rand` is the roll's, the flap's and
+   * dropped thing meeting the ground, `splash(x, y, z)` one falling into
+   * the water from above it, and `douse(x, y, z)` a lit one going out there. `rand` is the roll's, the flap's and
    * the drift's own stream. `eaten(lure, eater)` is a creature eating what a
    * hand of hers held (eatLure). `scale` is her size against the world (DESIGN.md
    * §30): each hand's reach, the size of thing it lifts and the backpack zone
    * about her head are hers, and shrink with her.
    */
-  constructor(scene, { walk, water, haptic, stow, thud, splash, eaten, rand = Math.random, scale = 1 }) {
+  constructor(scene, { walk, water, haptic, stow, thud, splash, douse, eaten, rand = Math.random, scale = 1 }) {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Hands needs the WalkSurface, for heightAt and normalAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt')
-    if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function' || typeof eaten !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z), splash(x, y, z) and eaten(lure, eater)')
+    if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function' || typeof douse !== 'function' || typeof eaten !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z), splash(x, y, z), douse(x, y, z) and eaten(lure, eater)')
     if (!(scale > 0)) throw new Error(`Hands: scale must be positive, not ${scale}`)
     this.scale = scale
     this.eaten = eaten
@@ -181,6 +181,7 @@ export class Hands {
     this.stow = stow
     this.thud = thud
     this.splash = splash
+    this.douse = douse
     this.rand = rand
     this.batch = new THREE.Group()
     this.batch.name = 'v2-hands'
@@ -936,6 +937,11 @@ export class Hands {
           item.tried = true
           // Let go of under the surface, it was never above it: no splash.
           if (bottom - item.vy * dt > level) this.splash(item.x, level, item.z)
+          // Before _settled, so the room hears it unlit.
+          if (item.rec.lit) {
+            item.rec.lit = false
+            this.douse(item.x, level, item.z)
+          }
           if (item.mine && this._giveBack(item, item.x, Math.min(item.y, level), item.z, item.head)) { this._settled(item, true); return false }
           if (!SWIMMERS.has(item.rec.kind)) {
             this._float(item)

@@ -4,6 +4,7 @@
 
 import { Noise3 } from './noise3.js'
 import { reliefAt } from './graph.js'
+import { mulberry32 } from '../../sim/mathx.js'
 
 const BIN = 8
 // Smooth-min radius: how wide the fillet where two pieces of air meet. It also sags a shared floor by up to BLEND / 4, which is why a passage's own segments join by a hard min.
@@ -17,11 +18,28 @@ const COVE = 0.9
 
 const lowOf = (n) => (n.relief === undefined ? 0 : n.relief.lo)
 
-/** Mouth n's flare: the passage folding outward behind it to the plane the room draws across its far end, { pts, end: { x, y, z }, w, h }. A cellar's runs straight to its door. */
+// Metres a sky mouth's flare runs on past the exit before the sky plane, in steps of FLARE_STEP.
+export const FLARE_M = 20
+const FLARE_STEP = 2.5
+
+/** Mouth n's flare: the passage running on outward behind it to the plane the room draws across its far end, { pts, end: { x, y, z }, w, h }. A sky mouth's wanders, swells and climbs over FLARE_M, seeded by its place, so she sees passage before sky; a cellar's runs straight to its door. */
 export function mouthFlare(n) {
-  const [len, w, h] = n.cellar ? [2.4, 1.1, 2.5] : [3.2, 2.6, 3.6]
-  const end = { x: n.x - n.dx * len, y: n.y, z: n.z - n.dz * len }
-  return { pts: [{ x: n.x, y: n.y, z: n.z, w: 1.2, h: 2.6, cut: 0 }, { ...end, w, h, cut: 0 }], end, w, h }
+  const first = { x: n.x, y: n.y, z: n.z, w: 1.2, h: 2.6, cut: 0 }
+  if (n.cellar) {
+    const end = { x: n.x - n.dx * 2.4, y: n.y, z: n.z - n.dz * 2.4 }
+    return { pts: [first, { ...end, w: 1.1, h: 2.5, cut: 0 }], end, w: 1.1, h: 2.5 }
+  }
+  const rand = mulberry32(Math.floor(n.x * 73.1 + n.z * 191.7) ^ 0xf1a7)
+  const pts = [first]
+  let side = 0, y = n.y
+  for (let k = 1; k * FLARE_STEP <= FLARE_M; k++) {
+    const t = (k * FLARE_STEP) / FLARE_M, d = k * FLARE_STEP
+    side = Math.max(-1.5, Math.min(1.5, side + (rand() - 0.5) * 1.4))
+    y += rand() * 0.35
+    pts.push({ x: n.x - n.dx * d - n.dz * side, y, z: n.z - n.dz * d + n.dx * side, w: 1.3 + 1.2 * t + (rand() - 0.5) * 0.6, h: 2.7 + 0.9 * t + (rand() - 0.5) * 0.8, cut: 0 })
+  }
+  const end = pts[pts.length - 1]
+  return { pts, end: { x: end.x, y: end.y, z: end.z }, w: end.w, h: end.h }
 }
 
 export class CaveField {
@@ -52,7 +70,7 @@ export class CaveField {
     }
     for (const e of graph.edges) {
       const ra = graph.nodes[e.a].region, rb = graph.nodes[e.b].region
-      run(e.pts, graph.nodes.length + e.i, (k) => (k < e.pts.length / 2 ? ra : rb), e.kind === 'sump' ? 0.3 : 1)
+      run(e.pts, graph.nodes.length + e.i, (k) => (k < e.pts.length / 2 ? ra : rb), e.kind === 'sump' || e.kind === 'drowned' ? 0.3 : 1)
     }
     let group = graph.nodes.length + graph.edges.length
     for (const l of graph.lobes) {

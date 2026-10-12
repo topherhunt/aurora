@@ -1,5 +1,5 @@
 import THREE from '../../three-instance.js'
-import { QUANT, boundedRadius, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
+import { LIFT_REACH, QUANT, STONE_PAD, boundedRadius, eyeLift, levelFor, poolBound, tileOutOfBounds } from './tile-pool.js'
 
 import { buildTreeBank, bakeTreeImpostors, treeImpostorLayers, treeVariantId } from '../../props/tree-bank.js'
 import { treeClumpCards, bakeTreeClumps, CLUMP_TREES } from '../../props/tree-clump.js'
@@ -430,6 +430,9 @@ const WALK_BUDGET_MS = 1.0
 // inside it can need a mesh tier.
 const NEAR_MARGIN = TILE * 1.5
 
+// See LIFT_REACH. The near set takes Y_SQUASH's share of the lift, as the tiers do.
+const LIFT_NEAR = LIFT_REACH - TILE * 2
+
 // How much wider than its published BASE radius the trunk's cursor pick volume
 // is. The trunk is a cone, so its base radius overstates it everywhere above the
 // ground and a pick cylinder at exactly that radius still sits inside the bark
@@ -471,21 +474,22 @@ const PLACEMENT_CELL = 4.0
 // the camera has drifted less than it since is one the rim has already paid
 // for. Standing still, the walk costs eight distance compares a frame.
 //
-// Two things pull a bucket forward off its turn. The rim's `need` growing past
-// what the bucket was walked at -- a hard acceleration -- is the rim's own
-// forcing rule, kept at bucket granularity. It fires on every frame of a
-// speed-up, so those walks share WALK_BUDGET_MS, stalest bucket first, and a
-// bucket left over waits for a later frame or its own turn: never staler than
-// the RIM_PHASES frames the slack is sized for. And the camera covering
-// NEAR_MARGIN since the bucket's last walk, which is the guarantee the near
-// set's margin was sized to: a tile joins it before any tree inside can need a
-// mesh tier. That one is never deferred, and fires only past ~300 m/s or on a
-// jump longer than the margin.
+// One thing pulls a bucket forward off its turn: the rim's `need` growing past
+// the slack it was walked at -- a hard acceleration, the rim's own forcing rule
+// at bucket granularity. Against the quantised slack and not the raw `need`, so
+// a step a millimetre longer than the last (head tracking, float rounding) does
+// not walk every bucket; a tile it skips is at most one RIM_SLACK_STEP of need
+// behind, a quarter metre over a sweep. The rim itself keeps the raw test, which
+// grass's hard ramp in check-grass needs. Those
+// walks share WALK_BUDGET_MS, stalest bucket first, and a bucket left over
+// waits for a later frame or its own turn: never staler than the RIM_PHASES
+// frames the slack is sized for.
 //
 // The cadence knob is RIM_PHASES itself: fewer phases walk more tiles a frame
 // and shrink the slack the rim holds against the wait; more do the reverse.
 // Anything newly grown or thickened is walked next frame regardless, off the
-// `due` list, and the near tiles are re-tiered every frame off their own list.
+// `due` list, the tiles around the near set off `_walkNear`, and the near
+// tiles are re-tiered every frame off their own list.
 const STILL_M = RIM_SLACK_MIN
 
 // Per-instance size multiplier on the variant's own default -- so an 11 m pine
@@ -941,6 +945,9 @@ export class Trees {
     this.buildBudgetMs = BUILD_BUDGET_MS
     this.camTileX = null
     this.camTileZ = null
+    // This frame's eyeLift squared, and Y_SQUASH's share of it less STONE_PAD; see LIFT_REACH.
+    this.lift2 = 0
+    this.liftNear2 = 0
 
     // The same tiles again, as dense arrays the walk can run without the Map:
     // one bucket per rim phase, the near set, and what must be walked next
@@ -949,13 +956,13 @@ export class Trees {
     this.buckets = Array.from({ length: RIM_PHASES }, () => [])
     this.nearList = []
     this.due = []
-    // Per bucket: where the camera stood, the rim's `need`, and the ground
+    // Per bucket: where the camera stood, the rim's slack, and the ground
     // version, at its last walk. What decides whether the next walk can be
     // skipped.
     this.bucketX = new Float64Array(RIM_PHASES)
     this.bucketY = new Float64Array(RIM_PHASES)
     this.bucketZ = new Float64Array(RIM_PHASES)
-    this.bucketNeed = new Float32Array(RIM_PHASES)
+    this.bucketSlack = new Float64Array(RIM_PHASES)
     this.bucketGver = new Int32Array(RIM_PHASES).fill(-1)
     this.walkBudgetMs = WALK_BUDGET_MS
     // Set by anything that moves the near boundary under every tile at once, so
@@ -1279,6 +1286,8 @@ export class Trees {
    */
   place(cx, cz) {
     const t0 = performance.now()
+    // No eye height here, so the disc is grown for the ground and the next update thins it.
+    this.lift2 = this.liftNear2 = 0
     this._reseat(cx, cz)
     while (this.queue.length) this._growTile(this.queue.pop())
     this.walkAll = true
@@ -1400,6 +1409,9 @@ export class Trees {
    */
   update(camX, camY, camZ) {
     const tStart = performance.now()
+    const lift = eyeLift(this.field, camX, camY, camZ, LIFT_REACH)
+    this.lift2 = lift * lift
+    this.liftNear2 = (Math.max(0, lift - STONE_PAD) * Y_SQUASH) ** 2
     this._reseat(camX, camZ)
 
     const t0 = performance.now()
@@ -1437,14 +1449,13 @@ export class Trees {
       const moved2 = mx * mx + my * my + mz * mz
       const walk = this.walkAll
         || (p === turn && (moved2 >= STILL_M * STILL_M || this.bucketGver[p] !== gver))
-        || moved2 >= NEAR_MARGIN * NEAR_MARGIN
-        || (need > this.bucketNeed[p] && performance.now() - tWalk < this.walkBudgetMs)
+        || (need > this.bucketSlack[p] && performance.now() - tWalk < this.walkBudgetMs)
       if (!walk) continue
       this.bucketX[p] = camX
       this.bucketY[p] = camY
       this.bucketZ[p] = camZ
-      this.bucketNeed[p] = need
       this.bucketGver[p] = gver
+      this.bucketSlack[p] = this.rim.slack
       const bucket = this.buckets[p]
       for (let k = 0; k < bucket.length; k++) this._walkTile(bucket[k], camX, camY, camZ, gver)
     }
@@ -1454,11 +1465,14 @@ export class Trees {
     // walk finds nothing to do.
     const due = this.due
     for (let k = 0; k < due.length; k++) {
-      due[k].due = false
-      if (!this.walkAll) this._walkTile(due[k], camX, camY, camZ, gver)
+      const tile = due[k]
+      tile.due = false
+      if (!this.walkAll) this._walkTile(tile, camX, camY, camZ, gver)
+      this.bucketSlack[tile.phase] = Math.min(this.bucketSlack[tile.phase], this.rim.slack)
     }
     due.length = 0
     this.walkAll = false
+    this._walkNear(camX, camY, camZ, gver)
 
     const nearList = this.nearList
     for (let t = 0; t < nearList.length; t++) {
@@ -1469,7 +1483,7 @@ export class Trees {
       // the tile moved into this slot is not skipped.
       const dx = (tile.tx + 0.5) * TILE - camX
       const dz = (tile.tz + 0.5) * TILE - camZ
-      if (dx * dx + dz * dz >= this.nearSq) {
+      if (dx * dx + dz * dz + this.liftNear2 >= this.nearSq) {
         this._leaveNear(tile)
         t--
         continue
@@ -1530,10 +1544,13 @@ export class Trees {
   /**
    * One far tile's share of an update: follow the terrain if it has changed,
    * queue a level change, give the rim its sweep, and admit the tile to the
-   * near set if the camera has reached it. Runs on the tile's bucket turn, or
-   * off the due list -- see STILL_M for when a bucket is walked.
+   * near set if the camera has reached it. Runs on the tile's bucket turn, off
+   * the due list, or from `_walkNear` -- see STILL_M.
    */
   _walkTile(tile, camX, camY, camZ, gver) {
+    tile.wx = camX
+    tile.wy = camY
+    tile.wz = camZ
     // The chunk under the tile's centre, re-asked only when a chunk over it has
     // entered or left the render set since this tile last asked. A tree follows
     // the chunk it stands on when that re-splits, but not the same frame: the
@@ -1554,7 +1571,7 @@ export class Trees {
 
     const nx = Math.max(tile.tx * TILE, Math.min(camX, (tile.tx + 1) * TILE))
     const nz = Math.max(tile.tz * TILE, Math.min(camZ, (tile.tz + 1) * TILE))
-    const near2 = (nx - camX) ** 2 + (nz - camZ) ** 2
+    const near2 = this._lifted((nx - camX) ** 2 + (nz - camZ) ** 2)
 
     // Thinning level. Thicken IMMEDIATELY when the tile needs more trees --
     // being late there is a visible hole opening in front of the player -- but
@@ -1585,9 +1602,10 @@ export class Trees {
     const dx = (tile.tx + 0.5) * TILE - camX
     const dz = (tile.tz + 0.5) * TILE - camZ
     const centre2 = dx * dx + dz * dz
+    const clump2 = this._lifted(centre2)
     let qc = tile.qc
-    while (qc < this.maxQ && centre2 >= this.clumpUpSq[qc + 1]) qc++
-    while (qc > 0 && centre2 < this.clumpLoSq[qc]) qc--
+    while (qc < this.maxQ && clump2 >= this.clumpUpSq[qc + 1]) qc++
+    while (qc > 0 && clump2 < this.clumpLoSq[qc]) qc--
     if (qc !== tile.qc) this._reclump(tile, qc)
 
     // The rim, on this tile's own phase. Returns how many of its trees are
@@ -1595,12 +1613,47 @@ export class Trees {
     // leave out -- they are submitted to nothing.
     const gone = this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
 
-    if (centre2 < this.nearSq) {
+    if (centre2 + this.liftNear2 < this.nearSq) {
       if (!tile.near) this._enterNear(tile)
       return
     }
     if (tile.near) this._leaveNear(tile)
     this._countFar(tile, tile.n - gone, this._drawnClumps(tile, gone))
+  }
+
+  /**
+   * The tiles around the camera, looked up by coordinate: one whose centre has come inside the near set joins it now,
+   * and one within NEAR_MARGIN of it is walked again once the camera has covered NEAR_MARGIN since its last walk. That
+   * is the guarantee NEAR_MARGIN is sized for, kept here so the far buckets need not be walked off their turn for it.
+   */
+  _walkNear(camX, camY, camZ, gver) {
+    const r2 = this.nearSq - this.liftNear2
+    if (r2 <= 0) return
+    const reach = Math.sqrt(r2) + NEAR_MARGIN
+    const x1 = Math.floor((camX + reach) / TILE)
+    const z0 = Math.floor((camZ - reach) / TILE)
+    const z1 = Math.floor((camZ + reach) / TILE)
+    for (let tx = Math.floor((camX - reach) / TILE); tx <= x1; tx++) {
+      for (let tz = z0; tz <= z1; tz++) {
+        const tile = this.tiles.get(tx * 0x10000 + tz)
+        if (!tile) continue
+        const dx = (tx + 0.5) * TILE - camX
+        const dz = (tz + 0.5) * TILE - camZ
+        const c2 = dx * dx + dz * dz
+        if (c2 >= reach * reach) continue
+        const mx = camX - tile.wx
+        const my = camY - tile.wy
+        const mz = camZ - tile.wz
+        if ((!tile.near && c2 < r2) || mx * mx + my * my + mz * mz >= NEAR_MARGIN * NEAR_MARGIN) {
+          this._walkTile(tile, camX, camY, camZ, gver)
+        }
+      }
+    }
+  }
+
+  /** A horizontal tile distance squared with the eye's lift added where LIFT_NEAR vouches for it. */
+  _lifted(d2) {
+    return d2 < LIFT_NEAR * LIFT_NEAR ? d2 + this.lift2 : d2
   }
 
   /** Bring the far totals to this tile's drawn cards, and its share to what it now holds. */
@@ -1966,7 +2019,7 @@ export class Trees {
       // boundary is not cut and regrown by one step across a tile line.
       const nx = Math.max(tile.tx * TILE, Math.min(cx, (tile.tx + 1) * TILE))
       const nz = Math.max(tile.tz * TILE, Math.min(cz, (tile.tz + 1) * TILE))
-      const q = this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2)
+      const q = this._levelFor(this._lifted((nx - cx) ** 2 + (nz - cz) ** 2))
       if (q >= tile.q + 2) this._growTile({ key, tx: tile.tx, tz: tile.tz, q })
     }
 
@@ -1995,8 +2048,8 @@ export class Trees {
           tx: gx,
           tz: gz,
           d2,
-          q: this._levelFor((nx - cx) ** 2 + (nz - cz) ** 2),
-          qc: this._clumpLevelFor(d2),
+          q: this._levelFor(this._lifted((nx - cx) ** 2 + (nz - cz) ** 2)),
+          qc: this._clumpLevelFor(this._lifted(d2)),
         })
       }
     }
@@ -2229,6 +2282,10 @@ export class Trees {
         bi: bucket.length,
         ni: -1,
         counted: 0,
+        // Where the camera stood at the tile's last walk; see _walkNear.
+        wx: 0,
+        wy: 0,
+        wz: 0,
         // The terrain chunk covering this tile's CENTRE when its trees were last
         // grounded, or null if none was resident, and the ground version it was
         // read at. The walk re-asks only once the version has moved on and

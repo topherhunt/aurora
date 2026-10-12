@@ -2435,6 +2435,84 @@ console.log('\n-- the trees a room plants --')
   nothing.dispose(); wood.dispose(); bare.dispose(); both.dispose()
 }
 
+console.log('\n-- from the air --')
+
+{
+  // The same forest seen from 300 m with the lift, and with the lift pinned to 0.
+  const UP = 60 + 300
+  const aloft = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 400 })
+  const level = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 400 })
+  for (const k of ['lift2', 'liftNear2']) Object.defineProperty(level, k, { get: () => 0, set() {} })
+  for (const t of [aloft, level]) {
+    t.place(0, 0)
+    for (let f = 0; f < 240; f++) t.update(0, UP, 0)
+  }
+  check(aloft.placed < level.placed * 0.6, 'from 300 m up the forest under the eye grows thinned for its true distance', `${aloft.placed} placed against ${level.placed}`)
+  check(aloft.nearTiles === 0 && level.nearTiles > 0, 'and no tile under it is walked for mesh tiers', `${aloft.nearTiles} near tiles against ${level.nearTiles}`)
+  const standing = new Set()
+  for (const tile of aloft.tiles.values()) for (let k = 0; k < tile.n; k++) standing.add(`${aloft.instX[tile.ids[k]]},${aloft.instZ[tile.ids[k]]}`)
+  let shown = 0, lost = 0
+  for (const tile of level.tiles.values()) {
+    for (let k = 0; k < tile.n; k++) {
+      const id = tile.ids[k]
+      if (level.rim.isHidden(id)) continue
+      shown++
+      if (!standing.has(`${level.instX[id]},${level.instZ[id]}`)) lost++
+    }
+  }
+  check(shown > 0 && lost === 0, 'and every tree the rim would still draw from there is standing', `${lost} of ${shown} lost`)
+  aloft.dispose(); level.dispose()
+}
+
+console.log('\n-- the walk in flight --')
+
+{
+  // How many tiles a frame `_walkTile` visits while `step(f)` moves the camera along x at height `y`.
+  const fly = (y, frames, step, onFrame) => {
+    const t = new Trees(new THREE.Scene(), flat, dry, texArray, { cards: new LitterCards(12288), seed: 7, radius: 800 })
+    t.buildBudgetMs = Infinity
+    let walks = 0
+    const walk = t._walkTile.bind(t)
+    t._walkTile = (...a) => (walks++, walk(...a))
+    let x = 0
+    t.place(0, 0)
+    for (let f = 0; f < 120; f++) t.update((x += step(0)), y, 0)
+    const per = []
+    for (let f = 0; f < frames; f++) {
+      walks = 0
+      t.update((x += step(f)), y, 0)
+      per.push(walks / t.tiles.size)
+      onFrame?.(t, x, y)
+    }
+    t.dispose()
+    return per
+  }
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length
+  let r = 1
+  const mm = () => ((r = (r * 16807) % 2147483647) / 2147483647 - 0.5) * 0.002
+  const steady = mean(fly(60 + 300, 96, () => 8.1 + mm()))
+  check(steady < 0.2, 'steady flight with millimetre jitter walks about one bucket a frame',
+    `${(steady * 100).toFixed(0)}% of tiles a frame, one bucket is ${(100 / 8).toFixed(1)}%`)
+  const ramp = mean(fly(60 + 300, 48, (f) => 0.5 + f * 0.25))
+  check(ramp > steady * 2, 'and a hard acceleration still walks buckets off their turn',
+    `${(ramp * 100).toFixed(0)}% of tiles a frame against ${(steady * 100).toFixed(0)}% steady`)
+
+  // Low and far faster than flight allows there, so the near set is crossed in a few frames.
+  let late = 0
+  let seen = 0
+  fly(EYE, 96, () => 4, (t, x) => {
+    for (const tile of t.tiles.values()) {
+      const dx = (tile.tx + 0.5) * TILE - x
+      const dz = (tile.tz + 0.5) * TILE
+      if (dx * dx + dz * dz + t.liftNear2 >= t.nearSq) continue
+      seen++
+      if (!tile.near) late++
+    }
+  })
+  check(seen > 0 && late === 0, 'at speed, every tile inside the near reach is in the near set that frame',
+    `${late} of ${seen} late`)
+}
+
 // ---------------------------------------------------------------------------
 
 console.log(`\n${failures === 0 ? 'all tree checks passed' : `${failures} FAILED`}\n`)
