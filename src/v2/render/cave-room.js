@@ -20,10 +20,17 @@ import { shipFernParams, FERN_TIERS } from '../../props/fern-bank.js'
 import { buildBladeClump } from '../../props/grass-blades.js'
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
 import { rockParams } from '../../props/rock-bank.js'
+import { buildStickGeometry, LENGTH_M as STICK_M } from './sticks.js'
+import { TriFlames, TRI_TORCH } from './fire-tris.js'
+import { TORCH as HELD_FLAME } from './wildfire.js'
 import { buildPebble, STRETCH, FLAT, SINK, FULL_RADIUS, RADIUS as PEBBLE_REACH, REACH_SIZES } from './litter.js'
 
 // Torch and glow gains on the albedo, and the faint floor light so a lit wall's shadowed side is not void.
 const TORCH_GAIN = 2.6
+// A wall torch's stick: radians off upright, out from the rock, and its scale on the overworld's stick.
+const TORCH_LEAN = 0.6
+const TORCH_STICK = 1.1
+const STICK_TIP_DIR = new THREE.Vector3(0, 0, -1)
 const GLOW_GAIN = 3.2
 // Fog in the air, and in the water: density per metre, linear colour.
 export const CAVE_AIR = { density: 0.022, color: [0, 0, 0] }
@@ -365,6 +372,7 @@ const tmpQ2 = new THREE.Quaternion()
 const tmpE = new THREE.Euler()
 const tmpP = new THREE.Vector3()
 const tmpS = new THREE.Vector3()
+const tmpV = new THREE.Vector3()
 const tmpC = new THREE.Color()
 const rockOut = new Float32Array(ROCK_AT)
 // The water's mirror cube: its face size, and how far from her eye (m) a water vertex may be to be captured over.
@@ -724,16 +732,21 @@ export class CaveRoom {
     this.pebbleReach = Float32Array.from(small, (p) => Math.min(PEBBLE_REACH, REACH_SIZES * p.s))
     this.pebbleRank = Float32Array.from(small, (p) => roll(p.seed, 53.1))
 
-    // Wall torches: a stick leaning out of the rock, its flame lit from within.
-    const tip = (t) => [t.x + t.nx * 0.31, t.y + 0.45, t.z + t.nz * 0.31]
-    this._instanced(new THREE.BoxGeometry(0.06, 0.55, 0.06).translate(0, 0.275, 0), props.torches, (t) => {
-      set(t.x - t.nx * 0.05, t.y, t.z - t.nz * 0.05, Math.atan2(t.nx, t.nz), 0.6, 0, 1, 1, 1)
-      return { color: [0.12, 0.07, 0.03] }
+    // Wall torches: the overworld's stick (sticks.js) leaning out of the rock, the held torch's flame (wildfire.js) on its tip.
+    const along = (t) => tmpV.set(t.nx * Math.sin(TORCH_LEAN), Math.cos(TORCH_LEAN), t.nz * Math.sin(TORCH_LEAN))
+    const tipOf = (t) => along(t).multiplyScalar(STICK_M * TORCH_STICK).add(tmpP.set(t.x - t.nx * 0.05, t.y, t.z - t.nz * 0.05))
+    this._instanced(buildStickGeometry(), props.torches, (t) => {
+      tmpQ.setFromUnitVectors(STICK_TIP_DIR, along(t))
+      tmpM.compose(along(t).multiplyScalar(STICK_M * TORCH_STICK * 0.5).add(tmpP.set(t.x - t.nx * 0.05, t.y, t.z - t.nz * 0.05)), tmpQ, tmpS.setScalar(TORCH_STICK))
+      return { color: [0.3, 0.22, 0.14] }
     }, this.propMaterial)
-    this._instanced(new THREE.OctahedronGeometry(0.09, 0).scale(1, 1.7, 1), props.torches, (t) => {
-      set(...tip(t), 0, 0, 0, 1, 1, 1)
-      return { color: [0, 0, 0], emit: [1.6, 0.8, 0.3] }
-    }, this.propMaterial)
+    this.flames = null
+    if (props.torches.length > 0) {
+      this.flames = new TriFlames(props.torches.length, TRI_TORCH)
+      props.torches.forEach((t, i) => { const p = tipOf(t); this.flames.place(i, p.x, p.y, p.z, { height: HELD_FLAME.height, radius: HELD_FLAME.radius }) })
+      this.group.add(this.flames.group)
+      this.disposables.push(this.flames)
+    }
 
     // Chalk: lumps of the same stone, paler and bluer, to be learnt by eye; one picked up anywhere this session (taken.js) lies nowhere.
     this.chalkRows = props.chalk
@@ -855,6 +868,7 @@ export class CaveRoom {
       m.visible = regions.some((r) => shown.has(r)) && (flying || box.distanceToPoint(tmpP.set(eye.x, ly, eye.z)) < CULL_M)
     }
     for (const s of this.skies) s.mesh.visible = shown.has(s.region) && (flying || chunkGap(s, eye.x, ly, eye.z) < CULL_M)
+    if (this.flames !== null) this.flames.update(t, [1, 1, 1])
     const e = this.dripEye
     if (e === null || (e.x - eye.x) ** 2 + (e.y - ly) ** 2 + (e.z - eye.z) ** 2 > DRIP_STEP * DRIP_STEP) {
       this.dripEye = { x: eye.x, y: ly, z: eye.z }

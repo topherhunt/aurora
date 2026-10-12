@@ -1924,11 +1924,11 @@ export class Villagers {
     this.talking.set(id, { x: p.x, y: p.y, z: p.z, heading: p.heading, clip: 'idle', at: seconds, cue: 0 })
   }
 
-  /** A held one's `clip` played once from `seconds`, then idle. */
-  gesture(id, clip, seconds) {
+  /** A held one's `clip` played once from `seconds`, then idle; turned to `toward` {x, z} while it plays, when given. */
+  gesture(id, clip, seconds, toward = null) {
     const h = this.talking.get(id)
     if (h === undefined) throw new Error(`Villagers.gesture: ${id} is not held`)
-    Object.assign(h, { clip, at: seconds, cue: h.cue + 1 })
+    Object.assign(h, { clip, at: seconds, cue: h.cue + 1, toward })
   }
 
   /** Let go: eased back onto its sim (net-ease.js). */
@@ -2075,7 +2075,8 @@ export class Villagers {
     const held = this.talking.get(c.id)
     if (held !== undefined) {
       // Held, its offset from the sim is the ease's, so a release eases it back.
-      const s = swing(held.heading, Math.atan2(-(this.feet.z - held.z), this.feet.x - held.x))
+      const look = held.toward && seconds - held.at < this.durations[held.clip] ? held.toward : this.feet
+      const s = swing(held.heading, Math.atan2(-(look.z - held.z), look.x - held.x))
       held.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       c.ox = held.x - sx; c.oy = held.y - sy; c.oz = held.z - sz; c.oh = swing(sh, held.heading)
       pose.x = held.x; pose.y = held.y; pose.z = held.z; pose.heading = held.heading

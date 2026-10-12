@@ -362,12 +362,18 @@ export function buildGraph({ seed, entries }) {
     glows.push({ node: n.i, x: n.x + Math.cos(a) * r, z: n.z + Math.sin(a) * r, color: GLOWS[Math.floor(rand() * GLOWS.length)], reach: n.kind === 'cavern' ? 16 : 9 })
   }
 
-  // Rockfalls: a plain braid choked partway by a pile of boulders (props.js), its `choke` the metres along it, at a spot no other passage runs near. Never a tree passage, so every node keeps its way out.
+  // Rockfalls: a plain braid choked partway by a pile of boulders (props.js), its `choke` the metres along it, at a spot no other passage's run comes near. Never a tree passage, so every node keeps its way out, nor one that would leave a great cavern under two open.
+  const open = (n) => edges.filter((f) => (f.a === n.i || f.b === n.i) && f.choke === null).length
   for (const e of edges) {
     if (e.tree || e.kind !== 'walk' || e.river || nodes[e.a].kind === 'mouth' || nodes[e.b].kind === 'mouth' || rand() >= CHOKE_ODDS) continue
+    if ([nodes[e.a], nodes[e.b]].some((n) => n.great && open(n) <= 2)) continue
     for (let k = 0; k < 5 && e.choke === null; k++) {
       const c = e.pts[Math.floor(e.pts.length * rr(0.35, 0.65))]
-      const near = edges.some((f) => f !== e && f.pts.some((q) => Math.abs(q.y - c.y) < 6 && Math.hypot(q.x - c.x, q.z - c.z) < 2 * (c.w + q.w) + 3))
+      const near = edges.some((f) => f !== e && f.pts.some((q, j) => {
+        const r = f.pts[Math.min(j + 1, f.pts.length - 1)]
+        const d = r === q ? Math.hypot(q.x - c.x, q.z - c.z) : segDist(c, q, r)
+        return Math.min(Math.abs(q.y - c.y), Math.abs(r.y - c.y)) < 6 && d < 2 * (c.w + Math.max(q.w, r.w)) + 3
+      }))
       if (!near) e.choke = c.s
     }
   }

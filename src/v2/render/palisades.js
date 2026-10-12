@@ -20,6 +20,7 @@ const CAPS = [600, 2000]
 const REBUCKET = 1
 const TORCHES = 6
 const FLAME = { height: 0.34, radius: 0.1 }
+export const GATE_LIGHT = 0.5
 // The walker's torch pole is a stake this wide.
 const POLE_R = 0.12
 // Each post's variety off its roll. Girth never under fat[0], so the widest crack stays under 5 cm (props/palisade.js POST.rough); the lean (radians) and the shift (metres) are across the wall only, since either along it would open a crack.
@@ -180,10 +181,10 @@ export class Palisades {
     this.poles.instanceMatrix.needsUpdate = true
   }
 
-  /** The gate torches' lights for main.js updateFire, pushed onto `out` as its torch entries. */
+  /** The gate torches' lights for main.js updateFire, pushed onto `out` as its torch entries; `reach` is a hand torch's, a gate torch's is GATE_LIGHT of it. */
   torchLights(head, now, reach, out) {
     for (const t of this.torches) {
-      out.push({ x: t.x, y: t.y + 0.15, z: t.z, strength: flicker(now, t.phase), reach, d: Math.hypot(t.x - head.x, t.y - head.y, t.z - head.z) })
+      out.push({ x: t.x, y: t.y + 0.15, z: t.z, strength: flicker(now, t.phase), reach: reach * GATE_LIGHT, d: Math.hypot(t.x - head.x, t.y - head.y, t.z - head.z) })
     }
   }
 

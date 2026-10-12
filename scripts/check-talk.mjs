@@ -14,9 +14,9 @@ import { planTowns } from '../src/v2/layers/towns.js'
 import { TRAITS, VOICE, castMinds, villageMinds } from '../src/v2/talk/mind.js'
 import { LORE, TOPICS } from '../src/v2/talk/lore.js'
 import { DialogGrid } from '../src/v2/talk/grid.js'
-import { Chat, CHAT, chatterMoment } from '../src/v2/talk/chat.js'
-import { LinePicker, leafkinTier } from '../src/v2/talk/lines.js'
-import { TalkWorld, compass } from '../src/v2/talk/world.js'
+import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
+import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
+import { TalkWorld } from '../src/v2/talk/world.js'
 import { Rapport } from '../src/v2/talk/rapport.js'
 import { QuestLog, questsFor, missingChild, MESSAGES } from '../src/v2/talk/quests.js'
 import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
@@ -37,7 +37,7 @@ const { towns } = planTowns({ ground: (x, z) => hm.sample(x, z), surface: (x, z)
 const world = new TalkWorld(SEED, towns)
 const EPOCH = 7
 const quests = questsFor(world, EPOCH)
-const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, known: new Set(), ...more })
+const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), ...more })
 const fire = (t) => ({ x: t.town.x, z: t.town.z })
 // A mind with some traits pinned, for testing one lever at a time.
 const as = (m, traits) => ({ ...m, traits: { ...m.traits, ...traits } })
@@ -71,10 +71,10 @@ for (const t of world.towns) {
   const from = fire(t)
   const line = new Conversation(as(asker, STRAIGHT), ctxAt(from)).say('where:title:smith')
   const truth = world.placeOf(smith)
-  if (line.claim !== null && dist(line.claim, truth) < SPEAK.same && line.text.includes(compass(truth.x - from.x, truth.z - from.z)) && line.gesture === 'talk-point') pointed++
+  if (line.claim !== null && dist(line.claim, truth) < SPEAK.same && line.toward === line.claim && line.gesture === 'talk-point') pointed++
   else wrong.push(`${t.name}: ${line.text}`)
 }
-check(wrong.length === 0 && pointed > 0, 'an honest, accurate townsperson points at the real smithy, by the real compass bearing', `${pointed} towns${wrong.length ? `; ${wrong.slice(0, 2).join(' | ')}` : ''}`)
+check(wrong.length === 0 && pointed > 0, 'an honest, accurate townsperson points at the real smithy', `${pointed} towns${wrong.length ? `; ${wrong.slice(0, 2).join(' | ')}` : ''}`)
 const noElder = world.towns.find((t) => world.titled(t, 'elder') === null)
 if (noElder) check(/no elder/.test(new Conversation(as(noElder.minds[0], STRAIGHT), ctxAt(fire(noElder))).say('where:title:elder').text), 'a town without a jarlsthane says it has no elder')
 
@@ -113,8 +113,14 @@ if (lied === null) {
 }
 const spacey = as(liar, { honesty: 1, accuracy: 0 })
 const cs = new Conversation(spacey, ctxAt(fire(t0)))
-const drift = new Set(Array.from({ length: 12 }, () => cs.say(`where:person:${target.id}`).claim).map((c) => `${c.x.toFixed(1)},${c.z.toFixed(1)}`))
-check(drift.size >= 2, 'a spacey townsperson asked the same thing twelve times gives drifting answers', `${drift.size} distinct`)
+const steady = new Set(Array.from({ length: 12 }, () => cs.say(`where:person:${target.id}`).claim).map((c) => `${c.x.toFixed(1)},${c.z.toFixed(1)}`))
+check(steady.size === 1, 'a spacey grown townsperson still points the same way at a neighbour every time', `${steady.size} distinct`)
+const nextTown = world.nearestTown(t0.town.x, t0.town.z, t0.index).index
+const drifts = Array.from({ length: 12 }, () => cs.say(`where:town:${nextTown}`))
+const drift = new Set(drifts.map((l) => `${l.claim.x.toFixed(1)},${l.claim.z.toFixed(1)}`))
+check(drift.size >= 2, 'a spacey townsperson asked the way to the next town twelve times gives drifting answers', `${drift.size} distinct`)
+const moved = drifts.find((l, i) => i > 0 && dist(l.claim, drifts[i - 1].claim) > 8)
+check(moved !== undefined && /^Or no, wait\./.test(moved.text), 'an answer that moved owns up to it', moved && moved.text)
 
 // --- wariness and standing ---
 const wary = as(all.find((m) => m.household.length > 0 && m.cls !== 'child'), { wariness: 1, honesty: 1, accuracy: 1, greed: 0 })
@@ -158,6 +164,25 @@ const seen = new Conversation(as(w0, STRAIGHT), qctx).say(`ask:person:${q.child}
 check(seen.claim !== null && dist(seen.claim, q.where) < SPEAK.same, 'an honest witness points where the child really went', seen.text)
 const passer = qt.minds.find((m) => m.id !== q.parent && m.cls !== 'child' && !q.witnesses.some((w) => w.who === m.id) && !q.covers.includes(m.id))
 if (passer) check(new Conversation(as(passer, STRAIGHT), qctx).say(`ask:person:${q.child}`).claim === null, 'someone who saw nothing says so')
+const again2 = new Conversation(parent, qctx).say(`ask:person:${q.child}`)
+check(again2.moment === 'missing.worry' && !/^Please/.test(again2.text), 'asked after the child once she has taken the search on, the parent says what they know rather than plead again', again2.text)
+if (passer) {
+  const child = world.person(q.child)
+  const ac = new Chat(as(passer, { kindness: 1, chattiness: 1, wariness: 0 }), ctxAt(fire(qt)), { approached: true })
+  const al = ac.open()
+  check(al.text.includes(`${child.name} has gone missing`) && ac.conv.menu()[0].label === `Where was ${child.name} last seen?`, 'one who comes to her says plainly what is on their mind, and her first chip follows it up', `${al.text} -> ${ac.conv.menu()[0].label}`)
+  // Heard from the parent, the child is hers to raise with anyone in that town, and only that town.
+  const labels = new Conversation(passer, qctx).menu().map((c) => c.label)
+  const elsewhere = world.towns.find((t) => t.index !== qt.index).minds.find((m) => m.cls !== 'child')
+  const away = new Conversation(elsewhere, qctx).menu().map((c) => c.label)
+  check(qctx.known.has(`person:${child.id}`) && labels.includes(`Where was ${child.name} last seen?`) && labels.includes(`What about ${child.name}?`) && !labels.includes(`Where is ${child.name}?`) && !away.includes(`What about ${child.name}?`), 'told of the missing child by one, she can ask anyone else in that town after (but not "where is" them, as if at home), and no one in another', labels.filter((l) => l.includes(child.name)).join(' / '))
+}
+// A worried parent never sends her off: asked of other things past patience, they turn her back to the search.
+const worried = new Chat(as(parent, { chattiness: 0, kindness: 0, wariness: 1 }), qctx)
+const hello = worried.open()
+const offTopic = Array.from({ length: 10 }, (_, i) => worried.ask(i % 2 ? 'talk:self' : 'lore:striders'))
+const lastOff = offTopic[offTopic.length - 1]
+check(/^Any word of/.test(hello.text) && !worried.ended && lastOff.moment === 'missing.worry' && lastOff.text.includes(world.person(q.child).name) && worried.ask(`ask:person:${q.child}`).moment === 'missing.worry', 'a worried parent asks after the child, never dismisses her, and steers ten idle questions back to the search', `${hello.text} ... ${lastOff.text}`)
 if (q.covers.length > 0) {
   const cv = world.person(q.covers[0])
   const lie = new Conversation(as(cv, { honesty: 0, wariness: 0, accuracy: 1 }), ctxAt(fire(qt))).say(`ask:person:${q.child}`)
@@ -240,10 +265,10 @@ const asked = (m, topic, more = {}, ctx = ctxAt(fire(world.townOf(m)))) => new C
 const truths = new Set(LORE.dragons.map((x) => x.truth))
 const knew = folk.map((m) => asked(m, 'dragons', STRAIGHT)).filter((l) => l.claim !== null)
 check(knew.length > folk.length * 0.2 && knew.every((l) => truths.has(l.claim)), 'honest folk who know of dragons tell a true thing about them', `${knew.length} of ${folk.length}`)
-const dunnos = folk.map((m) => asked(m, 'dragons', { ...STRAIGHT, boast: 0 })).filter((l) => l.claim === null)
+const dunnos = folk.map((m) => asked(m, 'leafkin', { ...STRAIGHT, boast: 0 })).filter((l) => l.claim === null)
 check(dunnos.length > 0 && dunnos.every((l) => l.moment === 'answer.unknown'), 'someone who does not know and will not boast shrugs it off', dunnos[0]?.text)
-const tales = new Set(LORE.dragons.flatMap((x) => x.tales))
-const boasts = folk.map((m) => asked(m, 'dragons', { boast: 1 })).filter((l) => l.how?.boast && tales.has(l.claim))
+const tales = new Set(LORE.leafkin.flatMap((x) => x.tales))
+const boasts = folk.map((m) => asked(m, 'leafkin', { boast: 1 })).filter((l) => l.how?.boast && tales.has(l.claim))
 check(boasts.length > 0 && boasts.every((l) => l.moment === 'answer.boast'), 'a boaster who does not know tells a tall tale instead', boasts[0]?.text)
 const lies = new Set(Object.values(LORE).flatMap((fs) => fs.flatMap((x) => x.lies)))
 const liars = all.flatMap((m) => Object.keys(LORE).map((t) => asked(m, t, { honesty: 0, accuracy: 1, boast: 0, wariness: 0 }))).filter((l) => lies.has(l.claim))
@@ -257,8 +282,54 @@ const gemTeller = all.map((m) => {
 }).find((ctx) => ctx !== null)
 check(gemTeller !== undefined && new Conversation(t0.minds[0], gemTeller).menu().some((c) => c.topic === 'lore:gems'), 'told of traders and gems, she can ask anyone about gems after', gemTeller && [...gemTeller.known].join(', '))
 check(Object.values(LORE).every((fs) => fs.length > 0) && Object.keys(TOPICS).every((t) => LORE[t] !== undefined), 'every topic has lore')
+// Whatever a fact names, she can follow up: each topic its words name is in its `unlocks`.
+const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i }
+const unnamed = Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => Object.entries(NAMES).filter(([k, re]) => k !== t && re.test(x.truth) && !x.unlocks.includes(k)).map(([k]) => `${t}.${x.id} names ${k}`)))
+check(unnamed.length === 0, 'every topic a fact names is one she may ask of next', unnamed.join(', '))
+const reach = new Set(Object.keys(TOPICS).filter((t) => !TOPICS[t].gated))
+for (let grew = true; grew;) { grew = false; for (const t of [...reach]) for (const x of LORE[t]) for (const u of x.unlocks) if (!reach.has(u)) { reach.add(u); grew = true } }
+check(Object.keys(TOPICS).every((t) => reach.has(t)), 'every gated topic can be heard of, starting from the open ones', Object.keys(TOPICS).filter((t) => !reach.has(t)).join(', '))
+const brews = LORE.alchemist.find((x) => x.id === 'brews').truth
+let brewed = null
+for (const m of adults) {
+  const ctx = ctxAt(fire(world.townOf(m)))
+  const c = new Conversation(as(m, { ...STRAIGHT, greed: 0 }), ctx)
+  for (let i = 0; i < LORE.alchemist.length && brewed === null; i++) if (c.say('lore:alchemist').claim === brews) brewed = { c, ctx, m }
+  if (brewed !== null) break
+}
+const firstChips = brewed && brewed.c.menu().slice(0, 3).map((x) => x.label)
+const stranger = brewed && all.find((m) => m.kind === 'human' && m.town !== brewed.m.town)
+check(brewed !== null && firstChips.includes('What are mushrooms good for?') && firstChips.includes('Can I eat wild things?') && new Conversation(stranger, brewed.ctx).menu().some((x) => x.topic === 'lore:mushrooms'), 'told the potion master brews from mushrooms, she is offered "What are mushrooms good for?" at once, and may ask anyone after', firstChips && firstChips.join(' / '))
 const leafLore = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 })).say('lore:alchemist')
 check(leafLore.claim === null, 'a leafkin has no words for the alchemist', leafLore.text)
+const adults = all.filter((m) => m.kind === 'human' && m.cls !== 'child')
+const striderTruths = new Set(LORE.striders.map((x) => x.truth))
+const striderTold = adults.filter((m) => striderTruths.has(asked(m, 'striders', STRAIGHT).claim))
+check(striderTold.length > adults.length * 0.85, 'nearly every grown-up can tell her something true about striders', `${striderTold.length} of ${adults.length}`)
+let referred = null
+for (const m of folk) {
+  const c = new Conversation(as(m, { ...STRAIGHT, boast: 0 }), ctxAt(fire(world.townOf(m))))
+  const l = c.say('lore:labyrinths')
+  if (l.claim === null && /Ask /.test(l.text)) { referred = { l, menu: c.menu() }; break }
+}
+check(referred !== null && referred.menu.some((x) => x.topic === `where:person:${referred.l.about[0].id}`), 'one who does not know sends her to whoever in town knows best, and she can ask where they are', referred?.l.text)
+
+// --- follow-ups and wording ---
+const grudger = all.find((m) => m.rival !== null && m.cls !== 'child')
+const rival = world.townOf(grudger).minds[grudger.rival]
+const grudge = new Conversation(as(grudger, STRAIGHT), ctxAt(fire(world.townOf(grudger))))
+const opinion = grudge.say(`ask:person:${rival.id}`)
+const fm = grudge.menu()
+check(fm[0].topic === `why:person:${rival.id}` && fm.some((x) => x.label === `Where is ${rival.name}?`), 'told of a rival, her first chips ask why, and where the rival is', `${opinion.text} -> ${fm.slice(0, 3).map((x) => x.label).join(' / ')}`)
+const why = grudge.say(`why:person:${rival.id}`)
+check(why.text.startsWith(`${rival.name}? `) && why.moment === 'nv.sigh', 'asked why, they tell the grudge', why.text)
+let late = null
+for (const t of world.towns) {
+  const speaker = t.minds.find((m) => m.cls !== 'child')
+  const p = speaker && t.minds.find((o) => o.id !== speaker.id && !speaker.household.includes(o.index) && world.placeOf(o).building === o.home && world.placeOf(o).label !== 'the inn')
+  if (p) { late = { p, l: new Conversation(as(speaker, STRAIGHT), ctxAt(fire(t), { hour: 22 })).say(`where:person:${p.id}`) }; break }
+}
+check(late !== null && late.l.text.startsWith(late.p.voice.he ? "He's likely home by now." : "She's likely home by now.") && !late.l.text.includes(`${late.p.name}'s house`), 'asked at night where someone is, they say the person is likely home by now', late?.l.text)
 
 // --- the dialog grid ---
 const menuCtx = ctxAt(fire(t0), { known: new Set(Object.keys(TOPICS)) })
@@ -331,13 +402,30 @@ const tiers = ['native', 'mixed', 'pidgin'].map((t) => lines.pick(lk, 'greet.str
 check(tiers.every((l, i) => l.includes(['native', 'mixed', 'pidgin'][i])) && leafkinTier(false, 1) === 'native' && leafkinTier(true, 0) === 'mixed' && leafkinTier(true, 1) === 'pidgin', 'a leafkin speaks its own tongue until it trusts her, then pidgin as she warms it', tiers.join(' '))
 const he = all.find((m) => m.voice.he), she = all.find((m) => !m.voice.he && m.kind === 'human')
 check(he.voice.pack !== she.voice.pack && all.every((m) => Math.abs(m.voice.rate - 1) <= VOICE.rate && Math.abs(m.voice.tilt) <= VOICE.tilt), 'each person speaks with their body\'s voice, shifted a little in pitch and tone of their own')
-const chatterSpeakers = [...all.filter((m, i) => i % 7 === 0), lk]
 const unvoiced = []
-for (const m of chatterSpeakers) for (const hour of [3, 10, 18, 22]) for (let turn = 0; turn < 3; turn++) for (const r of [0, 0.2, 0.4, 0.6, 0.8, 0.99]) {
-  const moment = chatterMoment(m, ctxAt(fire(m.kind === 'leafkin' ? t0 : world.townOf(m))), { turn, hour, r })
-  if (new LinePicker(table, SEED).pick(m, moment, { now: 1e4, force: true, tier: 'native' }) === null) unvoiced.push(`${m.kind}:${moment}`)
+for (const [kind, book] of Object.entries(EXCHANGES)) for (const [ex, steps] of Object.entries(book)) for (const step of steps) for (const alt of step.split(' | ')) {
+  const [moment, ids] = alt.split(': ')
+  if (kind === 'leafkin') { if (ids !== undefined || LEAFKIN_ATOM[moment] === undefined) unvoiced.push(`${ex}: ${alt}`); continue }
+  const have = new Set((table.human[moment] ?? []).map((l) => l.slice(0, l.indexOf('.'))))
+  for (const id of ids === undefined ? [] : ids.split(' ')) if (!have.has(id)) unvoiced.push(`${ex}: ${moment} ${id}`)
+  if (ids === undefined) unvoiced.push(`${ex}: ${alt} names no words`)
 }
-check(unvoiced.length === 0, 'every chatter moment, human or leafkin, any hour or turn, has a recorded line to say', [...new Set(unvoiced)].join(', '))
+check(unvoiced.length === 0, 'every chatter exchange step names words recorded for its moment (leafkin, a moment with an atom)', unvoiced.join(', '))
+const pair = [t0.minds[0], t0.minds[1]]
+const heardSteps = []
+let at = null
+for (let i = 0; i < 14; i++) {
+  const s = chatterStep(pair[i % 2], ctxAt(fire(t0)), at, { hour: 14, r: (i * 0.37) % 1, alt: (i * 0.61) % 1 })
+  heardSteps.push(`${s.at.ex}.${s.at.step}`)
+  at = s.at
+}
+const inOrder = heardSteps.every((s, i) => {
+  const [ex, n] = s.split('.')
+  return i === 0 ? ex === 'greet' && n === '1' : n === '1' ? heardSteps[i - 1].split('.')[1] === String(EXCHANGES.human[heardSteps[i - 1].split('.')[0]].length) : heardSteps[i - 1] === `${ex}.${n - 1}`
+})
+check(inOrder, 'two neighbours meet with a greeting, then talk each exchange through in order before the next', heardSteps.join(' '))
+const lone = new LinePicker(table, SEED).pick(t0.minds[0], 'gossip.lead', { now: 1e4, force: true, only: ['between-us'] })
+check(lone !== null && lone.line.startsWith('between-us.'), 'a chatter step says only the words it names', lone?.line)
 const formed = Object.entries(table.human).find(([, ls]) => ls.some((l) => l.includes('{')))
 if (formed) {
   const [mom] = formed

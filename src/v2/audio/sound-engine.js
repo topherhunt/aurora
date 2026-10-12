@@ -317,7 +317,7 @@ export class SoundEngine {
    * sound, or null for one with no bearing (her own footsteps, the cricket bed).
    * `distance` in metres gives the shot the far treatment (dulled, wetted,
    * late; see the top), `air` times that for the dulling and wetting alone
-   * (a sound small at the source, lost in the air faster), and `echo` is its send, 0-1 of its gain, into the
+   * (over 1 a sound small at the source, lost faster; under 1 one kept near-dry), and `echo` is its send, 0-1 of its gain, into the
    * valley echo, `cave` the same into the cave's. `tilt` in dB lifts (or, negative, dulls) everything over TILT_HZ: a
    * speaker's own timbre (audio/voices.js). Returns the source, or null when the shot is not started:
    * under the floor, over the cap, or while the context is still suspended --
@@ -328,7 +328,7 @@ export class SoundEngine {
     if (!(rate > 0)) throw new Error(`SoundEngine.play(${name}): rate must be positive, got ${rate}`)
     if (!(gain >= 0)) throw new Error(`SoundEngine.play(${name}): gain must be non-negative, got ${gain}`)
     if (!(distance >= 0)) throw new Error(`SoundEngine.play(${name}): distance must be non-negative, got ${distance}`)
-    if (!(air >= 1)) throw new Error(`SoundEngine.play(${name}): air must be at least 1, got ${air}`)
+    if (!(air > 0)) throw new Error(`SoundEngine.play(${name}): air must be positive, got ${air}`)
     if (!(echo >= 0 && echo <= 1)) throw new Error(`SoundEngine.play(${name}): echo must be 0-1, got ${echo}`)
     if (!(cave >= 0 && cave <= 1)) throw new Error(`SoundEngine.play(${name}): cave must be 0-1, got ${cave}`)
     if (!this.running) return null

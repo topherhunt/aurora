@@ -6,7 +6,6 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { Conversation, strHash } from './speak.js'
 import { OPEN_TOPICS, TOPICS } from './lore.js'
-import { LEAFKIN_ATOM } from './lines.js'
 
 export const CHAT = {
   // Questions they will answer before they have had enough: base, plus chattiness and standing (each 0..1) times these.
@@ -30,12 +29,13 @@ const rollOf = (...parts) => mulberry32(hash32(...parts.map((p) => (typeof p ===
  * `ask(topic)` answers a grid sentence. A line with `ended` true is their last; `alone` is how many seconds to leave them be.
  */
 export class Chat {
-  /** `ctx` as speak.js Conversation's; `trusted` whether a leafkin trusts her (trust.js), `busy` whether they are about something. */
-  constructor(mind, ctx, { trusted = true, busy = false, salt = 0 } = {}) {
+  /** `ctx` as speak.js Conversation's; `trusted` whether a leafkin trusts her (trust.js), `busy` whether they are about something, `approached` whether they came to her. */
+  constructor(mind, ctx, { trusted = true, busy = false, approached = false, salt = 0 } = {}) {
     this.mind = mind
     this.conv = new Conversation(mind, ctx)
     this.trusted = trusted
     this.busy = busy
+    this.approached = approached
     this.salt = salt
     this.turns = 0
     this.ended = false
@@ -58,16 +58,25 @@ export class Chat {
     if (mind.kind === 'leafkin' && !this.trusted) return this._end(conv._line('Kee? Hmm-hm.', 'talk-shrug', { moment: 'refuse.wary', mood: 'cold' }), 'declined')
     if (conv._standing() < CHAT.shun) return this._end(conv._line(mind.kind === 'leafkin' ? 'No. Go.' : "I've nothing to say to you.", 'talk-shrug', { moment: 'refuse.wary', mood: 'cold' }), 'declined')
     const opener = conv.opener()
-    // A plea or an errand is why they want her; busy or not, they will say it.
+    // A plea, an errand or a missing child is why they want her; busy or not, they will say it.
     if (opener.quest === undefined && this.busy && this._roll('busy') < CHAT.busy * (1 - T.chattiness)) {
       return this._end(conv._line(mind.kind === 'leafkin' ? 'Busy-busy! Later.' : pick(this._roll('busy-line'), ["Not now, I've work to do.", 'Sorry, I am in a hurry.', 'Another time.']), 'talk-shrug', { moment: 'mood.busy' }), 'declined')
     }
-    if (opener.quest !== undefined || this._roll('volunteer') >= CHAT.volunteer * T.chattiness) return opener
-    // A chatty one brings something up unasked: a rumour, sometimes of a thing she has never heard of.
+    if (opener.quest !== undefined) return opener
+    // Having come to her, they say plainly what brought them; a chatty one hailed may bring up a rumour unasked.
+    const lead = this.approached ? conv.news() ?? conv.wish() ?? this._rumour() : this._roll('volunteer') < CHAT.volunteer * T.chattiness ? this._rumour() : null
+    if (lead === null) return opener
+    conv.about = lead.about
+    conv._hear(lead.about)
+    return { ...opener, text: `${opener.text} ${lead.text}`, unlocks: lead.unlocks, about: lead.about }
+  }
+
+  /** A fact of lore they know, sometimes of a thing she has never heard of, or null. */
+  _rumour() {
     const topics = [...OPEN_TOPICS, ...Object.keys(TOPICS).filter((t) => TOPICS[t].gated)]
-    const rumour = conv.say(`lore:${pick(this._roll('rumour'), topics)}`)
-    if (rumour.claim === null) return opener
-    return { ...opener, text: `${opener.text} ${mind.kind === 'leafkin' ? 'Listen!' : 'Have you heard?'} ${rumour.text}`, unlocks: rumour.unlocks }
+    const rumour = this.conv.say(`lore:${pick(this._roll('rumour'), topics)}`)
+    if (rumour.claim === null) return null
+    return { ...rumour, text: `${this.mind.kind === 'leafkin' ? 'Listen!' : 'Have you heard?'} ${rumour.text.replace(/ Glad to help\.$/, '')}` }
   }
 
   /** Her sentence `topic` (grid.js) answered. */
@@ -75,6 +84,12 @@ export class Chat {
     if (this.ended) throw new Error(`Chat: ${this.mind.id} has already ended the conversation`)
     if (topic === 'bye') return this._end(this.conv.bye(), 'bye')
     this.turns++
+    // A parent whose child is missing never sends her off. Past patience, what is not about the search turns them back to it.
+    if (this.conv._worried()) {
+      const q = this.conv.quest
+      if (this.turns < this.patience || topic === `ask:person:${q.child}` || topic === 'talk:needs' || topic.startsWith('where:')) return this.conv.say(topic)
+      return this.conv.urge(q)
+    }
     const line = this.conv.say(topic)
     if (this.turns < this.patience && this._roll('dismiss') >= CHAT.dismiss[this.conv.tone]) return line
     const off = this.mind.kind === 'leafkin' ? 'Leafkin go now.' : pick(this._roll('off'), ["That's enough questions.", 'I must get on.', 'Well. I have things to do.'])
@@ -84,26 +99,79 @@ export class Chat {
 
 const pick = (r, list) => list[Math.min(list.length - 1, (r * list.length) | 0)]
 
-/**
- * What `mind` says on its `turn` (0 the first) of a chat with a neighbour at `hour`, `r` a roll: a moment (lines.js).
- * The opener leads with gossip; after, they answer by temperament and the time of day, a worried parent of nothing else.
- */
-export function chatterMoment(mind, ctx, { turn, hour, r }) {
+// Two neighbours' chatter as short exchanges, so each remark is answered in kind. A step is said by the next speaker of
+// the pair: `moment: ids` (the recorded utterances it may be, tools/voice/atoms.js), or a bare moment for any of its
+// lines; ` | ` parts are alternatives. Leafkin atoms carry no words, so theirs are bare moments.
+export const EXCHANGES = {
+  human: {
+    greet: ['greet.stranger: good-day hey-there well-met', 'greet.stranger: good-day well-met'],
+    morning: ['greet.morning: morning', 'greet.morning: morning up-early'],
+    evening: ['greet.evening: evening', 'greet.evening: evening'],
+    gossip: ['gossip.lead: did-you-hear never-guess', 'gossip.react: go-on really', 'gossip.lead: between-us', 'gossip.react: dont-believe who-told-you truly | social.disagree: nonsense dont-think-so', 'answer.boast: own-eyes', 'nv.laugh: laugh chuckle | social.disagree: bah tsk | observe.marvel: well-ill-be'],
+    cold: ['weather.cold: bitter-cold feel-wind smell-snow', 'social.agree: aye true-enough | weather.cold: brr', 'worry.winter: long-winter stores-last', 'worry.general: hard-times | social.agree: true-enough'],
+    fine: ['weather.fine: fine-day sun-out', 'social.agree: aye | mood.content: cant-complain the-life', 'mood.content: sigh-content hum'],
+    foul: ['weather.foul: rain-again storm-brewing', 'social.agree: aye true-enough', 'weather.foul: get-indoors'],
+    tired: ['mood.tired: long-day back-aches', 'social.agree: aye true-enough | nv.sigh: sigh-long', 'mood.tired: bed-soon', 'bye.warm: get-home-safe go-well'],
+    hungry: ['mood.hungry: eat-a-horse', 'mood.hungry: whats-supper | nv.laugh: chuckle'],
+    aurora: ['sky.aurora: lights-out sky-dancing look-at-sky', 'observe.marvel: never-tired well-ill-be', 'mood.content: sigh-content'],
+    beasts: ['worry.beast: at-the-livestock', 'gossip.react: really truly', 'worry.beast: saw-tracks', 'worry.beast: doors-shut | fear.uneasy: dont-like-this'],
+    leafkin: ['worry.leafkin: little-folk', 'worry.leafkin: fairy-stories | social.disagree: nonsense bah', 'answer.boast: own-eyes', 'nv.laugh: snort | social.disagree: tsk'],
+    bored: ['mood.bored: nothing-happens', 'nv.laugh: chuckle | talk.town: quiet-place | mood.content: cant-complain', 'mood.bored: sigh-long bah'],
+    busy: ['mood.busy: busy-busy no-rest', 'mood.busy: keep-busy | social.agree: aye'],
+    missing: ['gossip.lead: someones-missing', 'gossip.react: truly | social.surprise: by-the-gods', 'worry.general: terrible-business', 'missing.sympathy: poor-soul hard-times'],
+    worried: ['worry.general: i-worry what-will-we-do', 'missing.sympathy: poor-soul hard-times'],
+    dusk: ['observe.dusk: getting-dark', 'social.agree: aye', 'bye.warm: get-home-safe'],
+  },
+  leafkin: {
+    greet: ['greet.friend', 'greet.friend'],
+    gossip: ['gossip.lead', 'gossip.react', 'social.agree', 'nv.laugh'],
+    curious: ['social.curious', 'social.surprise', 'gossip.react'],
+    happy: ['mood.content', 'nv.laugh'],
+    aurora: ['sky.aurora', 'observe.marvel', 'mood.content'],
+    uneasy: ['fear.uneasy', 'social.agree'],
+  },
+}
+
+/** Which exchange `mind` turns their pair's chatter to next, at `hour`, `r` a roll, `not` the one just had. */
+function nextExchange(mind, ctx, hour, r, not) {
   const conv = new Conversation(mind, ctx)
-  if (conv._worried()) return r < 0.5 ? 'missing.worry' : 'worry.general'
-  if (turn === 0) return 'gossip.lead'
-  const T = mind.traits
-  const cheery = conv.tone === 'cheery'
   const night = hour >= 21 || hour < 5
-  const dusk = hour >= 17 && hour < 21
-  const weights = [
-    ['gossip.react', 3], ['social.agree', 2], ['social.curious', 1 + T.chattiness], ['social.surprise', 1], ['social.disagree', T.wariness * 2],
-    ['gossip.lead', T.chattiness * 1.5], ['nv.laugh', cheery ? 2 : 0.3], ['nv.think', 0.8], ['mood.content', cheery ? 1.5 : 0.4], ['mood.bored', cheery ? 0.2 : 1],
-    ['observe.dusk', dusk ? 1.5 : 0], ['sky.aurora', night ? 1.5 : 0], ['observe.marvel', night ? 0.5 : 0], ['mood.tired', night ? 1.2 : 0], ['weather.cold', night ? 0.6 : 0], ['talk.town', 0.8],
-  ].filter(([m, w]) => w > 0 && (mind.kind !== 'leafkin' || LEAFKIN_ATOM[m] !== undefined))
-  let left = r * weights.reduce((s, [, w]) => s + w, 0)
-  for (const [m, w] of weights) if ((left -= w) < 0) return m
-  return weights[weights.length - 1][0]
+  if (mind.kind === 'leafkin') return weighed([['gossip', 2], ['curious', 1], ['happy', 1.5], ['aurora', night ? 2.5 : 0], ['uneasy', night ? 0.8 : 0.3]], r, not)
+  if (conv._worried()) return 'worried'
+  const T = mind.traits
+  const q = conv.quest
+  const cheery = conv.tone === 'cheery'
+  const meal = (hour >= 11 && hour < 13) || (hour >= 17 && hour < 19)
+  return weighed([
+    ['gossip', 1 + T.chattiness * 2], ['cold', 1], ['fine', hour >= 7 && hour < 18 ? 1 : 0], ['foul', 0.5], ['tired', hour >= 17 || hour < 5 ? 1.5 : 0.3],
+    ['hungry', meal ? 1.2 : 0.2], ['aurora', night ? 2 : 0], ['beasts', 0.4 + T.wariness], ['leafkin', 0.4], ['bored', cheery ? 0.3 : 1], ['busy', 0.5],
+    ['missing', q !== null && ctx.log.state(q.id) !== 'done' ? 3 : 0], ['dusk', hour >= 17 && hour < 21 ? 1.5 : 0],
+  ], r, not)
+}
+
+function weighed(weights, r, not) {
+  const live = weights.filter(([k, w]) => w > 0 && k !== not)
+  let left = r * live.reduce((s, [, w]) => s + w, 0)
+  for (const [k, w] of live) if ((left -= w) < 0) return k
+  return live[live.length - 1][0]
+}
+
+/**
+ * The next line of a pair's chatter, said by `mind` at `hour`, `r` and `alt` rolls: `at` is where the pair stands (`{ ex, step }`,
+ * null for a fresh meeting, which opens with a greeting). Returns `{ moment, only, at }`, `only` the utterance ids the
+ * line may be (null for any) and `at` where the pair stands after it.
+ */
+export function chatterStep(mind, ctx, at, { hour, r, alt }) {
+  const book = EXCHANGES[mind.kind === 'leafkin' ? 'leafkin' : 'human']
+  let ex = at === null ? (mind.kind === 'leafkin' ? 'greet' : hour >= 5 && hour < 10 ? 'morning' : hour >= 18 ? 'evening' : 'greet') : at.ex
+  let step = at === null ? 0 : at.step
+  if (step >= book[ex].length) {
+    ex = nextExchange(mind, ctx, hour, r, ex)
+    step = 0
+  }
+  const alts = book[ex][step].split(' | ')
+  const [moment, ids] = pick(alt, alts).split(': ')
+  return { moment, only: ids === undefined ? null : ids.split(' '), at: { ex, step: step + 1 } }
 }
 
 /** Whether `mind` would come to her unasked: a plea or an errand to give, or a warm, chatty sort with time on their hands. */

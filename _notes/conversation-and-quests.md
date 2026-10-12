@@ -29,7 +29,7 @@ So the smith is not just "the smith" but Ragna the smith: honest but wary, greed
 
 ```
 you ask about X
-  -> do they know X?          no: "No idea", or a boastful guess
+  -> do they know X?          no: "No idea" (plus who would: the town's expert), or a boastful guess; common lore nearly everyone knows
   -> will they share X?       the fact's sensitivity vs. their disposition; maybe a price
   -> is it true?              honesty vs. a motive to lie; a lie is a different FACT, not different words
   -> is it accurate?          accuracy blurs it: bearing off, distance off, a name swapped
@@ -40,13 +40,13 @@ you ask about X
 Two rules make this playable:
 
 1. **Distortion acts on the fact, not the sentence.** A lie is a real alternative claim (the wrong road, the wrong house) that you can check, catch and repeat to someone else.
-2. **Liars are consistent; spacey people are not.** A lie is hashed from (person, fact, chapter), so asking twice gets the same lie, and both players hear the same lie. A muddle is rolled per ask, so asking twice gets two answers. Players learn that a story that never moves might be a liar's, and one that drifts is a muddle.
+2. **Liars are consistent; spacey people are not.** A lie is hashed from (person, fact, chapter), so asking twice gets the same lie, and both players hear the same lie. A muddle is rolled per ask, so asking twice gets two answers, and a moved answer owns up ("Or no, wait..."). A grown local never muddles the doors of their own town; muddles are for children, other towns and half-seen clues. Players learn that a story that never moves might be a liar's, and one that drifts is a muddle.
 
 ## The dialog shape
 
 The top menu is tiny: **Talk** (about yourself / this town / do you need anything), **Where is...** (the elder, the potion master, your house, the nearest village, where am I), **Ask about...**, **Tell...**, **Give**, **Follow me** (I want to show you something / I can bring you to safety / I can bring you riches), **Bye**.
 
-**The depth is tucked under "Ask about...":** every person, place and thing an NPC names becomes a chip you can raise with anyone. "Tomas was down by the mill arguing with Old Wenna" adds *Tomas*, *the mill* and *Old Wenna*. This is the Morrowind/Ultima keyword system with the keywords drawn from a real world, so the tree is effectively endless without a text box.
+**The depth is tucked under "Ask about...":** every person, place and thing an NPC names becomes a chip you can raise with anyone. "Tomas was down by the mill arguing with Old Wenna" adds *Tomas*, *the mill* and *Old Wenna*. This is the Morrowind/Ultima keyword system with the keywords drawn from a real world, so the tree is effectively endless without a text box. **The first chips follow the last line**: each line carries `about` (a person and how they were spoken of, a missing child, a town, a lore topic, a want), and the menu leads with the obvious next question ("Why don't you trust Hilde?", "Where is Hilde?" under Where). **What she hears is hers, not the speaker's**: everyone a line names goes into the saved `known` set, so once anyone has told her Arne's Finn is missing she can ask anyone in that town about Finn and Arne. A where-answer points: they gesture toward the place and say "Just over there" or "That way, a fair walk", not a compass bearing off a landmark.
 
 Small theory-of-mind touches that pay for themselves: they remember what they told you ("Like I said, north"); they ask "who told you that?" when you repeat something they believe false; they clam up when they guess why you are asking (the friend covering for a runaway).
 
@@ -67,12 +67,12 @@ Small theory-of-mind touches that pay for themselves: they remember what they to
 
 `src/v2/conversations.js` runs it; `talk/chat.js` decides when they talk and stop, `talk/grid.js` and `ui/dialog-panel.js` are the grid.
 
-- **You start it** by speaking up while facing a townsperson (or a leafkin that trusts you) within 3 m: only a spike in the mic's level counts (`audio/mic.js`), never the words. The Quest browser gives `getUserMedia` over HTTPS behind a permission prompt; until it is allowed, or where it is refused, the C key stands in. They stop, turn, gesture and greet, and the panel appears below them, between you: their line over a 4x4 grid. A sentence is 2-5 fragments pressed in turn, the punctuated one sends it, `<` steps back, and Goodbye sits at the top level. No preview.
-- **They may refuse**: busy and unchatty, cold to you, a leafkin that does not trust you, or one you just left (`CHAT.alone`). They cut you off when patience runs out.
-- **They start it**: now and then a free townsperson within 12 m who wants something of you, or is the cheery chatty sort, walks up, waves and hails; speak while facing them and the panel opens. Left waiting 15 s, they go back to what they were doing.
+- **You start it** by speaking up while facing a townsperson (or a leafkin that trusts you) within 3 m: only a spike in the mic's level counts (`audio/mic.js`), never the words. The Quest browser gives `getUserMedia` over HTTPS behind a permission prompt; until it is allowed, or where it is refused, the C key stands in. They stop and turn to her, and after 1.2-1.8 s (`TALK.answer`) wave and greet, and the panel appears below them, between you: their line over a 4x4 grid. A sentence is 2-5 fragments pressed in turn, the punctuated one sends it, `<` steps back, and Goodbye sits at the top level. No preview.
+- **They may refuse**: busy and unchatty, cold to you, a leafkin that does not trust you, or one you just left (`CHAT.alone`). They cut you off when patience runs out, except a parent whose child is missing: they open with "Any word of Finn?", never refuse or dismiss her, and past patience turn idle questions back to the search.
+- **They start it**: now and then a free townsperson within 12 m who wants something of you, or is the cheery chatty sort, walks up, waves and hails; speak while facing them and the panel opens at once on what brought them, said plainly (the news of a missing child, a want, a rumour). Left waiting 15 s, they go back to what they were doing.
 - **It ends** when you walk 4.5 m off, go indoors, say Goodbye or are dismissed; their last line stays up to be read. After Goodbye they leave you be a while.
 - **Holds are drawn, not simulated**: the townsfolk's greet path and the villagers' ease offsets (`net-ease.js`) pose the held one while the deterministic sim walks on underneath, so a release glides them back. A townsperson walking up to you passes through obstacles in pose-space.
-- **Their chatter with each other** comes as turns from the talk state (`TownLife.chatter`, `Villagers.turns`), voiced as `chatterMoment` picks: gossip leads, then reactions, moods and the hour.
+- **Their chatter with each other** comes as turns from the talk state (`TownLife.chatter`, `Villagers.turns`), voiced as short exchanges (`talk/chat.js` `EXCHANGES`): a greeting by the hour, then a topic weighed by hour, temperament and any missing child, each step naming the recorded utterances it may be so a remark is answered in kind. Leafkin exchanges are moments only. Chatter plays softer than a reply (`SPEECH.aside`).
 - **Overhearing** (other players seeing bubbles) is not built.
 
 ## Netplay
@@ -112,7 +112,7 @@ Engine (three-free, gated by `check-talk.mjs`): `mind.js` (names, ties, temperam
 4. **Telling and gossip.** Built in the engine (`tell` for "X sent me" and "Y is at Z", `gossip`); nothing calls `gossip` from the talk state yet. Rapport and the quest log live for the session only; the topics she has heard of are saved (`talk.topics`).
 5. **The headset panel and hails.** Built (In the headset). Overhead bubbles are not.
 6. **The message.** Built: someone asks her to carry a phrase to a grown-up in the nearest town; the recipient asks what was said and she picks from the true words and three near-misses. True words warm the recipient and the sender thanks her and owes her; garbled words turn the recipient cold for good. The discretion variant ("not where her husband can hear") is not built.
-7. **Voice.** Recorded and converted into four packs (`m-big`, `f-bright`, `teen-from-man`, `leafkin`), baked by `node tools/voice/pack.mjs` into `public/sounds/voice/` (one MP3 per pack, each line its own stream, indexed, and `moments.json`), gated by `check-voice.mjs`. `audio/voices.js` fetches a pack the first time anyone in it speaks and decodes a line only when it plays; speech is bright up close, darker and echoed with distance, and silent past 20 m. `talk/lines.js` picks the line (shuffle per moment, cooldowns, leafkin trust tiers), each person on their body's pack with their own rate and tone tilt (`mind.js` `voice`). 32 clipped takes still need re-recording, then a re-pack. Splicing is not used.
+7. **Voice.** Recorded and converted into four packs (`m-big`, `f-bright`, `teen-from-man`, `leafkin`), baked by `node tools/voice/pack.mjs` into `public/sounds/voice/` (one MP3 per pack, each line its own stream, indexed, and `moments.json`), gated by `check-voice.mjs`. `audio/voices.js` fetches a pack the first time anyone in it speaks and decodes a line only when it plays; speech is always brightened, kept near-dry (no echo, `SPEECH.air` under 1 to cut the valley reverb), and silent past 20 m. `talk/lines.js` picks the line (shuffle per moment, cooldowns, leafkin trust tiers), each person on their body's pack with their own rate and tone tilt (`mind.js` `voice`). 32 clipped takes still need re-recording, then a re-pack. Splicing is not used.
 8. Go-and-look, trades, the rest of the quest list.
 
 ## Decided

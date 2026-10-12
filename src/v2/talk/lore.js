@@ -41,44 +41,57 @@ const EXPERT = {
   jarlsthane: { dragons: 0.2, coins: 0.2 },
 }
 
-/** How likely `mind` is to know facts of `topic`, 0..1. A leafkin knows only facts with a leafkin telling. */
-export function knowOdds(mind, topic) {
-  return Math.min(1, (KNOW[mind.cls] ?? 0.5) + (EXPERT[mind.body]?.[topic] ?? 0))
+// A `common` fact is everyday knowledge: anyone but a child knows it at these odds, whatever their class.
+const COMMON = { adult: 0.92, child: 0.7 }
+
+/** How likely `mind` is to know fact `fact` of `topic`, 0..1. A leafkin knows only facts with a leafkin telling. */
+export function knowOdds(mind, topic, fact) {
+  const odds = Math.min(1, (KNOW[mind.cls] ?? 0.5) + (EXPERT[mind.body]?.[topic] ?? 0))
+  return fact.common && mind.kind === 'human' ? Math.max(odds, mind.cls === 'child' ? COMMON.child : COMMON.adult) : odds
+}
+
+/** How much better than most body `body` knows `topic`: 0 for no better. */
+export function expertise(body, topic) {
+  return EXPERT[body]?.[topic] ?? 0
 }
 
 // A fact: `truth`, `lies` (misinformation, said by the dishonest), `tales` (told by boasters, or by anyone who does
-// not know and will not admit it), `lk` the truth in leafkin pidgin, `unlocks` the gated topics the telling names.
-const f = (id, truth, { lies = [], tales = [], lk = null, unlocks = [], sens = 0, rumour = false } = {}) => ({ id, truth, lies, tales, lk, unlocks, sens, rumour })
+// not know and will not admit it), `lk` the truth in leafkin pidgin, `unlocks` the other topics the telling names: each her follow-up after, and a gated one hers to ask anyone.
+const f = (id, truth, { lies = [], tales = [], lk = null, unlocks = [], sens = 0, rumour = false, common = false } = {}) => ({ id, truth, lies, tales, lk, unlocks, sens, rumour, common })
 
 export const LORE = {
   striders: [
-    f('tame', 'A wild strider will carry you once it trusts you. Feed it carrots from your hand.', { lies: ['Striders eat fish. Toss one a trout and it is yours.', 'Never feed a strider. It will follow you home and eat your roof.'], tales: ['I rode a strider clean across the lake once. It ran on the water.'], lk: 'Long-legs love carrot. Give carrot, long-legs friend.' }),
-    f('town', 'Every town keeps a strider tied up. Ask nicely and they will lend it to you.', { lies: ['Town striders bite strangers. Stay well back.'], tales: ['The jarl\'s strider can outrun the wind. I timed it.'] }),
-    f('mad', 'Eat a chanterelle and every beast near you turns on you, striders worst of all.', { lies: ['Striders are scared of mushrooms. Hold one up and they flee.'], unlocks: ['mushrooms'] }),
+    f('wild', 'Frost striders roam all over the wild country. Tall as a hayloft, all legs and beak.', { common: true, tales: ['There is a white strider in the hills, bigger than a house.'], lk: 'Long-legs walk everywhere. Big-big.' }),
+    f('charge', 'Never walk straight up on a wild strider. Get too close and it will charge you.', { common: true, lies: ['Wild striders are gentle as lambs. Walk right up.'], lk: 'Long-legs angry close. Keesh! Run.' }),
+    f('shy', 'Come at a strider from the side or behind and it shrieks and runs off.', { common: true, lies: ['Sneak up behind a strider and you can grab it.'] }),
+    f('tame', 'Hold a fish out to a strider and it goes meek. Feed it and it trusts you after.', { common: true, lies: ['Striders eat carrots. Hold one out and it is yours.', 'Never feed a strider. It will follow you home and eat your roof.'], tales: ['I rode a strider clean across the lake once. It ran on the water.'], lk: 'Long-legs love fish. Give fish, long-legs friend.' }),
+    f('ride', 'A strider that trusts you, take its rein from the front and it will follow. Climb on and it carries you.', { lies: ['Nobody can ride a strider. They throw you.'] }),
+    f('town', 'Every town keeps striders tied at a rail. Feed one a fish and it will carry you.', { lies: ['Town striders bite strangers. Stay well back.'], tales: ['The jarl\'s strider can outrun the wind. I timed it.'] }),
+    f('mad', 'Eat a chanterelle and every beast near you turns on you, striders worst of all.', { lies: ['Striders are scared of mushrooms. Hold one up and they flee.'], unlocks: ['mushrooms', 'eating'] }),
   ],
   dragons: [
-    f('roost', 'Dragons roost on the high peaks. You can see their nests from the valley.', { lies: ['Dragons live under the lakes. Watch the water.'], tales: ['I fought a dragon once. With a stick.'], lk: 'Big-wing live up-up. Keesh! Leafkin hide.', unlocks: ['snowlands'] }),
+    f('roost', 'Dragons roost on the high peaks. You can see their nests from the valley.', { common: true, lies: ['Dragons live under the lakes. Watch the water.'], tales: ['I fought a dragon once. With a stick.'], lk: 'Big-wing live up-up. Keesh! Leafkin hide.', unlocks: ['snowlands'] }),
     f('return', 'The old folk say the dragons are coming back. More of them every year.', { lies: ['There are no dragons. That is a story for children.'], tales: ['A dragon egg is worth more than this whole town.', 'Dragons are afraid of yetis. True as I stand here.'] }),
     f('pair', 'Dragons keep in pairs. One hunts while the other guards the nest.', { rumour: true, lies: ['Dragons only fly at midsummer.'], tales: ['A dragon once carried off a whole cow. And the farmer.'] }),
   ],
   alchemist: [
-    f('brews', 'The potion master brews from mushrooms and stranger things. Ask before you eat anything wild.', { lies: ['The alchemist turns lead into gold. Mostly.'], tales: ['The alchemist once brewed a potion that made a man fly. Briefly.'], unlocks: ['mushrooms', 'eating'] }),
+    f('brews', 'The potion master brews from mushrooms and stranger things. Ask before you eat anything wild.', { common: true, lies: ['The alchemist turns lead into gold. Mostly.'], tales: ['The alchemist once brewed a potion that made a man fly. Briefly.'], unlocks: ['mushrooms', 'eating'] }),
     f('wants', 'The alchemist always wants red mushrooms. Bring some and you will have a friend.', { lies: ['The alchemist hates mushrooms. Never bring one.'], unlocks: ['mushrooms'] }),
     f('firestone', 'Alchemists burn firestone in their brews. Rare stuff, and dear.', { rumour: true, lies: ['Firestone is just coal with airs.'], unlocks: ['ores'] }),
     f('flare', 'Do the alchemist a good turn and you may get a flare gun out of it.', { rumour: true, lies: ['The alchemist sells flare guns for a copper each.'], tales: ['I once shot a flare so high it became a star.'] }),
   ],
   blacksmith: [
-    f('forge', 'The smith works iron at the forge, morning to night.', { lies: ['The smith only works by moonlight.'], unlocks: ['ores'] }),
+    f('forge', 'The smith works iron at the forge, morning to night.', { common: true, lies: ['The smith only works by moonlight.'], unlocks: ['ores'] }),
     f('sword', 'Bring the smith good metal, or do a favour, and you might walk off with a sword.', { rumour: true, lies: ['The smith will forge you anything for a smile.'], tales: ['The smith made a blade that cuts stone. I saw it split a boulder.'], unlocks: ['ores'] }),
     f('flint', 'Strike flint near something dry and you will have a fire. The smith swears by it.', { lies: ['Flint only sparks if you spit on it first.'], unlocks: ['ores'] }),
   ],
   coins: [
-    f('buy', 'Gold coins buy food, a bed at the inn, a smith\'s time.', { rumour: true, lies: ['Coins? We trade in carrots here.'], lk: 'Shiny-round? Leafkin no eat. Big-folk like.' }),
+    f('buy', 'Gold coins buy food, a bed at the inn, a smith\'s time.', { common: true, rumour: true, lies: ['Coins? We trade in carrots here.'], lk: 'Shiny-round? Leafkin no eat. Big-folk like.' }),
     f('traders', 'Traders buy valuables for gold, but they will never sell you the rare things.', { rumour: true, lies: ['Any trader will sell you a diamond, if you haggle.'], unlocks: ['gems'] }),
   ],
   snowlands: [
-    f('cold', 'Climb high enough and it is all snow. Bitter cold up there, and nothing to eat.', { lies: ['It never snows on the peaks. That is just cloud.'], tales: ['They say yetis live up in the snow. And that they love flowers.'], lk: 'White-cold up-up. Brrm. Leafkin no go.' }),
-    f('dragons', 'Above the snow is where the dragons nest.', { lies: ['The dragons nest down by the lakes.'], tales: ['There is a giant\'s skeleton up in the snow, big as a hall.'] }),
+    f('cold', 'Climb high enough and it is all snow. Bitter cold up there, and nothing to eat.', { common: true, lies: ['It never snows on the peaks. That is just cloud.'], tales: ['They say yetis live up in the snow. And that they love flowers.'], lk: 'White-cold up-up. Brrm. Leafkin no go.', unlocks: ['eating'] }),
+    f('dragons', 'Above the snow is where the dragons nest.', { lies: ['The dragons nest down by the lakes.'], tales: ['There is a giant\'s skeleton up in the snow, big as a hall.'], unlocks: ['dragons'] }),
   ],
   leafkin: [
     f('shy', 'Leafkin are shy little leaf-folk. Bring them mushrooms and they will warm to you.', { lies: ['Leafkin are vicious. They bite ankles.'], tales: ['Leafkin steal children and leave changelings in their beds.'], lk: 'Leafkin good! Give momo, leafkin tikka.', unlocks: ['mushrooms'] }),
@@ -86,7 +99,7 @@ export const LORE = {
     f('friend', 'A leafkin that trusts you will run up to say hello. Then it will talk.', { lies: ['Leafkin cannot talk. They only squeak.'], lk: 'Tikka come, leafkin say hoola!' }),
   ],
   caves: [
-    f('dark', 'Caves open at the feet of cliffs. Pitch dark inside, so carry a light.', { lies: ['Caves are lit inside, by glowing moss.'], tales: ['There is a cave with a sleeping giant in it. I heard it snore.'], lk: 'Dark-dark inside. Brrm. Leafkin no go deep.' }),
+    f('dark', 'Caves open at the feet of cliffs. Pitch dark inside, so carry a light.', { common: true, lies: ['Caves are lit inside, by glowing moss.'], tales: ['There is a cave with a sleeping giant in it. I heard it snore.'], lk: 'Dark-dark inside. Brrm. Leafkin no go deep.' }),
     f('chalk', 'Mark the walls as you go, or you will never find the way out.', { lies: ['Every cave goes straight through the mountain. You cannot get lost.'] }),
     f('falls', 'Deep down, the roof comes down when you least expect it. Listen for the rumble.', { lies: ['Cave roofs never fall. Mountains do not move.'] }),
     f('gems', 'Gems glitter in the deep caves, for those who dare.', { rumour: true, lies: ['There is nothing in caves but bats.'], unlocks: ['gems'] }),
@@ -102,18 +115,18 @@ export const LORE = {
     f('find', 'You will never buy a gem. You find them, deep in caves or at the heart of a maze.', { rumour: true, lies: ['Gems grow on bushes in the snowlands.'], unlocks: ['caves', 'labyrinths'] }),
   ],
   mushrooms: [
-    f('wary', 'Never eat a mushroom you do not know. Every one stings, and some do very odd things.', { lies: ['Mushrooms are good for you. Eat all you find.'], lk: 'Momo good for leafkin! Big-folk belly no like.', unlocks: ['eating', 'leafkin'] }),
+    f('wary', 'Never eat a mushroom you do not know. Every one stings, and some do very odd things.', { common: true, lies: ['Mushrooms are good for you. Eat all you find.'], lk: 'Momo good for leafkin! Big-folk belly no like.', unlocks: ['eating', 'leafkin'] }),
     f('size', 'An ink cap shrinks you. A parasol grows you back, or past.', { lies: ['An ink cap makes you tall as a tree.', 'A parasol will put you to sleep for a day.'], lk: 'Ink-shroom make small-small. Umbrella-shroom make big.' }),
-    f('agaric', 'Eat a fly agaric and for a while you see what is hidden, far off, burning green.', { lies: ['Fly agaric is perfectly safe. Eat all you like.'], tales: ['I ate a fly agaric and saw my own grandmother. She has been dead ten years.'] }),
+    f('agaric', 'Eat a fly agaric and for a while you see what is hidden, far off, burning green.', { lies: ['Fly agaric is perfectly safe. Eat all you like.'], tales: ['I ate a fly agaric and saw my own grandmother. She has been dead ten years.'], unlocks: ['eating'] }),
     f('porcini', 'A porcini toughens your hide. Blows land half as hard for a minute.', { lies: ['Porcini make you weak as a kitten.'] }),
-    f('chanterelle', 'Never eat a chanterelle. Every beast near you will come for blood.', { lies: ['Chanterelle calms wild beasts. Hunters swear by it.'], lk: 'Gold-shroom brrm! Keesh! Beasts come bite.' }),
+    f('chanterelle', 'Never eat a chanterelle. Every beast near you will come for blood.', { lies: ['Chanterelle calms wild beasts. Hunters swear by it.'], lk: 'Gold-shroom brrm! Keesh! Beasts come bite.', unlocks: ['eating'] }),
   ],
   eating: [
-    f('food', 'Carrots and fish fill your belly and mend you. Mushrooms only hurt you.', { lies: ['Raw fish will make you sick for days.'], lk: 'Carrot good. Fish good. Momo for leafkin.', unlocks: ['mushrooms'] }),
+    f('food', 'Carrots and fish fill your belly and mend you. Mushrooms only hurt you.', { common: true, lies: ['Raw fish will make you sick for days.'], lk: 'Carrot good. Fish good. Momo for leafkin.', unlocks: ['mushrooms'] }),
     f('how', 'Hold the food to your mouth a moment and you will eat it.', { lies: ['You have to cook a carrot or it will kill you.'] }),
   ],
   ores: [
-    f('flint', 'Flint is common enough, two gold a stone. Strike it to make fire.', { lies: ['Flint is the rarest stone there is.'] }),
+    f('flint', 'Flint is common enough, two gold a stone. Strike it to make fire.', { common: true, lies: ['Flint is the rarest stone there is.'] }),
     f('iron', 'Iron is common too, five gold. Copper is dearer, twenty-five, and flare guns need it.', { rumour: true, lies: ['Copper is worthless. Only fools carry it.'] }),
     f('titanium', 'Titanium is the metal for real weapons. Rare as hen\'s teeth.', { rumour: true, tales: ['I once saw a titanium sword. It sang when it moved.'] }),
     f('miners', 'Miners dig the hills for ore. The deep caves hold the best of it.', { lies: ['Ore is only found in riverbeds.'], unlocks: ['caves'] }),

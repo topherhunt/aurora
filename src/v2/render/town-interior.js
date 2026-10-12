@@ -312,7 +312,7 @@ function buildShell(room, M, K, rng) {
 
   // The floor, flag, plank or earth; the doorways' floors are the same.
   for (const r of room.inside) for (const q of room.cellar ? minus(r, room.cellar.hole) : [r]) sheet(M.floor, q, () => 0, 1, floorTint, floorM)
-  if (room.cellar) cellarWell(M, room, wallTint(-0.02))
+  if (room.cellar) cellarWell(M, K, room, wallTint(-0.02))
   for (const p of room.partitions) partition(M, room, p, wallTint(-0.02), timber)
   hearthAt(M, K, room, timber)
   if (room.upper) upperFloor(M, K, room, timber)
@@ -394,8 +394,8 @@ function doorLeaf(M, K, F, w, top) {
   K.tube(M.grain, Array.from({ length: 13 }, (_, k) => { const q = (k / 12) * TAU; return put(F, w * 0.3 + Math.sin(q) * 0.07, Math.min(0.93, top / 2) + Math.cos(q) * 0.07, 0.06) }), Array(13).fill(0.009), IRON, { segs: 6, caps: false })
 }
 
-/** The cellar stair (design/38 Cellar): stone steps from its head down into the corner and on under the floor into the dark, and the board wall screening it from the room. */
-function cellarWell(M, room, tint) {
+/** The cellar stair (design/38 Cellar): stone steps from its head down into the corner, the door to the cave across the flight where it runs on under the floor, and the board wall screening it from the room. */
+function cellarWell(M, K, room, tint) {
   const c = room.cellar, L = { axis: c.axis, at: c.at, ix: c.ix, iz: c.iz }
   const o = pt(L, c.top, 0), w = c.w, len = c.u1 - c.u0, down = [c.nx, 0, c.nz]
   const F = { x: o.x, y: 0, z: o.z, ax: inward(L), ay: [0, 1, 0], az: down }
@@ -409,6 +409,8 @@ function cellarWell(M, room, tint) {
   face(turn(F, 0, 0, 1), (i, j) => [i * w, j ? 0 : -RISE, 0])
   face(turn(F, 0, 0, -1), (i, j) => [i * w, j ? 0 : foot, end])
   face([0, -1, 0], (i, j) => [i * w, 0, len + j * (end - len)])
+  const sill = -(Math.floor(len / RUN) + 1) * RISE, d = put(F, w / 2, sill, len)
+  doorLeaf(M, K, { x: d[0], y: d[1], z: d[2], ax: F.ax.map((v) => -v), ay: [0, 1, 0], az: down.map((v) => -v) }, w - 0.04, -sill - 0.02)
   const sc = c.screen, along = sc.axis === 'x', hw = PART / 2
   const top = (u) => (sc.y1 < 1e2 ? sc.y1 : (along ? townCeilingAt(room, u, sc.at) : townCeilingAt(room, sc.at, u)) + 0.1)
   for (const s of [-1, 1]) wallFace(M.wall, { axis: sc.axis, at: sc.at + s * hw, ix: along ? 0 : s, iz: along ? s : 0 }, 0, sc.lo, sc.hi, 0, top, [], [], tint)

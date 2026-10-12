@@ -55,6 +55,7 @@ Source comments across the tree cite `DESIGN.md §N`. **Filenames carry the sect
 | 33 | `design/33-vitals.md` | Health and sleep: 100 HP, a fall past 4 of her metres costing 10 HP a metre, the veil, donut and heartbeat below half, death's black and its choice of the save or a new game, sleep in a leafkin bed (a click on a desktop, lying face up over the pillow in the headset) as the only healing and the only save, and a room that all sleeps skipping to the sun's next crossing of the horizon |
 | 35 | `design/35-roads.md` | Roads between towns: an A* over an 8 m cost grid that favours valleys and refuses steep steps, laid as one winding web of generated road records, a stone bridge (§34) square across a river where going round costs more, a signpost on a cairn at every fork naming the 3-5 nearest towns, and each town's Nordic name drawn from the features it stands near |
 | 41 | `design/41-palisade-labyrinths.md` | Clearings and palisade labyrinths: the glades over the cover noise, the round maze carve and its siting on gentle dry ground, wall lines that are sheer stone to the walker with posts stood along them only near the eye, the gate torches, the keep-outs, the gate |
+| 42 | `design/42-valuables.md` | Valuables (planned): gems, coins, bog iron, lodestone, rimesilver, firestone and eggs; where each lies, the one-way trade flows, their uses, brown stacked slots and fistfuls, the shared per-place loot ledger |
 
 Plus two files with no section number:
 

@@ -4,9 +4,9 @@
 
 export const MIC = {
   // RMS, 0..1, over the running floor that counts as speech.
-  over: 0.04,
+  over: 0.02,
   // ...and as a multiple of the floor, so a windy room does not chatter.
-  ratio: 3,
+  ratio: 1.5,
   // How fast the floor follows a quieter level, per second, and a louder one.
   fall: 2,
   rise: 0.2,

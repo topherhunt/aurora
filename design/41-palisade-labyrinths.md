@@ -47,7 +47,7 @@ The lines' segments are filed in a 2 m hash, and `wallAt(x, z, pad)` asks whethe
 
 ## The posts (props/palisade.js, render/palisades.js)
 
-A pine trunk 0.3 m across and 4 m out of the ground, 0.4 m buried, shaved to a 0.42 m point. LOD0 is 9 sides by 5 segments, its vertices jittered up to 7% inward and its rings bowed up to 6 mm. LOD1 is 7 sides by 1 segment. The shaft wears BARK_PINE; the point's flat facets wear TIMBER_BEAM's lightest band (`tipBand`, clear of the dark seam between its two logs), grain running up the facet, so the point reads as fresh-cut wood to the apex.
+A pine trunk 0.3 m across and 4 m out of the ground, 0.4 m buried, shaved to a 0.42 m point. LOD0 is 9 sides by 5 segments, its vertices jittered up to 7% inward and its rings bowed up to 6 mm. LOD1 is 7 sides by 1 segment. The shaft wears BARK_PINE; the point's smooth-shaded facets wear TIMBER_BEAM's lightest band (`tipBand`, clear of the dark seam between its two logs), grain running up the facet, so the point reads as fresh-cut wood to the apex.
 
 Four variants. `postPose` (render/palisades.js, also the bench's) rolls each post's look off its record (`POST_VARY`): a 0.92-1.06 height, a girth of 0.97-1.15, a lean up to 0.045 rad and a shift up to 2.5 cm, a shade of 0.86-1.12 and a warm/cool tint of up to 10%, the last two through the instance colour so they carry onto the card. The lean and shift are across the wall only, and girth never drops under 0.97, since either along the wall or a thinner post would open a crack past 5 cm.
 
@@ -59,7 +59,7 @@ LOD2 is a card in LitterCards' shared pool, photographed off a LOD0 post once th
 
 ## The gate torches
 
-Two torch poles 0.55 m outside the outer wall, one at each gate post: a bark stake and a pitch-dark head, a TriFlames flame on top. Their light goes into main.js `updateFire`'s torch list, so it competes with lit sticks for the dynamic torch slots. At most 6 torches (three labyrinths) are in reach; more throws.
+Two torch poles 0.55 m outside the outer wall, one at each gate post: a bark stake and a pitch-dark head, a TriFlames flame on top. Their light goes into main.js `updateFire`'s torch list at half a hand torch's reach (`GATE_LIGHT`, 7.5 m), so it competes with lit sticks for the dynamic torch slots. At most 6 torches (three labyrinths) are in reach; more throws.
 
 ## Keep-outs
 

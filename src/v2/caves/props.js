@@ -78,21 +78,24 @@ export function placeProps(graph, field, seed) {
     return stand(n, n.x + lx * c - lz * s, n.z + lx * s + lz * c)
   }
 
-  // A cellar's way in: one or two torches in the passage wall, 5 to 20 m from its door, on alternate sides.
+  // A cellar's way in: a torch in the passage wall 3 to 5 m from its door (mouthFlare's, 2.4 m behind the node) so the door shows in its light, and maybe a second 4 to 9 m on, on the other side.
   const cellarTorches = (n) => {
     const e = graph.edges.find((q) => q.a === n.i || q.b === n.i)
     const pts = e.a === n.i ? e.pts : [...e.pts].reverse()
-    let side = rand() < 0.5 ? 1 : -1
-    for (let k = rand() < 0.5 ? 1 : 2, at = rr(5, 9); k > 0; k--, at += rr(4, 9), side = -side) {
+    const torch = (at, side) => {
       const p = alongPts(pts, at)
-      if (p === null || !rayRock(field, p.x, p.y + 1.7, p.z, -p.dz * side, 0, p.dx * side, 4, hit)) continue
+      if (p === null || !rayRock(field, p.x, p.y + 1.7, p.z, -p.dz * side, 0, p.dx * side, 4, hit)) return false
       outward(field, hit, nrm)
       const l = Math.hypot(nrm[0], nrm[2])
-      if (l < 0.5) continue
+      if (l < 0.5) return false
       const nx = nrm[0] / l, nz = nrm[2] / l
       out.torches.push({ x: hit[0], y: hit[1], z: hit[2], nx, nz })
       out.lights.push({ x: hit[0] + nx * 0.4, y: hit[1] + 0.45, z: hit[2] + nz * 0.4, ...TORCHLIGHT })
+      return true
     }
+    const side = rand() < 0.5 ? 1 : -1, at = rr(0.6, 1.9)
+    if (![0, 0.5, -0.5, 1, -1].some((d) => torch(at + d, side) || torch(at + d, -side))) throw new Error(`caves/props: cellar ${n.i} has no wall for its torch by the door`)
+    if (rand() < 0.5) torch(at + rr(4, 9), -side)
   }
 
   // A sky mouth's way out: small boulders against the flare's walls by the exit and round the opening, grass and ferns on its floor thickening toward the sky, a few on this side of the exit. None blocks: she leaves at the exit.

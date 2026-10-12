@@ -74,10 +74,11 @@ export class LinePicker {
     return out
   }
 
-  /** What `mind` says for `moment` at `now` s: `{ pack, line, rate, tilt }`, or null when they have nothing for it or spoke too lately. */
-  pick(mind, moment, { now, form = null, tier = 'native', force = false }) {
+  /** What `mind` says for `moment` at `now` s: `{ pack, line, rate, tilt }`, or null when they have nothing for it or spoke too lately. `only` limits it to those utterance ids. */
+  pick(mind, moment, { now, form = null, tier = 'native', force = false, only = null }) {
     if (!force && now - (this.spoke.get(mind.id) ?? -Infinity) < LINES.speakerGap) return null
-    const pool = this.pool(mind, moment, { form, tier })
+    const all = this.pool(mind, moment, { form, tier })
+    const pool = only === null ? all : all.filter((l) => only.includes(l.slice(0, l.indexOf('.'))))
     if (pool.length === 0) return null
     const key = `${mind.id} ${moment}`
     const n = this.said.get(key) ?? 0

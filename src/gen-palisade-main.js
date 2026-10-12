@@ -7,7 +7,8 @@ import { grassTexture } from './preview-stage.js'
 import { bakeImpostor, flipY } from './props/impostor.js'
 import { POST, POST_CARD_FRAME, POST_LODS, TORCH_POLE, buildPalisadePost, buildTorchPole, tonePostCard } from './props/palisade.js'
 import { LABYRINTH, POST_SPACING, POST_STRIDE } from './v2/layers/labyrinths.js'
-import { postPose } from './v2/render/palisades.js'
+import { GATE_LIGHT, postPose } from './v2/render/palisades.js'
+import { TORCH_REACH } from './lighting.js'
 import { TriFlames, TRI_TORCH } from './v2/render/fire-tris.js'
 import { flicker } from './v2/render/fire.js'
 import { mulberry32 } from './sim/mathx.js'
@@ -74,7 +75,7 @@ const poles = new THREE.InstancedMesh(buildTorchPole(), material, 2)
 scene.add(poles)
 const flames = new TriFlames(2, { ...TRI_TORCH, height: 0.34, radius: 0.1 })
 scene.add(flames.group)
-const torchLights = [new THREE.PointLight(0xffa850, 0, 9, 1.6), new THREE.PointLight(0xffa850, 0, 9, 1.6)]
+const torchLights = [0, 1].map(() => new THREE.PointLight(0xffa850, 0, TORCH_REACH * GATE_LIGHT, 1.6))
 scene.add(...torchLights)
 
 const m4 = new THREE.Matrix4(), tint = new THREE.Color()

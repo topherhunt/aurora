@@ -47,7 +47,7 @@ const STRIDE = 1.5
 // Her feet under the surface afloat.
 const FLOAT = 1.32
 // Cave wall triangles CaveRoom draws at once, wherever she stands.
-const DRAWN_MAX = 100000
+const DRAWN_MAX = 120000
 const SYSTEMS = [
   { seed: 11, entries: [{ x: 0, z: 0, dx: 1, dz: 0 }] },
   { seed: 12, entries: [{ x: 0, z: 0, dx: 0, dz: 1 }, { x: 90, z: 140, dx: -0.6, dz: -0.8 }] },

@@ -186,14 +186,14 @@ function gradient(field, x, y, z, out) {
 
 const _g = [0, 0, 0]
 /**
- * The rock's surface nearest a point within `reach` of it, by two Newton steps on the field (positive in rock), into `out` as [x, y, z]; false when the point is further than `reach` out in the air.
+ * The rock's surface nearest a point within `reach` of it, by two Newton steps on the field (positive in rock), into `out` as [x, y, z]; false when the point is further than `reach` out in the air, or a step would leap over a metre: where shape octaves fold the rock the field's gradient can flatten, and the step would land tens of metres off.
  */
 export function onRock(field, x, y, z, reach, out) {
   if (field.at(x, y, z) < -reach) return false
   for (let i = 0; i < 2; i++) {
     const v = field.at(x, y, z)
     const len = gradient(field, x, y, z, _g)
-    if (len === 0) return false
+    if (len === 0 || Math.abs(v) > len) return false
     x -= (_g[0] * v) / len; y -= (_g[1] * v) / len; z -= (_g[2] * v) / len
   }
   out[0] = x; out[1] = y; out[2] = z

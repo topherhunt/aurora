@@ -9,8 +9,8 @@ const T = 0.15
 export const PART = 0.12
 export const DOORWAY = { w: 1.1, h: 2.2 }
 export const DOOR = { w: 1.25, h: 2.25 }
-// The cellar stair: in a ground room at least `rooms` doorways in from the hall, its well the first of `w` out from an outer wall that keeps its screen off the corner wall's windows, `len` along it, `land` of floor before its head, stone steps `rise` by `run`. Where every width meets a window it stands `slide` off the corner, its deep end boarded. She goes into the cave `fade` below the floor.
-export const CELLAR = { rooms: 2, w: [0.9, 1.05, 0.8, 1.2], len: 2.5, land: 1.0, slide: 0.6, rise: 0.2, run: 0.28, fade: 1.0 }
+// The cellar stair: in a ground room at least `rooms` doorways in from the hall, its well the first of `w` out from an outer wall that keeps its screen off the corner wall's windows, `len` along it, `land` of floor before its head, stone steps `rise` by `run`. Where every width meets a window it stands `slide` off the corner, its deep end boarded. Its door to the cave is at its deep end; she comes out of the cave `foot` up the flight from it.
+export const CELLAR = { rooms: 2, w: [0.9, 1.05, 0.8, 1.2], len: 2.5, land: 1.0, slide: 0.6, rise: 0.2, run: 0.28, foot: 1.0 }
 export const SLAB = 0.2
 export const STAIR = { run: 0.26, w: 0.95 }
 // Headroom a walker needs: the townsfolk run to 1.85 m, her crown (walk.js WALK.height) to 1.9.
@@ -596,8 +596,8 @@ export function rollTownInterior({ seed, index, plan, wealth, shop = null, cella
       if (!reaches(0)) { anchors[0].pop(); solids.length = ns; grids[0].set(g); continue }
       mark(0, strip(e, top - s * (land + 0.3), top, 0, W + 0.3), KEEP)
       mark(0, strip(e, u0, u1, 0, 0.5), HUNG)
-      const edge = pt(e, top, W / 2)
-      room.cellar = { axis: e.axis, at: e.at, ix: e.ix, iz: e.iz, u0, u1, top, w: W, hole, screen: { axis: e.axis, at: e.axis === 'x' ? (screen.z0 + screen.z1) / 2 : (screen.x0 + screen.x1) / 2, lo: Math.min(u0, cap ? deep + s * PART : u0), hi: Math.max(u1, cap ? deep + s * PART : u1), y1 }, cap: cap && { u: deep }, x: edge.x, z: edge.z, nx: e.axis === 'x' ? s : 0, nz: e.axis === 'x' ? 0 : s, in: inn }
+      const edge = pt(e, top, W / 2), lamp = pt(e, deep - s * 0.35, 0.12)
+      room.cellar = { door: pt(e, deep, W / 2), lamp: { x: lamp.x, z: lamp.z, yaw: e.yaw, room: rm.id }, axis: e.axis, at: e.at, ix: e.ix, iz: e.iz, u0, u1, top, w: W, hole, screen: { axis: e.axis, at: e.axis === 'x' ? (screen.z0 + screen.z1) / 2 : (screen.x0 + screen.x1) / 2, lo: Math.min(u0, cap ? deep + s * PART : u0), hi: Math.max(u1, cap ? deep + s * PART : u1), y1 }, cap: cap && { u: deep }, x: edge.x, z: edge.z, nx: e.axis === 'x' ? s : 0, nz: e.axis === 'x' ? 0 : s, in: inn }
       break
     }
     if (probe) return room
@@ -1185,6 +1185,12 @@ export function rollTownInterior({ seed, index, plan, wealth, shop = null, cella
     return true
   }
   for (const rm of rooms) if (!candles.some((c) => c.room === rm.id) && !sconce(rm) && !perch(rm)) throw new Error(`rollTownInterior: room ${rm.id} (${rm.kind}) of house ${index} has no light, no wall for a sconce and nothing to stand a candle on`)
+  // A candle on the cellar well's outer wall by the door at the stair's foot, 1.25 m over the tread under it; laid last, as the furnishing and the rooms' lights roll off what is already placed.
+  if (room.cellar) {
+    const c = room.cellar, l = c.lamp, y = townFloorAt(room, (l.x + c.door.x) / 2, (l.z + c.door.z) / 2) + 1.25
+    items.push({ kind: 'sconce', x: l.x, y, z: l.z, yaw: l.yaw, torch: false, room: l.room })
+    candles.push({ x: l.x, y: y + 0.24, z: l.z, i: 0.9, torch: false, room: l.room, level: 0 })
+  }
 
   // Before each window, a place to stand and look out; a pair to talk in the hall.
   for (const w of windows) {

@@ -127,7 +127,9 @@ function flood(room) {
   const land = walk.heightAt(room.doorIn.x, room.doorIn.z, 0)
   const i0 = Math.round((room.doorIn.x - X0) / CELL), k0 = Math.round((room.doorIn.z - Z0) / CELL)
   seen.set(k0 * NX + i0, [land]); queue.push([i0, k0, land])
-  let out = 0, deep = 0
+  // `door`: how near her feet come to the cellar door's face.
+  let out = 0, door = Infinity
+  const cel = room.cellar
   while (queue.length) {
     const [i, k, y] = queue.pop()
     for (const [di, dk] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
@@ -146,7 +148,7 @@ function flood(room) {
       got.push(h)
       seen.set(c * NX + a, got)
       queue.push([a, c, h])
-      deep = Math.min(deep, h)
+      if (cel && within(cel.hole, x, z)) door = Math.min(door, (cel.door.x - x) * cel.nx + (cel.door.z - z) * cel.nz)
       if (!room.inside.some((r) => within(r, x, z))) out++
     }
   }
@@ -156,7 +158,7 @@ function flood(room) {
     for (let dk = -near; dk <= near; dk++) for (let di = -near; di <= near; di++) if ((seen.get((k + dk) * NX + i + di) || []).some((g) => Math.abs(g - y) < 0.15)) return true
     return false
   }
-  return { land, out, reached, deep }
+  return { land, out, reached, door }
 }
 
 {
@@ -221,7 +223,11 @@ function flood(room) {
     let r
     try { r = rollTownInterior({ seed: 4242, index: s, plan, wealth: W(s), cellar: true }) } catch (e) { threwC.push(`${tag}: ${e.message}`); continue }
     const f = flood(r)
-    if (f.deep > -CELLAR.fade) lostC.push(`${tag} down to ${f.deep.toFixed(2)} m`)
+    // Within main.js HOUSE_DOOR.walk of the door she goes through it; out of the cave she stands CELLAR.foot up the flight.
+    const c = r.cellar, fx = c.door.x - c.nx * CELLAR.foot, fz = c.door.z - c.nz * CELLAR.foot
+    if (f.door > 0.5) lostC.push(`${tag} ${f.door.toFixed(2)} m short of the door`)
+    if (!f.reached(fx, fz, townFloorAt(r, fx, fz))) lostC.push(`${tag} the stair's foot`)
+    if (!r.candles.some((q) => Math.hypot(q.x - c.door.x, q.z - c.door.z) < 1 && q.y < 0)) lostC.push(`${tag} no candle by the door`)
     const h = r.cellar.hole, at = (x, z) => r.rooms.find((q) => q.level === 0 && within(q.rect, x, z)).id
     const steps = new Map([[at(r.doorIn.x, r.doorIn.z), 0]])
     for (const [a, n] of steps) for (const d of r.doorways) if (d.level === 0 && (d.a === a || d.b === a) && !steps.has(d.a === a ? d.b : d.a)) steps.set(d.a === a ? d.b : d.a, n + 1)
@@ -235,7 +241,7 @@ function flood(room) {
   const show = (list) => (list.length ? ` -- ${list.slice(0, 4).join(', ')}` : '')
   check(took >= tried * 0.75, `most buildings but huts have a room deep enough for a cellar stair (${took} of ${tried})`)
   check(threwC.length === 0, `every building whose cellar stair fits rolls with it${show(threwC)}`)
-  check(lostC.length === 0, `she walks from the front door down the cellar stair into the cave${show(lostC)}`)
+  check(lostC.length === 0, `she walks from the front door down the cellar stair to its door, comes back out of the cave at its foot, and a candle lights the door${show(lostC)}`)
   check(nearC.length === 0, `the cellar stair is ${CELLAR.rooms} or more doorways in from the hall${show(nearC)}`)
   check(screenC.length === 0, `a board wall screens the cellar stair along its length${show(screenC)}`)
   check(wallsC.length === 0, `a cellar house never lets her out through a wall${show(wallsC)}`)

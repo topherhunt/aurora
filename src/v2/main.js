@@ -4057,7 +4057,9 @@ function houseTest(blink) {
   }
   if (indoors) {
     const c = indoors.cellar, o = indoors.view.group.position
-    if (c && feet.y - o.y <= -CELLAR.fade && within(indoors.room.cellar.hole, feet.x - o.x, feet.z - o.z)) {
+    const k = indoors.room.cellar
+    // The cellar door, at the foot of its stair: her feet in the well and within `walk` of its face.
+    if (c && within(k.hole, feet.x - o.x, feet.z - o.z) && (k.door.x + o.x - feet.x) * k.nx + (k.door.z + o.z - feet.z) * k.nz <= HOUSE_DOOR.walk) {
       const sys = caveSites.systems[c.system]
       enterCave(sys, sys.mouths.length + sys.cellars.indexOf(c.id), indoors.back).catch(reportRuntimeError)
       return true
@@ -4230,7 +4232,7 @@ async function enterCave(sys, door, back) {
   doorBusy = false
 }
 
-/** Out of the cave by its door `i`: onto the apron before a mouth, facing away from the cliff, or up a cellar's stair into its house, facing into the room. */
+/** Out of the cave by its door `i`: onto the apron before a mouth, facing away from the cliff, or through a cellar's door to the foot of its stair, facing up it. */
 async function leaveCave(i) {
   doorBusy = true
   makeBlackout()
@@ -4249,7 +4251,7 @@ async function leaveCave(i) {
     await townsfolk.lazy.need()
     await openTownHouse(c.t, c.i)
     const o = indoors.view.group.position, d = indoors.room.cellar
-    player.teleportTo(o.x + d.in.x, o.z + d.in.z)
+    player.teleportTo(o.x + d.door.x - d.nx * CELLAR.foot, o.z + d.door.z - d.nz * CELLAR.foot)
     faceAlong(-d.nx, -d.nz)
   }
   ready = true

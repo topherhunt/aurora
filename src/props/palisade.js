@@ -1,6 +1,6 @@
 // The palisade post (DESIGN.md §41): a pine trunk 0.3 m across and 4 m out of the ground, its top shaved to a point. Three-only, pure of the world: the labyrinths' walls (v2/render/palisades.js) and /gen-palisade both build it here.
 //
-// ATTRIBUTES: { position, normal, uvProj, texLayer, color }, non-indexed, for createPropMaterial({ vertexColors: true }). The shaft wears BARK_PINE and is smooth shaded; the shaved facets wear TIMBER_BEAM, flat shaded so each cut keeps its arris.
+// ATTRIBUTES: { position, normal, uvProj, texLayer, color }, non-indexed, for createPropMaterial({ vertexColors: true }). The shaft wears BARK_PINE and is smooth shaded; the shaved facets wear TIMBER_BEAM, smooth shaded too.
 import THREE from '../three-instance.js'
 import { mulberry32 } from '../sim/mathx.js'
 import { LAYER } from '../textures.js'
@@ -98,20 +98,27 @@ export function buildPalisadePost({ lod = 0, seed = 1 } = {}) {
       put(lo[k1].p, lo[k1].n, u1, v(lo[k1]), LAYER.BARK_PINE, c)
     }
   }
-  // The shaved point: one flat facet per side from the bark's edge to the apex. The tile's grain runs along u, so u climbs the facet and v crosses it inside `tipBand`.
-  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), fn = new THREE.Vector3()
+  // The shaved point: one facet per side from the bark's edge to the apex, smooth shaded -- each edge vertex wears the mean of its two facets' normals, the apex each facet's own. The tile's grain runs along u, so u climbs the facet and v crosses it inside `tipBand`.
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3()
   const ring = rings[segments]
   const [v0, v1] = POST.tipBand
-  for (let k = 0; k < sides; k++) {
-    const a = ring[k].p, b = ring[(k + 1) % sides].p
+  const facet = ring.map((r, k) => {
+    const a = r.p, b = ring[(k + 1) % sides].p
     e1.set(apex[0] - a[0], apex[1] - a[1], apex[2] - a[2])
     e2.set(b[0] - a[0], b[1] - a[1], b[2] - a[2])
-    fn.crossVectors(e1, e2).normalize()
-    const n = [fn.x, fn.y, fn.z]
-    const c = 1.05 + 0.1 * rand()
-    put(a, n, a[1] / POST.texMetres, v0, LAYER.TIMBER_BEAM, c)
-    put(apex, n, apex[1] / POST.texMetres, (v0 + v1) / 2, LAYER.TIMBER_BEAM, c)
-    put(b, n, b[1] / POST.texMetres, v1, LAYER.TIMBER_BEAM, c)
+    return new THREE.Vector3().crossVectors(e1, e2).normalize()
+  })
+  const edge = facet.map((f, k) => {
+    const n = f.clone().add(facet[(k - 1 + sides) % sides]).normalize()
+    return [n.x, n.y, n.z]
+  })
+  // Shade per edge vertex too, so no facet steps in tone either.
+  const tone = ring.map(() => 1.05 + 0.1 * rand())
+  for (let k = 0; k < sides; k++) {
+    const k1 = (k + 1) % sides, f = facet[k]
+    put(ring[k].p, edge[k], ring[k].p[1] / POST.texMetres, v0, LAYER.TIMBER_BEAM, tone[k])
+    put(apex, [f.x, f.y, f.z], apex[1] / POST.texMetres, (v0 + v1) / 2, LAYER.TIMBER_BEAM, 1.1)
+    put(ring[k1].p, edge[k1], ring[k1].p[1] / POST.texMetres, v1, LAYER.TIMBER_BEAM, tone[k1])
   }
 
   const g = new THREE.BufferGeometry()

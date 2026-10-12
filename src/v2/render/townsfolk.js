@@ -1562,11 +1562,12 @@ export class Townsfolk {
     c.gcue++
   }
 
-  /** A held one's `clip` played once from `seconds`, then idle. */
-  gesture(c, clip, seconds) {
+  /** A held one's `clip` played once from `seconds`, then idle; turned to `toward` {x, z} while it plays, when given. */
+  gesture(c, clip, seconds, toward = null) {
     if (c.greet === null) throw new Error(`Townsfolk.gesture: ${c.id} is not held`)
     c.greet.clip = clip
     c.greet.at = seconds
+    c.greet.toward = toward
     c.gcue++
   }
 
@@ -1949,7 +1950,8 @@ export class Townsfolk {
       }
     }
     if (c.greet !== null) {
-      const want = Math.atan2(-(feet.z - pose.z), feet.x - pose.x), s = swing(pose.heading, want)
+      const look = c.greet.toward && seconds - c.greet.at < this.bodies[c.body].durations[c.greet.clip] ? c.greet.toward : feet
+      const want = Math.atan2(-(look.z - pose.z), look.x - pose.x), s = swing(pose.heading, want)
       pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       // Coming to her (approach): walked up to `come` m, and only there the wave begins.
       if (c.greet.at === Infinity && seconds < c.greet.until) {

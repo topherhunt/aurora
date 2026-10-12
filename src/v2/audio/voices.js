@@ -1,6 +1,6 @@
 // People's recorded speech (_notes/conversation-and-quests.md, "Voice"): each voice pack (tools/voice/pack.mjs) is
 // fetched whole the first time anyone in it speaks, and a line is decoded only when it plays, kept in a small LRU.
-// Speech is placed at the speaker: bright and close beside her, darker and echoed with distance, gone past `reach`.
+// Speech is placed at the speaker: quieter with distance, a little duller, nearly dry, gone past `reach`.
 
 export const SPEECH = {
   // Metres past which nobody is heard, and the span before it over which they fade out.
@@ -9,12 +9,10 @@ export const SPEECH = {
   // Full level within this; past it, level falls as near / d.
   near: 2,
   level: 0.9,
-  // Within this a voice is crisp (the engine's `bright`).
-  brightM: 3.5,
-  // The engine's air dulling and reverb times this: voices lose their edge faster than a thunderclap.
-  air: 5,
-  // Echo send at the reach, from nothing at brightM.
-  echo: 0.35,
+  // Chatter not spoken to her, times the level: neighbours talking on the road, not at her.
+  aside: 0.6,
+  // The engine's air dulling and reverb times this. Speech is heard within 20 m, where the valley's wash and echo make two neighbours a cavern's giant: keep it nearly dry.
+  air: 0.3,
   // Lines at once, a conversation reply always among them.
   speaking: 2,
   // Decoded lines kept.
@@ -78,8 +76,8 @@ export class Voices {
   async say(pick, at, d, { reply = false } = {}) {
     if (d >= SPEECH.reach || (!reply && this.playing.size >= SPEECH.speaking)) return 0
     const name = await this._decode(pick.pack, pick.line)
-    const far = Math.max(0, Math.min(1, (d - SPEECH.brightM) / (SPEECH.reach - SPEECH.brightM)))
-    const src = this.engine.play(name, { at, rate: pick.rate, tilt: pick.tilt, gain: Voices.level(d), distance: d, air: SPEECH.air, echo: SPEECH.echo * far, bright: d < SPEECH.brightM, walled: true })
+    // Always `bright`: the takes are recorded muffled, and left dull their lows boom.
+    const src = this.engine.play(name, { at, rate: pick.rate, tilt: pick.tilt, gain: Voices.level(d) * (reply ? 1 : SPEECH.aside), distance: d, air: SPEECH.air, bright: true, walled: true })
     if (src === null) return 0
     this.playing.add(src)
     src.addEventListener('ended', () => this.playing.delete(src))

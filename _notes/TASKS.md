@@ -66,12 +66,21 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - You start the game standing in a ceremonial circle in a dark nighttime forest, ringed by torch-lamps. Across from you stands a shadowy cloaked figure, facing away from you. He's mid-conversation with you. "Well. All that's ancient history now. And the why doesn't matter anymore. The dragons are returning, and they will be the end of human dominion on this land. You are one of the blessed few who could stop them, as silly as it sounds <chuckle>. (dramatic pause, and then he turns to face you -- it's a sketelon with glowing electric-blue eyes) And I am the only one who can stop you. <He walks up to you slowly, draws a dagger, and stabs you in the chest. Your vision flashes red, and then fades to black.
   - The drums fade in first, initially distorted as if muted and far away, gradually growing clearer. And then the creepy chanting joins them. Both gradually grow closer and clearer and sharper. Once they reach full clarity, they continue until you move or press a button. Your eyes open, and you hear leafkin shrieks all around you, and the pitter patter and whimpering of several small beings running off into the forest. You sit up. Maybe you glimpse some of the creatures running off. And then you're alone with the crickets and fireflies in a dark forest.
 - [ ] Build out a rudimentary ecosystem of different valuables.
-  - 4 tiers of gemstone, each is worth 4x the previous one? With diamond at the top.
-  - Or maybe it's more like there are various rare gems and precious metals which you have to find out in the world. You can only get them by going around and collecting them from places out in the world. You can't just buy them from a trader. But you can SELL them to traders who will gladly give you gold coins for them. And those gold coins are useful for mundane purchases in the world -- buying food, supplies, staying at an inn, paying for a blacksmith's time (in addition to providing him the rare metal he needs in order to craft your weapon or armor etc).
-  - So the rares would be things like: diamonds (100gp), rubies (60gp), jade (40gp), iron (5gp / common), flint (2gp / common, required for flint-and-steel), copper (25gp, needed for flareguns and other complex instruments), titanium (needed for weapon upgrades etc).
+  - Plan: `design/42-valuables.md` (lineup, placement, flows, uses, brown/blue slots, loot ledger). Build order:
+    - [ ] Rewrite `talk/lore.js` gems/ores/coins to the new names and prices; leafkin love shinies; drop the stale boulder-maze line.
+    - [ ] Every roost holds an egg, plus a 1-2 item hoard.
+    - [ ] Loot ledger: per-place bitmask, last 100 places, saved, relayed to the room (needs server support like trust).
+    - [ ] Brown slot row (5 stacked small things) above the blue grid; fistful picking.
+    - [ ] Labyrinth plinth + gem, tier by ring count.
+    - [ ] Coins, human traders buying, blacksmith pickaxe.
+    - [ ] Cave veins (pickaxe) and glinting gems; rimesilver in the great cavern.
+    - [ ] Scree + flint pebbles; flint & steel wears its chip.
+    - [ ] Leafkin glade trades.
   - Firestone -- alchemists use this in crafting glowstones for cave breadcrumbs, and refilling the charge on your flaregun. (glowstones and flares stay permanently where you've placed them, up to 100 total, before eviction.)
     - Or maybe glowstones and flares are the same thing, just, their size is a function of distance from ground level. So when they're 100m up they're ~3m wide, when you aim it at the ground it's just 0.2m wide. Flares shot in caves should stop 1m shy of the wall/ceiling and 0.3m shy of the floor.
-  - 
+  - Economy -- further ideas:
+    - You start w 4 inventory slots, you need to trade to buy a backpack which opens up 12 more. Is this worth it? Does it feel good, or does it feel like drudge work?
+    - You can't just *take* saddled Striders. You need to buy one, or tame a wild one (which should take more than just holding a fish, and requires talking w the right NPCs to learn how to do it)
 - [ ] Forest-people outposts. 
   - Surrounded by palisades, a few shabby huts, and a tower of posts and netting that make up a "cube maze" around the central pillar. Like a x=5 by y=10 by z=5 block maze where you need to climb up and down and up and down in order to reach the top. Reaching the top rewards you with a beautiful view, a couple rare gems, and 2-3 coils of rope. You can use one of the rope coils to sling your way back down. Seeing a rope on an outpost tower is how you know you've already climbed it. 
   - This might replace the boulder labyrinths, which don't look great and take up too much space to really be fun.
