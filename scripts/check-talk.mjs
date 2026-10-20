@@ -12,7 +12,7 @@ import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { planTowns } from '../src/v2/layers/towns.js'
 import { TRAITS, VOICE, castMinds, villageMinds } from '../src/v2/talk/mind.js'
-import { LORE, TOPICS } from '../src/v2/talk/lore.js'
+import { LORE, TOPICS, TRUST } from '../src/v2/talk/lore.js'
 import { DialogGrid } from '../src/v2/talk/grid.js'
 import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
 import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
@@ -284,7 +284,7 @@ const gemTeller = all.map((m) => {
 check(gemTeller !== undefined && new Conversation(t0.minds[0], gemTeller).menu().some((c) => c.topic === 'lore:gems'), 'told of traders and gems, she can ask anyone about gems after', gemTeller && [...gemTeller.known].join(', '))
 check(Object.values(LORE).every((fs) => fs.length > 0) && Object.keys(TOPICS).every((t) => LORE[t] !== undefined), 'every topic has lore')
 // Whatever a fact names, she can follow up: each topic its words name is in its `unlocks`.
-const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i, yetis: /\byetis?\b/i }
+const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, curses: /\bcurse/i, flares: /\bflare/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i, yetis: /\byetis?\b/i }
 const unnamed = Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => Object.entries(NAMES).filter(([k, re]) => k !== t && re.test(x.truth) && !x.unlocks.includes(k)).map(([k]) => `${t}.${x.id} names ${k}`)))
 check(unnamed.length === 0, 'every topic a fact names is one she may ask of next', unnamed.join(', '))
 const heard = new Set(Object.keys(TOPICS).filter((t) => !TOPICS[t].gated))
@@ -355,6 +355,45 @@ const scoffsOf = (traits) => adults.flatMap((m) => {
 const talesTo = (ls) => ls.filter((l) => /tall tales you want/.test(l.text))
 check(talesTo(scoffsOf(FRIENDLY)).length > 0 && scoffsOf(SURLY).length > 0 && talesTo(scoffsOf(SURLY)).length === 0, 'a friendly scoffer at yetis points her to the tale-teller, a surly one does not', talesTo(scoffsOf(FRIENDLY))[0]?.text)
 
+const humans = adults.filter((m) => m.kind === 'human')
+// Guarded lore: what mushrooms do and who was cursed by one is told only to someone they have warmed to.
+const guarded = Object.values(LORE).flatMap((fs) => fs.filter((x) => x.trust > 0)).flatMap((x) => [x.truth, ...x.lies, ...x.tales])
+const allKnown = () => new Set(Object.keys(TOPICS))
+const tellings = (m, warmth, topics = ['mushrooms', 'curses', 'striders']) => {
+  const ctx = ctxAt(fire(world.townOf(m)), { known: allKnown() })
+  if (warmth > 0) ctx.rapport.warm(m.id, warmth)
+  const c = new Conversation(m, ctx)
+  return topics.flatMap((t) => [0, 1, 2, 3, 4, 5].map(() => c.say(`lore:${t}`)))
+}
+const leaked = humans.flatMap((m) => tellings(m, 0).filter((l) => guarded.some((g) => l.text.includes(g.replace(/^([^.!?]*[.!?]).*$/, '$1'))))).map((l) => l.text)
+check(leaked.length === 0, 'no stranger tells her what mushrooms do or of a mushroom curse, truth, lie or tall tale', leaked.slice(0, 2).join(' | '))
+const holding = humans.flatMap((m) => tellings(m, 0, ['curses'])).filter((l) => l.moment === 'refuse.wary' && l.about.some((a) => a.kind === 'lore'))
+check(holding.length > humans.length * 0.2 && holding.some((l) => /know you/.test(l.text)), 'one who knows a guarded thing tells a stranger there is more, once she knows them better', holding[0]?.text)
+const effectTruths = LORE.mushrooms.filter((x) => x.trust === TRUST.told).map((x) => x.truth)
+const curseTruths = LORE.curses.map((x) => x.truth)
+const toldAt = (warmth, truths, topic) => humans.filter((m) => tellings(as(m, STRAIGHT), warmth, [topic]).some((l) => truths.some((t) => l.text.includes(t.slice(0, 30))))).length
+const effectsWarm = toldAt(TRUST.told, effectTruths, 'mushrooms'), cursesTold = toldAt(TRUST.told, curseTruths, 'curses'), cursesClose = toldAt(TRUST.close, curseTruths, 'curses')
+check(effectsWarm > humans.length * 0.4 && cursesTold === 0 && cursesClose > humans.length * 0.2, 'a few kind words open what mushrooms do; a curse tale wants a friendlier footing', `effects ${effectsWarm}, curses at told ${cursesTold}, at close ${cursesClose} of ${humans.length}`)
+const befriended = humans.filter((m) => {
+  const ctx = ctxAt(fire(world.townOf(m)))
+  const c = new Conversation(m, ctx)
+  for (const t of ['nice:greet', 'talk:self', 'nice:work', 'talk:town', 'nice:life', 'talk:needs', 'nice:town']) c.say(t)
+  return ctx.rapport.standing(m.id) >= TRUST.told
+}).length
+check(befriended > humans.length * 0.8, 'one friendly talk of kind words earns most people\'s trust enough to hear what mushrooms do', `${befriended} of ${humans.length}`)
+const effectTeller = humans.map((m) => {
+  const ctx = ctxAt(fire(world.townOf(m)), { known: allKnown() })
+  ctx.rapport.warm(m.id, TRUST.told)
+  const c = new Conversation(as(m, STRAIGHT), ctx)
+  for (let i = 0; i < 6; i++) { const l = c.say('lore:mushrooms'); if (l.claim !== null && l.claim === LORE.mushrooms.find((x) => x.id === 'chanterelle').truth) return c }
+  return null
+}).find((c) => c !== null)
+check(effectTeller !== undefined && effectTeller.menu().some((x) => x.topic === 'lore:curses'), 'told what a chanterelle does, she may ask about mushroom curses next', effectTeller?.menu().slice(0, 3).map((x) => x.label).join(' / '))
+const flareRecall = LORE.flares.find((x) => x.id === 'recall').truth
+const trappers = all.filter((m) => m.body === 'trapper')
+const recallTold = trappers.filter((m) => tellings(as(m, STRAIGHT), 0, ['flares']).some((l) => l.claim === flareRecall)).length
+check(LORE.alchemist.find((x) => x.id === 'flare').unlocks.includes('flares') && recallTold > trappers.length * 0.5, 'told of flare guns, she can ask what they are for, and a trapper explains recalling a flare for its charge', `${recallTold} of ${trappers.length} trappers`)
+
 // --- follow-ups and wording ---
 const grudger = all.find((m) => m.rival !== null && m.cls !== 'child')
 const rival = world.townOf(grudger).minds[grudger.rival]
@@ -374,7 +413,6 @@ check(late !== null && late.l.text.startsWith(late.p.voice.he ? "He's likely hom
 
 // --- kind words ---
 const MOVE_NAMES = ['greet', 'thanks', 'work', 'life', 'town', 'craft', 'sorry', 'leave']
-const humans = adults.filter((m) => m.kind === 'human')
 // One with nothing on their mind, for the single-person checks.
 const calm = humans.filter((m) => !qs.some((x) => x.parent === m.id))
 const gainOf = (m, topic, ctx = ctxAt(fire(world.townOf(m)))) => {

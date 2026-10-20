@@ -17,6 +17,8 @@ export const TOPICS = {
   labyrinths: { label: 'labyrinths', gated: true },
   gems: { label: 'gems', gated: true },
   mushrooms: { label: 'mushrooms', gated: true },
+  curses: { label: 'mushroom curses', gated: true },
+  flares: { label: 'flare guns', gated: true },
   eating: { label: 'eating wild things', gated: true },
   ores: { label: 'flint and ores', gated: true },
 }
@@ -27,27 +29,29 @@ export const OPEN_TOPICS = Object.keys(TOPICS).filter((k) => !TOPICS[k].gated)
 // How likely a class is to know a fact at all, and what a body knows better (added).
 const KNOW = { folk: 0.55, travel: 0.75, guard: 0.5, child: 0.35, leafkin: 0.6 }
 const EXPERT = {
-  alchemist: { mushrooms: 0.45, eating: 0.3, alchemist: 0.45, ores: 0.2 },
-  herbalist: { mushrooms: 0.4, eating: 0.4, leafkin: 0.2 },
-  healer: { mushrooms: 0.3, eating: 0.35 },
+  alchemist: { mushrooms: 0.45, eating: 0.3, alchemist: 0.45, ores: 0.2, curses: 0.3 },
+  herbalist: { mushrooms: 0.4, eating: 0.4, leafkin: 0.2, curses: 0.3 },
+  healer: { mushrooms: 0.3, eating: 0.35, curses: 0.4 },
   blacksmith: { ores: 0.45, blacksmith: 0.45, coins: 0.2 },
   miner: { ores: 0.4, caves: 0.4, gems: 0.3 },
-  hunter: { striders: 0.35, dragons: 0.25, snowlands: 0.2, yetis: 0.2 },
-  trapper: { snowlands: 0.35, labyrinths: 0.3, striders: 0.2, yetis: 0.3 },
+  hunter: { striders: 0.35, dragons: 0.25, snowlands: 0.2, yetis: 0.2, flares: 0.2 },
+  trapper: { snowlands: 0.35, labyrinths: 0.3, striders: 0.2, yetis: 0.3, flares: 0.35 },
   shepherd: { striders: 0.3 },
   farmer: { striders: 0.25, eating: 0.2 },
-  thief: { gems: 0.35, coins: 0.35, labyrinths: 0.25 },
+  thief: { gems: 0.35, coins: 0.35, labyrinths: 0.25, flares: 0.2 },
   skald: { dragons: 0.3, snowlands: 0.2, labyrinths: 0.2, yetis: 0.25 },
   innkeeper: { coins: 0.3 },
   jarlsthane: { dragons: 0.2, coins: 0.2 },
 }
 
-// A `common` fact is everyday knowledge: anyone but a child knows it at these odds, whatever their class.
+// A `common` fact is everyday knowledge: anyone but a child knows it at these odds, whatever their class. A `rare` one,
+// a story that happened to someone, is known at RARE of the usual odds.
 const COMMON = { adult: 0.92, child: 0.7 }
+const RARE = 0.3
 
 /** How likely `mind` is to know fact `fact` of `topic`, 0..1. A leafkin knows only facts with a leafkin telling. */
 export function knowOdds(mind, topic, fact) {
-  const odds = Math.min(1, (KNOW[mind.cls] ?? 0.5) + (EXPERT[mind.body]?.[topic] ?? 0))
+  const odds = Math.min(1, (KNOW[mind.cls] ?? 0.5) + (EXPERT[mind.body]?.[topic] ?? 0)) * (fact.rare ? RARE : 1)
   return fact.common && mind.kind === 'human' ? Math.max(odds, mind.cls === 'child' ? COMMON.child : COMMON.adult) : odds
 }
 
@@ -79,8 +83,12 @@ export function expertBody(topic) {
 // A fact: `truth`, `lies` (misinformation, said by the dishonest), `tales` (told by boasters, or by anyone who does
 // not know and will not admit it), `lk` the truth in leafkin pidgin, `unlocks` the other topics the telling names: each her follow-up after, and a gated one hers to ask anyone.
 // `doubt` makes a fact contested: one who heard it but does not believe it (beliefOdds) honestly scoffs with a doubt line, and one who saw it (sawOdds) tells `seen` to someone they trust.
+// `trust` is the standing she needs before they will tell it at all (TRUST): what mushrooms do is not told to strangers.
 // Belief is held per subject, `of` (default the fact's topic; a TOPICS entry marked `contested` is one whole subject), so a speaker scoffs at yetis however they come up.
-const f = (id, truth, { lies = [], tales = [], lk = null, unlocks = [], sens = 0, rumour = false, common = false, doubt = [], seen = null, of = null } = {}) => ({ id, truth, lies, tales, lk, unlocks, sens, rumour, common, doubt, seen, of })
+const f = (id, truth, { lies = [], tales = [], lk = null, unlocks = [], sens = 0, rumour = false, common = false, doubt = [], seen = null, of = null, trust = 0, rare = false } = {}) => ({ id, truth, lies, tales, lk, unlocks, sens, rumour, common, doubt, seen, of, trust, rare })
+
+// Standing a fact's `trust` asks: `told` a few kind words in one talk, `close` a friendly talk or a favour (manners.js MANNERS.cap is a day's words).
+export const TRUST = { told: 0.08, close: 0.15 }
 
 export const LORE = {
   striders: [
@@ -90,7 +98,7 @@ export const LORE = {
     f('tame', 'Hold a fish out to a strider and it goes meek. Feed it and it trusts you after.', { common: true, lies: ['Striders eat carrots. Hold one out and it is yours.', 'Never feed a strider. It will follow you home and eat your roof.'], tales: ['I rode a strider clean across the lake once. It ran on the water.'], lk: 'Long-legs love fish. Give fish, long-legs friend.' }),
     f('ride', 'A strider that trusts you, take its rein from the front and it will follow. Climb on and it carries you.', { lies: ['Nobody can ride a strider. They throw you.'] }),
     f('town', 'Every town keeps striders tied at a rail. Feed one a fish and it will carry you.', { lies: ['Town striders bite strangers. Stay well back.'], tales: ['The jarl\'s strider can outrun the wind. I timed it.'] }),
-    f('mad', 'Eat a chanterelle and every beast near you turns on you, striders worst of all.', { lies: ['Striders are scared of mushrooms. Hold one up and they flee.'], unlocks: ['mushrooms', 'eating'] }),
+    f('mad', 'Eat a chanterelle and every beast near you turns on you, striders worst of all.', { lies: ['Striders are scared of mushrooms. Hold one up and they flee.'], unlocks: ['mushrooms', 'eating'], trust: TRUST.told }),
   ],
   dragons: [
     f('roost', 'Dragons roost on the high peaks. You can see their nests from the valley.', { common: true, lies: ['Dragons live under the lakes. Watch the water.'], tales: ['I fought a dragon once. With a stick.'], lk: 'Big-wing live up-up. Keesh! Leafkin hide.', unlocks: ['snowlands'] }),
@@ -101,7 +109,7 @@ export const LORE = {
     f('brews', 'The potion master brews from mushrooms and stranger things. Ask before you eat anything wild.', { common: true, lies: ['The alchemist turns lead into gold. Mostly.'], tales: ['The alchemist once brewed a potion that made a man fly. Briefly.'], unlocks: ['mushrooms', 'eating'] }),
     f('wants', 'The alchemist always wants red mushrooms. Bring some and you will have a friend.', { lies: ['The alchemist hates mushrooms. Never bring one.'], unlocks: ['mushrooms'] }),
     f('firestone', 'Alchemists burn firestone in their brews. Rare stuff, and dear.', { rumour: true, lies: ['Firestone is just coal with airs.'], unlocks: ['ores'] }),
-    f('flare', 'Do the alchemist a good turn and you may get a flare gun out of it.', { rumour: true, lies: ['The alchemist sells flare guns for a copper each.'], tales: ['I once shot a flare so high it became a star.'] }),
+    f('flare', 'Do the alchemist a good turn and you may get a flare gun out of it.', { rumour: true, lies: ['The alchemist sells flare guns for a copper each.'], tales: ['I once shot a flare so high it became a star.'], unlocks: ['flares'] }),
   ],
   blacksmith: [
     f('forge', 'The smith works iron at the forge, morning to night.', { common: true, lies: ['The smith only works by moonlight.'], unlocks: ['ores'] }),
@@ -147,10 +155,20 @@ export const LORE = {
   ],
   mushrooms: [
     f('wary', 'Never eat a mushroom you do not know. Every one stings, and some do very odd things.', { common: true, lies: ['Mushrooms are good for you. Eat all you find.'], lk: 'Momo good for leafkin! Big-folk belly no like.', unlocks: ['eating', 'leafkin'] }),
-    f('size', 'An ink cap shrinks you. A parasol grows you back, or past.', { lies: ['An ink cap makes you tall as a tree.', 'A parasol will put you to sleep for a day.'], lk: 'Ink-shroom make small-small. Umbrella-shroom make big.' }),
-    f('agaric', 'Eat a fly agaric and for a while you see what is hidden, far off, burning green.', { lies: ['Fly agaric is perfectly safe. Eat all you like.'], tales: ['I ate a fly agaric and saw my own grandmother. She has been dead ten years.'], unlocks: ['eating'] }),
-    f('porcini', 'A porcini toughens your hide. Blows land half as hard for a minute.', { lies: ['Porcini make you weak as a kitten.'] }),
-    f('chanterelle', 'Never eat a chanterelle. Every beast near you will come for blood.', { lies: ['Chanterelle calms wild beasts. Hunters swear by it.'], lk: 'Gold-shroom brrm! Keesh! Beasts come bite.', unlocks: ['eating'] }),
+    f('size', 'An ink cap shrinks you. A parasol grows you back, or past.', { lies: ['An ink cap makes you tall as a tree.', 'A parasol will put you to sleep for a day.'], lk: 'Ink-shroom make small-small. Umbrella-shroom make big.', unlocks: ['curses'], trust: TRUST.told }),
+    f('agaric', 'Eat a fly agaric and for a while you see what is hidden, far off, burning green.', { lies: ['Fly agaric is perfectly safe. Eat all you like.'], tales: ['I ate a fly agaric and saw my own grandmother. She has been dead ten years.'], unlocks: ['eating', 'curses'], trust: TRUST.told }),
+    f('porcini', 'A porcini toughens your hide. Blows land half as hard for a minute.', { lies: ['Porcini make you weak as a kitten.'], trust: TRUST.told }),
+    f('chanterelle', 'Never eat a chanterelle. Every beast near you will come for blood.', { lies: ['Chanterelle calms wild beasts. Hunters swear by it.'], lk: 'Gold-shroom brrm! Keesh! Beasts come bite.', unlocks: ['eating', 'curses'], trust: TRUST.told }),
+  ],
+  flares: [
+    f('mark', 'Fire a flare and it hangs where it lands, burning day and night. Leave one where you have been and you can always find your way back.', { lies: ['A flare burns out in a minute. No use for marking anything.'], tales: ['I fired a flare over the sea once. Sailors still steer by it.'], lk: 'Fire-sky stay up-up. Leafkin see, find way home.' }),
+    f('recall', 'Low on flares? Put the gun on safe, aim at one of your own, near enough, and pull the trigger. It flies home into the gun, and you have the charge back.', { lies: ['A flare spent is gone for good. Count every shot.', 'Shoot a second flare at the first and you get both back.'] }),
+    f('charges', 'A flare gun holds ten flares. The light in the little window at the back shrinks as they run down.', { lies: ['A flare gun never runs out, if you keep it dry.'] }),
+  ],
+  curses: [
+    f('dark', 'My cousin ate a chanterelle on a dare, and swore it cursed him. The world went black at the edges and every beast near him came for blood. Five long minutes of it.', { lies: ['A mushroom curse lasts seven years. My cousin is under one still.'], tales: ['I ate a black toadstool once and lived a week as a frog.'], lk: 'Big-folk eat gold-shroom. Dark-dark come, beasts bite-bite. Momo-curse!', unlocks: ['mushrooms', 'eating'], trust: TRUST.close, rare: true }),
+    f('small', 'A woman I knew ate three ink caps and shrank small as a cat. She thought the curse was for life. So it was, till she ate a parasol.', { lies: ['Shrunk by an ink cap? Sleep it off. You are your own size by morning.'], lk: 'Big-folk eat ink-shroom, small-small, stay small. Eat umbrella-shroom, big again.', unlocks: ['mushrooms', 'eating'], trust: TRUST.close, rare: true }),
+    f('green', 'My aunt ate a fly agaric and saw green fire through the hills, burning wherever something lay hidden. She called it a curse. It was gone in a few breaths.', { lies: ['Eat a fly agaric and you see green fire for the rest of your days.'], tales: ['A fly agaric showed me where the dragons bury their gold. I have kept it secret.'], unlocks: ['mushrooms', 'eating'], trust: TRUST.close, rare: true }),
   ],
   eating: [
     f('food', 'Carrots and fish fill your belly and mend you. Mushrooms only hurt you.', { common: true, lies: ['Raw fish will make you sick for days.'], lk: 'Carrot good. Fish good. Momo for leafkin.', unlocks: ['mushrooms'] }),
@@ -158,7 +176,7 @@ export const LORE = {
   ],
   ores: [
     f('flint', 'Flint is common enough, two gold a stone. Strike it to make fire.', { common: true, lies: ['Flint is the rarest stone there is.'] }),
-    f('iron', 'Iron is common too, five gold. Copper is dearer, twenty-five, and flare guns need it.', { rumour: true, lies: ['Copper is worthless. Only fools carry it.'] }),
+    f('iron', 'Iron is common too, five gold. Copper is dearer, twenty-five, and flare guns need it.', { rumour: true, lies: ['Copper is worthless. Only fools carry it.'], unlocks: ['flares'] }),
     f('titanium', 'Titanium is the metal for real weapons. Rare as hen\'s teeth.', { rumour: true, tales: ['I once saw a titanium sword. It sang when it moved.'] }),
     f('miners', 'Miners dig the hills for ore. The deep caves hold the best of it.', { lies: ['Ore is only found in riverbeds.'], unlocks: ['caves'] }),
   ],

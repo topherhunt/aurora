@@ -1691,11 +1691,16 @@ function threeIsTheInstance() {
   }
 }
 
+// HTTPS by default: WebXR on the Quest over LAN needs a secure context, and
+// gate scripts that spawn vite navigate to https://. `npm start` sets
+// AURORA_HTTP=1 for plain http://localhost on desktop (no cert warning).
+const useHttps = process.env.AURORA_HTTP !== '1'
+
 // index.html is the world; every other root .html file is a bench, and the
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [basicSsl(), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard(), threeIsTheInstance()],
+  plugins: [...(useHttps ? [basicSsl()] : []), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard(), threeIsTheInstance()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`

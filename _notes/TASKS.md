@@ -26,16 +26,62 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- FPS. Need to get it stably up to 80fps in all environments.
-- Reinvent this as an open-world Pokemoid:
+- Reinvent this as an open-world Pokemoid game:
+  - This will no longer be called Aurora. It will be called Pocket.
   - you shipwreck on the shore of a massive island teeming with strange creatures. On the shore, you find 
   - It's a mix of D&D fantasy adventure world, with different races and complex lore and chilling underground areas, combined with Pokemon RPG mechanics, where there's a very structured combat & progression system but without the realtime stress and blood/gore of a Skyrim clone.
+    - Fantasy elements: medieval aesthetic, magical spells, potions/elixirs, mythical beasts, various humanoid races.
   - Have Claude generate a bunch of creatures fitting the various biomes. The creatures serve simultaneously as: decoration, potential, enemies/combat system, 
   - Biomes are progression gates, and further from town/roads is typically more dangerous. Caves are more dangerous.
-  - Instead of pokéballs, there's something more like a magical talisman that allows you to seal creatures in another dimension -- but only if they have sufficient Respect and sufficient Trust in you.
-    - Battling wild creatures 
-    - There are different combat styles. You can "fight dirty", which deals more damage but enemy creatures (and human trainers) lose Respect for you; or you can "fight politely", in which case you'll do less damage but crea
-  - Like in Pokemon, you can take up to 
+  - Instead of pokéballs, you have your Pocket, a magical talisman that allows you to seal creatures in another dimension -- but only if they have sufficient Respect and sufficient Trust in you.
+    - The Pocket is a glowing pouch covered in beautiful arcane symbols.
+    - There are different combat styles: ruthless or noble. You can "fight ruthless", which deals standard damage (helping you survive the harsh wilds) but enemy creatures (and human trainers) lose Respect for you; or you can "fight noble", in which case you'll do ~half damage but creatures grow more Respect for you. This is a playstyle you pick at the start of each battle, and you can switch mid-combat too.
+    - Certain actions also build an opponent's Respect for you. For example if you give them a healing potion or skip a turn. 
+    - Giving NPCs an item builds their Respect for you too. NPCs who have more Respect for you are more inclined to give you stuff in return, and less inclined to attack you unprompted.
+    - When battling a wild creature, if it goes to 0 health, it runs away (the equivalent of dying or "fainting" in poke-speke). (Some wild creatures may run away sooner than that, if your creature uses scary or intimidating attacks.) If you want to tame a creature, you need to wear down its health while building its Respect for you.
+  - **To tame a creature**, fight nobly and build its Respect for you (it's a meter from 0 to 100) while wearing down its Health (ie its independence), then literally walk up to it, kneel down and hold your talisman on the ground in front of it. If its Respect for you is high enough and its Health low enough (and if you have room in your talisman) it will decide to join you, and will allow itself to get sucked into the Fold (cool vertex animation and warping sound). This is a random chance, it's a function of how high Respect is and how low its Health is, such that 50% Respect and 50% Health has 0% chance and 100% Respect and 1 Health has 100% chance. If it does NOT decide to tame itself, it attacks you (harming your health, never by more than 50 points) and runs away.
+  - **Wild creatures that see you can attack you.** If when prompted you decline to pick a creature to fight them, the creature will literally attack YOU, and you have no defenses other than running away and hoping it can't keep up. Larger creatures, and higher-level creatures, do more damage, up to 50 HP per hit (to you; in creature-to-creature combat there's no ceiling). If your HP goes to 0, you'll black out and wake up at your last save point, having lost all your progress.
+  - Like in Pokemon, you can have up to 6 creatures in your Fold at a time. (If you already have 6, you can't tame creatures.)
+  - **Elements:** Each creature has 1-2 element affinities. Its element-affined attacks will do more damage against other elements vulnerable to it, and its element affinity represents its weakness. For example, in the Pokemon world, Rock is tough against normal damage attacks and fire, but weak against water and plant. But we want to think up our own elements system from first principles. Please think this through yourself and propose a system. To the greatest extent possible, it should not be influenced by the specific elemental choices made in the Pokemon world. But if we end up aligning with them because those are the natural Kantian categories, then so be it. 
+  - **Creature designs:** You're tasked with coming up with whimsical fantastical designs for 150 creatures, evenly balanced across the different Elements and Biomes. Aim for the DIVERSITY of creature looks from Pokemon, but more sense of D&D fantasy grit and realism. Write up designs and generate a few sample images using Flux Klein, so I can review.
+    - Within each Element and within each Biome, there should be an evenly-distributed ladder of creature strengths (represented by their size, generally, and by their cool appearance; weaker earlier creatures are cuter, apex creatures are cooler and more badass looking).
+  - **Biomes:** Each biome has different flora and a unique visual look, and unique environmental hazards and opportunities. Each biome has creatures with different elemental affinities. For example:
+    - Canyons: lots of sheer verticals that make traversal difficult. Creatures tend to have Rock, Air, and Fire affinity.
+    - Deserts: endless dunes. Mirages mess with your sense of distance; you can't trust what you see. Creatures tend to have Fire and Poison affinity.
+    - Forests: deep, lush, towering trees. Creatures tend to have Plant and Water affinity.
+    - Snow: the cold wears you down, and intermittent blizzards blind you. Creatures tend to have Ice and Air affinity (???)
+    - Tropical: affinity for Plant, Poison, and .
+    - Swamp: Environmental hazards include bogs that trap you and toxic spores that sap your health, blur your vision, or make you see and hear things. Creatures have affinity for Plant, Water and Poison.
+    - Caverns: environmental hazards include pitch-black dark, mazelike passages, and sheer drops requiring ropes or climbing picks. Creatures have affinity for Rock and Dark. 
+    - Each region has different flora. For ex: deserts and canyons have cactuses and dry scrub brush. Forests have trees, ferns, grass. Snow has pines. etc.
+    - Each biome's background wildlife sounds are literally the sounds the tameable creatures make. There are no "purely decoration" creature types / creature sounds. Everything you hear (apart from wind, rain, water etc) represents a real creature type.
+  - **Taking out creatures**: If you're lonely or need their help, you can take one or more creatures out of your pocket. They'll simply hang out, explore the scenery nearby and follow you around, never straying far. You can "talk" to one to ask it how it's doing, what it needs, if it has any advice, or ask it to take certain actions on the world around you, by picking the action and then pointing at an obstacle/object near you -- for example, ask one to burn away vines blocking your path. Most creature moves can be used in the outer world, but watch out, many of them might have unintended / unwanted consequences, even on your health.
+    - Sometimes a creature has a strong preference to stay in the pocket and will go back in quickly without your invitation. Or vice versa, sometimes a creature refuses to stay put and will break out of the Pocket to wander around.
+    - Creatures wandering around are both company, comfort, and liability: any wild creatures that spot them will fight or flee, whereas if it was just you the wild creature might not even notice you. Different creatures have different stealth levels / visibility levels.
+  - **NPCs and villages** have different appearances per biome. 
+    - See the NPC designs created for ../tribes-game/ - they have a very pleasant cartoonish look that honestly looks much more promising than the gargoyles I ended up with on this project. Please use that aesthetic instead. And let's create several different skins for the male and female human mesh, so they can have different looks while still being one InstancedMesh and one draw call.
+    - Each biome should have a different aesthetic for the village buildings. For example, snowy mountains have alpine-looking log houses whereas canyon and desert have Greece-style stucco rounded cubes, etc. CLAUDE: Please use an AI image generator to get inspiration & establish concept-art targets for each biome's architecture aesthetic, then write building generator code to create great-looking near-photorealistic low-poly tiling-texture procedural buildings fitting each biome.
+    - All villages have an Inn where you can pay to sleep the night, restoring your and your creatures' health (they often like to pop out of the Pocket and wander around the Inn).
+    - Most villages have an Alchemist shop who can sell you potions and has equipment you can use to brew your own. Also will sell you a flare gun and refills for it.
+    - Also, most villages have an Enchanter shop; here you can place your pocket on an enchanting table to switch out your creature loadout, or even enter into your Pocket to walk among your creatures in a terrarium made up of different biomes (similar in size to aurora's leafkin glades).
+    - Your Pocket periodically needs expanding. Initially it can only hold 1 creature so you can't tame more than that. The Enchanter will gladly expand it for an affordable per-slot price, starting at 10 GP, BUT each additional slot costs 5% more than the last, AND each town's enchanter only has the ability to expand it by 5 slots, so you need to visit new villages in order to get more slots.
+  - **Traversal:** 
+    - Initially it's just walking, and sometimes from villages you can join a caravan riding to the next village over (you can either stay awake and enjoy the ride, or doze off and wake up when it gets there).
+    - Once you get access to the Vault (see below), you get a talisman that opens various Portals hidden around the island. You've already come across many of them; the next time you visit one, tap it to enter an alternate plane where you can travel to any other activated Portal. There's one right next to the Vault.
+  - **Goals of the game:**
+    - 1st goal: Make it to the Vault at the center of the island.
+      - When you start exploring and reach your first town and start helping people, once you earn their trust, You start hearing word about this Vault -- a mythical place in the mountaintops where priceless secrets and powers are hidden away. Village elders who you've helped say they think you have a rare gift, they bid you to find the Vault and use its powers to heal the island.
+      - Once you finally find your way to the Vault, the front door is sealed with the silhouettes of 6 apex creatures on it. You need to have tamed each of those, take it there and have it touch the door; its silhouette will glow white. Once all 6 are white, the door opens and you're in the Vault.
+    - Eradicate the Corruption spreading across the island.
+      - Corruption = zones where the scenery is infected with a red-black goo. Creatures that have too much contact with it become rabid, stronger and fiercer and untameable.
+      - When you first arrive, each region is roughly 50% covered by corruption. You quickly learn to stay out of those areas; the creatures there are ~2x fiercer and more aggressive.
+      - There's a questline (inspired by ../shadow-game) where you need to travel to each region, talk with village elders and help the towns and win their trust, and gradually be granted information and tools to learn more about how the corruption works and how to fight it back.
+      - Each biome has 3-6 corruption zones.  To clear a zone, you need to first enter it with sufficiently strong creatures to face its unpredictable corrupted ones, explore/fight your way to the center, fight the Guardian who is tasked with guarding that corruption-seed, then take the seed and place it in the Vault at the top center of the island.
+    - Final goal: Tame all 150 creature types. The more you tame, the more regions of the Vault you open up, with access to detailed lore about the island and creatures. Taming all creature types from a specific biome unlocks the vault region for that biome; taming all 150 unlocks the central archive.
+
+---
+
+- FPS. Need to get it stably up to 80fps in all environments.
 - [ ] Fix the netplay system to not require reconstructing the whole routine since "chapter start".
   - Creatures / NPCs spawn in plausible, legal places
   - The first player to see it spawn "declares" that creature to the room relay, with its identity, position, seed, and timestamp.
@@ -73,7 +119,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - [ ] **Vision for a mainline quest**
   - You start the game standing in a ceremonial circle in a dark nighttime forest, ringed by torch-lamps. Across from you stands a shadowy cloaked figure, facing away from you. He's mid-conversation with you. "Well. All that's ancient history now. And the why doesn't matter anymore. The dragons are returning, and they will be the end of human dominion on this land. You are one of the blessed few who could stop them, as silly as it sounds <chuckle>. (dramatic pause, and then he turns to face you -- it's a sketelon with glowing electric-blue eyes) And I am the only one who can stop you. <He walks up to you slowly, draws a dagger, and stabs you in the chest. Your vision flashes red, and then fades to black.
   - The drums fade in first, initially distorted as if muted and far away, gradually growing clearer. And then the creepy chanting joins them. Both gradually grow closer and clearer and sharper. Once they reach full clarity, they continue until you move or press a button. Your eyes open, and you hear leafkin shrieks all around you, and the pitter patter and whimpering of several small beings running off into the forest. You sit up. Maybe you glimpse some of the creatures running off. And then you're alone with the crickets and fireflies in a dark forest.
-- [ ] Build out a rudimentary ecosystem of different valuables.
+- [ ] Build out a rudimentary ecosystem of different valuables. (see design/42-valuables.md)
   - Plan: `design/42-valuables.md` (lineup, placement, flows, uses, brown/blue slots, loot ledger). Build order:
     - [ ] Rewrite `talk/lore.js` gems/ores/coins to the new names and prices; leafkin love shinies; drop the stale boulder-maze line.
     - [ ] Every roost holds an egg, plus a 1-2 item hoard.

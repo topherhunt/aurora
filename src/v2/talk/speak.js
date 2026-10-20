@@ -56,6 +56,7 @@ const LORE_PATH = {
   alchemist: ['What does', 'the alchemist', 'do?'], blacksmith: ['What does', 'the blacksmith', 'do?'],
   coins: ['What are', 'coins', 'good for?'], gems: ['What are', 'gems', 'worth?'], ores: ['What are', 'flint and ores', 'worth?'],
   mushrooms: ['What are', 'mushrooms', 'good for?'], eating: ['Can I eat', 'wild things?'],
+  curses: ['Tell me about', 'mushroom curses.'], flares: ['What are', 'flare guns', 'good for?'],
 }
 
 const LEAFKIN_FAR = { "right here": 'here-here', "a stone's throw": 'close', 'a short walk': 'little walk', 'a fair walk': 'far', 'a long walk': 'far-far', 'a long road': 'far-far-far' }
@@ -879,14 +880,18 @@ export class Conversation {
     const start = (roll(ctx.world.seed, mind.id, topic) * facts.length) | 0
     const ring = facts.map((_, i) => facts[(start + i) % facts.length])
     const knows = (f) => roll(ctx.world.seed, mind.id, 'lore', topic, f.id) < knowOdds(mind, topic, f)
-    let fact = ring.find((f) => !told.has(f.id) && knows(f))
+    const trusts = (f) => this._standing() >= f.trust
+    let fact = ring.find((f) => !told.has(f.id) && knows(f) && trusts(f))
+    if (fact === undefined && ring.some((f) => !told.has(f.id) && knows(f))) return this._holdsBack(topic)
     if (fact === undefined && told.size > 0) {
       if (!this.leafkin) return this._referred(this._line(`That's all I know of ${TOPICS[topic].label}.`, 'talk-shrug', { moment: 'answer.unknown' }), topic)
       told.clear()
-      fact = ring.find(knows)
+      fact = ring.find((f) => knows(f) && trusts(f))
     }
     const known = fact !== undefined
-    if (!known) fact = ring[0]
+    // Not knowing, a boaster may make up a tale, but never one of a fact they would not yet tell her.
+    if (!known) fact = ring.find(trusts)
+    if (fact === undefined) return this._referred(this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' }), topic)
     told.add(fact.id)
     const odds = knowOdds(mind, topic, fact)
     const line = this._answer({
@@ -900,6 +905,13 @@ export class Conversation {
       return fact.doubt.includes(line.claim) ? this._talesTo(told) : told
     }
     return line.moment === 'answer.unknown' ? this._referred(line, topic) : line
+  }
+
+  /** They know more of `topic` than they will tell her yet (lore.js `trust`), and say so, so she knows to win them over. */
+  _holdsBack(topic) {
+    const tone = this.tone
+    const text = this.leafkin ? 'Leafkin tell more when friend.' : tone === 'curt' ? 'Not for strangers.' : tone === 'cheery' ? "There's more I could tell you. Another time, when I know you better." : "There's more to it. But I don't know you well enough."
+    return this._line(text, 'talk-shrug', { moment: 'refuse.wary', about: [{ kind: 'lore', topic }] })
   }
 
   /** Contested `fact` as the speaker holds it: their own sighting if they saw it and trust her, a scoff if they do not believe it, else the fact as they heard it. */

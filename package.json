@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "start": "AURORA_HTTP=1 vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
     "relay": "npm start --prefix server",

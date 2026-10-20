@@ -29,13 +29,13 @@ You need Node.js (the relay requires >= 22; the client has been run on current N
 git clone <this repo>
 cd aurora-game
 npm install
-npm run dev
+npm start
 ```
 
-Vite serves on port 5173 with a self-signed certificate (WebXR needs a secure context).
+`npm start` serves plain HTTP on port 5173; `npm run dev` serves the same thing with a self-signed certificate, which the Quest over LAN needs (WebXR needs a secure context, and only `localhost` counts as one without HTTPS).
 
-- **Desktop:** open `https://localhost:5173/` and accept the certificate warning. Move with WASD or the arrow keys, `T` teleports, `G` grabs, `E` drops. Space and Shift fly up and down for surveying the map; click plants a measuring beam.
-- **Quest, over LAN:** open `https://<your-lan-ip>:5173/` in Quest Browser, click through "Advanced" then "Proceed", and press Enter VR.
+- **Desktop:** `npm start`, then open `http://localhost:5173/`. Move with WASD or the arrow keys, `T` teleports, `G` grabs, `E` drops. Space and Shift fly up and down for surveying the map; click plants a measuring beam.
+- **Quest, over LAN:** `npm run dev`, then open `https://<your-lan-ip>:5173/` in Quest Browser, click through "Advanced" then "Proceed", and press Enter VR.
 - **Quest, over USB (no cert warning):** enable developer mode, run `adb reverse tcp:5173 tcp:5173`, and open `http://localhost:5173` on the headset.
 
 `/` is the world, and `/?editor` is the same world with the authoring panel over it.
@@ -44,7 +44,8 @@ Vite serves on port 5173 with a self-signed certificate (WebXR needs a secure co
 
 | Command | What it does |
 | --- | --- |
-| `npm run dev` | Dev server on `0.0.0.0:5173` (HTTPS, no HMR; reload the page) |
+| `npm start` | Dev server on `0.0.0.0:5173` (HTTP, no HMR; reload the page) |
+| `npm run dev` | The same dev server over HTTPS, for the Quest over LAN |
 | `npm run build` | Production build into `dist/`. Run it after every code change to confirm nothing broke |
 | `npm run preview` | Serve the built `dist/` |
 | `npm run check` | The full gate suite, roughly 75 headless Node scripts in `scripts/check-*.mjs` |
