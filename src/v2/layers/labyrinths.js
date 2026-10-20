@@ -128,6 +128,15 @@ export function warp(s, r, a, out) {
   return out
 }
 
+const TYPICAL = 0x7fff
+
+/** A labyrinth's rings, outer wall radius and reach (to its torches and past) off its rolled radius `R`. */
+function ringsOf(R) {
+  const rings = Math.max(3, Math.round((R - LABYRINTH.centre) / LABYRINTH.pitch))
+  const rOuter = LABYRINTH.centre + rings * LABYRINTH.pitch
+  return { rings, rOuter, reach: rOuter * (1 + SWELL_MAX) + TORCH_OUT + 0.5 }
+}
+
 export class Labyrinths {
   /** `ground` is the world's V2Height; its `scatterAt` and `layers` are read. */
   constructor({ seed, ground }) {
@@ -162,10 +171,7 @@ export class Labyrinths {
     const rand = mulberry32(regionHash(rx, rz, this.seed))
     s = null
     if (rand() < LABYRINTH.chance) {
-      const R = LABYRINTH.radius[0] + rand() * (LABYRINTH.radius[1] - LABYRINTH.radius[0])
-      const rings = Math.max(3, Math.round((R - LABYRINTH.centre) / LABYRINTH.pitch))
-      const rOuter = LABYRINTH.centre + rings * LABYRINTH.pitch
-      const reach = rOuter * (1 + SWELL_MAX) + TORCH_OUT + 0.5
+      const { rings, rOuter, reach } = ringsOf(LABYRINTH.radius[0] + rand() * (LABYRINTH.radius[1] - LABYRINTH.radius[0]))
       const shape = { p3: rand() * TAU, p5: rand() * TAU, phase: rand() * TAU, a0: rand() * TAU }
       const margin = reach + LABYRINTH.wood + LABYRINTH.fray
       const room = LABYRINTH.region - 2 * margin
@@ -177,6 +183,11 @@ export class Labyrinths {
     }
     this._sites.set(key, s)
     return s
+  }
+
+  /** A labyrinth of the middle radius at the origin, under a region key no world reaches: the model render/palisades.js photographs for every labyrinth's far card. */
+  typicalSite() {
+    return { rx: TYPICAL, rz: TYPICAL, cx: 0, cz: 0, ...ringsOf((LABYRINTH.radius[0] + LABYRINTH.radius[1]) / 2), p3: 1, p5: 2, phase: 0.5, a0: 0 }
   }
 
   /** Whether a disc `reach` across at (cx, cz) is inside the world with its wood, and every sample of it gentle, a shore rise over any water and clear of roads. */

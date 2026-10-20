@@ -293,6 +293,25 @@ export function bakeImpostorPlate(
 }
 
 /**
+ * Photograph `geometry` from `elevation` radians above the horizon at `azimuth` into a `size` px square of its own, for a
+ * subject wide and low enough that side-on it is a row of sticks (render/palisades.js, a whole labyrinth). The frame is
+ * ±`half` across and runs from `bottom` to `top` in the picture's up, which leans back from world up by `elevation`, all
+ * about the origin. Rows are top first, as every other bake's.
+ */
+export function bakeImpostorView(renderer, geometry, texArray, { half, bottom, top, elevation, azimuth = 0, size, vertexColors = false }) {
+  if (!(half > 0) || !(top > bottom)) throw new Error(`bakeImpostorView: need a positive frame, got ±${half} x [${bottom}, ${top}]`)
+  if (!(elevation > 0 && elevation < Math.PI / 2)) throw new Error(`bakeImpostorView: elevation must be in (0, pi/2), got ${elevation}`)
+  const reach = Math.max(half, top - bottom)
+  const cam = new THREE.OrthographicCamera(-half, half, top, bottom, 0.01, reach * 8)
+  const out = new THREE.Vector3(Math.sin(azimuth) * Math.cos(elevation), Math.sin(elevation), Math.cos(azimuth) * Math.cos(elevation))
+  cam.position.copy(out).multiplyScalar(reach * 3)
+  cam.lookAt(0, 0, 0)
+  cam.updateMatrixWorld()
+  const key = new THREE.Vector3(Math.sin(azimuth) * reach * 0.9, reach * 2.1, Math.cos(azimuth) * reach * 0.9)
+  return captureLayer(renderer, geometry, texArray, null, cam, key, { tint: null, vertexColors, bounce: BAKE_ROCK_BOUNCE, size })
+}
+
+/**
  * Render `geometry` through `cam` into `layer` (or only into the returned bytes, when null), lit by a white key at `keyPos`
  * over a hemisphere whose ground is `bounce` -- or, `unlit`, as flat albedo
  * with no rig at all. Returns the bytes it stored.
@@ -310,16 +329,17 @@ export function bakeImpostorPlate(
  */
 function captureLayer(
   renderer, geometry, texArray, layer, cam, keyPos,
-  { tint, vertexColors, hemFray = null, bounce, unlit = false, exposure = 1 }
+  { tint, vertexColors, hemFray = null, bounce, unlit = false, exposure = 1, size = TEX_SIZE }
 ) {
   if (!(exposure > 0)) throw new Error(`captureLayer: exposure must be positive, got ${exposure}`)
+  if (layer !== null && size !== TEX_SIZE) throw new Error(`captureLayer: only a ${TEX_SIZE} px picture lands in the array, got ${size}`)
   // The atlas is what the photograph SAMPLES, not only where it lands: without one every texel alpha-tests away and the card is a blank that throws nowhere.
   if (!texArray) throw new Error('captureLayer: needs the atlas the subject samples, even when `layer` is null')
   if (layer !== null && (layer < 0 || layer >= texArray.image.depth)) {
     throw new Error(`captureLayer: layer ${layer} is outside the ${texArray.image.depth}-layer array`)
   }
 
-  const opts = { tint, vertexColors, hemFray, bounce, unlit, exposure }
+  const opts = { tint, vertexColors, hemFray, bounce, unlit, exposure, size }
   const cardKey = cardsOn() && new CardHash().geometry(geometry)
     .nums([...cam.projectionMatrix.elements, ...cam.matrixWorld.elements, ...keyPos.toArray()])
     .text(JSON.stringify(opts)).key
@@ -334,7 +354,7 @@ function captureLayer(
 }
 
 /** captureLayer's live photograph. Restores the render target and clear state it found. */
-function renderLayer(renderer, geometry, texArray, cam, keyPos, { tint, vertexColors, hemFray, bounce, unlit, exposure }) {
+function renderLayer(renderer, geometry, texArray, cam, keyPos, { tint, vertexColors, hemFray, bounce, unlit, exposure, size }) {
   // `vertexColors` is the building kit's and `hemFray` the trees' -- see
   // createImpostorBakeMaterial. A prop leaves both off and carries neither
   // attribute.
@@ -371,7 +391,7 @@ function renderLayer(renderer, geometry, texArray, cam, keyPos, { tint, vertexCo
     scene.add(new THREE.HemisphereLight(0xffffff, bounce, BAKE_SKY * exposure))
   }
 
-  const big = TEX_SIZE * SUPERSAMPLE
+  const big = size * SUPERSAMPLE
   const target = new THREE.WebGLRenderTarget(big, big, {
     format: THREE.RGBAFormat,
     type: THREE.UnsignedByteType,
@@ -413,9 +433,9 @@ function renderLayer(renderer, geometry, texArray, cam, keyPos, { tint, vertexCo
   // the image, and the whole atlas has to agree about which way up v runs or
   // half of it is upside down. So: flip here, and the impostor card puts v = 0
   // at its top like everything else.
-  const pixels = downsample(raw, big)
-  flipY(pixels)
-  dilate(pixels)
+  const pixels = downsample(raw, big, size)
+  flipY(pixels, size)
+  dilate(pixels, size)
   return pixels
 }
 
@@ -448,11 +468,11 @@ export function coverage(px) {
 // transparent texels' colour -- which is black, because nothing ever wrote them
 // -- into every edge and hand back a canopy with a sooty rim. Alpha itself
 // averages plainly, because that is exactly what coverage means.
-export function downsample(src, big) {
-  const n = big / TEX_SIZE
-  const out = new Uint8Array(TEX_SIZE * TEX_SIZE * 4)
-  for (let y = 0; y < TEX_SIZE; y++) {
-    for (let x = 0; x < TEX_SIZE; x++) {
+export function downsample(src, big, size = TEX_SIZE) {
+  const n = big / size
+  const out = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
       let r = 0
       let g = 0
       let b = 0
@@ -469,7 +489,7 @@ export function downsample(src, big) {
           w += sa
         }
       }
-      const i = (y * TEX_SIZE + x) * 4
+      const i = (y * size + x) * 4
       if (w > 0) {
         out[i] = r / w
         out[i + 1] = g / w
@@ -481,12 +501,12 @@ export function downsample(src, big) {
   return out
 }
 
-export function flipY(px) {
-  const row = TEX_SIZE * 4
+export function flipY(px, size = TEX_SIZE) {
+  const row = size * 4
   const tmp = new Uint8Array(row)
-  for (let y = 0; y < TEX_SIZE / 2; y++) {
+  for (let y = 0; y < size / 2; y++) {
     const a = y * row
-    const b = (TEX_SIZE - 1 - y) * row
+    const b = (size - 1 - y) * row
     tmp.set(px.subarray(a, a + row))
     px.copyWithin(a, b, b + row)
     px.set(tmp, b)
@@ -495,12 +515,12 @@ export function flipY(px) {
 
 // Push colour outward into transparent texels, alpha untouched. See
 // DILATE_PASSES.
-export function dilate(px) {
+export function dilate(px, size = TEX_SIZE) {
   for (let pass = 0; pass < DILATE_PASSES; pass++) {
     const src = px.slice()
-    for (let y = 0; y < TEX_SIZE; y++) {
-      for (let x = 0; x < TEX_SIZE; x++) {
-        const i = (y * TEX_SIZE + x) * 4
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4
         if (src[i + 3] !== 0) continue
         let r = 0
         let g = 0
@@ -510,8 +530,8 @@ export function dilate(px) {
           for (let dx = -1; dx <= 1; dx++) {
             const nx = x + dx
             const ny = y + dy
-            if (nx < 0 || ny < 0 || nx >= TEX_SIZE || ny >= TEX_SIZE) continue
-            const j = (ny * TEX_SIZE + nx) * 4
+            if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue
+            const j = (ny * size + nx) * 4
             if (src[j + 3] === 0) continue
             r += src[j]
             g += src[j + 1]

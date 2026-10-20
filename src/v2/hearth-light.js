@@ -27,3 +27,28 @@ export function hearthGlowAt(hearths, x, y, z, step) {
   }
   return bestK > 0 ? best + Math.min(bestK * bestK, 0.999) : 0
 }
+
+// A labyrinth's gate torches and beacon ride the same attribute as minus their k², so they need no index: the shader scales that by uLabyrinthGlow and drops it over the labyrinths whose torches are live (render/palisades.js, uLabyrinthLive). The reach is a gate torch's live one, palisades.js GATE_LIGHT of lighting.js TORCH_REACH.
+export const LABYRINTH_GLOW = { reach: 7.5, gain: 1 }
+export const LABYRINTHS_LIVE = 3
+
+/** The gate torches and beacons, flat [x, z, ...], of every labyrinth whose baked pool can reach the square; `labyrinths` is the biome's, or null. */
+export function labyrinthTorchesNear(labyrinths, ox, oz, size, step) {
+  const out = []
+  if (labyrinths === null) return out
+  const reach = Math.max(LABYRINTH_GLOW.reach, HEARTH_LIGHT.coarse * step)
+  for (const s of labyrinths.sitesIn(ox - reach, oz - reach, ox + size + reach, oz + size + reach)) {
+    const m = labyrinths.mazeOf(s)
+    for (const [x, z] of m.torches) out.push(x, z)
+    out.push(m.beacon[0], m.beacon[1])
+  }
+  return out
+}
+
+/** The nearest of `torches`' (labyrinthTorchesNear) k² at (x, z), kept under 1, or 0. */
+export function labyrinthGlowAt(torches, x, z, step) {
+  const reach = Math.max(LABYRINTH_GLOW.reach, HEARTH_LIGHT.coarse * step)
+  let best = 0
+  for (let i = 0; i < torches.length; i += 2) best = Math.max(best, 1 - Math.hypot(x - torches[i], z - torches[i + 1]) / reach)
+  return Math.min(best * best, 0.999)
+}

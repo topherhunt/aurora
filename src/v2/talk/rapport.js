@@ -17,7 +17,7 @@ export class Rapport {
   get(id) {
     let r = this.of.get(id)
     if (r === undefined) {
-      r = { warmth: 0, debt: 0, suspicion: 0, said: new Map(), beliefs: new Map(), sentBy: null }
+      r = { warmth: 0, debt: 0, suspicion: 0, said: new Map(), beliefs: new Map(), sentBy: null, words: { epoch: null, gained: 0, used: new Map() } }
       this.of.set(id, r)
     }
     return r
@@ -36,6 +36,13 @@ export class Rapport {
 
   owe(id, by) {
     this.get(id).debt += by
+  }
+
+  /** `id`'s record of her kind words in quest epoch `epoch` (manners.js): `{ gained, used (move -> times said) }`, fresh each epoch. */
+  words(id, epoch) {
+    const r = this.get(id)
+    if (r.words.epoch !== epoch) r.words = { epoch, gained: 0, used: new Map() }
+    return r.words
   }
 
   catchLie(id) {

@@ -2,7 +2,7 @@ import { clamp01, lerp, smoothstep } from '../../sim/mathx.js'
 import { Noise } from '../../sim/noise.js'
 import { CHUNK_VERTS, CHUNK_INDICES, CHUNK_RES, WORLD_SIZE, MAX_DEPTH } from '../config.js'
 import { forestKeepAt } from '../layers/forest.js'
-import { hearthGlowAt, hearthsReach } from '../hearth-light.js'
+import { hearthGlowAt, hearthsReach, labyrinthGlowAt, labyrinthTorchesNear } from '../hearth-light.js'
 
 // ---- THE STIPPLE FRAME, one per vertex, read per FACE.
 //
@@ -616,7 +616,7 @@ function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, w
  *   as Trees: null is full forest everywhere the treeline allows, which is what
  *   the gates measure against. The shipped worker passes the real field.
  * @param ground GroundTint, or null for a world whose ground is grass everywhere; see layers/ground.js.
- * @param hearths town hearth flames `{x, y, z}` whose glow is baked per vertex; see v2/hearth-light.js.
+ * @param hearths town hearth flames `{x, y, z}` whose glow is baked per vertex, with `biome`'s labyrinth torches'; see v2/hearth-light.js.
  * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, stipFloor:Float32Array, forest:Float32Array, hearth:Float32Array, grain:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
 export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null, hearths = []) {
@@ -763,6 +763,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   const hearth = new Float32Array(total)
   const grain = new Float32Array(total)
   const glows = hearthsReach(hearths, ox, oz, size, step)
+  const torches = labyrinthTorchesNear(biome === null ? null : biome.labyrinths, ox, oz, size, step)
 
   let minY = Infinity
   let maxY = -Infinity
@@ -862,7 +863,11 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       if (ground) ground.tintAt(wx, wz, tint)
       shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o, tint)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
-      if (glows) hearth[vi] = hearthGlowAt(hearths, wx, h, wz, step)
+      if (glows || torches.length > 0) {
+        const town = glows ? hearthGlowAt(hearths, wx, h, wz, step) : 0
+        const maze = torches.length > 0 ? labyrinthGlowAt(torches, wx, wz, step) : 0
+        hearth[vi] = maze > town % 1 ? -maze : town
+      }
       // shade()'s snow cover, slide-off included, so a bare cliff above the line keeps its grain.
       grain[vi] = grainAt(wx, wz) * (1 - snowHere * (1 - smoothstep(0.86, 0.62, nyClass) * 0.85))
 

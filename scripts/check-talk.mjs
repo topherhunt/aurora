@@ -20,6 +20,7 @@ import { TalkWorld } from '../src/v2/talk/world.js'
 import { Rapport } from '../src/v2/talk/rapport.js'
 import { QuestLog, questsFor, missingChild, MESSAGES } from '../src/v2/talk/quests.js'
 import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
+import { MANNERS } from '../src/v2/talk/manners.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -370,6 +371,69 @@ for (const t of world.towns) {
   if (p) { late = { p, l: new Conversation(as(speaker, STRAIGHT), ctxAt(fire(t), { hour: 22 })).say(`where:person:${p.id}`) }; break }
 }
 check(late !== null && late.l.text.startsWith(late.p.voice.he ? "He's likely home by now." : "She's likely home by now.") && !late.l.text.includes(`${late.p.name}'s house`), 'asked at night where someone is, they say the person is likely home by now', late?.l.text)
+
+// --- kind words ---
+const MOVE_NAMES = ['greet', 'thanks', 'work', 'life', 'town', 'craft', 'sorry', 'leave']
+const humans = adults.filter((m) => m.kind === 'human')
+// One with nothing on their mind, for the single-person checks.
+const calm = humans.filter((m) => !qs.some((x) => x.parent === m.id))
+const gainOf = (m, topic, ctx = ctxAt(fire(world.townOf(m)))) => {
+  const before = ctx.rapport.standing(m.id)
+  const line = new Conversation(m, ctx).say(topic)
+  return { gain: ctx.rapport.standing(m.id) - before, line }
+}
+const unwarmed = MOVE_NAMES.flatMap((mv) => humans.filter((m) => !(gainOf(m, `nice:${mv}`).gain > 0)).map((m) => `${mv}:${m.name}`))
+check(unwarmed.length === 0, 'every kind word warms everyone a little on first saying', unwarmed.slice(0, 6).join(', '))
+const landed = MOVE_NAMES.map((mv) => [mv, humans.filter((m) => gainOf(m, `nice:${mv}`).line.mood === 'warm').length / humans.length])
+check(landed.every(([, f]) => f >= 0.3 && f < 1), 'each kind word visibly lands with many people but not all', landed.map(([mv, f]) => `${mv} ${(f * 100) | 0}%`).join(', '))
+const chatterer = gainOf(as(calm[0], { chattiness: 1, boast: 1 }), 'nice:work').gain, mute = gainOf(as(calm[0], { chattiness: 0, boast: 0 }), 'nice:work').gain
+check(chatterer > 2 * mute && mute > 0, 'asked after their work, a chatty boaster warms far more than a quiet modest soul, who still warms', `${chatterer.toFixed(3)} vs ${mute.toFixed(3)}`)
+const helpGain = gainOf(as(calm[0], { kindness: 1, greed: 1 }), 'talk:needs')
+check(helpGain.gain > 0 && helpGain.line.mood === 'warm', 'offering help warms them', helpGain.line.text)
+const greetCtx = ctxAt(fire(world.townOf(calm[0])))
+const greets = [0, 1, 2].map(() => gainOf(calm[0], 'nice:greet', greetCtx).gain)
+const nextDay = gainOf(calm[0], 'nice:greet', { ...greetCtx, epoch: EPOCH + 1 }).gain
+check(greets[1] < greets[0] && greets[2] === 0 && nextDay > 0, 'the same kind word warms less said again, nothing a third time that day, and anew the next', greets.map((g) => g.toFixed(3)).join(' ') + ` / ${nextDay.toFixed(3)}`)
+const fctx = ctxAt(fire(world.townOf(calm[0])))
+const fawner = new Conversation(calm[0], fctx)
+const fawned = ['work', 'life', 'town'].map((mv) => fawner.say(`nice:${mv}`))
+const paced = new Conversation(calm[1], ctxAt(fire(world.townOf(calm[1]))))
+const pacedLines = ['nice:work', 'talk:self', 'nice:life', 'talk:town', 'nice:town'].map((t) => paced.say(t))
+check(fawned[2].mood === 'cold' && fctx.rapport.standing(calm[0].id) < fawned.slice(0, 2).length * 0.2 && !pacedLines.some((l) => l.mood === 'cold'), 'praise and small talk three in a row reads as buttering up, but spaced with real talk it does not', fawned[2].text)
+const capCtx = ctxAt(fire(world.townOf(calm[0])))
+const keen = as(calm[0], { chattiness: 1, boast: 1, kindness: 1, greed: 1, wariness: 1 })
+for (const mv of MOVE_NAMES) for (let i = 0; i < 2; i++) { const c = new Conversation(keen, capCtx); c.say('talk:self'); c.say(`nice:${mv}`) }
+check(Math.abs(capCtx.rapport.standing(keen.id) - MANNERS.cap) < 1e-9, 'kind words alone warm one person only so far in a day', capCtx.rapport.standing(keen.id).toFixed(3))
+const toneCtx = ctxAt(fire(world.townOf(calm[0])))
+const cheeryBefore = humans.filter((m) => new Conversation(m, toneCtx).tone === 'cheery').length
+for (const m of humans) for (const [i, mv] of ['greet', 'work', 'town', 'thanks', 'life', 'leave'].entries()) { const c = new Conversation(m, toneCtx); if (i % 2) c.say('talk:self'); c.say(`nice:${mv}`) }
+const cheeryAfter = humans.filter((m) => new Conversation(m, toneCtx).tone === 'cheery').length
+check(cheeryAfter > cheeryBefore, 'a day of kind words turns some people cheery', `${cheeryBefore} -> ${cheeryAfter} of ${humans.length}`)
+const nctx = ctxAt(fire(world.townOf(calm[0])))
+const firstMenu = new Conversation(calm[0], nctx).menu().map((x) => x.label)
+new Conversation(calm[0], nctx).say('talk:self')
+const knownMenu = new Conversation(calm[0], nctx).menu().map((x) => x.label)
+const laterConv = new Conversation(calm[0], nctx)
+laterConv.say('talk:town')
+check(firstMenu.includes('Good day to you.') && knownMenu.includes(`Good day, ${calm[0].name}.`) && !laterConv.menu().some((x) => x.topic === 'nice:greet'), 'she greets someone by name once she knows it, and only on meeting', knownMenu.filter((l) => l.startsWith('Good day')).join(''))
+const craftLater = new Conversation(calm[0], ctxAt(fire(world.townOf(calm[0]))))
+const craftBefore = craftLater.menu().some((x) => x.topic === 'nice:craft')
+craftLater.say('nice:work')
+check(!craftBefore && craftLater.menu().some((x) => x.topic === 'nice:craft'), 'she praises their work only once she has heard what it is')
+const pConv = new Conversation(parent, ctxAt(fire(world.townOf(parent))))
+const sorry = pConv.menu().find((x) => x.topic === 'nice:sorry')
+check(sorry !== undefined && !new Conversation(calm[0], ctxAt(fire(world.townOf(calm[0])))).menu().some((x) => x.topic === 'nice:sorry') && pConv.say('nice:sorry').text.includes(world.person(q.child).name), 'she offers sympathy only where there is a worry, and it is heard', sorry?.label)
+check(!new Conversation(leaf[0], ctxAt({ x: 0, z: 0 })).menu().some((x) => x.topic.startsWith('nice:')), 'a leafkin is offered no pleasantries')
+const lctx = ctxAt(fire(world.townOf(calm[0])))
+const leaver = new Chat(calm[0], lctx)
+leaver.ask('talk:town')
+const left = leaver.ask('nice:leave')
+check(left.ended && left.alone >= CHAT.alone.bye && lctx.rapport.standing(calm[0].id) > 0, '"I won\'t keep you" ends the talk and leaves them warmer', left.text)
+const octx = ctxAt(fire(world.townOf(calm[0])))
+const pest = new Chat(as(calm[0], { chattiness: 0, kindness: 0, wariness: 1 }), octx)
+let pestLast = null
+for (let i = 0; i < 40 && !pest.ended; i++) pestLast = pest.ask('talk:town')
+check(pest.ended && octx.rapport.standing(calm[0].id) < 0, 'pushing past someone\'s patience until sent off cools them', pestLast.text)
 
 // --- the dialog grid ---
 const menuCtx = ctxAt(fire(t0), { known: new Set(Object.keys(TOPICS)) })

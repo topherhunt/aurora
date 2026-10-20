@@ -4811,7 +4811,7 @@ async function buildRoom(room, at) {
     window.v2roads = { plan: roadPlan, signposts, bridges, lines: roadLines } // console: `v2roads.plan.signs`, `v2roads.bridges.items`
   }
   if (biome.labyrinths) {
-    palisades = new Palisades(scene, { labyrinths: biome.labyrinths, field: height, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), cards: litterCards, egg: await loadEggBank() })
+    palisades = new Palisades(scene, { labyrinths: biome.labyrinths, field: height, textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), cards: litterCards, egg: await loadEggBank(), light: lighting.uniforms })
     palisades.update(spawn, fireNow())
     window.v2palisades = palisades // console: `v2palisades.stats`
   }

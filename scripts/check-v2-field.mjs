@@ -64,7 +64,9 @@ import THREE from '../src/three-instance.js'
 import { createPlainTerrainMaterial, createTerrainMaterial } from '../src/terrain/terrain-material.js'
 import { TerrainTint } from '../src/terrain/terrain-tint.js'
 import { buildChunkV2, restippleChunk, shade, stippleTilesPerM, CLASS_EPS, CREST_CELL_LO, STIPPLE_TILE_MIN, STIPPLE_WALL_SCALE, stippleTilesForPlane, stippleFloor } from '../src/v2/terrain/chunk-mesh-v2.js'
-import { HEARTH_LIGHT, HEARTHS } from '../src/v2/hearth-light.js'
+import { HEARTH_LIGHT, HEARTHS, LABYRINTH_GLOW } from '../src/v2/hearth-light.js'
+import { TORCH_REACH } from '../src/lighting.js'
+import { GATE_LIGHT } from '../src/v2/render/palisades.js'
 import { WORLD_SIZE, WORLD_HALF, CHUNK_RES, CHUNK_VERTS, CHUNK_INDICES, MAX_DEPTH } from '../src/v2/config.js'
 import { clamp01, smoothstep } from '../src/sim/mathx.js'
 
@@ -682,6 +684,28 @@ export async function run({ heightmap } = {}) {
       const coarse = buildChunkV2(field, layers, { ox: 512, oz: -1024, size: coarseSize, res: CHUNK_RES, cam: CAM }, null, null, [{ x: qx, y: field.heightAt(qx, qz), z: qz }])
       const coarseLit = coarse.hearth.filter((v) => v > 0).length
       check(coarseStep * HEARTH_LIGHT.coarse > HEARTH_LIGHT.reach && coarseLit >= 4, `a ${coarseStep.toFixed(0)} m cell still catches the glow on the vertices around the flame`, `${coarseLit} lit`)
+    }
+
+    // A labyrinth's gate torch at the chunk's centre and a town hearth beside it: the torch's pool bakes negative, the hearth's keeps its index where it is the stronger.
+    {
+      const cx = 512 + size / 2, cz = -1024 + size / 2
+      const site = { cx, cz, reach: 20 }
+      const stub = { sitesIn: (x0, z0, x1, z1) => (cx > x0 && cx < x1 && cz > z0 && cz < z1 ? [site] : []), mazeOf: () => ({ torches: [[cx, cz]], beacon: [cx + 1000, cz] }) }
+      const town = { x: cx + 6, y: field.heightAt(cx + 6, cz), z: cz }
+      const lit = buildChunkV2(field, layers, { ox: 512, oz: -1024, size, res: CHUNK_RES, cam: CAM }, { labyrinths: stub }, null, [town])
+      const reach = Math.max(LABYRINTH_GLOW.reach, HEARTH_LIGHT.coarse * (size / CHUNK_RES))
+      let maze = 0, leaked = 0, peak = 0, kept = 0
+      for (let v = 0; v < inner; v++) {
+        const x = 512 + lit.positions[v * 3], z = -1024 + lit.positions[v * 3 + 2], g = lit.hearth[v]
+        const d = Math.hypot(x - cx, z - cz)
+        if (d < 1) { maze++; if (!(g < 0)) leaked++ }
+        if (d > reach && g < 0) leaked++
+        if (g < 0) peak = Math.max(peak, -g)
+        if (Math.hypot(x - town.x, z - town.z) < 1 && g > 0) kept++
+      }
+      check(maze > 0 && peak > 0.9 && peak < 1 && leaked === 0, 'a gate torch bakes a negative glow under 1 within its reach and none past it', `${maze} at the torch, peak ${peak.toFixed(3)}, ${leaked} wrong`)
+      check(kept > 0, 'and a town hearth keeps its own index where it outshines the torch', `${kept} kept`)
+      check(Math.abs(TORCH_REACH * GATE_LIGHT - LABYRINTH_GLOW.reach) < 1e-9, 'the baked pool reaches as far as a live gate torch', `${LABYRINTH_GLOW.reach} m`)
     }
 
     let nan = 0

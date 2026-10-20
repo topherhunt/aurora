@@ -26,8 +26,16 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ### Tasks
 
-- [ ] FPS. Need to get it stably up to 70fps both in the main world and in leafkin glades.
-  - 
+- FPS. Need to get it stably up to 80fps in all environments.
+- Reinvent this as an open-world Pokemoid:
+  - you shipwreck on the shore of a massive island teeming with strange creatures. On the shore, you find 
+  - It's a mix of D&D fantasy adventure world, with different races and complex lore and chilling underground areas, combined with Pokemon RPG mechanics, where there's a very structured combat & progression system but without the realtime stress and blood/gore of a Skyrim clone.
+  - Have Claude generate a bunch of creatures fitting the various biomes. The creatures serve simultaneously as: decoration, potential, enemies/combat system, 
+  - Biomes are progression gates, and further from town/roads is typically more dangerous. Caves are more dangerous.
+  - Instead of pokéballs, there's something more like a magical talisman that allows you to seal creatures in another dimension -- but only if they have sufficient Respect and sufficient Trust in you.
+    - Battling wild creatures 
+    - There are different combat styles. You can "fight dirty", which deals more damage but enemy creatures (and human trainers) lose Respect for you; or you can "fight politely", in which case you'll do less damage but crea
+  - Like in Pokemon, you can take up to 
 - [ ] Fix the netplay system to not require reconstructing the whole routine since "chapter start".
   - Creatures / NPCs spawn in plausible, legal places
   - The first player to see it spawn "declares" that creature to the room relay, with its identity, position, seed, and timestamp.
@@ -54,7 +62,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
     - And this leads to a scenario where you can decide, once you get your hands on an egg, if you want to bring it to the person to become the hero of the village, or if you want to just keep the egg and go elsewhere. But the first time anyone sees you with that egg, or sees you with the dragonling that hatches out of it, Word will gradually get back to that town and you will become pariah there. Everyone will hate you for your betrayal.
       - (This thing about the betrayal and the town being angry at you should be a repeating theme with different things, especially with things that are more secret than dragon eggs. Obviously, everyone knows where to find dragon eggs, you just look up at the mountaintops. But if there should be other secrets that if the if it if a NPC tells you that secret, and then you later and and you promise to keep it secret and then you later find that thing or acquire some object and the word gets back to the town that you did so and didn't help them, they will be pissed off with you and will refuse to help you and maybe even will attack you.)
   - [ ] 1-2 houses in each village have secret entrances into a cave system (maybe connected, maybe not). But they're secret, eg, you find a lever on the wall tucked in the corner next to a bookshelf. The only way to find it is, some village crazy conspiratorial personality is raving about the clandestine meetings, and if you bother to listen to his rambling, he'll go on to point out how isn't it suspicious that some houses have gaps in their floor plans? rooms you can't get to? And hints that the residents must have a way of getting in there.
-    - This is a questline entryway. Someone has disappeared, their house is empty, and only the rambling lunatic seems to have any valid theories of what happened. 
+    - This is a questline entryway. Someone has disappeared, their house is empty, and only the rambling lunatic seems to have any valid theories of what happened.
   - [ ] Village entrances into caves tend to have a torch or two on the walls near the cave entrance (baked lighting in vertices so it doesn't cost globally). So you can see a bit of the way into the cave, but not far.
   - Quest mechanic: sometimes you need to be large, or small, in order to successfully traverse a certain region. For example sometimes you need to be made small and then traverse a well-known path from that terrifying new vantage point, which turns a short easy jaunt into a death-defying odyssey, and then sneak into someone's house while avoiding any townsfolk seeing you since they'll treat you like vermin leafkin and stomp you out.
   - Quest mechanic: You delve into the caves. Initially all seems fine, albeit creepy. But as you get deeper, you start to encounter lovecraftian horrors who loathe light, and will become hostile towards you if you're bearing light into their domain, either doing you the kindness of snuffing it out, or attacking you. So you have to learn other less fire-based ways of getting around. But those creatures aren't evil per se, and you can deal with them and communicate with them once you learn to work with their way of seeing the world.
@@ -81,14 +89,14 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - Economy -- further ideas:
     - You start w 4 inventory slots, you need to trade to buy a backpack which opens up 12 more. Is this worth it? Does it feel good, or does it feel like drudge work?
     - You can't just *take* saddled Striders. You need to buy one, or tame a wild one (which should take more than just holding a fish, and requires talking w the right NPCs to learn how to do it)
-- [ ] Forest-people outposts. 
-  - Surrounded by palisades, a few shabby huts, and a tower of posts and netting that make up a "cube maze" around the central pillar. Like a x=5 by y=10 by z=5 block maze where you need to climb up and down and up and down in order to reach the top. Reaching the top rewards you with a beautiful view, a couple rare gems, and 2-3 coils of rope. You can use one of the rope coils to sling your way back down. Seeing a rope on an outpost tower is how you know you've already climbed it. 
+- [ ] Forest-people outposts.
+  - Surrounded by palisades, a few shabby huts, and a tower of posts and netting that make up a "cube maze" around the central pillar. Like a x=5 by y=10 by z=5 block maze where you need to climb up and down and up and down in order to reach the top. Reaching the top rewards you with a beautiful view, a couple rare gems, and 2-3 coils of rope. You can use one of the rope coils to sling your way back down. Seeing a rope on an outpost tower is how you know you've already climbed it.
   - This might replace the boulder labyrinths, which don't look great and take up too much space to really be fun.
 - [ ] Snowboarding! A group of enterprising people will offer you a race to the bottom. Bet them some money, and earn 10x that if you win.
 - [ ] Caves
   - [ ] You can buy a pouch of colored glowing marbles. Drop them like a trail of breadcrumbs to lead you back to safety. Also is an alternate (limited) light source, especially useful in places where torches are.... not welcome. And they work underwater which is a plus. (Maybe.)
   - [ ] Some cave passages open up into the WALL of a massive chamber with no end in sight. You need to tie a rope to a stalagmite and climb down, either into the unknown dark, or to a semiglowing sporescape, or a settlement.
-  - [ ] Most cave systems have an interesting lore-dense quest-dense settlement of 
+  - [ ] Most cave systems have an interesting lore-dense quest-dense settlement of
 - [ ] Think through w Claude: Traversing the world should feel genuinely dangerous. If you don't carefully plan and prepare, you aren't likely to make it to your destination.
   - What should the dangers be? Food? Being out in unfamiliar unsafe regions at nighttime? Random creature encounters? Dragons?
 - [ ] Human villages

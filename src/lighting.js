@@ -1,7 +1,7 @@
 import THREE from './three-instance.js'
 import { WORLD_SIZE, WORLD_HALF } from './sim/terrain-height.js'
 import { AZIMUTHS, HORIZON_SOFT } from './sim/horizon.js'
-import { HEARTHS } from './v2/hearth-light.js'
+import { HEARTHS, LABYRINTHS_LIVE } from './v2/hearth-light.js'
 import { UniformBlock } from './uniform-block.js'
 
 // ---------------------------------------------------------------------------
@@ -513,6 +513,16 @@ const TORCH_GLSL = /* glsl */ `
     return sum;
   }
 `
+// The terrain's baked glow (v2/hearth-light.js): a town hearth's index + amount, dimmed by its uHearthFar, or minus a labyrinth torch's amount, dropped inside a labyrinth whose torches are live.
+const HEARTH_GLSL = /* glsl */ `
+  if ( hearth < 0.0 ) {
+    float wlMaze = -hearth * uLabyrinthGlow;
+    for ( int i = 0; i < ${LABYRINTHS_LIVE}; i++ ) if ( distance( wlWorld.xz, uLabyrinthLive[ i ].xy ) < uLabyrinthLive[ i ].z ) wlMaze = 0.0;
+    vWlTorch += uTorchColor * wlMaze;
+  } else {
+    int wlHi = int( hearth );
+    vWlTorch += uTorchColor * ( fract( hearth ) * uHearthFar[ wlHi / 4 ][ wlHi % 4 ] );
+  }`
 
 export class WorldLighting {
   constructor() {
@@ -573,6 +583,9 @@ export class WorldLighting {
       uTorchColor: { value: new THREE.Color(1.0, 0.42, 0.12) },
       // Each town hearth's baked glow strength (hearth-light.js), read only by a patch with `hearths`.
       uHearthFar: { value: new Float32Array(HEARTHS) },
+      // The labyrinths' baked torch glow (hearth-light.js LABYRINTH_GLOW): its strength, and (x, z, radius) of each labyrinth whose live torches stand in for it.
+      uLabyrinthGlow: { value: 0 },
+      uLabyrinthLive: { value: Array.from({ length: LABYRINTHS_LIVE }, () => new THREE.Vector4(0, 0, 0, 0)) },
     }
 
     this.horizonTex = null
@@ -594,6 +607,7 @@ export class WorldLighting {
       f('uFarLight', 'vec2'), f('uLampY', 'vec2'),
       f('uCaustic', 'vec4'), f('uLampRect', 'vec4'),
       f('uTorch', 'vec4', TORCHES), f('uTorchInvReach', 'float', TORCHES), f('uHearthFar', 'vec4', HEARTHS / 4),
+      f('uLabyrinthLive', 'vec4', LABYRINTHS_LIVE), f('uLabyrinthGlow', 'float'),
     ])
     this.block.attach(renderer)
   }
@@ -860,7 +874,7 @@ export class WorldLighting {
     // The baked glow rides a per-vertex `hearth` attribute only the terrain carries.
     if (hearths && mode !== 'vertex') throw new Error('patch: hearths needs vertex mode')
     // vec4-packed: a float[] may take a whole vector slot per element, and HEARTHS of those would crowd the vertex stage's uniform budget.
-    const hearthDecl = hearths ? `\nattribute float hearth;\nuniform vec4 uHearthFar[${HEARTHS / 4}];` : ''
+    const hearthDecl = hearths ? `\nattribute float hearth;\nuniform vec4 uHearthFar[${HEARTHS / 4}];\nuniform vec4 uLabyrinthLive[${LABYRINTHS_LIVE}];\nuniform float uLabyrinthGlow;` : ''
     // Per material, and on userData so a console can tune it live.
     const liftU = liftAlbedo && { value: new THREE.Vector2(liftAlbedo.mix, liftAlbedo.gain) }
     if (liftAlbedo?.weight !== undefined && typeof liftAlbedo.weight !== 'string') throw new Error('lighting.patch: liftAlbedo.weight is a GLSL float expression')
@@ -946,7 +960,7 @@ export class WorldLighting {
             ${caustics ? 'vWlBed = wlWorld;' : ''}
             ${lamps ? 'vWlLamp = wlLamp( wlWorld );' : ''}
             vWlTorch = wlTorch( wlWorld );
-            ${hearths ? 'int wlHi = int( hearth ); vWlTorch += uTorchColor * ( fract( hearth ) * uHearthFar[ wlHi / 4 ][ wlHi % 4 ] );' : ''}`
+            ${hearths ? HEARTH_GLSL : ''}`
           )
         shader.fragmentShader = shader.fragmentShader
           .replace('#include <common>', `#include <common>\n${varying}${bed}${lamp}\n${NIGHT_GLSL}${liftDecl}\n${caustics ? CAUSTIC_DEFS : ''}`)

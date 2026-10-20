@@ -6,6 +6,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { Conversation, strHash } from './speak.js'
 import { OPEN_TOPICS, TOPICS } from './lore.js'
+import { MANNERS } from './manners.js'
 
 export const CHAT = {
   // Questions they will answer before they have had enough: base, plus chattiness and standing (each 0..1) times these.
@@ -49,6 +50,7 @@ export class Chat {
 
   _end(line, why) {
     this.ended = true
+    if (why === 'dismissed') this.conv.ctx.rapport.warm(this.mind.id, MANNERS.overstay)
     return { ...line, ended: true, alone: CHAT.alone[why] }
   }
 
@@ -83,6 +85,7 @@ export class Chat {
   ask(topic) {
     if (this.ended) throw new Error(`Chat: ${this.mind.id} has already ended the conversation`)
     if (topic === 'bye') return this._end(this.conv.bye(), 'bye')
+    if (topic === 'nice:leave') return this._end(this.conv.say(topic), 'bye')
     this.turns++
     // A parent whose child is missing never sends her off. Past patience, what is not about the search turns them back to it.
     if (this.conv._worried()) {

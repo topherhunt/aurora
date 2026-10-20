@@ -5,6 +5,7 @@ import { hash32 } from '../../sim/score.js'
 import { TITLES } from './world.js'
 import { MESSAGES } from './quests.js'
 import { LORE, TOPICS, knowOdds, expertise, expertBody, beliefOdds, sawOdds } from './lore.js'
+import { MANNERS, MOVES, reception, isNight } from './manners.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -19,8 +20,8 @@ export const SPEAK = {
   detect: 0.5,
   // Standing a friend's name lends, or a rival's costs.
   sentBy: 0.3,
-  // Standing a witness needs before telling her what they saw of a contested fact (lore.js `seen`).
-  confide: 0.15,
+  // Standing a witness needs before telling her what they saw of a contested fact (lore.js `seen`): a favour, or kind words over two days.
+  confide: 0.3,
 }
 
 const TRADE_WORDS = {
@@ -101,6 +102,10 @@ export class Conversation {
     this.delivering = null
     // Lore told this conversation: topic -> Set of fact ids, so asking again tells another fact.
     this.lore = new Map()
+    // Kind words (manners.js): praise and small talk said in a row, whether their last line told her something, whether she has heard their work.
+    this.fawn = 0
+    this.useful = false
+    this.heardWork = false
   }
 
   get leafkin() {
@@ -139,8 +144,9 @@ export class Conversation {
 
   /** What she may say: `{ topic, label, path }`, `path` the fragments the dialog grid (grid.js) builds it from. Gated lore shows once she has heard of it (`ctx.known`). */
   menu() {
-    const chips = this._followUps()
-    chips.push(['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']])
+    const nice = this._niceties()
+    const chips = [...this._followUps(), ...nice.lead]
+    chips.push(['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']], ...nice.rest)
     if (!this.leafkin) {
       chips.push(['talk:town', ['Tell me about', 'this town.']], ['where:here', ['Where', 'am I?']], ['where:home', ['Where', 'do you live?']])
       for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, ['Where', 'is the', `${title === 'potionmaster' ? 'potion master' : title}?`]])
@@ -157,6 +163,31 @@ export class Conversation {
     chips.push(['bye', ['Goodbye.']])
     const seen = new Set()
     return chips.map(([topic, path]) => ({ topic, label: path.join(' '), path })).filter((c) => !seen.has(c.label) && seen.add(c.label))
+  }
+
+  /** Kind words she may say now (manners.js): `lead` fits this moment and follows the follow-ups, `rest` follows the everyday chips. */
+  _niceties() {
+    if (this.leafkin) return { lead: [], rest: [] }
+    const { mind } = this
+    const lead = []
+    if (this.ask === 0) lead.push(['nice:greet', this.ctx.known.has(`person:${mind.id}`) ? ['Good day,', `${mind.name}.`] : ['Good day', 'to you.']])
+    if (this.useful) lead.push(['nice:thanks', ['Thank you,', 'that helps.']])
+    const sad = this._sadAbout()
+    if (sad !== null) lead.push(['nice:sorry', ['I hope', `${sad.name} is found.`]])
+    const child = mind.cls === 'child'
+    const rest = [['nice:work', child ? ['What are', 'you up to today?'] : ['How is', 'the work going?']]]
+    if (!child) rest.push(['nice:life', ['How long have', 'you lived here?']])
+    rest.push(['nice:town', ['This is', 'a lovely town.']])
+    if (this.heardWork && !child) rest.push(['nice:craft', ['You do', 'fine work.']])
+    if (this.ask > 0) rest.push(['nice:leave', ["I won't", 'keep you.']])
+    return { lead, rest }
+  }
+
+  /** The missing child weighing on them, their own or the one their last line told of, or null. */
+  _sadAbout() {
+    if (this._worried()) return this.ctx.world.person(this.quest.child)
+    const a = this.about.find((x) => x.kind === 'missing')
+    return a === undefined ? null : this.ctx.world.person(a.id)
   }
 
   /** The questions their last line invites, first in the menu so the grid offers them first. */
@@ -239,8 +270,10 @@ export class Conversation {
   /** Her question `topic` (a chip's topic) answered: `{ text, gesture, toward, claim, mood }`. */
   say(topic) {
     this.ask++
+    if (!topic.startsWith('nice:')) this.fawn = 0
     const line = this._say(topic)
     this.about = line.about
+    this.useful = line.claim !== null
     this._hear(line.about)
     return line
   }
@@ -257,6 +290,7 @@ export class Conversation {
     if (head === 'word') return this._deliver(rest.slice(1).join(':'), Number(rest[0]))
     if (head === 'lore') return this._lore(arg)
     if (head === 'who') return this._who(arg)
+    if (head === 'nice') return this._nice(arg)
     if (head === 'bye') return this.bye()
     throw new Error(`Conversation: no topic ${topic}`)
   }
@@ -291,6 +325,7 @@ export class Conversation {
     if (s > 0.3) return this._line('Good to see you!', 'wave', { mood: 'warm', moment: 'greet.friend' })
     const tone = this.tone
     if (tone === 'curt') return this._line('What is it?', 'talk-shrug', { moment: 'greet.cold' })
+    if (tone === 'cheery') this.ctx.known.add(`person:${this.mind.id}`)
     return this._line(tone === 'cheery' ? `Well met, stranger! I'm ${this.mind.name}.` : 'Well met, stranger.', 'wave', { moment: 'greet.stranger' })
   }
 
@@ -544,6 +579,8 @@ export class Conversation {
       if (this.leafkin) return this._line(`${mind.name}. ${mind.name} find shroom. ${mind.name} good.`, 'talk-nod', { moment: 'talk.self', unlocks: this._unlock(['mushrooms']), about: this._named(['mushrooms']) })
       if (this._standing() < T.wariness - 0.85) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
       let text = `I'm ${mind.name}. I ${this._work(mind)}.`
+      ctx.known.add(`person:${mind.id}`)
+      this.heardWork = true
       const trade = BODY_UNLOCKS[mind.body] ?? []
       const unlocks = this._unlock(trade)
       if (this.tone === 'curt') return this._line(text, 'talk-gesture', { moment: 'talk.self', unlocks, about: this._named(trade) })
@@ -593,7 +630,11 @@ export class Conversation {
       }
       return this._line(text, 'talk-gesture', { moment: 'talk.town', about })
     }
-    if (arg === 'needs') return this._needs()
+    if (arg === 'needs') {
+      const line = this._needs()
+      if (this.leafkin || !this._warmBy('help') || line.mood !== 'neutral') return line
+      return { ...line, mood: 'warm' }
+    }
     throw new Error(`Conversation: no talk:${arg}`)
   }
 
@@ -604,6 +645,59 @@ export class Conversation {
     const m = this._message('giver')
     if (m !== null && [null, 'accepted', 'delivered'].includes(ctx.log.state(m.id))) return this._errand(m)
     return this.wish() ?? this._line(this.leafkin ? 'Need nothing. Happy.' : "I'm all right, thank you.", 'talk-nod', { moment: 'needs.no' })
+  }
+
+  /** Move `move` of manners.js said to them: its warmth applied, and their reply, warm and nodding when it lands. Praise and small talk past MANNERS.fawn in a row reads as buttering up. */
+  _nice(move) {
+    if (MOVES[move] === undefined) throw new Error(`Conversation: no nicety ${move}`)
+    if (MOVES[move].fawns && ++this.fawn >= MANNERS.fawn) {
+      this.ctx.rapport.warm(this.mind.id, MANNERS.sour)
+      return this._line("You're laying it on a bit thick.", 'talk-shrug', { mood: 'cold', moment: 'social.disagree' })
+    }
+    const high = this._warmBy(move)
+    const [text, moment] = this._niceReply(move, high || this.tone === 'cheery')
+    return this._line(text, high ? 'talk-nod' : 'talk-gesture', { mood: high ? 'warm' : 'neutral', moment })
+  }
+
+  /** The warmth `move` earns now, applied: its base times their reception, less each saying this epoch, within the epoch's cap. True when it showed. */
+  _warmBy(move) {
+    const { mind, ctx } = this
+    const words = ctx.rapport.words(mind.id, ctx.epoch)
+    const n = words.used.get(move) ?? 0
+    words.used.set(move, n + 1)
+    const k = reception(mind, move, { worried: this._worried(), night: isNight(ctx.hour), standing: this._standing() })
+    const gain = Math.min(MOVES[move].base * k * MANNERS.repeat[Math.min(n, MANNERS.repeat.length - 1)], MANNERS.cap - words.gained)
+    words.gained += gain
+    ctx.rapport.warm(mind.id, gain)
+    return gain >= MOVES[move].base * MANNERS.shows
+  }
+
+  /** Their reply to `move`, `high` when it landed or they are cheery anyway: `[text, moment]`. */
+  _niceReply(move, high) {
+    const { mind } = this
+    const travel = mind.cls === 'travel'
+    if (move === 'greet') return [high ? 'And a good day to you!' : 'Good day.', 'greet.stranger']
+    if (move === 'thanks') return [high ? 'Glad to be of use.' : 'Mm.', 'social.agree']
+    if (move === 'work') {
+      this.heardWork = true
+      if (mind.cls === 'child') return [high ? 'Playing! It is the best day.' : 'Nothing.', 'talk.self']
+      return [high ? `Busy enough. I ${this._work(mind)}, and I like it.` : 'It gets done.', 'talk.self']
+    }
+    if (move === 'life') {
+      if (travel) return [high ? 'I come and go. Here a while, then on down the road.' : 'Not long.', 'talk.self']
+      return [high ? `All my life. ${this.town.name} is home.` : 'Long enough.', 'talk.self']
+    }
+    if (move === 'town') {
+      if (travel) return [high ? "It's a fair place to rest, I'll give it that." : "It's not my town.", 'mood.content']
+      return [high ? `We're proud of ${this.town.name}.` : "It's all right.", 'mood.content']
+    }
+    if (move === 'craft') return [high ? 'Ha! Someone noticed.' : "It's only work.", high ? 'nv.laugh' : 'social.agree']
+    if (move === 'sorry') {
+      if (this._worried()) return [high ? `Thank you. I just want ${this._sadAbout().name} home.` : 'Mm. Thank you.', 'give.polite']
+      return [high ? 'Aye. A hard business.' : 'Aye.', 'social.agree']
+    }
+    if (move === 'leave') return [high ? 'Kind of you. Go well.' : 'Oh, already? Well, go well.', 'bye.warm']
+    throw new Error(`Conversation: no reply for ${move}`)
   }
 
   /** What they would like of her (WANTS), or null: a kindly sort asks nothing. */

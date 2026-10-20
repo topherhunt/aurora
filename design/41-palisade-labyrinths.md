@@ -59,13 +59,15 @@ Four variants. `postPose` (render/palisades.js, also the bench's) takes its girt
 
 **Tone.** The mesh is drawn 20% darker and the card 20% lighter than the plain prop and card (`POST_TONE`), in display terms: the vertex colours carry 0.8^2.2 (they are linear), and `tonePostCard` lifts the baked card's sRGB bytes by 1.2 / 0.8 since the bake already carries the mesh's darkening.
 
-LOD2 is a card in LitterCards' shared pool, photographed off a LOD0 post once the atlas is in. Bands from the eye: LOD0 inside 10 m, LOD1 inside 28 m, the card inside 80 m, and nothing past it, where the forest hides the walls. Labyrinths whose reach meets the 80 m box are placed into a 14000-id PropArena (three of the largest at once) and released past it; tiers rebucket per metre the eye moves. LitterCards grows by PALISADE_CARDS (10000) for the claim.
+LOD2 is a card in LitterCards' shared pool, photographed off a LOD0 post once the atlas is in. Bands from the eye (`PALISADE_BANDS`): LOD0 inside 10 m, LOD1 inside 28 m, the post card beyond. A labyrinth whose centre is inside 80 m has its posts placed into a 14000-id PropArena (three of the largest at once) and released past it; tiers rebucket per metre the eye moves. LitterCards grows by PALISADE_CARDS (10000) for the claim.
+
+**The far card.** From 80 m to 1500 m a whole labyrinth is one picture (`FAR_CARD`). At the card bake, `typicalSite()` (the middle radius, at the origin) is built on flat ground from LOD1 posts and its fixtures and photographed once by `bakeImpostorView` into a 256 px texture, orthographic from 35° up, the gate 0.7 rad round from the camera. Each card stands on the near rim of its labyrinth's reach (scaled by its reach over the typical one), faces the eye and leans back to the eye's elevation, and is as tall as the labyrinth would look from there, capped at the picture's own height; so from a low eye it is the picture squashed flat. Every card shows the gate in the same place, not at its real bearing; the flames are not in it. The swap to posts pops at the 80 m centre distance.
 
 `/gen-palisade` shows LOD0, LOD1 and the card side by side, with a curved run of wall, its gate and torches.
 
 ## The gate torches
 
-Two torch poles 0.55 m outside the outer wall, one at each gate post: a bark stake and a pitch-dark head, a TriFlames flame on top. Their light goes into main.js `updateFire`'s torch list at half a hand torch's reach (`GATE_LIGHT`, 7.5 m), so it competes with lit sticks for the dynamic torch slots. At most 6 torches (three labyrinths) are in reach; more throws.
+Two torch poles 0.55 m outside the outer wall, one at each gate post: a bark stake and a pitch-dark head, a TriFlames flame on top. Their light goes into main.js `updateFire`'s torch list at half a hand torch's reach (`GATE_LIGHT`, 7.5 m), so it competes with lit sticks for the dynamic torch slots. At most 6 torches (three labyrinths) are in reach; more throws. Past the posts their light is baked into the terrain like a town hearth's (hearth-light.js `LABYRINTH_GLOW`, the same 7.5 m): the chunk's `hearth` attribute carries minus the nearest gate torch's or beacon's k² where it outshines any town, the shader scales it by `uLabyrinthGlow` (the flicker's mean, at any hour, as the live torches burn), and drops it inside `uLabyrinthLive`, the placed labyrinths whose live torches light the ground instead.
 
 ## The watchtowers
 
@@ -109,11 +111,12 @@ It shares the snowmen's visibility toggle and trace row, and treads through ambi
 - **check-labyrinths** `[every]`, ~16 s. Every labyrinth: every cell reached from the one entrance, one door, two torches; wall covered by posts or cracks of at most 4 cm; girths in range; its towers; its dead ends' carrots on their nodes, clear of walls and posts; its drums' reach and rise; the giant's graph one piece, `nodeAt` finding every node, every leg 0.25 m clear of the walls. Walked: WalkSurface flooded on a 0.25 m grid with Palisades' own columnAt, every cell and the middle reached from outside, and with the gate plugged, none. Towers climbed, held and fallen from; wall tops found.
 - **check-giants**: on flat ground with a stand-in skinned yeti: the round's coverage and pace, the closed-form pose across two frame rates, noticing, chase, swing and blows, forgetting and the walk back, a peer going live on an anchor; a flare's cower, its scream, its anchor and what follows.
 - **check-world-plan**: the boot reads the plan's footprints, and the gate trails reach the roads through no labyrinth.
+- **check-v2-field**: a chunk's baked labyrinth glow is negative and under 1 at a gate torch and gone past its reach, a stronger town hearth keeps its index, and the glow's reach is a live gate torch's.
 
 ## Open
 
 - design/42-valuables.md plans a gem on the plinth; the egg stands there now.
 - The giant is wider than a 1.35 m corridor and clips the posts; a noticed giant can take long to reach her round the maze's turns.
 - Climbing and the giant are unseen in a headset.
-- Posts are drawn only inside 80 m, so a labyrinth is invisible past that; the wood round it usually hides it first.
+- The far card and its glow are seen only in a headless probe: the wood round a labyrinth hides most of the card, and at night its glow is a speck at 110 m.
 - On v3 fine tiles, slope at the 4 m siting cell may disagree with the beds' own reading.
