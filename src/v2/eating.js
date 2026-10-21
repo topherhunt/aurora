@@ -7,7 +7,7 @@ export const EAT = {
   heal: 10,
   harm: 10,
   // Her size, as a multiple of her full height, the same in every room: eased to each new target over `easeS` s, in ratio.
-  size: { min: 1 / 8, max: 2, easeS: 6 },
+  size: { min: 1 / 8, max: 4, easeS: 6 },
   // Each effect fades in over `inS`, holds to `s`, then fades out over `outS`.
   agaric: { s: 15, inS: 3, outS: 3, m: 500, rgba: [0.25, 1, 0.3, 0.32] },
   porcini: { s: 60, inS: 3, outS: 3, guard: 0.5, rgba: [0.4, 0.22, 0.06, 0.22], most: 0.75 },

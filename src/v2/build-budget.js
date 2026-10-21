@@ -45,6 +45,12 @@ export class BuildScheduler {
     this.sources.push({ owner, grow, name, on, rank, tile, cost: 0.1, at: -1, ring: Infinity, d2: Infinity })
   }
 
+  /** Drops every source, for a room swap: their layers are disposed and the next room adds its own under the same names. `spent` is emptied in place, since the trace windows hold it. */
+  clear() {
+    this.sources.length = 0
+    for (const name in this.spent) delete this.spent[name]
+  }
+
   /** Squared distance from the player to the nearest point of a job's tile. */
   _near2(s, job) {
     const t = s.tile

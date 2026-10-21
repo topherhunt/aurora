@@ -332,14 +332,16 @@ async function bootStep(name) {
   bootStepAt = performance.now()
 }
 /**
- * Close the running step and print the build's table.
+ * Close the running step and print the build's table: the boot's when `swapTo`
+ * is null, else the swap into the room of that id (passed in, since this sits
+ * outside the boot closure that holds `currentRoom`).
  *
  * EVERY build calls this, the first and each swap after it. A step left open
  * runs until the next `bootStep`, which for a swap is the next room -- so the
  * whole of her stay in this room would be charged to the step that finished
  * building it.
  */
-function bootReport(first) {
+function bootReport(swapTo) {
   const now = performance.now()
   if (bootStepName !== null) bootSteps.push({ name: bootStepName, ms: now - bootStepAt, frame: 0 })
   bootStepName = null
@@ -348,7 +350,7 @@ function bootReport(first) {
   const build = `build ${bootFmtMs(wall)}: steps ${bootFmtMs(sum('ms'))} + frames ${bootFmtMs(sum('frame'))} + other ${bootFmtMs(wall - sum('ms') - sum('frame'))}`
   const steps = 'steps: ' + bootSteps.slice().sort((a, b) => b.ms + b.frame - a.ms - a.frame)
     .map((s) => `${s.name} ${bootFmtMs(s.ms)}${s.frame >= 1 ? ` +${bootFmtMs(s.frame)} frame` : ''}`).join(', ')
-  if (!first) return reportLog(`[v2] room ${currentRoom.id} ${build}; ${steps}`)
+  if (swapTo !== null) return reportLog(`[v2] room ${swapTo} ${build}; ${steps}`)
   // Everything fetched so far. transferSize is 0 for a cache hit, so a warm boot reads as near-zero MB.
   const fetches = performance.getEntriesByType('resource')
   const lastEnd = (list) => list.reduce((m, e) => Math.max(m, e.responseEnd), 0)
@@ -369,7 +371,7 @@ function bootReport(first) {
 }
 const bootDone = async () => {
   await bootStep(null)
-  bootReport(true)
+  bootReport(null)
   openLoads()
   if (boot) boot.classList.add('gone')
 }
@@ -3880,6 +3882,7 @@ function disposeRoom() {
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
     boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
   ]) gone(layer)
+  buildScheduler.clear()
   if (overworld !== null && waterSurfaces === overworld.waterSurfaces) waterSurfaces.detach()
   else gone(waterSurfaces)
   lighting.clearLamps()
@@ -4136,6 +4139,7 @@ window.v2house = (k, i) => (k === null ? leaveHouse() : enterHouse(i === undefin
 // --- caves (design/39-caves.md) ----------------------------------------------
 // Every cave is built CAVE_OY under the overworld at its plan's own x, z, so a peer in the same cave stands where she does with nothing new on the wire.
 const CAVE_OY = -2000
+const caveWorld = (sys) => `cave ${sys.id}`
 // The overworld's mouths and systems (caves/sites.js), and their arches; null in a village.
 let caveSites = null
 let caveMouths = null
@@ -4262,8 +4266,7 @@ async function enterCave(sys, door, back) {
   inner.hintY = d.y + CAVE_OY
   walk = window.v2walk = inner
   player.setGround(inner)
-  hands.walk = inner
-  hands.water = caveWater
+  hands.setWorld(caveWorld(sys), inner, caveWater)
   cave.fishSeed = fish.seed
   aimFish(caveFishBed, caveFishWater, sys.seed, d.x, d.z)
   player.teleportTo(d.x, d.z, d.y + CAVE_OY)
@@ -4313,10 +4316,7 @@ function closeCave() {
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = cave.outside
   if (player) player.setGround(walk)
-  if (hands) {
-    hands.walk = walk
-    hands.water = waterSurfaces
-  }
+  if (hands) hands.setWorld('overworld', walk, waterSurfaces)
   const feet = player.originPosition()
   aimFish(height, waterSurfaces, cave.fishSeed, feet.x, feet.z)
   cave = null
@@ -5258,6 +5258,9 @@ async function buildRoom(room, at) {
     // A creature eating from her hand: deeper from a strider or a stag.
     eaten: (lure, eater) => { if (ambience) sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) }) },
     scale: herScale(),
+    world: 'overworld',
+    // A peer's thing in a cave is taken to be in hers: the room does not say which system.
+    worldOf: (y) => (y > CAVE_OY / 2 ? 'overworld' : cave === null ? 'caves' : caveWorld(cave.sys)),
   })
   hands.addSource(mushrooms, 'mushroom')
   hands.addSource(carrots, 'carrot')
@@ -5326,7 +5329,7 @@ async function buildRoom(room, at) {
     await bootStep('leafkin')
     leafkin = new Leafkin(scene, { ground, walk, entrances, mushrooms, hands })
     for (const m of leafkin.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-leafkin' })
-    leafkin.ready.then(() => console.log(`[v2] leafkin ${leafkin.asset.height.toFixed(2)} m body, ${Object.keys(leafkin.durations).length} clips`))
+    leafkin.ready.then(() => { if (build === roomBuild) console.log(`[v2] leafkin ${leafkin.asset.height.toFixed(2)} m body, ${Object.keys(leafkin.durations).length} clips`) })
     creatureNet.add(leafkin, ['lk'])
   }
   window.v2leafkin = leafkin
@@ -5484,7 +5487,7 @@ async function buildRoom(room, at) {
   if (MULTIVIEW && new URLSearchParams(location.search).has('tbasic')) terrain.batch.material = new THREE.MeshBasicMaterial({ vertexColors: true })
   // The first build reports from bootDone, which has the overlay to take down
   // and a save to apply after this returns; a swap has nothing after it.
-  if (build > 1) bootReport(false)
+  if (build > 1) bootReport(room.id)
   return { spawn, fresh }
 }
 

@@ -189,6 +189,8 @@ export function setCritterAsset(mesh, material, asset, label) {
   geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(asset.uv), 2))
   geo.setIndex(asset.idx)
   geo.computeBoundingBox()
+  // A sphere computed while the geometry was empty (radius -1) culls every later photograph of it into an empty card.
+  geo.computeBoundingSphere()
   const b = geo.boundingBox
   if (asset.map) {
     material.map = asset.map

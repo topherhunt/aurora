@@ -166,9 +166,10 @@ export class Hands {
    * the drift's own stream. `eaten(lure, eater)` is a creature eating what a
    * hand of hers held (eatLure). `scale` is her size against the world (DESIGN.md
    * §30): each hand's reach, the size of thing it lifts and the backpack zone
-   * about her head are hers, and shrink with her.
+   * about her head are hers, and shrink with her. `world` names where she is
+   * (see setWorld), and `worldOf(y)` where a peer's thing at height y lies.
    */
-  constructor(scene, { walk, water, haptic, stow, thud, splash, douse, eaten, rand = Math.random, scale = 1 }) {
+  constructor(scene, { walk, water, haptic, stow, thud, splash, douse, eaten, rand = Math.random, scale = 1, world = null, worldOf = () => this.world }) {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Hands needs the WalkSurface, for heightAt and normalAt')
     if (!water || typeof water.levelAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt')
     if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function' || typeof douse !== 'function' || typeof eaten !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z), splash(x, y, z), douse(x, y, z) and eaten(lure, eater)')
@@ -177,6 +178,8 @@ export class Hands {
     this.eaten = eaten
     this.walk = walk
     this.water = water
+    this.world = world
+    this.worldOf = worldOf
     this.haptic = haptic
     this.stow = stow
     this.thud = thud
@@ -216,6 +219,18 @@ export class Hands {
     this.tag = null
     this.looseN = 0
     this.peerHeld = new Map()
+  }
+
+  /**
+   * She has gone into another world (main.js: the overworld, or a cave
+   * system): `walk` and `water` as the constructor's. A loose thing belongs to
+   * the world it was let go in and holds still while she is in another, whose
+   * water has no level under it.
+   */
+  setWorld(world, walk, water) {
+    this.world = world
+    this.walk = walk
+    this.water = water
   }
 
   _emit(event) {
@@ -860,6 +875,7 @@ export class Hands {
     item.tried = false
     item.head = { x: head.x, y: head.y, z: head.z }
     item.mine = true
+    item.world = this.world
     item.netId = this._looseId()
     this.loose.push(item)
     while (this.loose.length > LOOSE_MAX) this._forget(this.loose.shift())
@@ -914,7 +930,7 @@ export class Hands {
     }
     let kept = 0
     for (const item of this.loose) {
-      if (this._stepLoose(item, dt)) this.loose[kept++] = item
+      if (item.world !== this.world || this._stepLoose(item, dt)) this.loose[kept++] = item
     }
     this.loose.length = kept
     for (const held of this.peerHeld.values()) for (const entry of held) if (entry && !entry.item) this._dressPeer(entry)
@@ -1123,6 +1139,7 @@ export class Hands {
       if (rec === null) return false
       item = this._item(rec, this.byKind.get(slot.kind))
       item.netId = id
+      item.world = this.worldOf(pose[1])
       item.x = pose[0]; item.y = pose[1]; item.z = pose[2]
       item.q.set(pose[3], pose[4], pose[5], pose[6])
       item.head = { x: pose[0], y: pose[1], z: pose[2] }

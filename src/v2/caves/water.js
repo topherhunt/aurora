@@ -14,9 +14,7 @@ const DEEP = 14
  * Settles every pool and sump in `graph.pools` against the field: sets `shore` = { x0, z0, nx, nz, cell, s, floor }, s per grid corner being the floor's rise over level + TUCK: negative where the water reaches, the true rise on its shore, 0 in a wall, so the plane runs exactly into a wall corner. A pool a sump's water already covers takes the sump's level and shore null, so the two planes don't fight. Pure in the seed, so the worker and main thread settle the same water.
  */
 export function settleWaters(graph, field) {
-  // A great cavern's hollow its wall's shape octaves swallowed holds no water.
-  graph.pools = graph.pools.filter((p) => p.node === undefined || !graph.nodes[p.node].great || floorUnder(field, p.x, p.z, p.level + 0.3) < p.level - 0.2)
-  for (const p of graph.pools) settle(p, graph, field)
+  graph.pools = graph.pools.filter((p) => settle(p, graph, field))
   for (const sump of graph.pools) {
     if (sump.edge === undefined) continue
     for (const p of graph.pools) {
@@ -29,6 +27,7 @@ export function settleWaters(graph, field) {
   }
 }
 
+// False for a great cavern's hollow its wall's shape octaves swallowed: it holds no water.
 function settle(p, graph, field) {
   const homes = []
   // A drowned passage's wet stretch runs under the cavern's dry rim, so its floor is read from under the surface, not over it.
@@ -68,6 +67,8 @@ function settle(p, graph, field) {
   // Priority flood: each corner's key is the lowest water that reaches it from the seed, the highest floor on its best path.
   const heap = new Heap()
   const s0 = Math.round((seed[1] - z0) / CELL) * nx + Math.round((seed[0] - x0) / CELL)
+  // Judged at the seed's cell, not the seed: off the grid by up to a quarter metre, a hollow's seed can sit in a sliver of air its cell does not.
+  if (p.node !== undefined && graph.nodes[p.node].great && !(floorOf(s0) < p.level - 0.2)) return false
   if (!(floorOf(s0) < p.level)) throw new Error(`settleWaters: ${p.node !== undefined ? `pool ${p.node}` : `sump ${p.edge}`} has no floor under its level at its deepest point`)
   key[s0] = floorOf(s0)
   heap.push(key[s0], s0)
@@ -98,6 +99,7 @@ function settle(p, graph, field) {
     else s[c] = Math.max(floor[c] - level - TUCK, 0)
   }
   p.shore = refine({ x0, z0, nx, nz, cell: CELL, s, floor }, field, level, refAt)
+  return true
 }
 
 // The shore at half the flood's cell: interpolated inside the water and on dry ground, sampled afresh only in the cells the shoreline crosses, where a dip between two corners would leave the plane's edge in the air.

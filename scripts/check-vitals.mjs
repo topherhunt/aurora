@@ -281,9 +281,9 @@ console.log('eating')
   const up = e.eat({ kind: 'mushroom', name: 'parasol' })
   run(EAT.size.easeS + 0.1)
   check(up.sound === 'zoomBack' && e.size === 2 * EAT.size.min, 'a parasol doubles her, zooming backward', e.size)
-  for (let i = 0; i < 5; i++) e.eat({ kind: 'mushroom', name: 'parasol' })
+  for (let i = 0; i < 6; i++) e.eat({ kind: 'mushroom', name: 'parasol' })
   run(EAT.size.easeS + 0.1)
-  check(e.size === EAT.size.max, 'parasols stack up to twice and no further', e.size)
+  check(e.size === EAT.size.max && e.size === 4, 'parasols stack up to four times and no further', e.size)
 
   const A = EAT.agaric
   e.eat({ kind: 'mushroom', name: 'fly agaric' })

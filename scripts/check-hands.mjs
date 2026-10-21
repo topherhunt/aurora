@@ -427,6 +427,15 @@ const build = () => {
   m.ax = -0.06; m.az = 0; m.vx = -0.06; m.vz = 0; m.tack = 30
   w.run(10)
   check(m.x > 30 && m.state === 'float' && water.levelAt(m.x, m.z) !== null, 'it never drifts up the beach', `x ${m.x.toFixed(2)}`)
+  // Into a cave, whose water lies nowhere under the lake: the thing afloat on the lake holds still, and floats on once she is back.
+  w.hands.setWorld('cave', walk, { levelAt: () => null })
+  const held = [m.x, m.y, m.z]
+  let threw = null
+  try { w.run(2) } catch (e) { threw = e.message }
+  check(threw === null && m.x === held[0] && m.y === held[1] && m.z === held[2] && w.hands.loose.length === 1, 'in another world a thing afloat on the lake holds still', threw ?? '')
+  w.hands.setWorld(null, walk, water)
+  w.run(2)
+  check(m.state === 'float' && m.y !== held[1], 'and bobs on once she is back')
   // A crab refused at the surface goes on down to the bed as before.
   const c = build()
   c.at(4, 0.7, 0)
