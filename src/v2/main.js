@@ -1664,7 +1664,7 @@ function applyLitterVisibility() {
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
-  if (entrances) entrances.batch.visible = entrances.holes.visible = entrances.flank.visible = entrances.shown = questToggles.boulders
+  if (entrances) entrances.batch.visible = entrances.flank.visible = entrances.shown = questToggles.boulders
 }
 
 /** The `huts`, `towns` and `townsfolk` rows. The village hearth is left to `fire`: its own update decides when its group shows. */
@@ -3197,13 +3197,6 @@ const HAND_KEYS = ['left', 'right', 'desk']
 // shows partly off screen, as if carried near her face by a hand out of frame.
 let deskHand = null
 const DESK_HAND_REST = { x: 0.15, y: -0.15, z: -0.45 }
-// Her rein (WildStriders hand): on the desktop the desk hand; in the headset the hand `key` that took a led one's, and riding the left hand, as a rider holds it, unless only the right is empty.
-function reinHand(out, key) {
-  if (!renderer.xr.isPresenting) return deskHand.getWorldPosition(out)
-  if (key === 'left' || key === 'right') return (key === 'left' ? leftGrip : rightGrip).getWorldPosition(out)
-  const left = hands.holding('left') === null || hands.holding('right') !== null
-  return (left ? leftGrip : rightGrip).getWorldPosition(out)
-}
 // Metres a thing in the desk hand is drawn at, at most (placeDeskHand), at her full size: a fern is shown a third its size, like a thing carried near the face.
 const DESK_HAND_MAX_M = 0.4
 // A desktop click within this many px of its press picks along the camera ray this far, at her full size.
@@ -5183,7 +5176,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, cards: litterCards, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: wildAvoid, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key), hand: reinHand })
+    wildStriders = new WildStriders(scene, { walk, textures: propTextures, cards: litterCards, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: wildAvoid, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`

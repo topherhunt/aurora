@@ -26,8 +26,8 @@ export const WILD = {
   fish: { see: 6, lose: 9, hold: [1.6, 3.0], eat: 0.7 },
   // A fed one keeps `stand` m from her, walks after her past `walk` and runs past `run`, and goes back to the wild past `lose`.
   follow: { stand: 2.5, walk: 4, run: 10, lose: 60 },
-  // Her empty hand within `grab` m (times its size over the mean) of a tamed one's jowl, or a desk click ray passing that near, takes its rein, `rein` m long at the mean size: led, it keeps `stand` m from her, walks after her past `walk` and runs past `run`; past `lose` the rein slips from her hand.
-  lead: { grab: 0.5, rein: 3.5, stand: 2, walk: 3, run: 8, lose: 25 },
+  // Her empty hand within `grab` m (times its size over the mean) of a tamed one's jowl, or a desk click ray passing that near, takes its rein: led, it keeps `stand` m from her, walks after her past `walk` and runs past `run`; past `lose` the rein slips from her hand.
+  lead: { grab: 0.5, stand: 2, walk: 3, run: 8, lose: 25 },
   // A share of the homes that come into range once she is under way charge past her at `pace` times their run, missing by `miss` m, calling every `call` s.
   panic: { chance: 0.1, pace: 1.1, miss: [4, 18], call: [0.3, 0.8] },
   // Radians a second it turns, and the steepest rise a step takes it up.
@@ -91,7 +91,6 @@ const _sat = new THREE.Vector3()
 const GRAVITY = 9.81
 // A peer's head further than this (times its size over the mean) from the seat of the strider it rides has hopped: the copy walks or runs after it (_carried).
 const TRIP_M = 1
-const _hand = new THREE.Vector3()
 
 function hash01(a, b, c) {
   let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ Math.imul(c | 0, 0x9e3779b1)
@@ -155,9 +154,8 @@ export class WildStriders {
    * @param opts.bond      { trusted: Set, grown: Map } of strider keys, shared with the towns' (townsfolk.js) and outliving the room
    * @param opts.returned  (key) => a town's strider lent to her (borrow) gone from this layer
    * @param opts.lend      (key) => the town's strider under that key lent as for borrow, for a peer riding it, or null where its town is not awake here
-   * @param opts.hand      (out, key) => the hand her rein is in, in the world, into `out` (a Vector3) as of now: riding, `key` null; leading, the hand that took it (lead). None, she rides and leads without one
    */
-  constructor(scene, { walk, textures, patch, cards, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null, hand = null }) {
+  constructor(scene, { walk, textures, patch, cards, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null }) {
     this.walk = walk
     this.avoid = avoid
     this.crowd = crowd
@@ -166,7 +164,6 @@ export class WildStriders {
     this.bond = bond
     this.returned = returned
     this.lend = lend
-    this.hand = hand
     // The room's clock, the peers' heads (main.js peerHeadsNow) and her feet, as of update; the latest anchor per key, the room's and this client's own; the anchors owed.
     this.now = 0
     this.peers = []
@@ -395,12 +392,9 @@ export class WildStriders {
         if (m.state === 'meek' && a.time > hi) a.time = lo
       }
     }
-    const r = this.ridden
-    if (r && this.hand && S.jowl(r, _v)) S.rein(this.hand(_hand, null), _v, (STRIDER.rein.held * r.pose.size) / STRIDER.size.mean)
     const l = this.led
     // A peer that took it live (apply), or its going anything but led, takes it from her hand.
     if (l && (l.by !== null || l.state !== 'led' || this.live.get(l.key) !== l)) this.led = null
-    else if (l && this.hand && S.jowl(l, _v)) S.rein(this.hand(_hand, this.leadBy), _v, (WILD.lead.rein * l.pose.size) / STRIDER.size.mean)
     S.end()
   }
 

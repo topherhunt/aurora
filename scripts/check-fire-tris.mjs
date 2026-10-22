@@ -16,10 +16,9 @@ const throws = (fn) => { try { fn() } catch { return true } return false }
 console.log('the meshes')
 {
   const f = new TriFlames(4)
-  check(f.sparks.instanceMatrix === f.mesh.instanceMatrix, 'the sparks share the silhouettes\' matrices')
-  check(f.sparks.geometry.getAttribute('aFlame') === f.mesh.geometry.getAttribute('aFlame'), 'the sparks share the silhouettes\' phase and group')
-  check(f.mesh.geometry.index.count / 3 + f.sparks.geometry.index.count / 3 === FLAME_TRIS, 'FLAME_TRIS is what one flame draws', String(FLAME_TRIS))
-  for (const m of [f.mesh.material, f.sparks.material]) {
+  check(f.group.children.length === 1 && f.group.children[0] === f.mesh, 'silhouettes and sparks are one mesh, so one draw')
+  check(f.mesh.geometry.index.count / 3 === FLAME_TRIS, 'FLAME_TRIS is what one flame draws', String(FLAME_TRIS))
+  for (const m of [f.mesh.material]) {
     check(!/discard/.test(m.fragmentShader) && !/texture2D|texture\(/.test(m.fragmentShader), 'the fragment shader neither discards nor samples')
     check(m.transparent === false && m.blending === 1, 'the material is opaque and unblended')
     check(/uHeadEye/.test(m.vertexShader) && 'uHeadEye' in m.uniforms, 'the flame turns toward the head, not the eye being drawn')
@@ -49,12 +48,12 @@ console.log('the placement')
   f.place(1, 1, 2, 3, { height: 0.3, radius: 0.1 }); f.place(0, 4, 2, 3, { height: 0.3, radius: 0.1 })
   check(a.getX(2) === 1.5 && a.getX(1) !== a.getX(0), 'a flame moved keeps its phase; unphased flames apart differ', `${a.getX(1).toFixed(2)} vs ${a.getX(0).toFixed(2)}`)
   f.update(1, [1, 1, 1])
-  check(f.count === 3 && f.mesh.count === 3 && f.sparks.count === 3, 'the flames draw up to the highest placed', String(f.mesh.count))
+  check(f.count === 3 && f.mesh.count === 3 && f.mesh.visible, 'the flames draw up to the highest placed', String(f.mesh.count))
   check(f.triangles() === 3 * FLAME_TRIS, 'triangles() is count x FLAME_TRIS', String(f.triangles()))
   check(throws(() => f.place(4, 0, 0, 0, { height: 1, radius: 1 })), 'placing past the capacity throws')
   TriFlames.shown = false
   f.update(1, [1, 1, 1])
-  check(f.mesh.count === 0 && f.sparks.count === 0 && f.triangles() === 0, 'the fire row off draws no flame and no spark')
+  check(f.mesh.count === 0 && !f.mesh.visible && f.triangles() === 0, 'the fire row off draws no flame and no spark')
   TriFlames.shown = true
   f.update(1, [1, 1, 1])
   check(f.mesh.count === 3, 'back on, the flames draw again')

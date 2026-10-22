@@ -1508,10 +1508,7 @@ export class Townsfolk {
     this.shown.length = 0
     for (const c of drawn) if (c.puppet) this.shown.push(c)
     this._tools()
-    if (this.striders) {
-      for (const m of mounts) this._rein(m)
-      this.striders.end()
-    }
+    if (this.striders) this.striders.end()
   }
 
   /** A town or a traveller within LOAD_LEAD_M of waking, checked as often as the road is: time to fetch the bodies before anyone needs one. */
@@ -2110,21 +2107,6 @@ export class Townsfolk {
     pose.x += (seat.x - hips.x - pose.x) * h
     pose.y += (seat.y - hips.y - pose.y) * h + Math.sin(Math.PI * h) * TOWNSFOLK.leap
     pose.z += (seat.z - hips.z - pose.z) * h
-  }
-
-  /** A strider's rein: to the rail's knot tied, else to the right hand of whoever leads or rides it. */
-  _rein(m) {
-    const S = this.striders
-    if (m.gone || m.shy || !S.jowl(m, _head)) return
-    if (m.state === 'tied') {
-      const [x, z] = m.tether.knot
-      S.rein(_hand.set(x, S.barY(x, z), z), _head)
-      return
-    }
-    const by = m.held !== null ? m.held : m.state === 'led' ? m.leader : m.state === 'ridden' ? m.rider : null
-    if (by === null || !by.puppet) return
-    const p = by.puppet
-    S.rein(_hand.setFromMatrixPosition(p.skeleton.bones[this.bodies[p.pool].wrist].matrixWorld).applyMatrix4(p.group.matrix), _head)
   }
 
   // -- her ride on a tied strider that trusts her (WildStriders.borrow) --------

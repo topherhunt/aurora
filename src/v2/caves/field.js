@@ -62,12 +62,15 @@ export function mouthFlare(n) {
   return { pts, end: { x: end.x, y: end.y, z: end.z }, w: end.w, h: end.h }
 }
 
-// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose size fits SHAPE_FIT times in its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for.
+// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose size fits SHAPE_FIT times in its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for, and at most SHAPE_CARVE too, or a wide one's breaks through the SILL of rock (graph.js) over or under it.
 const SHAPE_BASE = 0.625, SHAPE_AMP = 0.9, SHAPE_FIT = 3.6, SHAPE_OCT = 7, SHAPE_RISE = 5, SHAPE_CARVE = 2, SHAPE_BIAS = 0.2
 const octavesOf = (dim) => { let k = 0; while (k < SHAPE_OCT && SHAPE_FIT * SHAPE_BASE * 2 ** k <= dim) k++; return k }
 // The most an octave count's sum reaches either way.
 const reachOf = (oct) => SHAPE_AMP * SHAPE_BASE * (2 ** oct - 1)
 const roomOct = (n) => octavesOf(Math.max(2 * n.rx, 2 * n.rz, 1.05 * n.h))
+
+// A passage vault's distance in metres to first order, from its normalised radius |(a, b)|. Scaled by its narrower axis instead, a carve or lump of a metre would reach h/w metres up a tall passage, through the SILL of rock (graph.js) the graph left over it.
+const ell = (a, b, w, h) => { const q = Math.sqrt(a * a + b * b); return q < 1e-6 ? -Math.min(w, h) : ((q - 1) * q) / Math.sqrt((a / w) ** 2 + (b / h) ** 2) }
 
 export class CaveField {
   constructor(graph, seed) {
@@ -85,13 +88,13 @@ export class CaveField {
     // A passage's octaves are its widest cross-section's, the same along its whole run so its segments meet without a step.
     const run = (pts, group, regionAt, rough, form = null) => {
       const gw = form === null ? 1 : form.fw + form.lean + form.crumple, gh = form === null ? 1 : Math.hypot(1, form.lean)
-      const oct = rough < 1 ? 0 : octavesOf(Math.max(...pts.map((p) => Math.max(2 * p.w * gw, p.h * gh)))), reach = reachOf(oct)
+      const oct = rough < 1 ? 0 : octavesOf(Math.max(...pts.map((p) => Math.max(2 * p.w * gw, p.h * gh)))), full = reachOf(oct), reach = Math.min(full, SHAPE_CARVE)
       for (let k = 0; k + 1 < pts.length; k++) {
         const p = pts[k], q = pts[k + 1]
         const ex = q.x - p.x, ez = q.z - p.z
         const w = Math.max(p.w, q.w) * gw + reach, h = Math.max(p.h * gh, q.h * gh, form === null ? 0 : FORM_H_MIN) + reach
         prims.push({
-          node: false, rough, group, region: regionAt(k), ca: p.cut, cb: q.cut, form, sa: p.s, sb: q.s, oct, reach,
+          node: false, rough, group, region: regionAt(k), ca: p.cut, cb: q.cut, form, sa: p.s, sb: q.s, oct, full, reach,
           ax: p.x, az: p.z, ex, ez, il2: 1 / (ex * ex + ez * ez), len: Math.hypot(ex, ez), ya: p.y, yb: q.y, wa: p.w, wb: q.w, ha: p.h, hb: q.h,
           x0: Math.min(p.x, q.x) - w, x1: Math.max(p.x, q.x) + w, z0: Math.min(p.z, q.z) - w, z1: Math.max(p.z, q.z) + w,
           y0: Math.min(p.y, q.y) - 1, y1: Math.max(p.y, q.y) + h,
@@ -270,7 +273,7 @@ export class CaveField {
     const fade = p.oct === 0 ? 0 : Math.max(0, Math.min(1, v / Math.min(SHAPE_RISE, 0.5 * h)))
     if (k === 0) {
       const a = t / w, b = (v + over) / h
-      return Math.max(this._carve(p, fade, (Math.sqrt(a * a + b * b) - 1) * Math.min(w, h), x, y, z), -v)
+      return Math.max(this._carve(p, fade, ell(a, b, w, h), x, y, z), -v)
     }
     // The vault's plan offset from the line: swayed by the lean, more the higher up it (her headroom over the line kept by h's hypot above), and folded by the crumple.
     const cross = ((x - p.ax) * p.ez - (z - p.az) * p.ex) / p.len
@@ -283,13 +286,14 @@ export class CaveField {
     // A tube's centre stands at 0.4 h, so its walls belly out over the floor.
     const c0 = f.tube ? 0.4 * h * k : 0
     const a = r / w, b = (v + over - c0) / (h - c0)
-    return Math.max(this._carve(p, fade, (Math.sqrt(a * a + b * b) - 1) * Math.min(w, h - c0), x, y, z), -v)
+    return Math.max(this._carve(p, fade, ell(a, b, w, h - c0), x, y, z), -v)
   }
 
-  // A passage's vault `e` carved by its shape octaves, which reach 0 to p.reach. Over 3 m from the wall the noise is skipped for the bound nearest it.
+  // A passage's vault `e` carved by its shape octaves, 0 to p.full held under p.reach. Over 3 m from the wall the noise is skipped for the bound nearest it.
   _carve(p, fade, e, x, y, z) {
     if (fade === 0 || e < -3) return e
     if (e > 3 + p.reach) return e - p.reach * fade
-    return e - 0.5 * fade * (p.reach + this._shape(x, y, z, p.oct))
+    const c = 0.5 * (p.full + this._shape(x, y, z, p.oct))
+    return e - fade * (p.full > SHAPE_CARVE ? SHAPE_CARVE * Math.tanh(c / SHAPE_CARVE) : c)
   }
 }

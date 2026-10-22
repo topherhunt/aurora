@@ -7,10 +7,9 @@ import { makePuppet, tintFor, tintOf, tintRange } from './baked-puppet.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
 import { addGeometry, propArrays, toGeometry } from './signposts.js'
-import { Cords } from './cord.js'
 import { PADDLE, paddleHz, striderClips } from './strider-clips.js'
 
-// The towns' frost striders (DESIGN.md §32): their puppets, the hitching rails they stand at, and the reins. The sim (townsfolk.js TownLife) says where each is and what it does; this draws it, and says where its saddle is for a rider.
+// The towns' frost striders (DESIGN.md §32): their puppets and the hitching rails they stand at. The sim (townsfolk.js TownLife) says where each is and what it does; this draws it, and says where its saddle is for a rider.
 
 export const STRIDER = {
   url: 'creatures/frost-strider.glb',
@@ -18,8 +17,6 @@ export const STRIDER = {
   puppets: 8,
   // A rail's posts and bar in metres: the bar `h` over the ground, the posts sunk `sink` into it.
   rail: { h: 1.0, post: 0.12, bar: 0.07, sink: 0.3 },
-  // The most reins drawn, the points along each, and its droop mid-span per metre of it, at most `max`; a cord (cord.js) `width` m wide, never under `px` pixels. Hers riding is `held` m long at the mean size, hanging as a cord of that length would.
-  rein: { most: 48, points: 12, droop: 0.12, max: 0.35, width: 0.015, px: 2, color: 0x4a2e1a, held: 1.0 },
   // Running off or at her it is never quite straight: its aim wanders up to `wobble` rad, rolled afresh every `every` m, and veers by the first of `veer` rad each way that clears the way `look` s (at least `near` m times its size) ahead (clearAhead). Stone standing `wall` m over both the ground and its feet is a wall to it.
   dash: { wobble: 0.2, every: [0.7, 1.5], look: 0.4, near: 1.2, veer: [0.4, 0.8, 1.2], wall: 0.5 },
   // Seconds between a drawn strider's chirps; its flutter is on each fidget, whose clip carries the shake (strider-clips.js).
@@ -211,12 +208,6 @@ export class Striders {
     this.k = 0
     this.railMaterial = patch(createPropMaterial(textures, { side: THREE.FrontSide, vertexColors: true }), 'v2-strider-rail')
     this.box = new THREE.BoxGeometry(1, 1, 1)
-    // The reins: one buffer drawn three times a pixel apart.
-    const R = STRIDER.rein
-    const material = new THREE.MeshLambertMaterial({ color: R.color })
-    this.reins = new Cords(scene, { most: R.most, points: R.points, width: R.width, minPx: R.px, material, name: 'v2-strider-reins' })
-    patch(material, 'v2-strider-reins')
-    this.reinXyz = new Float32Array(R.points * 3)
     // The frame's walking bodies for the ear, and the calls not yet heard (audio/ambience.js herds and voiced).
     this.treading = []
     this.said = []
@@ -291,11 +282,10 @@ export class Striders {
     return { walk: this.asset.gait.walk * this.k, fidget: this.asset.clips.find((c) => c.name === 'fidget').duration }
   }
 
-  /** A new frame: the puppets go nearest first from here, and the reins are laid afresh. */
+  /** A new frame: the puppets go nearest first from here. */
   begin() {
     this.frame++
     this.rank = 0
-    this.reins.begin()
     this.treading.length = 0
   }
 
@@ -465,23 +455,8 @@ export class Striders {
     return _v.distanceToSquared(_s.set(x, y, z)) < (STRIDER.bite * m.pose.size * slack) ** 2
   }
 
-  /** A rein from `a` to `b`, sagging; `length` m long if given, hanging as a cord that long (taut past it), else by STRIDER.rein.droop. */
-  rein(a, b, length = 0) {
-    const R = STRIDER.rein, d = a.distanceTo(b), xyz = this.reinXyz
-    // A parabola `droop` deep over span d is about d + 8 droop^2 / 3d long.
-    const droop = length > 0 ? Math.min(0.5 * length, Math.sqrt((3 * d * Math.max(0, length - d)) / 8)) : Math.min(R.max, R.droop * d)
-    for (let i = 0; i < R.points; i++) {
-      const u = i / (R.points - 1)
-      xyz[i * 3] = a.x + (b.x - a.x) * u
-      xyz[i * 3 + 1] = a.y + (b.y - a.y) * u - droop * 4 * u * (1 - u)
-      xyz[i * 3 + 2] = a.z + (b.z - a.z) * u
-    }
-    this.reins.add(xyz)
-  }
-
-  /** The frame's reins to the GPU. */
+  /** The frame's cards that went undrawn are put away, and the faded ones settled. */
   end() {
-    this.reins.end()
     for (const m of this.carded) if (m.drawn !== this.frame) this._uncard(m)
     for (let i = this.fading.length - 1; i >= 0; i--) {
       const f = this.fading[i]
@@ -532,7 +507,6 @@ export class Striders {
     for (let i = 0; i < CARD_IDS; i++) this.cardView.setVisibleAt(i, false)
     for (const p of this.puppets) this.batch.remove(p.group)
     this.batch.removeFromParent()
-    this.reins.dispose()
     this.box.dispose()
     this.railMaterial.dispose()
     for (const m of this.materials) m.dispose()

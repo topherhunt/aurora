@@ -3,7 +3,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 
 // ---------------------------------------------------------------------------
-// FLAMES, the world's flame renderer (campfire, torches, lamps, candles, tree fires; design/37-fire.md §Flames drawn): three nested flat cel silhouettes, red, orange and yellow, with tongues running up their edges, and two-triangle sparks rising off them. Both turn about Y toward the head and pitch toward an eye above by `tilt` of its elevation, so a candle seen from above is not a sliver. Opaque, one varying, no texture, no discard: the cost is covered pixels and the vertex shader, and all motion is a pure function of the clock, so the CPU writes a flame's matrix only when it is placed.
+// FLAMES, the world's flame renderer (campfire, torches, lamps, candles, tree fires; design/37-fire.md §Flames drawn): three nested flat cel silhouettes, red, orange and yellow, with tongues running up their edges, and two-triangle sparks rising off them. One draw a TriFlames. Both turn about Y toward the head and pitch toward an eye above by `tilt` of its elevation, so a candle seen from above is not a sliver. Opaque, one varying, no texture, no discard: the cost is covered pixels and the vertex shader, and all motion is a pure function of the clock, so the CPU writes a flame's matrix only when it is placed.
 // ---------------------------------------------------------------------------
 
 export const TRI_FIRE = {
@@ -31,33 +31,25 @@ const LAYERS = 3
 const SPARKS = 24
 export const FLAME_TRIS = POINTS * LAYERS + SPARKS * 2
 
-function celGeometry(flame) {
-  const pos = [], index = []
+// One flame's silhouettes and sparks in one geometry, so a TriFlames is one draw: position.z is 0 on a silhouette vertex and 1 on a spark's, and only a spark reads aSeed.
+function flameGeometry(seed) {
+  const rand = mulberry32(seed)
+  const pos = [], seeds = [], index = []
   for (let L = 0; L < LAYERS; L++) {
     const base = pos.length
     pos.push([-1, L, 0])
     for (let i = 0; i < POINTS; i++) pos.push([i, L, 0])
     for (let i = 0; i < POINTS; i++) index.push(base, base + 1 + i, base + 1 + ((i + 1) % POINTS))
   }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos.flat()), 3))
-  g.setAttribute('aFlame', flame)
-  g.setIndex(index)
-  return g
-}
-
-function sparkGeometry(flame, seed) {
-  const rand = mulberry32(seed)
-  const pos = [], seeds = [], index = []
+  for (let k = 0; k < pos.length; k++) seeds.push([0, 0, 0, 0])
   for (let k = 0; k < SPARKS; k++) {
     const s = [rand(), rand(), rand(), rand()], base = pos.length
-    for (let c = 0; c < 4; c++) { pos.push([c, k, 0]); seeds.push(s) }
+    for (let c = 0; c < 4; c++) { pos.push([c, k, 1]); seeds.push(s) }
     index.push(base, base + 1, base + 2, base, base + 2, base + 3)
   }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos.flat()), 3))
   g.setAttribute('aSeed', new THREE.BufferAttribute(new Float32Array(seeds.flat()), 4))
-  g.setAttribute('aFlame', flame)
   g.setIndex(index)
   return g
 }
@@ -94,10 +86,7 @@ const FRAME = /* glsl */ `
 `
 
 // A layer is a fan of sixteen outline points on a teardrop, the inner ones stepped toward the head. Bumps run up both sides to the tip, so tongues lick upward; the tip jumps and the top sways.
-const CEL_VERT = HEAD + /* glsl */ `
-  #define M ${POINTS}.0
-  void main() {
-    ${FRAME}
+const CEL = /* glsl */ `
     float i = position.x;
     float L = position.y;
     float scl = 1.0 - 0.3 * L;
@@ -117,17 +106,12 @@ const CEL_VERT = HEAD + /* glsl */ `
       q += normalize( vec2( sin( th ), 1.6 ) ) * bump;
     }
     q.x += 0.25 * sx * pow( max( q.y, 0.0 ) / sy, 2.0 ) * sin( t * 1.7 );
-    vec3 p = origin + right * q.x + U * ( D + q.y ) + N * ( ( L * 0.04 + 0.01 ) * sx );
-    gl_Position = projectionMatrix * viewMatrix * vec4( p, 1.0 );
+    p = origin + right * q.x + U * ( D + q.y ) + N * ( ( L * 0.04 + 0.01 ) * sx );
     vColor = ramp( 0.18 + 0.41 * L ) * ( uGain * glow ) * ( i < 0.0 ? 1.1 : 1.0 );
-  }
 `
 
 // Two-triangle diamonds, stretched upright, a third of them alive in any one life, rising on a curling path and shrinking out.
-const SPARK_VERT = HEAD + /* glsl */ `
-  attribute vec4 aSeed;
-  void main() {
-    ${FRAME}
+const SPARK = /* glsl */ `
     highp float clock = uTime * ( 0.5 + 0.5 * aSeed.x ) + aSeed.y * 7.0 + ph;
     float u = fract( clock );
     float cyc = floor( clock );
@@ -140,9 +124,22 @@ const SPARK_VERT = HEAD + /* glsl */ `
     float s = sy * 0.03 * uSparkSize * ( 1.0 - u ) * on;
     float k = position.x;
     vec2 o = k < 0.5 ? vec2( 0.0, 1.6 ) : k < 1.5 ? vec2( 0.5, 0.0 ) : k < 2.5 ? vec2( 0.0, -1.0 ) : vec2( -0.5, 0.0 );
-    vec3 p = c + ( right * o.x + U * o.y ) * s;
-    gl_Position = projectionMatrix * viewMatrix * vec4( p, 1.0 );
+    p = c + ( right * o.x + U * o.y ) * s;
     vColor = ramp( 1.0 - 0.7 * u ) * ( uGain * glow ) * 1.3;
+`
+
+const VERT = HEAD + /* glsl */ `
+  #define M ${POINTS}.0
+  attribute vec4 aSeed;
+  void main() {
+    ${FRAME}
+    vec3 p;
+    if ( position.z < 0.5 ) {
+      ${CEL}
+    } else {
+      ${SPARK}
+    }
+    gl_Position = projectionMatrix * viewMatrix * vec4( p, 1.0 );
   }
 `
 
@@ -180,16 +177,14 @@ export class TriFlames {
     this.at = Array.from({ length: capacity }, () => ({ x: 0, y: 0, z: 0, height: 1, radius: 1, phase: 0, group: 0 }))
     this.set(params)
 
-    const flame = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2)
-    const material = (vertexShader) => new THREE.ShaderMaterial({ vertexShader, fragmentShader: FRAG, uniforms: this.shared, side: THREE.DoubleSide, fog: false })
-    this.mesh = new THREE.InstancedMesh(celGeometry(flame), material(CEL_VERT), capacity)
-    this.sparks = new THREE.InstancedMesh(sparkGeometry(flame, seed), material(SPARK_VERT), capacity)
-    this.sparks.instanceMatrix = this.mesh.instanceMatrix
-    for (const m of [this.mesh, this.sparks]) {
-      m.count = 0
-      m.frustumCulled = false
-      this.group.add(m)
-    }
+    const geometry = flameGeometry(seed)
+    geometry.setAttribute('aFlame', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2))
+    const material = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, uniforms: this.shared, side: THREE.DoubleSide, fog: false })
+    this.mesh = new THREE.InstancedMesh(geometry, material, capacity)
+    this.mesh.count = 0
+    this.mesh.visible = false
+    this.mesh.frustumCulled = false
+    this.group.add(this.mesh)
     this._m = new THREE.Matrix4()
   }
 
@@ -219,8 +214,8 @@ export class TriFlames {
   update(t, glow) {
     this.shared.uTime.value = t
     this.shared.uGlow.value.set(glow[0], glow[1], glow[2])
-    this.mesh.count = this.sparks.count = TriFlames.shown ? this.count : 0
-    this.mesh.visible = this.sparks.visible = this.mesh.count > 0
+    this.mesh.count = TriFlames.shown ? this.count : 0
+    this.mesh.visible = this.mesh.count > 0
   }
 
   /** Triangles the flames draw this frame. */
@@ -229,6 +224,8 @@ export class TriFlames {
   }
 
   dispose() {
-    for (const m of [this.mesh, this.sparks]) { m.geometry.dispose(); m.material.dispose(); m.dispose() }
+    this.mesh.geometry.dispose()
+    this.mesh.material.dispose()
+    this.mesh.dispose()
   }
 }

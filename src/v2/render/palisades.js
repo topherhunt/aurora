@@ -169,8 +169,10 @@ export class Palisades {
     this.eggs = new THREE.InstancedMesh(egg.geometry, this.eggMaterial, 3)
     this.eggScale = EGG_TALL / egg.bounds.height
     this.fixtures = [this.poles, this.beacons, this.decks, this.ladders, this.plinths, this.eggs]
+    // An instanced mesh at count 0 still issues its draw: three skips only an invisible one, so every count here sets `visible` with it.
     for (const f of this.fixtures) {
       f.count = 0
+      f.visible = false
       f.frustumCulled = false
       scene.add(f)
     }
@@ -192,6 +194,7 @@ export class Palisades {
     for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i))
     this.far = new THREE.InstancedMesh(plane, this.farMaterial, FAR_CARD.count)
     this.far.count = 0
+    this.far.visible = false
     this.far.frustumCulled = false
     scene.add(this.far)
     this.farFrame = null
@@ -306,6 +309,7 @@ export class Palisades {
     for (const kind in meshes) meshes[kind].count = c[kind]
     this.eggs.count = c.plinths
     for (const f of this.fixtures) {
+      f.visible = f.count > 0
       f.instanceMatrix.needsUpdate = true
       if (f.instanceColor) f.instanceColor.needsUpdate = true
     }
@@ -342,6 +346,7 @@ export class Palisades {
       }
     }
     this.far.count = n
+    this.far.visible = n > 0
     this.far.instanceMatrix.needsUpdate = true
     this.stats.far = n
   }

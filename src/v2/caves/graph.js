@@ -161,8 +161,8 @@ export function buildGraph({ seed, entries }) {
     }
     return false
   }
-  // Within 40 degrees (or acos `near`) of each other out of node i, toward j and toward e's other end.
-  const alongside = (e, i, j, near = 0.766) => {
+  // Within 50 degrees (or acos `near`) of each other out of node i, toward j and toward e's other end.
+  const alongside = (e, i, j, near = 0.643) => {
     if (e.a !== i && e.b !== i) return false
     const N = nodes[i], J = nodes[j], K = nodes[e.a === i ? e.b : e.a]
     if (K === J) return false
@@ -332,10 +332,10 @@ export function buildGraph({ seed, entries }) {
     }
   }
 
-  // Passages that would breach another's floor or a foreign node: a tree passage rerolls its bend, unwandering and unbellied after 8 tries; a braid is given up.
+  // Passages that would breach another's floor or a foreign node: a tree passage rerolls its bend, unwandering and unbellied after 8 tries and swung wider after 12; a braid is given up.
   const built = []
   for (const e of [...edges.filter((q) => q.tree), ...edges.filter((q) => !q.tree)]) {
-    for (let k = 0; k < 16 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand, k >= 8)
+    for (let k = 0; k < 16 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand, k >= 8, k >= 12)
     if (!e.tree && clashes(e, built, nodes)) { e.pts = null; continue }
     built.push(e)
   }
@@ -348,7 +348,7 @@ export function buildGraph({ seed, entries }) {
       if (!n.great || degree[n.i] >= 2) break
       if ((c.a !== n.i && c.b !== n.i) || edges.some((q) => (q.a === c.a && q.b === c.b) || (q.a === c.b && q.b === c.a)) || !braid(c, 1, 0.94)) continue
       const e = edges[edges.length - 1]
-      for (let k = 0; k < 16 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand, k >= 8)
+      for (let k = 0; k < 16 && (e.pts === null || clashes(e, built, nodes)); k++) e.pts = profile(e, nodes, rand, k >= 8, k >= 12)
       if (clashes(e, built, nodes)) { edges.pop(); degree[c.a]--; degree[c.b]-- } else built.push(e)
     }
   }
@@ -516,16 +516,16 @@ function relieve(n, edges, nooks, lobes, pools, rand) {
     if (n.dish > 0 && rhoOf(n, { x, z }) < 0.7) P[c] = 0
     if (i === 0 || k === 0 || i === nx - 1 || k === nz - 1) P[c] = N[c] = 0
   }
-  // Level where a passage or nook crosses the rim band, and under a drop's whole line in.
+  // Level where a passage or nook crosses the rim band, and under a drop's whole line in. A great cavern's hollows also keep out from under a passage's whole line: its floor runs level to the centre, and over a hollow it is a ledge wherever the wall's octaves stand a pillar beside it.
   const lines = [...edges.filter((e) => e.a === n.i || e.b === n.i).map((e) => ({ pts: e.pts, drop: e.kind === 'drop' })), ...nooks.filter((o) => o.node === n.i).map((o) => ({ pts: o.pts, drop: false }))]
   for (const { pts, drop } of lines) for (const q of pts) {
-    const rho = rhoOf(n, q)
-    if (rho > 1.6 || (!drop && rho < (great ? 0.8 : 0.55))) continue
+    const rho = rhoOf(n, q), rim = drop || rho >= (great ? 0.8 : 0.55)
+    if (rho > 1.6 || (!rim && !great)) continue
     const reach = q.w + (drop ? 2.5 : 1)
     for (let k = Math.max(0, Math.floor((q.z - reach - z0) / cell)); k <= Math.min(nz - 1, Math.ceil((q.z + reach - z0) / cell)); k++) {
       for (let i = Math.max(0, Math.floor((q.x - reach - x0) / cell)); i <= Math.min(nx - 1, Math.ceil((q.x + reach - x0) / cell)); i++) {
         if (Math.hypot(x0 + i * cell - q.x, z0 + k * cell - q.z) > reach) continue
-        P[k * nx + i] = 0
+        if (rim) P[k * nx + i] = 0
         if (!drop) N[k * nx + i] = 0
       }
     }
@@ -631,8 +631,8 @@ export function reliefAt(n, x, z) {
   return (v[c] * (1 - fu) + v[c + 1] * fu) * (1 - fw) + (v[c + R.nx] * (1 - fu) + v[c + R.nx + 1] * fu) * fw
 }
 
-// Rock under this much between two passages stacked in one plan spot.
-const SILL = 2.6
+// Rock under this much between two passages stacked in one plan spot. The field eats about 3.5 m of it: the lower vault's octaves and roughness carve up, the upper floor's bump dips down.
+const SILL = 4
 
 /** Whether passage e's samples come within a wall of another built passage or a node it does not end at, with less than SILL of rock between them. */
 export function clashes(e, built, nodes) {
@@ -706,14 +706,14 @@ function grazes(n, A, B, pad) {
  * The passage as samples every SAMPLE metres from node a to node b: { x, z, y, w, h }, y the floor, w the half-width, h the height above it.
  * The plan line bends through a rolled midpoint; the floor is flat inside each node, a straight grade between, dipped for a sump and held at the lip for a drop.
  */
-function profile(e, nodes, rand, plain) {
+function profile(e, nodes, rand, plain, wide = false) {
   const rr = (a, b) => a + (b - a) * rand()
   const A = nodes[e.a], B = nodes[e.b]
   const dx = B.x - A.x, dz = B.z - A.z
   const d = Math.hypot(dx, dz)
   // The mouth's passage runs straight in, so the daylight at its end shows from the throat.
   const mouth = A.kind === 'mouth' || B.kind === 'mouth'
-  const bend = mouth ? 0 : (rand() - 0.5) * 0.5 * d
+  const bend = mouth ? 0 : (rand() - 0.5) * (wide ? 1.4 : 0.5) * d
   const mx = (A.x + B.x) / 2 - (dz / d) * bend, mz = (A.z + B.z) / 2 + (dx / d) * bend
   const n = Math.max(3, Math.ceil(d / SAMPLE))
   const yB = e.kind === 'drop' ? B.y + e.drop : B.y

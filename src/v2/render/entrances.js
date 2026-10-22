@@ -23,8 +23,8 @@ import { WALK } from '../walk.js'
 // bearing rolled off the site's key, so two clients agree on the mouth to the
 // bit without exchanging it.
 //
-// The hole is a polygon, not a cavity: an unlit black plane a hair proud of
-// the stone across the arch's passage, so the depth test keeps it in front of
+// The hole is a polygon, not a cavity: a black fan in the arch's own mesh
+// (withHole), a hair proud of the stone across its passage, so the depth test keeps it in front of
 // the face and the arch's own ring around it. It reads as a hole because the
 // parallax across the arch's protruding half metre is real -- and it is cut
 // inside the ring's solid (HOLE.outline), because wherever it reaches past the
@@ -169,6 +169,29 @@ function holeGeometry() {
   return g
 }
 
+/** Arch tier `g` with the hole fanned into it on its plane, in the pick's frame at the bank's `scale`, so the two are one draw. The hole is black by its vertex colour (0 against the stone's 1): the arch's map has no black texel to point it at. */
+function withHole(g, scale) {
+  if (g.getAttribute('color')) throw new Error('Entrances: the arch tier already has a colour attribute')
+  const o = HOLE.outline, n = g.getAttribute('position').count, m = o.length
+  const out = new THREE.BufferGeometry()
+  for (const [name, a] of Object.entries(g.attributes)) {
+    const arr = new Float32Array((n + m) * a.itemSize)
+    for (let i = 0; i < n; i++) for (let c = 0; c < a.itemSize; c++) arr[i * a.itemSize + c] = a.getComponent(i, c)
+    out.setAttribute(name, new THREE.BufferAttribute(arr, a.itemSize))
+  }
+  const P = out.getAttribute('position'), N = out.getAttribute('normal')
+  for (let i = 0; i < m; i++) {
+    P.setXYZ(n + i, (MOUTH_SINK_M + HOLE.proud) / scale, o[i][1] / scale, o[i][0] / scale)
+    N.setXYZ(n + i, 1, 0, 0)
+  }
+  const color = new Float32Array((n + m) * 3).fill(1, 0, n * 3)
+  out.setAttribute('color', new THREE.BufferAttribute(color, 3))
+  const idx = Array.from(g.index.array)
+  for (let i = 1; i + 1 < m; i++) idx.push(n, n + i, n + i + 1)
+  out.setIndex(idx)
+  return out
+}
+
 export class Entrances {
   /**
    * @param field  V2Height: heightAt
@@ -214,6 +237,10 @@ export class Entrances {
 
     this.material = createGenPropMaterial()
     this.material.map = bank.map
+    this.material.vertexColors = true
+    // The drawn tiers, each arch with its hole; `bank.tiers` stays the bare stone the hole is fitted against.
+    this.tiers = bank.tiers.map((t) => ({ geometries: [withHole(t.geometries[0], bank.scale)] }))
+    this.tierTris = ladderTris(this.tiers.map((t) => t.geometries[0]))
     this.materials = [this.material]
     if (RUNGS !== bank.tiers.length + 1) throw new Error(`Entrances: ${bank.tiers.length} mesh tiers and a card are not ${RUNGS} rungs`)
     this.cards = cards
@@ -221,7 +248,7 @@ export class Entrances {
     cards.claim('entrances', pool)
     this.cardBounds = { halfX: bank.width / 2, halfZ: bank.width / 2, height: MOUTH_HEIGHT_M }
     this.cardPicture = cards.addPicture(cardPicture('fixed', this.cardBounds))
-    this.batch = new PropArena(pool, bank.tiers, new Array(bank.tiers.length).fill(pool), () => this.material, 'v2-entrances', { cards: cards.meshes, cardBase: this.cardTier })
+    this.batch = new PropArena(pool, this.tiers, new Array(bank.tiers.length).fill(pool), () => this.material, 'v2-entrances', { cards: cards.meshes, cardBase: this.cardTier })
     this.archM = new Float32Array(pool * 16)
     this.cardM = new Float32Array(pool * 16)
     // False draws nothing (the boulders row).
@@ -235,18 +262,11 @@ export class Entrances {
     }
     this.tierAt = new Int8Array(pool).fill(-1)
 
-    // The holes, one instance per arch on the same ids; a hidden one is a zero matrix.
-    this.holeMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false })
-    this.holes = new THREE.InstancedMesh(holeGeometry(), this.holeMaterial, pool)
-    this.holes.name = 'v2-entrance-holes'
-    this.holes.frustumCulled = false
-    this.holes.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.scene = scene
     this.shadows = []
     this.shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x000000, vertexColors: true, transparent: true, depthWrite: false, fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+    // Each arch's hole in the world, drawn as part of its arch: where check-entrances finds it.
     this.holeM = new Float32Array(pool * 16)
-    this._zero = new THREE.Matrix4().makeScale(0, 0, 0)
-    for (let i = 0; i < pool; i++) this.holes.setMatrixAt(i, this._zero)
 
     // The screen's stones: the tiers are cloned because PropMeshes hangs its
     // fade attribute on the geometry it is given, and the rocks' own meshes
@@ -282,7 +302,6 @@ export class Entrances {
     this.placeMs = 0
 
     scene.add(this.batch)
-    scene.add(this.holes)
     scene.add(this.flank)
 
     // The rocks ask whether a mouth fits each entrance boulder as it grows, and sink or grow one it does not (rocks.js HOLLOW_LADDER); key -> { cy, r, mouth }.
@@ -348,10 +367,8 @@ export class Entrances {
         }
         this.batch.setVisibleAt(i, drawn)
         if (site.shadow !== null) site.shadow.visible = meshed
-        this.holes.setMatrixAt(i, meshed ? this._m.fromArray(this.holeM, i * 16) : this._zero)
-        this.holes.instanceMatrix.needsUpdate = true
       }
-      if (meshed) tris += this.bank.tris[tier] + HOLE.outline.length - 2
+      if (meshed) tris += this.tierTris[tier]
       else if (tier === this.cardTier) tris += this.cards.cardTris
       // The screen stands while the boulder does, each piece on the rung its own size and distance earn; a stone leaves a rung 12% further out than it came in. The trees draw the pines.
       for (const f of site.flank) {
@@ -754,8 +771,6 @@ export class Entrances {
     if (site.blind) return
     const id = site.id
     this.batch.setVisibleAt(id, false)
-    this.holes.setMatrixAt(id, this._zero)
-    this.holes.instanceMatrix.needsUpdate = true
     this.tierAt[id] = -1
     this.free[this.freeCount++] = id
     for (const f of site.flank) {
@@ -858,8 +873,6 @@ export class Entrances {
   dispose() {
     this.batch.dispose()
     this.flank.dispose()
-    this.holes.geometry.dispose()
-    this.holeMaterial.dispose()
     for (const s of this.shadows) {
       this.scene.remove(s)
       s.geometry.dispose()
@@ -867,6 +880,6 @@ export class Entrances {
     this.shadowMaterial.dispose()
     if (this.material.map) this.material.map.dispose()
     this.material.dispose()
-    for (const t of this.bank.tiers) for (const g of t.geometries) g.dispose()
+    for (const t of [...this.bank.tiers, ...this.tiers]) for (const g of t.geometries) g.dispose()
   }
 }
