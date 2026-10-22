@@ -143,6 +143,7 @@ export class Sticks {
     this.batch.name = 'v2-sticks'
     this.batch.frustumCulled = false
     this.batch.count = 0
+    this.batch.visible = false
     this.batch.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     scene.add(this.batch)
     this.cap = cap
@@ -218,6 +219,7 @@ export class Sticks {
       this.placed++
     }
     this.batch.count = this.high
+    this.batch.visible = this.high > 0
     this.batch.instanceMatrix.needsUpdate = true
   }
 

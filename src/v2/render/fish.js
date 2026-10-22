@@ -95,6 +95,9 @@ const TEXTURE_URL = (file) => `fauna/${file}`
 // A bed's side and how far out beds are kept, both against the 20 m murk: the furthest bed's near edge is just past it.
 export const TILE = 24
 export const RADIUS = 36
+// Spots a site drawn from setSpots' list tries before it is refused.
+const SPOT_TRIES = 8
+const GOLDEN = 0.6180339887
 // Metres her head moves before the beds are walked again.
 const WALK_M = 4
 // Water this deep, under a fish's own spot, hands out the species' full size ceiling; 0.5 m hands out the shore's.
@@ -221,6 +224,8 @@ export class Fish {
     this.height = height
     this.water = water
     this.seed = seed
+    // Null, or the spots a bed's sites are drawn from per tile (setSpots).
+    this.spots = null
     // The layer's own noise: the loose fish only. Everything in a bed rolls from its key.
     this.rand = mulberry32(seed)
     this.batch = new THREE.Group()
@@ -380,24 +385,47 @@ export class Fish {
     this.walkedZ = z
   }
 
+  /**
+   * Null to roll each bed's sites anywhere in its tile, or [[x, z, depth], ...] to draw each species' sites from those spots that lie its minDepth deep: a cave's pools are each a sliver of a tile that a blind roll all but never lands in. Place after.
+   */
+  setSpots(spots) {
+    if (spots === null) { this.spots = null; return }
+    this.spots = new Map()
+    for (const [x, z, depth] of spots) {
+      const key = bedKey(Math.floor(x / TILE), Math.floor(z / TILE))
+      if (!this.spots.has(key)) this.spots.set(key, this.species.map(() => []))
+      this.species.forEach((sp, i) => { if (depth >= sp.cfg.minDepth) this.spots.get(key)[i].push([x, z]) })
+    }
+  }
+
   /** The bed at tile (tx, tz): its schools from the tile seed, in species order, `s` the site's index in the bed and every member numbered through the bed. */
   _enter(tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const t = { tx, tz, key: bedKey(tx, tz), schools: [], fish: [], luredSent: '', luredAt: -Infinity }
+    const lists = this.spots === null ? null : this.spots.get(t.key)
+    if (lists === undefined) return t
     let index = 0
     let s = 0
-    for (const sp of this.species) {
+    for (const [j, sp] of this.species.entries()) {
       const cfg = sp.cfg
+      const spots = lists === null ? null : lists[j]
+      if (spots !== null && spots.length === 0) { s += cfg.perTile; continue }
       for (let k = 0; k < cfg.perTile; k++, s++) {
         // Every roll first, so a site refused leaves the stream where an accepted one would.
-        const x = (tx + rand()) * TILE
-        const z = (tz + rand()) * TILE
+        const u = rand(), v = rand()
+        let x = (tx + u) * TILE
+        let z = (tz + v) * TILE
         const n = Math.round(between(rand, cfg.school))
         const rolls = []
         for (let i = 0; i < n; i++) rolls.push(this._roll(rand, cfg, n))
         const first = index
         index += n
-        const at = this.site(sp, x, z, cfg.clearance)
+        let at = spots === null ? this.site(sp, x, z, cfg.clearance) : null
+        // A spot too near the shore for the clearance tries the next, stepped by the golden ratio so the stream stays put.
+        for (let tries = 0, w = u; spots !== null && at === null && tries < SPOT_TRIES; tries++, w = (w + GOLDEN) % 1) {
+          [x, z] = spots[Math.floor(w * spots.length)]
+          at = this.site(sp, x, z, cfg.clearance)
+        }
         if (at === null || !sp.loaded) continue
         // A solo species does not seed on top of its own kind: two pike in a ditch now and then otherwise.
         if (cfg.school[1] === 1 && t.schools.some((o) => o.sp === sp && Math.hypot(o.home.x - x, o.home.z - z) < cfg.separation)) continue

@@ -1,9 +1,13 @@
 // Where each pool's and sump's water actually lies (design/39-caves.md §5): the floor under its planned level flooded from the body's deepest point, and the shoreline as a grid the renderer and the walk both read.
 
 const CELL = 0.5
-// A body's home: its node's ellipse times HOME, or for a sump its line widened by SUMP_HOME and its ends' ellipses. Flooding past it, the water would spill down a passage; it stops a cell out instead of settling to the lip, because the planned level is what floats her past a dish's steep wall to a bank she can mantle onto (check-caves walks every exit, and fails with the water 0.1 m lower).
+// A body's home: its node's and lobes' ellipses times HOME, and its passages and nooks widened by PAD over their floor's cove, or for a sump its line widened by SUMP_HOME and its ends' ellipses. Floor under the planned level that the flood reaches outside it is a way out (another passage, or her own past its neighbour), so the water settles GAP under the lowest such sill and never meets the home's edge in the air.
 const HOME = 1.4
 const SUMP_HOME = 2
+const PAD = 1
+const GAP = 0.15
+// A room's water this shallow at its deepest, once settled, is no pool.
+const SHALLOW = 0.3
 // The water plane runs on to where the floor is TUCK over it, so its edge is under the shore's rock, not short of it.
 const TUCK = 0.04
 // Neighbouring columns are one shore only if both are air LIP over the higher floor: over a drop the water spills, under rock it is another passage.
@@ -38,6 +42,10 @@ function settle(p, graph, field) {
     homes.push(ellipse(n, HOME))
     for (const i of p.drowned) under.push(line(graph.edges[i].pts.filter((q) => q.y < p.level), 0))
     homes.push(...under)
+    const mine = graph.edges.filter((e) => (e.a === p.node || e.b === p.node) && e.kind !== 'drowned').map((e) => e.i)
+    for (const i of mine) homes.push(line(graph.edges[i].pts, PAD))
+    for (const l of graph.lobes) if (l.node === p.node) homes.push(ellipse(l, HOME))
+    for (const o of graph.nooks) if (o.node === p.node || mine.includes(o.edge)) homes.push(line(o.pts, PAD))
     seed = [p.x, p.z]
   } else {
     const e = graph.edges[p.edge]
@@ -72,13 +80,12 @@ function settle(p, graph, field) {
   if (!(floorOf(s0) < p.level)) throw new Error(`settleWaters: ${p.node !== undefined ? `pool ${p.node}` : `sump ${p.edge}`} has no floor under its level at its deepest point`)
   key[s0] = floorOf(s0)
   heap.push(key[s0], s0)
-  const level = p.level
   while (heap.size > 0) {
     const c = heap.pop()
     if (done[c]) continue
-    if (key[c] >= level) break
+    if (key[c] >= p.level) break
     done[c] = 1
-    if (!home(c)) continue
+    if (!home(c)) { p.level = key[c] - GAP; break }
     const i = c % nx, k = Math.floor(c / nx)
     for (const [di, dk] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const a = i + di, b = k + dk
@@ -89,6 +96,11 @@ function settle(p, graph, field) {
       const kd = Math.max(key[c], f)
       if (kd < key[d]) { key[d] = kd; heap.push(kd, d) }
     }
+  }
+  const level = p.level
+  if (level - key[s0] < SHALLOW) {
+    if (p.node !== undefined) return false
+    throw new Error(`settleWaters: sump ${p.edge} pours away above its dip`)
   }
 
   const s = new Float32Array(nx * nz)
@@ -163,7 +175,7 @@ function open(field, xa, za, xb, zb, y) {
   return field.at(xa, y, za) <= 0 && field.at(xb, y, zb) <= 0
 }
 
-// The floor of the first air under `ref` at (x, z), down through at most DEEP of rock; Infinity for a wall.
+// The floor of the first air under `ref` at (x, z), down through at most DEEP of rock; Infinity for a wall. The field levels off just under a floor, so one interpolation across a long step through air lands a fifth of a metre low, and a flood testing the air over it finds rock: it is refined.
 function floorUnder(field, x, z, ref) {
   let y = ref
   let v = field.at(x, y, z)
@@ -173,12 +185,15 @@ function floorUnder(field, x, z, ref) {
     v = field.at(x, y, z)
   }
   for (;;) {
-    const y2 = y - Math.max(0.05, -v * 0.6)
+    let y2 = y - Math.max(0.05, -v * 0.6)
     if (y2 < ref - 3 * DEEP) return -Infinity
-    const v2 = field.at(x, y2, z)
-    if (v2 > 0) return y2 + ((y - y2) * v2) / (v2 - v)
-    y = y2
-    v = v2
+    let v2 = field.at(x, y2, z)
+    if (v2 <= 0) { y = y2; v = v2; continue }
+    for (let i = 0; i < 3; i++) {
+      const m = y2 + ((y - y2) * v2) / (v2 - v), vm = field.at(x, m, z)
+      if (vm > 0) { y2 = m; v2 = vm } else { y = m; v = vm }
+    }
+    return y2 + ((y - y2) * v2) / (v2 - v)
   }
 }
 

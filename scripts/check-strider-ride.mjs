@@ -1,8 +1,8 @@
-// Node-side gates for the headset's ride on a wild strider (src/v2/render/wild-striders.js): its hops and its turns after her.
+// Node-side gates for the headset's ride on a wild strider (src/v2/render/wild-striders.js): its hops and its turns after her, and a peer's ride under them.
 //
 //   node scripts/check-strider-ride.mjs
 //
-// What can go wrong without throwing: her view turned by a hop she aimed to the side (the sickness the ride exists to avoid); a strider that follows every glance, or never follows her body round; a side hop as long as a forward one.
+// What can go wrong without throwing: her view turned by a hop she aimed to the side (the sickness the ride exists to avoid); a strider that follows every glance, or never follows her body round; a side hop as long as a forward one; a peer riding nothing, their strider let go here while she was away and never brought back.
 
 import * as THREE from 'three'
 import { WILD, WildStriders } from '../src/v2/render/wild-striders.js'
@@ -73,6 +73,35 @@ console.log('turning after her')
   check(player.carries.every((a) => a === 0), 'never turning her view while it does')
   for (let i = 0; i < 144; i++) S.sit(1 / 72, player)
   check(near(wrap(m.pose.heading - 1.2), 0, 1e-3) && m.ride.turn === 0, 'turning no further once it faces her', `heading ${m.pose.heading.toFixed(4)}, owes ${m.ride.turn}`)
+}
+
+console.log("a peer's ride")
+{
+  /** A layer with only what an anchor reads, her feet at the origin, flat dry ground everywhere. */
+  const room = () => {
+    const S = Object.create(WildStriders.prototype)
+    Object.assign(S, { walk: { heightAt: () => 0, slopeAt: () => 0 }, avoid: null, bond: { trusted: new Set(), grown: new Map() }, tamed: new Set(), anchors: new Map(), live: new Map(), away: new Set(), homes: new Map(), struck: new Set() })
+    Object.assign(S, { now: 100, feet: { x: 0, z: 0 }, booted: true, loaded: true, ridden: null, ids: 0, runV: 4 })
+    S._dry = () => true
+    S._set = S._say = () => {}
+    return S
+  }
+  const S0 = room()
+  let ix = 20
+  while (!S0._home(ix, 0)) ix++
+  const key = `${ix},0`
+  const ridden = (x, z) => [`ws:${key}`, 100, x, 0, z, 0, -1, 'ridden', 'peer', 1.5, 3, 1, 0, 90, 0]
+  const S = room()
+  S.apply(ridden(10, 5), 100)
+  const m = S.live.get(key)
+  check(m !== undefined && m.by === 'peer' && m.state === 'ridden' && m.pose.x === 10 && m.pose.z === 5, 'ridden by a peer beside her, far from its home: it is under them where their anchor has it', m ? `${m.state} by ${m.by} at ${m.pose.x}, ${m.pose.z}` : 'no body')
+  const T = room()
+  T.away.add(key)
+  T.apply(ridden(10, 5), 100)
+  check(T.live.has(key) && !T.away.has(key), 'and so when it was let go here while still in range of its home')
+  const U = room()
+  U.apply(ridden(WILD.spawn + 10, 0), 100)
+  check(!U.live.has(key), 'but not while their anchor has it out of her range')
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

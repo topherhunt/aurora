@@ -373,6 +373,11 @@ const stature = roster.find((a) => a.id === 'fisherman').heightM
   PeerAvatars.prototype.ground.call(peers, { heightAt: () => 0, waterAt: () => null })
   run(b, pose, [true, true], 1, 0)
   check(hipY() < rest.head.y, 'ground() hands it the new room\'s, and its hips come back down under its head', `hips ${(hipY() - rest.head.y).toFixed(2)} m over the headset`)
+  // A cave or house main.js hands her but not the bodies hoists a friend walking beside her out of sight.
+  const main = fs.readFileSync(new URL('../src/v2/main.js', import.meta.url), 'utf8')
+  const swaps = [...main.matchAll(/player\.setGround\((\w+)\)\n\s*peerAvatars\.ground\((\w+)\)/g)].filter((m) => m[1] === m[2]).length
+  const grounds = (main.match(/player\.setGround\(/g) ?? []).length
+  check(grounds > 0 && swaps === grounds, 'main.js hands the bodies every ground it hands her', `${swaps} of ${grounds} setGround calls followed by peerAvatars.ground`)
 }
 
 // --- the ground: the body stands on it, and a headset lowered crouches it ---------------

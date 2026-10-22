@@ -1,4 +1,4 @@
-// One cave system drawn (design/39-caves.md §8): the worker's chunks, the props as instanced meshes, the water and its crabs. Pitch dark: everything is lit only by the torches (lighting.js's uTorch, shared by reference) and the glow the mesher baked from the mushrooms and the mouths' daylight.
+// One cave system drawn (design/39-caves.md §8): the worker's chunks, the props as instanced meshes, the water. Pitch dark: everything is lit only by the torches (lighting.js's uTorch, shared by reference) and the glow the mesher baked from the mushrooms and the mouths' daylight.
 //
 // The group stands at the cave's world height `oy`; every plan position inside it is cave-local.
 import THREE from '../../three-instance.js'
@@ -465,10 +465,16 @@ export class CaveRoom {
     // The marks laid (drawChalk), and the strokes being drawn (drawLive).
     this.marks = null
     this.live = null
-    // key -> { x, y, z (the chunk's centre), lods: [meshes per LODS tier, null until it arrives or if empty there] }, a mesh per region.
+    // key -> { x, y, z (the chunk's centre), lods: [per LODS tier, null until it arrives or if empty there, else { id, region } per region: an instance in `rock`] }.
     this.chunks = new Map()
+    // Every chunk's rock in one multi-draw. Its instance matrices stay identity: VERT reads modelMatrix only, so a transform set here would cull but not move.
+    this.rockUsed = { v: 0, i: 0, mv: 1 << 18, mi: 1 << 19 }
+    this.rock = new THREE.BatchedMesh(1024, this.rockUsed.mv, this.rockUsed.mi, this.material)
+    this.rock.frustumCulled = false
+    this.rock.matrixAutoUpdate = false
+    this.group.add(this.rock)
     this.region = plan.graph.nodes[plan.doors[0].node].region
-    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.woodMaterial,this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.mirror]
+    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.woodMaterial,this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.mirror, this.rock]
     this._props(plan.props)
     this._water(plan.waters)
     this._mouths(plan.graph)
@@ -525,33 +531,46 @@ export class CaveRoom {
     return rockOut
   }
 
-  /** A chunk from the worker at one LOD: { key, lod, position, normal, color, glow, index, parts }, one mesh per region sharing the buffers. */
+  /** A chunk from the worker at one LOD: { key, lod, position, normal, color, glow, day, index, parts }, each region's triangles and the vertices they use an instance in `rock`. */
   addChunk(m) {
-    const attrs = {
-      position: new THREE.BufferAttribute(m.position, 3), normal: new THREE.BufferAttribute(m.normal, 3),
-      color: new THREE.BufferAttribute(m.color, 3), glow: new THREE.BufferAttribute(m.glow, 3), day: new THREE.BufferAttribute(m.day, 1),
-    }
-    const index = new THREE.BufferAttribute(m.index, 1)
-    let sphere = null
-    const meshes = []
+    const remap = new Int32Array(m.position.length / 3)
+    const parts = []
     for (let p = 0; p < m.parts.length; p += 3) {
+      const start = m.parts[p + 1], count = m.parts[p + 2]
+      remap.fill(-1)
+      const index = new Uint32Array(count), from = []
+      for (let t = 0; t < count; t++) {
+        const s = m.index[start + t]
+        if (remap[s] < 0) { remap[s] = from.length; from.push(s) }
+        index[t] = remap[s]
+      }
       const g = new THREE.BufferGeometry()
-      for (const k in attrs) g.setAttribute(k, attrs[k])
-      g.setIndex(index)
-      g.setDrawRange(m.parts[p + 1], m.parts[p + 2])
-      if (sphere === null) { g.computeBoundingSphere(); sphere = g.boundingSphere } else g.boundingSphere = sphere
-      const mesh = new THREE.Mesh(g, this.material)
-      mesh.matrixAutoUpdate = false
-      mesh.visible = false
-      mesh.updateMatrix()
-      mesh.userData.region = m.parts[p]
-      this.group.add(mesh)
-      this.disposables.push(g)
-      meshes.push(mesh)
+      for (const [k, size] of [['position', 3], ['normal', 3], ['color', 3], ['glow', 3], ['day', 1]]) {
+        const src = m[k], out = new Float32Array(from.length * size)
+        for (let v = 0; v < from.length; v++) for (let c = 0; c < size; c++) out[v * size + c] = src[from[v] * size + c]
+        g.setAttribute(k, new THREE.BufferAttribute(out, size))
+      }
+      g.setIndex(new THREE.BufferAttribute(index, 1))
+      parts.push({ id: this._addRock(g, from.length, count), region: m.parts[p] })
     }
     const [i, j, k] = m.key.split(',').map(Number)
     if (!this.chunks.has(m.key)) this.chunks.set(m.key, { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: LODS.map(() => null) })
-    this.chunks.get(m.key).lods[m.lod] = meshes
+    this.chunks.get(m.key).lods[m.lod] = parts
+  }
+
+  // Geometry `g` (`v` vertices, `n` indices) as a hidden instance in `rock`, its buffers doubled when full.
+  _addRock(g, v, n) {
+    const b = this.rock, u = this.rockUsed
+    let mv = u.mv, mi = u.mi
+    while (u.v + v > mv) mv *= 2
+    while (u.i + n > mi) mi *= 2
+    if (mv !== u.mv || mi !== u.mi) { b.setGeometrySize(mv, mi); u.mv = mv; u.mi = mi }
+    if (b.instanceCount >= b.maxInstanceCount) b.setInstanceCount(b.maxInstanceCount * 2)
+    u.v += v
+    u.i += n
+    const id = b.addInstance(b.addGeometry(g))
+    b.setVisibleAt(id, false)
+    return id
   }
 
   /** Her region, from the prim nearest her eye; kept while the eye is out of every prim's reach. */
@@ -592,6 +611,22 @@ export class CaveRoom {
     return mesh
   }
 
+  // A mushroom mesh's rows in `shown` regions copied to the front of its buffers, and drawn alone.
+  _packMush(mesh, shown) {
+    const { ranges, src } = mesh.userData, attrs = mesh.geometry.attributes
+    let n = 0
+    for (const [region, [a, b]] of ranges) {
+      if (!shown.has(region)) continue
+      mesh.instanceMatrix.array.set(src.matrix.subarray(a * 16, b * 16), n * 16)
+      for (const k in ROW_ATTRS) attrs[k].array.set(src[k].subarray(a * ROW_ATTRS[k], b * ROW_ATTRS[k]), n * ROW_ATTRS[k])
+      n += b - a
+    }
+    mesh.count = n
+    mesh.visible = n > 0
+    mesh.instanceMatrix.needsUpdate = true
+    for (const k in ROW_ATTRS) attrs[k].needsUpdate = true
+  }
+
   // Rows (place as _rows) each drawn by one of `geometries` or none, as _repick says: { src, n, meshes }, or null for no rows.
   _picked(geometries, rows, place) {
     if (rows.length === 0) { for (const g of geometries) g.dispose(); return null }
@@ -623,6 +658,7 @@ export class CaveRoom {
     }
     set.meshes.forEach((mesh, f) => {
       mesh.count = fill[f]
+      mesh.visible = fill[f] > 0
       mesh.instanceMatrix.needsUpdate = true
       for (const k in ROW_ATTRS) mesh.geometry.getAttribute(k).needsUpdate = true
     })
@@ -674,6 +710,7 @@ export class CaveRoom {
       }
       for (const [f, mesh] of [d.near, d.far].entries()) {
         mesh.count = fill[f]
+        mesh.visible = fill[f] > 0
         mesh.instanceMatrix.needsUpdate = true
         for (const k in ROW_ATTRS) mesh.geometry.getAttribute(k).needsUpdate = true
       }
@@ -719,19 +756,21 @@ export class CaveRoom {
       return { color: [0.05, 0.09, 0.025], lit: this._rock(g.x, g.y, g.z) }
     }, this.propMaterial)
 
-    // Mushrooms: the forest's species grown large, a glowing cap lit from within. One mesh per tier, species and region, so update() shows only her regions' (mushGroups).
+    // Mushrooms: the forest's species grown large, a glowing cap lit from within. One mesh per tier and species, its rows sorted by region; update() packs her regions' rows to the front (_packMush).
     const tiers = [mushroomGeometries(0), mushroomGeometries(1)]
     const groups = new Map()
     for (const m of props.mush) {
       const tier = m.h < 1 ? 1 : 0
-      const key = `${tier},${Math.floor(m.seed * tiers[tier].length)},${m.region}`
+      const key = `${tier},${Math.floor(m.seed * tiers[tier].length)}`
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(m)
     }
     this.mushGroups = []
+    this.mushShown = null
     for (const [key, rows] of groups) {
-      const [tier, species, region] = key.split(',').map(Number)
+      const [tier, species] = key.split(',').map(Number)
       const { geometry, height } = tiers[tier][species]
+      rows.sort((a, b) => a.region - b.region)
       const mesh = this._instanced(geometry.clone(), rows, (m) => {
         tmpS.set(...m.up).normalize()
         tmpQ.setFromUnitVectors(tmpP.set(0, 1, 0), tmpS).multiply(tmpQ2.setFromEuler(tmpE.set(m.lean, m.yaw, 0, 'YXZ')))
@@ -741,7 +780,11 @@ export class CaveRoom {
         const lit = this._rock(m.x, m.y, m.z)
         return m.glow ? { color: [0.35, 0.35, 0.35], emit: m.glow.map((c) => c * (m.giant ? 0.9 : 0.7)), lit } : { color: [0.7, 0.7, 0.7], lit }
       }, this.mushMaterial)
-      mesh.userData.region = region
+      const ranges = new Map()
+      rows.forEach((m, i) => { if (ranges.has(m.region)) ranges.get(m.region)[1] = i + 1; else ranges.set(m.region, [i, i + 1]) })
+      const src = { matrix: mesh.instanceMatrix.array.slice() }
+      for (const k in ROW_ATTRS) src[k] = mesh.geometry.attributes[k].array.slice()
+      mesh.userData = { ranges, src }
       mesh.visible = false
       this.mushGroups.push(mesh)
     }
@@ -811,14 +854,6 @@ export class CaveRoom {
       if (this.chalkGone[i]) m.makeScale(0, 0, 0)
       return { color: CHALK_STONE }
     })
-
-    // Crabs, moved in update(). The pools' fish are the rivers' (render/fish.js), which main.js points at the cave.
-    this.crabRows = props.crabs
-    this.crabOff = new Float32Array(props.crabs.length)
-    this.crabs = this._instanced(new THREE.BoxGeometry(0.16, 0.06, 0.12).translate(0, 0.04, 0), props.crabs, (c) => {
-      set(c.x, c.y, c.z, c.yaw, 0, 0, 1, 1, 1)
-      return { color: [0.3, 0.1, 0.05] }
-    }, this.propMaterial)
   }
 
   _water(waters) {
@@ -908,16 +943,17 @@ export class CaveRoom {
     this.uniforms.uLitFloor.value = flying ? FLY_LIT : 0
     this.uniforms.uTime.value = t % 1024
     const ly = eye.y - this.oy
-    const shown = flying ? this.everyRegion : drawnRegions(this.plan.graph, this._regionAt(eye.x, ly, eye.z))
+    const region = flying ? -1 : this._regionAt(eye.x, ly, eye.z)
+    const shown = flying ? this.everyRegion : drawnRegions(this.plan.graph, region)
     for (const c of this.chunks.values()) {
       const d = chunkGap(c, eye.x, ly, eye.z)
       const lod = drawnLod(c.lods, flying ? Math.min(d, CULL_M - 1) : d)
       for (let l = 0; l < LODS.length; l++) {
         if (c.lods[l] === null) continue
-        for (const mesh of c.lods[l]) mesh.visible = l === lod && shown.has(mesh.userData.region)
+        for (const { id, region } of c.lods[l]) this.rock.setVisibleAt(id, l === lod && shown.has(region))
       }
     }
-    for (const mesh of this.mushGroups) mesh.visible = shown.has(mesh.userData.region)
+    if (region !== this.mushShown) { this.mushShown = region; for (const mesh of this.mushGroups) this._packMush(mesh, shown) }
     for (const m of this.waterMeshes) {
       const { regions, box } = m.userData
       m.visible = regions.some((r) => shown.has(r)) && (flying || box.distanceToPoint(tmpP.set(eye.x, ly, eye.z)) < CULL_M)
@@ -929,17 +965,6 @@ export class CaveRoom {
       this.dripEye = { x: eye.x, y: ly, z: eye.z }
       this._splitDrips(eye.x, ly, eye.z)
       this._pickStones(eye.x, ly, eye.z)
-    }
-    if (this.crabs !== null) {
-      this.crabRows.forEach((c, i) => {
-        // Crabs freeze in the torchlight and scuttle sideways in the dark.
-        const near = Math.hypot(c.x - eye.x, c.y - ly, c.z - eye.z) < 4
-        if (!near) this.crabOff[i] += 0.016 * Math.sin(t * 0.4 + c.seed * 20)
-        const s = this.crabOff[i]
-        set4(c.x + Math.cos(c.yaw) * s, c.y, c.z + Math.sin(c.yaw) * s, c.yaw)
-        this.crabs.setMatrixAt(i, tmpM)
-      })
-      this.crabs.instanceMatrix.needsUpdate = true
     }
   }
 
@@ -996,9 +1021,4 @@ export class CaveRoom {
     this.drawLive([])
     this.group.removeFromParent()
   }
-}
-
-function set4(x, y, z, yaw) {
-  tmpQ.setFromAxisAngle(tmpP.set(0, 1, 0), yaw)
-  tmpM.compose(tmpS.set(x, y, z), tmpQ, tmpP.set(1, 1, 1))
 }

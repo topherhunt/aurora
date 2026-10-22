@@ -167,9 +167,10 @@ export class WildStriders {
     this.returned = returned
     this.lend = lend
     this.hand = hand
-    // The room's clock and the peers' heads (main.js peerHeadsNow), as of update; the latest anchor per key, the room's and this client's own; the anchors owed.
+    // The room's clock, the peers' heads (main.js peerHeadsNow) and her feet, as of update; the latest anchor per key, the room's and this client's own; the anchors owed.
     this.now = 0
     this.peers = []
+    this.feet = { x: 0, z: 0 }
     this.anchors = new Map()
     this.outbox = []
     // Keys tamed by any player in the room, as its anchors say (_owe); hers are bond.trusted besides.
@@ -297,7 +298,7 @@ export class WildStriders {
   }
 
   _spawn(key, home, x, z) {
-    const m = this._body(key, home, striderSize(hash01(Math.round(home.x), Math.round(home.z), 11)), false)
+    const m = this._wild(key, home)
     const p = m.pose
     const a = this.anchors.get(key)
     if (a && a[1] > this.now - CHAPTER_S) {
@@ -313,6 +314,8 @@ export class WildStriders {
       this._enter(m, 'panic')
     }
   }
+
+  _wild(key, home) { return this._body(key, home, striderSize(hash01(Math.round(home.x), Math.round(home.z), 11)), false) }
 
   _drop(m, stillHome) {
     // Live here and gone out of range (a panicked runner, a swimmer left adrift): the room calms it where it went rather than where its last anchor was.
@@ -354,6 +357,8 @@ export class WildStriders {
     if (!this.loaded) return this.lazy.want()
     this.now = seconds
     this.peers = peers
+    this.feet.x = feet.x
+    this.feet.z = feet.z
     this._scan(feet.x, feet.z)
     const list = this.list
     list.length = 0
@@ -945,6 +950,14 @@ export class WildStriders {
         m.pose.y = lent.pose.y
         m.pose.heading = lent.pose.heading
       }
+    }
+    if (!m && mode !== 'rejoin' && !key.startsWith('town:') && this.booted && now - T < ANCHOR_STALE_S && Math.hypot(anchor[2] - this.feet.x, anchor[4] - this.feet.z) <= WILD.spawn) {
+      // Live on a peer near her yet let go here (_drop's away), or homed out of her range: _scan would never bring it back under them.
+      const [ix, iz] = key.split(',').map(Number)
+      const home = this._home(ix, iz)
+      if (!home) throw new Error(`WildStriders: a peer's anchor for ${key}, a tile with no home here`)
+      this.away.delete(key)
+      m = this._wild(key, home)
     }
     if (!m || m === this.ridden) return
     if (m.by === null && m.state !== 'calm' && (mode === 'rejoin' || (mode !== 'ridden' && !(anchor[13] < m.since)))) return

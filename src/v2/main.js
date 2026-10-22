@@ -4018,6 +4018,7 @@ async function openHouse(e) {
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
+  peerAvatars.ground(inner)
   console.log(`[v2] house ${e.k}: ${room.items.length} things, ${room.windows.length} windows, ${room.loft ? 'a loft' : 'no loft'}, ${residents.all.length} at home`)
 }
 
@@ -4054,6 +4055,7 @@ async function openTownHouse(t, i) {
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
+  peerAvatars.ground(inner)
   console.log(`[v2] town ${t} ${b.kind} ${i}: ${room.items.length} things, ${room.rooms.length} rooms, ${room.windows.length} windows, ${room.upper ? 'two floors' : 'one floor'}, ${residents.all.length} at home`)
 }
 
@@ -4083,6 +4085,7 @@ function closeHouse() {
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = indoors.outside
   if (player) player.setGround(walk)
+  peerAvatars.ground(walk)
   indoors = null
 }
 
@@ -4266,9 +4269,11 @@ async function enterCave(sys, door, back) {
   inner.hintY = d.y + CAVE_OY
   walk = window.v2walk = inner
   player.setGround(inner)
+  peerAvatars.ground(inner)
   hands.setWorld(caveWorld(sys), inner, caveWater)
   cave.fishSeed = fish.seed
-  aimFish(caveFishBed, caveFishWater, sys.seed, d.x, d.z)
+  const pools = inner.fishWorld()
+  aimFish(pools.bed, pools.water, pools.spots, sys.seed, d.x, d.z)
   player.teleportTo(d.x, d.z, d.y + CAVE_OY)
   faceAlong(d.dx, d.dz)
   console.log(`[v2] into cave ${sys.id} by door ${door} of ${sys.mouths.length} mouths and ${sys.cellars.length} cellars`)
@@ -4316,9 +4321,10 @@ function closeCave() {
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = cave.outside
   if (player) player.setGround(walk)
+  peerAvatars.ground(walk)
   if (hands) hands.setWorld('overworld', walk, waterSurfaces)
   const feet = player.originPosition()
-  aimFish(height, waterSurfaces, cave.fishSeed, feet.x, feet.z)
+  aimFish(height, waterSurfaces, null, cave.fishSeed, feet.x, feet.z)
   cave = null
 }
 
@@ -4411,26 +4417,12 @@ function darkCave() {
 const caveAir = new THREE.Vector3()
 // The cave's water as hands.js asks it of a dropped thing.
 const caveWater = { levelAt: (x, z) => cave.walk.trueWaterAt(x, z, cave.walk.hintY) }
-// The rivers' fish in the cave's pools: the surface held under a sump's roof, and the bed under the surface rather than under her feet.
-const caveFishWater = {
-  levelAt(x, z) {
-    const level = caveWater.levelAt(x, z)
-    if (level === null) return null
-    const roof = cave.walk.ceilingAt(x, z, cave.walk.heightAt(x, z, level) + 0.05)
-    return roof === -Infinity ? level : Math.min(level, roof - 0.4)
-  },
-}
-const caveFishBed = {
-  heightAt(x, z) {
-    const level = caveWater.levelAt(x, z)
-    return cave.walk.heightAt(x, z, level === null ? cave.walk.hintY : level)
-  },
-}
 
-/** The fish layer's beds over `water` and `bed` from `seed`, rebuilt round (x, z): the cave's pools on the way in, the overworld's on the way out. */
-function aimFish(bed, water, seed, x, z) {
+/** The fish layer's beds over `water` and `bed` from `seed`, drawn from `spots` (Fish.setSpots), rebuilt round (x, z): the cave's pools on the way in, the overworld's on the way out. */
+function aimFish(bed, water, spots, seed, x, z) {
   fish.height = bed
   fish.water = water
+  fish.setSpots(spots)
   fish.seed = seed
   if (animalOn('fish')) fish.place(x, z)
 }

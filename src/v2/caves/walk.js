@@ -160,7 +160,32 @@ export class CaveWalk {
     return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
   }
 
-  /** The open water surface over (x, z) for a body near `y` (the eye's, for the torch), or null. */
+  /** The water and bed render/fish.js swims in: every body's at any height, since the beds round her are seeded once from wherever she stands, and the surface held under a sump's roof; and its spots (Fish.setSpots), each wet shore corner and river sample with its depth. */
+  fishWorld() {
+    const spots = []
+    for (const b of this._waters) {
+      if (b.kind === 'river') {
+        for (const q of b.pts) { const level = b.levelOf(q); if (level !== null) spots.push([q.x, q.z, level - q.y + q.cut]) }
+        continue
+      }
+      const sh = b.shore
+      for (let c = 0; c < sh.s.length; c++) if (sh.s[c] < 0) spots.push([sh.x0 + (c % sh.nx) * sh.cell, sh.z0 + Math.floor(c / sh.nx) * sh.cell, b.level - sh.floor[c]])
+    }
+    const water = {
+      levelAt: (x, z) => {
+        const level = this.trueWaterAt(x, z, null)
+        if (level === null) return null
+        const roof = this.ceilingAt(x, z, this.heightAt(x, z, level) + 0.05)
+        return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
+      },
+    }
+    const bed = {
+      heightAt: (x, z) => this.heightAt(x, z, this.trueWaterAt(x, z, null) ?? this.hintY),
+    }
+    return { water, bed, spots }
+  }
+
+  /** The open water surface over (x, z) for a body near `y` (the eye's, for the torch), or the first body at any height for a null `y`, or null. */
   trueWaterAt(x, z, y) {
     for (const b of this._waters) {
       if (x < b.x0 || x > b.x1 || z < b.z0 || z > b.z1) continue
@@ -168,7 +193,7 @@ export class CaveWalk {
       if (local === null) continue
       const level = local + this.oy
       // Floors stack, so a body over (x, z) is hers only if she is not under its bed: a river on the floor above is someone else's.
-      if (y > level + 3 || y < b.bed + this.oy - 1.5) continue
+      if (y !== null && (y > level + 3 || y < b.bed + this.oy - 1.5)) continue
       return level
     }
     return null

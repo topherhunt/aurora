@@ -33,6 +33,9 @@ const DROWN_H = 2.3
 const DROWN_ROOF = 1
 const DROWN_OUT = 1.15
 const DROWN_RISE = 0.6
+// A room holds water only if every neighbour stands SINK_RISE over it; a flooded one stands FLOOD metres deep over its nominal floor.
+const SINK_RISE = 0.3
+const FLOOD = [0.4, 1.6]
 // Odds a plain braid is choked by a rockfall.
 const CHOKE_ODDS = 0.4
 const drownedFloor = (A) => A.y - 0.25 - DROWN_ROOF - DROWN_H
@@ -302,15 +305,20 @@ export function buildGraph({ seed, entries }) {
       e.river = true
     }
   }
-  // A dish no deeper than a third of its node's radius: its wall then stays a climb out where the water is too shallow to float her up it.
+  // Water only in a room no passage leads down out of: a dish in its floor filled to under the rim, or flooded FLOOD over it. Its planned level is a wish; settleWaters holds it under where the rock would let it pour away. The dish also smooths the room's relief, whose hollows and overhangs would otherwise make low drowned crawls at its shore. A dish is no deeper than a third of its node's radius: its wall then stays a climb out where the water is too shallow to float her up it.
+  // Its own stream, so where the water goes never reshapes the passages laid after.
+  const wet = mulberry32(seed ^ 0x3a7e)
+  const wr = (a, b) => a + (b - a) * wet()
   for (const n of nodes) {
-    if (n.kind === 'chamber' && rand() < 0.22) n.dish = Math.min(rr(1.6, 3.6), 0.33 * Math.min(n.rx, n.rz))
-    if (n.pool) n.dish = Math.min(rr(3, 7) * rr(2, 4), 0.33 * Math.min(n.rx, n.rz))
-    if (n.dish > 0) pools.push({ node: n.i, x: n.x, z: n.z, level: n.y - 0.25, r: Math.min(n.rx, n.rz) * (n.kind === 'cavern' ? 0.62 : 0.66), depth: n.dish })
+    if (n.kind !== 'chamber' && (n.kind !== 'cavern' || n.great)) continue
+    if (edges.some((e) => (e.a === n.i || e.b === n.i) && (e.kind === 'sump' || (e.kind === 'drop' && e.a === n.i) || nodes[e.a === n.i ? e.b : e.a].y < n.y + SINK_RISE))) continue
+    n.dish = Math.min(n.pool ? wr(3, 7) * wr(2, 4) : wr(1.6, 3.6), 0.33 * Math.min(n.rx, n.rz))
+    const level = wet() < 0.5 ? n.y - 0.25 : n.y + wr(FLOOD[0], FLOOD[1])
+    pools.push({ node: n.i, x: n.x, z: n.z, level, r: Math.min(n.rx, n.rz) * (n.kind === 'cavern' ? 0.62 : 0.66), depth: n.dish + level - n.y })
   }
   // Drowned passages: now and then a deep pool's bowl opens under its surface onto a braid that swims out under the rim and climbs to a higher node, its floor walkable once it is out of the water.
   for (const A of nodes) {
-    if (!A.pool || A.dish < DROWN_DISH || degree[A.i] >= cap(A) || rand() > 0.5) continue
+    if (!A.pool || A.dish < DROWN_DISH || degree[A.i] >= cap(A) || wet() > 0.5) continue
     const yd = drownedFloor(A)
     for (const c of extra) {
       if (c.a !== A.i && c.b !== A.i) continue
@@ -459,7 +467,7 @@ function lobesAndNooks(nodes, edges, rand) {
       const q = e.pts[Math.min(i + 1, e.pts.length - 1)], o = e.pts[Math.max(i - 1, 0)]
       const a = Math.atan2(q.z - o.z, q.x - o.x) + (rand() < 0.5 ? 1 : -1) * (Math.PI / 2 + rr(-0.4, 0.4))
       const c = crevice(nodes[i < e.pts.length / 2 ? e.a : e.b].region, p.x, p.z, p.y, a, rr(3, 6), Math.min(p.w, rr(0.6, 1)), Math.min(p.h, rr(1.6, 2.4)), rr(-0.2, 1), -1, e, p.w + 0.5)
-      if (c !== null) nooks.push(c)
+      if (c !== null) nooks.push({ ...c, edge: e.i })
     }
   }
   return { lobes, nooks }

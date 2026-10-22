@@ -1114,6 +1114,7 @@ export class Butterflies {
     }
     if (n !== this.mesh.count) dirty = true
     this.mesh.count = n
+    this.mesh.visible = this.loaded && n > 0
     written.length = n
     if (dirty) {
       this.mesh.instanceMatrix.needsUpdate = true

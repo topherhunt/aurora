@@ -24,6 +24,9 @@ import { planWorld } from '../src/v2/layers/world-plan.js'
 import { ROAD } from '../src/v2/layers/roads.js'
 import { mouthBankFrom } from '../src/v2/render/entrances.js'
 import { readShippedLadder } from './lib/gen-prop-node.mjs'
+import { Fish } from '../src/v2/render/fish.js'
+
+const FISH_ASSETS = JSON.parse(readFileSync(new URL('../public/fauna/fish.json', import.meta.url), 'utf8'))
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -253,6 +256,21 @@ for (const sys of SYSTEMS) {
   const o = props.obstacles[0]
   if (o !== undefined) deep.hintY = o.y0 + OY
   check(shifted && (o === undefined || deep.obstacleAt(o.x, o.z, {}) !== null),`${tag}: a cave sunk by oy answers floor, fit, water and obstacles shifted by oy`)
+
+  // The fish as main.js aims them: placed from the door's height, yet each pool a fish fits in (some site clear of its shore) is stocked.
+  const pools = deep.fishWorld()
+  const fish = new Fish(new THREE.Scene(), pools.bed, pools.water, { seed: sys.seed, assets: FISH_ASSETS })
+  fish.setSpots(pools.spots)
+  deep.hintY = doors[0].y + OY
+  const stockable = deep.waters.filter((b) => b.kind !== 'river').map((b) => ({ b, mine: pools.spots.filter(([x, z]) => x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1 && b.levelAt(x, z) !== null) }))
+    .filter(({ mine }) => fish.species.some((sp) => mine.some(([x, z]) => fish.site(sp, x, z, sp.cfg.clearance) !== null)))
+  const unstocked = stockable.filter(({ b, mine }) => {
+    // Swimming over its deepest spot: a body's box can be far wider than its water.
+    const [x, z] = mine.reduce((a, s) => (s[2] > a[2] ? s : a))
+    fish.place(x, z)
+    return !fish.species.some((sp) => sp.schools.some((s) => b.levelAt(s.home.x, s.home.z) !== null))
+  })
+  check(unstocked.length <= Math.max(1, stockable.length / 10), `${tag}: fish placed from the door stock all but one, or nine in ten, of the pools they fit`, `${unstocked.length} of ${stockable.length} empty: ${unstocked.map(({ b }) => b.node ?? `sump ${b.edge}`).join(' ')}`)
 
   // Water: every sump's dip is under water to the roof.
   for (const e of graph.edges.filter((q) => q.kind === 'sump')) {

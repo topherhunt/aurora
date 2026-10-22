@@ -1,4 +1,4 @@
-// What stands in the cave (design/39-caves.md §6): dripstone, mushrooms and the ferns in their light, ruin columns, chalk, each region's landmark, the mouths' boulders and greenery, and the spots crabs keep to. Pure and seeded.
+// What stands in the cave (design/39-caves.md §6): dripstone, mushrooms and the ferns in their light, ruin columns, chalk, each region's landmark, the mouths' boulders and greenery. Pure and seeded.
 //
 // Anything she cannot step past (a stalagmite over a metre, a column, a giant stem) is kept CLEAR of every passage line into its node, so dressing can never close a route the graph promised; check-caves.mjs walks the routes to prove it.
 
@@ -36,7 +36,7 @@ function surface(field, x, z, y, dir, reach) {
 export function placeProps(graph, field, seed) {
   const rand = mulberry32(seed ^ 0x9f05)
   const rr = (a, b) => a + (b - a) * rand()
-  const out = { mites: [], tites: [], mush: [], boulders: [], ferns: [], grass: [], torches: [], ruins: [], chalk: [], crabs: [], obstacles: [], lights: [], pebbles: [] }
+  const out = { mites: [], tites: [], mush: [], boulders: [], ferns: [], grass: [], torches: [], ruins: [], chalk: [], obstacles: [], lights: [], pebbles: [] }
   const lines = graph.nodes.map(() => [])
   for (const e of graph.edges) { lines[e.a].push(e.pts); lines[e.b].push(e.pts) }
   const clear = (n, x, z, pad) => lines[n.i].every((pts) => pts.every((p, k) => k + 1 >= pts.length || segDist(x, z, p, pts[k + 1]) > CLEAR + pad))
@@ -313,14 +313,6 @@ export function placeProps(graph, field, seed) {
     for (let k = Math.round(area / PEBBLE_M2); k > 0; k--) {
       const p = spot(n, 0, 0.95)
       if (p !== null) strew(p.x, p.y, p.z)
-    }
-
-    // Crabs round a pool's shore (its fish are the rivers' own, render/fish.js).
-    if (n.dish > 1.2) {
-      for (let k = 0; k < Math.round(rr(1, 4)); k++) {
-        const p = spot(n, 0.6, 0.85)
-        if (p !== null) out.crabs.push({ x: p.x, y: p.y, z: p.z, yaw: rand() * 6.28, seed: rand() })
-      }
     }
 
     // A great cavern: groves of giant glowing mushrooms on its dry ground, boulders strewn between.
