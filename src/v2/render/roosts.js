@@ -456,8 +456,9 @@ export class Roosts {
    * @param opts.egg       the bank from loadEggBank, or null for a world with no eggs in its nests
    * @param opts.textures  the prop atlas
    * @param opts.patch     (material, cacheKey) => material, the lighting patch
+   * @param opts.ground    TerrainV2, whose DRAWN surface a far roost sits on (see Trees._groundFor), or null for the field's
    */
-  constructor(scene, field, water, layers, { seed = 1, radius = null, rocks, egg = null, textures, patch } = {}) {
+  constructor(scene, field, water, layers, { seed = 1, radius = null, rocks, egg = null, textures, patch, ground = null } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.snowLineAt !== 'function') {
       throw new Error('Roosts: needs a V2Height with heightAt and snowLineAt')
     }
@@ -466,8 +467,10 @@ export class Roosts {
     if (!rocks || typeof rocks.boulder !== 'function' || typeof rocks.tintAt !== 'function') throw new Error('Roosts: needs the Rocks, for boulder() and tintAt()')
     if (!textures || !textures.image) throw new Error('Roosts: needs the prop atlas')
     if (typeof patch !== 'function') throw new Error('Roosts: needs the lighting patch')
+    if (ground && (typeof ground.groundVersion !== 'number' || typeof ground.groundChangedSince !== 'function')) throw new Error('Roosts: `ground` has no groundVersion/groundChangedSince -- pass the TerrainV2 or nothing')
 
     this.field = field
+    this.ground = ground
     this.water = water
     this.paths = layers.paths
     this.rocks = rocks
@@ -568,8 +571,10 @@ export class Roosts {
   update(camX, camY, camZ) {
     this._reseat(camX, camZ)
     let tris = 0
+    const gver = this.ground ? this.ground.groundVersion : 0
     if (this.rim) this.rim.beginFrame(camX, camY, camZ)
     for (const tile of this.tiles.values()) {
+      if (this.ground && tile.gver !== gver) this._reground(tile, gver)
       if (this.rim) this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, camX, camY, camZ)
       const { site } = tile
       const d2 = (site.x - camX) ** 2 + (site.y - camY) ** 2 + (site.z - camZ) ** 2
@@ -585,6 +590,27 @@ export class Roosts {
       if (tile.n && !this.rim.isHidden(tile.ids[0])) tris += this.egg.tris
     }
     this.tris = tris
+  }
+
+  // The fortress and its egg drop by however far the drawn chunk under the centre stands below the field there: a summit's chord at a distance is metres under it. `site.y` stays the field's.
+  _reground(tile, gver) {
+    const { site } = tile
+    const changed = this.ground.groundChangedSince(site.x, site.z, tile.gver)
+    tile.gver = gver
+    if (!changed) return
+    const g = this.ground.groundAt(site.x, site.z)
+    const dy = g === null ? 0 : g - site.y
+    if (dy === tile.dy) return
+    tile.mesh.position.y = site.y + dy
+    tile.mesh.updateMatrixWorld()
+    if (tile.n) {
+      const id = tile.ids[0]
+      this.instY[id] += dy - tile.dy
+      this.batch.getMatrixAt(id, this._m)
+      this._m.elements[13] = this.instY[id]
+      this.batch.setMatrixAt(id, this._m)
+    }
+    tile.dy = dy
   }
 
   _reseat(cx, cz) {
@@ -724,7 +750,7 @@ export class Roosts {
     mesh.updateMatrixWorld()
     mesh.matrixAutoUpdate = false
     this.group.add(mesh)
-    const tile = { tx, tz, site, mesh, geometries, tris: [...built.tris, ...built.far.tris], tier: geometries.length - 1, farSizeSq: built.far.size ** 2, grid: built.grid, ferns: built.ferns, ids: new Int32Array(1), n: 0 }
+    const tile = { tx, tz, site, mesh, geometries, tris: [...built.tris, ...built.far.tris], tier: geometries.length - 1, farSizeSq: built.far.size ** 2, grid: built.grid, ferns: built.ferns, ids: new Int32Array(1), n: 0, gver: -1, dy: 0 }
     this.tiles.set(key, tile)
     // A nest whose egg was taken from it (hands.js) lays no other.
     const { egg } = roll

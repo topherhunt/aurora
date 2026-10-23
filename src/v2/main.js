@@ -4696,7 +4696,7 @@ async function buildRoom(room, at) {
   // set into the peaks with the shipped egg in half of them. Ahead of the trees,
   // which keep out of them, and the ferns, which grow thick in them.
   if (!room.village) {
-    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank(), textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    roosts = new Roosts(scene, height, waterSurfaces, layers, { seed, rocks, egg: await loadEggBank(), textures: propTextures, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), ground: terrain })
     roosts.place(spawn.x, spawn.z)
     console.log(`[v2] roosts ${roosts.stats.placed} with ${roosts.stats.eggs} eggs in ${roosts.placeMs.toFixed(1)} ms`)
     window.v2roosts = roosts

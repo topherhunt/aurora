@@ -259,8 +259,8 @@ const peakField = (snow = SNOW) => {
 // Every peak is inside this from MID.
 const MID = [1350, 1350]
 const ROOST_R = 1600
-const roostsOn = ({ field = peakField(), water = DRY, layers = LAYERS, seed = 5, egg = null, radius = ROOST_R, at = MID, Kind = Roosts } = {}) => {
-  const r = new Kind(new THREE.Scene(), field, water, layers, { seed, rocks: ROCKS, egg, radius, textures: TEXTURES, patch: PATCH })
+const roostsOn = ({ field = peakField(), water = DRY, layers = LAYERS, seed = 5, egg = null, radius = ROOST_R, at = MID, Kind = Roosts, ground = null } = {}) => {
+  const r = new Kind(new THREE.Scene(), field, water, layers, { seed, rocks: ROCKS, egg, radius, textures: TEXTURES, patch: PATCH, ground })
   r.place(...at)
   return r
 }
@@ -446,6 +446,33 @@ const EGG_SEED = (() => {
   bareAgain.dispose()
   r.update(at.x + 4000, at.y, at.z)
   check(r.stats.used === 0 && r.stats.eggs === 0 && r.stats.placed === 0, 'walked 4 km off, every egg she left is released with its roost')
+  r.dispose()
+}
+{
+  // A stand-in TerrainV2 whose drawn chunks stand `drop` under the field, or are not resident (null); `groundVersion` bumps on a swap.
+  const field = peakField()
+  const ground = { groundVersion: 0, drop: 0, resident: true, groundChangedSince: () => true, groundAt: (x, z) => (ground.resident ? field.heightAt(x, z) - ground.drop : null) }
+  const r = roostsOn({ egg: eggBankFrom(pickOf(0.6, 1, 0.6)), seed: EGG_SEED, ground })
+  const t = [...r.tiles.values()].find((q) => q.n === 1)
+  const { site } = t
+  const id = t.ids[0]
+  const m = new THREE.Matrix4()
+  const seat = () => { r.batch.getMatrixAt(id, m); return [t.mesh.position.y - site.y, r.instY[id], m.elements[13]] }
+  r.update(site.x, site.y + 1.7, site.z)
+  const [, eggY] = seat()
+  ground.drop = 3
+  ground.groundVersion++
+  r.update(site.x, site.y + 1.7, site.z)
+  const [down, eggDown, matDown] = seat()
+  check(Math.abs(down + 3) < 1e-9 && Math.abs(eggDown - (eggY - 3)) < 1e-4 && matDown === eggDown && site.y === field.heightAt(site.x, site.z), 'a terrain swap that draws the summit 3 m lower takes the fortress and its egg down with it; the site keeps the field\'s height', `fortress ${fmt(down)} m, egg ${fmt(eggDown - eggY)} m`)
+  ground.drop = 0
+  r.update(site.x, site.y + 1.7, site.z)
+  check(seat()[0] === down, 'with no swap since, the drawn ground is not asked again')
+  ground.resident = false
+  ground.groundVersion++
+  r.update(site.x, site.y + 1.7, site.z)
+  const [back, eggBack] = seat()
+  check(back === 0 && Math.abs(eggBack - eggY) < 1e-4, 'and with no chunk drawn under it, back on the field', `fortress ${fmt(back)} m, egg ${fmt(eggBack - eggY)} m`)
   r.dispose()
 }
 
