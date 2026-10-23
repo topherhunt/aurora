@@ -160,16 +160,16 @@ export class CaveWalk {
     return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
   }
 
-  /** The water and bed render/fish.js swims in: every body's at any height, since the beds round her are seeded once from wherever she stands, and the surface held under a sump's roof; and its spots (Fish.setSpots), each wet shore corner and river sample with its depth. */
+  /** The water and bed render/fish.js swims in: every body's at any height, since the beds round her are seeded once from wherever she stands, and the surface held under a sump's roof; and its spots (Fish.setSpots), each wet shore corner and river sample with its depth and body. */
   fishWorld() {
     const spots = []
-    for (const b of this._waters) {
+    for (const [i, b] of this._waters.entries()) {
       if (b.kind === 'river') {
-        for (const q of b.pts) { const level = b.levelOf(q); if (level !== null) spots.push([q.x, q.z, level - q.y + q.cut]) }
+        for (const q of b.pts) { const level = b.levelOf(q); if (level !== null) spots.push([q.x, q.z, level - q.y + q.cut, i]) }
         continue
       }
       const sh = b.shore
-      for (let c = 0; c < sh.s.length; c++) if (sh.s[c] < 0) spots.push([sh.x0 + (c % sh.nx) * sh.cell, sh.z0 + Math.floor(c / sh.nx) * sh.cell, b.level - sh.floor[c]])
+      for (let c = 0; c < sh.s.length; c++) if (sh.s[c] < 0) spots.push([sh.x0 + (c % sh.nx) * sh.cell, sh.z0 + Math.floor(c / sh.nx) * sh.cell, b.level - sh.floor[c], i])
     }
     const water = {
       levelAt: (x, z) => {

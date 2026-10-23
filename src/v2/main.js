@@ -5176,7 +5176,7 @@ async function buildRoom(room, at) {
   })
   window.v2wildlife = wildlife
   if (!room.village) {
-    wildStriders = new WildStriders(scene, { walk, textures: propTextures, cards: litterCards, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), avoid: wildAvoid, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
+    wildStriders = new WildStriders(scene, { walk, cards: litterCards, avoid: wildAvoid, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`

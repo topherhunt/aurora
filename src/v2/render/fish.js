@@ -386,16 +386,22 @@ export class Fish {
   }
 
   /**
-   * Null to roll each bed's sites anywhere in its tile, or [[x, z, depth], ...] to draw each species' sites from those spots that lie its minDepth deep: a cave's pools are each a sliver of a tile that a blind roll all but never lands in. Place after.
+   * Null to roll each bed's sites anywhere in its tile, or [[x, z, depth, body], ...] to draw each species' sites from those spots that lie its minDepth deep: a cave's pools are each a sliver of a tile that a blind roll all but never lands in. A species' sites in a tile go to its bodies in turn, or one big pool takes them all. Place after.
    */
   setSpots(spots) {
     if (spots === null) { this.spots = null; return }
     this.spots = new Map()
-    for (const [x, z, depth] of spots) {
+    for (const [x, z, depth, body] of spots) {
       const key = bedKey(Math.floor(x / TILE), Math.floor(z / TILE))
-      if (!this.spots.has(key)) this.spots.set(key, this.species.map(() => []))
-      this.species.forEach((sp, i) => { if (depth >= sp.cfg.minDepth) this.spots.get(key)[i].push([x, z]) })
+      if (!this.spots.has(key)) this.spots.set(key, this.species.map(() => new Map()))
+      this.species.forEach((sp, i) => {
+        if (depth < sp.cfg.minDepth) return
+        const bodies = this.spots.get(key)[i]
+        if (!bodies.has(body)) bodies.set(body, [])
+        bodies.get(body).push([x, z])
+      })
     }
+    for (const lists of this.spots.values()) lists.forEach((bodies, i) => { lists[i] = [...bodies.values()] })
   }
 
   /** The bed at tile (tx, tz): its schools from the tile seed, in species order, `s` the site's index in the bed and every member numbered through the bed. */
@@ -408,11 +414,14 @@ export class Fish {
     let s = 0
     for (const [j, sp] of this.species.entries()) {
       const cfg = sp.cfg
-      const spots = lists === null ? null : lists[j]
-      if (spots !== null && spots.length === 0) { s += cfg.perTile; continue }
+      const bodies = lists === null ? null : lists[j]
+      if (bodies !== null && bodies.length === 0) { s += cfg.perTile; continue }
+      let b0 = 0
       for (let k = 0; k < cfg.perTile; k++, s++) {
         // Every roll first, so a site refused leaves the stream where an accepted one would.
         const u = rand(), v = rand()
+        if (k === 0 && bodies !== null) b0 = Math.floor(u * bodies.length)
+        const spots = bodies === null ? null : bodies[(b0 + k) % bodies.length]
         let x = (tx + u) * TILE
         let z = (tz + v) * TILE
         const n = Math.round(between(rand, cfg.school))
@@ -424,6 +433,11 @@ export class Fish {
         // A spot too near the shore for the clearance tries the next, stepped by the golden ratio so the stream stays put.
         for (let tries = 0, w = u; spots !== null && at === null && tries < SPOT_TRIES; tries++, w = (w + GOLDEN) % 1) {
           [x, z] = spots[Math.floor(w * spots.length)]
+          at = this.site(sp, x, z, cfg.clearance)
+        }
+        // A pool narrow but for a few clear spots: walk the list from where the tries began.
+        for (let i = 0; spots !== null && at === null && i < spots.length; i++) {
+          [x, z] = spots[(Math.floor(u * spots.length) + i) % spots.length]
           at = this.site(sp, x, z, cfg.clearance)
         }
         if (at === null || !sp.loaded) continue

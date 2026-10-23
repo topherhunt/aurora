@@ -1307,12 +1307,12 @@ export class Townsfolk {
       return [name, { geometry, meshes }]
     }))
     // Its materials are the caller's to light, as these are.
-    this.striders = journeys ? new Striders(scene, { walk, textures, patch, cards }) : null
+    this.striders = journeys ? new Striders(scene, { walk, cards }) : null
     this.bodies = null
     this.hearthScale = 1
     // The perf trace's split of the layer (main.js townsPeople, townsStriders, townsFires): a part off is neither stepped nor drawn.
     this.parts = { people: true, striders: true, fires: true }
-    // Town index -> { life, hearth, rails } for each town alive.
+    // Town index -> { life, hearth, forge } for each town alive.
     this.alive = new Map()
     // The travellers on the roads near her, `${journey}:${member}` -> { j, k, c, m } (a person, and its mount if it rides).
     this.road = new Map()
@@ -1423,18 +1423,17 @@ export class Townsfolk {
       forge.place(0, f.x, f.y, f.z, { height: TRI_CAMPFIRE.height * TOWNSFOLK.forge, radius: TRI_CAMPFIRE.radius * TOWNSFOLK.forge })
       this.scene.add(forge.group)
     }
-    this.alive.set(i, { life, hearth, forge, rails: this.striders ? this.striders.rails(town) : null })
+    this.alive.set(i, { life, hearth, forge })
   }
 
   _sleep(i) {
-    const { life, hearth, forge, rails } = this.alive.get(i)
+    const { life, hearth, forge } = this.alive.get(i)
     if (forge) {
       forge.group.removeFromParent()
       forge.dispose()
     }
     for (const c of life.all) this._release(c)
     for (const m of life.mounts) this.striders.release(m)
-    if (rails) this.striders.dropRails(rails)
     hearth.dispose()
     this.alive.delete(i)
   }

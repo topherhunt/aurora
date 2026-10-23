@@ -1,12 +1,12 @@
 import THREE from '../../three-instance.js'
-import { PROP_FADE_SECONDS, createPropMaterial, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
+import { PROP_FADE_SECONDS, dissolvesOn, getPropClock, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { LAYER } from '../../textures.js'
 import { CARD_RUNGS, LOD_DEG, LOD_RUNGS, LOD_STEP, distAt, ladderTier } from './critters.js'
 import { Puppet, lodFadeS, cloneBones, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintOf, tintRange } from './baked-puppet.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
-import { addGeometry, propArrays, toGeometry } from './signposts.js'
+import { addGeometry } from './signposts.js'
 import { PADDLE, paddleHz, striderClips } from './strider-clips.js'
 
 // The towns' frost striders (DESIGN.md §32): their puppets and the hitching rails they stand at. The sim (townsfolk.js TownLife) says where each is and what it does; this draws it, and says where its saddle is for a rider.
@@ -53,6 +53,7 @@ const _q = new THREE.Quaternion()
 const _v = new THREE.Vector3()
 const _s = new THREE.Vector3()
 const _m = new THREE.Matrix4()
+const RAIL_BOX = new THREE.BoxGeometry(1, 1, 1)
 const _c = new THREE.Color()
 
 /**
@@ -191,8 +192,8 @@ async function loadStrider(url) {
 }
 
 export class Striders {
-  /** `walk` is the WalkSurface their feet and the rails stand on; `patch` the lighting patch; `cards` the shared LitterCards their card rung is drawn by. */
-  constructor(scene, { walk, textures, patch, cards }) {
+  /** `walk` is the WalkSurface their feet stand on; `cards` the shared LitterCards their card rung is drawn by. */
+  constructor(scene, { walk, cards }) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Striders needs the LitterCards its far card is drawn by')
     this.scene = scene
     this.walk = walk
@@ -206,8 +207,6 @@ export class Striders {
     this.free = []
     this.asset = null
     this.k = 0
-    this.railMaterial = patch(createPropMaterial(textures, { side: THREE.FrontSide, vertexColors: true }), 'v2-strider-rail')
-    this.box = new THREE.BoxGeometry(1, 1, 1)
     // The frame's walking bodies for the ear, and the calls not yet heard (audio/ambience.js herds and voiced).
     this.treading = []
     this.said = []
@@ -472,43 +471,32 @@ export class Striders {
   /** The height of a rail's bar over (x, z). */
   barY(x, z) { return this.walk.heightAt(x, z, -Infinity) + STRIDER.rail.h }
 
-  /** A town's rails as one mesh in the scene: posts at each rail's ends and middle, a bar between each two. */
-  rails(town) {
-    const R = STRIDER.rail, prop = propArrays(), tint = [0.62, 0.5, 0.4]
+  /** A town's rails into `prop` (signposts.js propArrays) in the town's frame, for trades.js to merge into its mesh: posts at each rail's ends and middle, a bar between each two. `ground` is the field, the ground barY reads. */
+  static addRails(prop, town, ground) {
+    const R = STRIDER.rail, tint = [0.62, 0.5, 0.4]
     for (const { rail: [[ax, az], [bx, bz]] } of town.posts) {
       const ups = [0, 0.5, 1].map((u) => {
         const x = ax + (bx - ax) * u, z = az + (bz - az) * u
-        return new THREE.Vector3(x, this.walk.heightAt(x, z, -Infinity), z)
+        return new THREE.Vector3(x - town.x, ground(x, z), z - town.z)
       })
       const tall = R.h + R.bar + R.sink
       for (const p of ups) {
         _m.compose(_v.set(p.x, p.y - R.sink + tall / 2, p.z), _q.identity(), _s.set(R.post, tall, R.post))
-        addGeometry(prop, this.box, _m, LAYER.TIMBER_HEWN, tint)
+        addGeometry(prop, RAIL_BOX, _m, LAYER.TIMBER_HEWN, tint)
       }
       for (let i = 1; i < ups.length; i++) {
         const a = ups[i - 1].clone().setY(ups[i - 1].y + R.h), b = ups[i].clone().setY(ups[i].y + R.h)
         const dir = b.clone().sub(a), len = dir.length()
         _m.compose(a.add(b).multiplyScalar(0.5), _q.setFromUnitVectors(X, dir.normalize()), _s.set(len + R.post, R.bar, R.bar))
-        addGeometry(prop, this.box, _m, LAYER.TIMBER_HEWN, tint)
+        addGeometry(prop, RAIL_BOX, _m, LAYER.TIMBER_HEWN, tint)
       }
     }
-    const mesh = new THREE.Mesh(toGeometry(prop), this.railMaterial)
-    mesh.name = `strider-rails-${town.id}`
-    this.scene.add(mesh)
-    return mesh
-  }
-
-  dropRails(mesh) {
-    this.scene.remove(mesh)
-    mesh.geometry.dispose()
   }
 
   dispose() {
     for (let i = 0; i < CARD_IDS; i++) this.cardView.setVisibleAt(i, false)
     for (const p of this.puppets) this.batch.remove(p.group)
     this.batch.removeFromParent()
-    this.box.dispose()
-    this.railMaterial.dispose()
     for (const m of this.materials) m.dispose()
   }
 }

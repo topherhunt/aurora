@@ -62,7 +62,7 @@ export function mouthFlare(n) {
   return { pts, end: { x: end.x, y: end.y, z: end.z }, w: end.w, h: end.h }
 }
 
-// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose size fits SHAPE_FIT times in its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for, and at most SHAPE_CARVE too, or a wide one's breaks through the SILL of rock (graph.js) over or under it.
+// Shape octaves (§4): feature sizes SHAPE_BASE·2^k metres, each up to SHAPE_AMP of its size deep, a room or passage taking every one whose size fits SHAPE_FIT times in its largest dimension. A room's are biased in by SHAPE_BIAS of their reach and push its wall in at full depth but carve it out at most SHAPE_CARVE, fading in over SHAPE_RISE above the floor: grown further it would reach the sumps and passages the graph kept clear of its rim, and at the floor its rim must stay where each passage's flat run ends, or her ramp starts with a ledge. A passage's only carve, so no lump comes under the headroom it was rolled for.
 const SHAPE_BASE = 0.625, SHAPE_AMP = 0.9, SHAPE_FIT = 3.6, SHAPE_OCT = 7, SHAPE_RISE = 5, SHAPE_CARVE = 2, SHAPE_BIAS = 0.2
 const octavesOf = (dim) => { let k = 0; while (k < SHAPE_OCT && SHAPE_FIT * SHAPE_BASE * 2 ** k <= dim) k++; return k }
 // The most an octave count's sum reaches either way.
@@ -88,13 +88,13 @@ export class CaveField {
     // A passage's octaves are its widest cross-section's, the same along its whole run so its segments meet without a step.
     const run = (pts, group, regionAt, rough, form = null) => {
       const gw = form === null ? 1 : form.fw + form.lean + form.crumple, gh = form === null ? 1 : Math.hypot(1, form.lean)
-      const oct = rough < 1 ? 0 : octavesOf(Math.max(...pts.map((p) => Math.max(2 * p.w * gw, p.h * gh)))), full = reachOf(oct), reach = Math.min(full, SHAPE_CARVE)
+      const oct = rough < 1 ? 0 : octavesOf(Math.max(...pts.map((p) => Math.max(2 * p.w * gw, p.h * gh)))), reach = reachOf(oct)
       for (let k = 0; k + 1 < pts.length; k++) {
         const p = pts[k], q = pts[k + 1]
         const ex = q.x - p.x, ez = q.z - p.z
         const w = Math.max(p.w, q.w) * gw + reach, h = Math.max(p.h * gh, q.h * gh, form === null ? 0 : FORM_H_MIN) + reach
         prims.push({
-          node: false, rough, group, region: regionAt(k), ca: p.cut, cb: q.cut, form, sa: p.s, sb: q.s, oct, full, reach,
+          node: false, rough, group, region: regionAt(k), ca: p.cut, cb: q.cut, form, sa: p.s, sb: q.s, oct, reach,
           ax: p.x, az: p.z, ex, ez, il2: 1 / (ex * ex + ez * ez), len: Math.hypot(ex, ez), ya: p.y, yb: q.y, wa: p.w, wb: q.w, ha: p.h, hb: q.h,
           x0: Math.min(p.x, q.x) - w, x1: Math.max(p.x, q.x) + w, z0: Math.min(p.z, q.z) - w, z1: Math.max(p.z, q.z) + w,
           y0: Math.min(p.y, q.y) - 1, y1: Math.max(p.y, q.y) + h,
@@ -289,11 +289,10 @@ export class CaveField {
     return Math.max(this._carve(p, fade, ell(a, b, w, h - c0), x, y, z), -v)
   }
 
-  // A passage's vault `e` carved by its shape octaves, 0 to p.full held under p.reach. Over 3 m from the wall the noise is skipped for the bound nearest it.
+  // A passage's vault `e` carved by its shape octaves, which reach 0 to p.reach. Over 3 m from the wall the noise is skipped for the bound nearest it.
   _carve(p, fade, e, x, y, z) {
     if (fade === 0 || e < -3) return e
     if (e > 3 + p.reach) return e - p.reach * fade
-    const c = 0.5 * (p.full + this._shape(x, y, z, p.oct))
-    return e - fade * (p.full > SHAPE_CARVE ? SHAPE_CARVE * Math.tanh(c / SHAPE_CARVE) : c)
+    return e - 0.5 * fade * (p.reach + this._shape(x, y, z, p.oct))
   }
 }

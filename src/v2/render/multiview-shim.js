@@ -48,7 +48,7 @@ export function installMultiviewShim() {
   const base = proto.onBeforeCompile
   // Materials chain their handlers (`prev = material.onBeforeCompile`), so only the outermost call may patch: an inner one would resolve the includes the outer handlers still splice into.
   let depth = 0
-  // One stable function per material: callers compare `onBeforeCompile` against the prototype's (cord.js refuses a material that is already patched).
+  // One stable function per material: callers compare `onBeforeCompile` against the prototype's to tell a patched material.
   const wrap = (own) => function (shader, renderer) {
     depth++
     try { own.call(this, shader, renderer) } finally { depth-- }

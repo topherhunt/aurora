@@ -4,6 +4,7 @@ import { LAYER } from '../../textures.js'
 import { addGeometry, propArrays } from './signposts.js'
 import { TRADES, smithyLayout, fenceRuns } from '../layers/trades.js'
 import { mulberry32 } from '../../sim/mathx.js'
+import { Striders } from './striders.js'
 
 const WHITE = [1, 1, 1]
 const DARK = [0.06, 0.05, 0.05]
@@ -245,6 +246,7 @@ export function tradeArrays(town, detail, ground) {
     const m = frameOf(town, b.x, b.y, b.z, b.yaw).multiply(new THREE.Matrix4().makeTranslation(d.x + side * (d.width / 2 + 0.7), d.y0 + d.height + 0.6, front))
     sign(out, m, b.sign, detail)
   }
+  Striders.addRails(out, town, ground)
   const n = out.position.length / 3
   return { position: Float32Array.from(out.position), normal: Float32Array.from(out.normal), uvProj: Float32Array.from(out.uvProj), texLayer: Float32Array.from(out.texLayer), color: Float32Array.from(out.color), index: Uint32Array.from(out.index), tris: out.index.length / 3, verts: n }
 }

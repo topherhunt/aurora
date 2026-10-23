@@ -155,7 +155,7 @@ export class WildStriders {
    * @param opts.returned  (key) => a town's strider lent to her (borrow) gone from this layer
    * @param opts.lend      (key) => the town's strider under that key lent as for borrow, for a peer riding it, or null where its town is not awake here
    */
-  constructor(scene, { walk, textures, patch, cards, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null }) {
+  constructor(scene, { walk, cards, avoid = null, crowd = null, harm, eat, bond, returned, lend = () => null }) {
     this.walk = walk
     this.avoid = avoid
     this.crowd = crowd
@@ -175,7 +175,7 @@ export class WildStriders {
     this.warned = false
     // Whether every one of hers within EAT.chanterelle.m charges her, tamed or not (madden).
     this.maddened = false
-    this.inner = new Striders(scene, { walk, textures, patch, cards })
+    this.inner = new Striders(scene, { walk, cards })
     this.materials = this.inner.materials
     this.live = new Map()
     // Homes let go while still in range, not respawned until she has been out of range of them; homes whose strider struck at her.
