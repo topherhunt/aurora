@@ -176,7 +176,7 @@ console.log('\nroost fortress')
   check(f.geometries.every((g) => layersOf(g).has(LAYER.BARK) && [...layersOf(g)].some((l) => l !== LAYER.BARK)), 'stone and logs in bark on every tier', f.geometries.map((g) => [...layersOf(g)].join(',')).join(' / '))
   const b = f.geometries[0].boundingBox
   check(b.max.x - b.min.x > WIDTH * 0.85 && b.max.x - b.min.x < WIDTH * 1.1 && b.max.z - b.min.z > WIDTH * 0.85 && b.max.z - b.min.z < WIDTH * 1.1, `about ${WIDTH} m across`, `${fmt(b.max.x - b.min.x)} x ${fmt(b.max.z - b.min.z)} m`)
-  // The far boulder: one stone on the rocks' four rungs, over the fortress's footprint and up to its wall's crest, measured by its longest axis.
+  // The far boulder: one stone on the rocks' mesh rungs, over the fortress's footprint and up to its wall's crest, measured by its longest axis.
   const fb = f.far.geometries[0].boundingBox
   const crest = f.stones.filter((s) => s.wall).reduce((n, s, _, w) => n + s.top / w.length, 0)
   check(f.far.geometries.length === ROCK_TIERS.length && f.far.tris.every((t, k) => k === 0 || t < f.far.tris[k - 1]) && f.far.tris[ROCK_TIERS.length - 1] < f.tris[LODS - 1] / 10, `the far boulder is ${ROCK_TIERS.length} tiers of falling triangles, its last a tenth of the fortress's last or less`, `${f.far.tris.join('/')} against ${f.tris[LODS - 1]}`)
@@ -303,10 +303,11 @@ class Tilted extends Roosts {
   const size = Math.sqrt(ta.farSizeSq)
   const rungAt = (d) => { const k = ROCK_LOD_AT.findIndex((at) => d < at * size); return k < 0 ? ROCK_LOD_AT.length : k }
   const out = [FAR_AT + 5, FAR_AT - 10, 400, 1000, FAR_AT - 25].map(tierFrom)
-  const want = [LODS + rungAt(FAR_AT + 5), LODS + rungAt(FAR_AT + 5), LODS + rungAt(400), LODS + ROCK_LOD_AT.length, LODS - 1]
-  check(out.join() === want.join() && ta.mesh.geometry === ta.geometries[LODS - 1], `the far boulder (${fmt(size)} m) from FAR_AT out on the rocks' rungs, kept just inside it, its hull at 1 km, the fortress back at ${FAR_AT - 25} m`, out.join(' '))
+  const farTier = (d) => LODS + Math.min(ROCK_TIERS.length - 1, rungAt(d))
+  const want = [farTier(FAR_AT + 5), farTier(FAR_AT + 5), farTier(400), LODS + ROCK_TIERS.length - 1, LODS - 1]
+  check(out.join() === want.join() && ta.mesh.geometry === ta.geometries[LODS - 1], `the far boulder (${fmt(size)} m) from FAR_AT out on the rocks' rungs, kept just inside it, its coarsest mesh at 1 km, the fortress back at ${FAR_AT - 25} m`, out.join(' '))
   tierFrom(1000)
-  check(r.stats.tris < ta.tris[LODS - 1] / 10, 'and at range a roost costs the boulder\'s hull, not its stones', `${r.stats.tris} tris against ${ta.tris[LODS - 1]}`)
+  check(r.stats.tris < ta.tris[LODS - 1] / 10, 'and at range a roost costs one boulder, not its stones', `${r.stats.tris} tris against ${ta.tris[LODS - 1]}`)
   r.update(a.x + 4000, a.y, a.z)
   check(r.sites().length === 0 && r.group.children.length === 0 && !r.tiles.has(a.key), 'walked 4 km off, every roost is released and its mesh gone')
   r.dispose()

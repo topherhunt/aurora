@@ -1,29 +1,30 @@
 import THREE from './three-instance.js'
 import { buildTextureArray, loadImageLayers } from './textures.js'
-import { buildRockBank, ROCK_BAND_COUNT } from './props/rock-bank.js'
+import { bakeRockImpostor, buildRockBank, ROCK_BAND_COUNT } from './props/rock-bank.js'
 import { createPropMaterial } from './material.js'
+import { rockCardMaterial } from './v2/render/rocks.js'
 
 // ---------------------------------------------------------------------------
 // The far rock probe (rock-far-probe.html): one boulder drawn as its LOD0
-// mesh and as its far tier, the six-face hull, under the same light and the
-// same eye in the same instance matrices, and the two pictures measured
-// against each other: mean colour, mean brightness, and the ground the
-// silhouette covers. The hull is fitted to the box the mesh measured and
-// shaded off the ellipsoid in that box, and only a live renderer can say
-// whether that reads as the same rock; scripts/check-rock-far.mjs drives this
-// page headless and reads the JSON it writes into #out.
+// mesh and as its far tier, the card, under the same light and the same eye in
+// the same instance matrices, and the two pictures measured against each
+// other: mean colour, mean brightness, and the ground the silhouette covers.
+// The card is the baked photograph stood up to the eye and sized to the box
+// the mesh measured, and only a live renderer can say whether that reads as
+// the same rock; scripts/check-rock-far.mjs drives this page headless and
+// reads the JSON it writes into #out.
 //
 // The eye is a far orthographic camera from above, as a slope is looked at,
-// and the sun is swept over the bearings that tell a rounded shell apart from
-// six flat faces: the world's noon, straight overhead, over the eye's shoulder
+// and the sun is swept over the bearings that tell a rounded lump apart from a
+// flat sign: the world's noon, straight overhead, over the eye's shoulder
 // and behind the rock. The world's per-instance shadow and sky terms
 // (lighting.js) multiply both tiers alike and are not in this rig.
 //
 // HALF THE BED STANDS ON A HILLSIDE, seen from below, with the ground drawn
 // into the depth buffer and nothing else: a bed on a slope tilts a boulder to
 // the face and sinks most of it into the hill, and what shows is the downhill
-// face, where the ground falls away. The hull takes the mesh's own matrix, so
-// the hill cuts both around the same bulge.
+// face, where the ground falls away. The card takes the mesh's own matrix, so
+// the hill cuts both about the same centre.
 // ---------------------------------------------------------------------------
 
 const N_COLS = 8
@@ -69,6 +70,7 @@ async function run() {
 
   const tex = buildTextureArray()
   await loadImageLayers(tex)
+  bakeRockImpostor(renderer, tex)
   const bank = buildRockBank()
   const shape = bank.shapes.boulder
   const meshGeo = shape.tiers[0]
@@ -76,6 +78,9 @@ async function run() {
   const measured = shape.measured
 
   const material = createPropMaterial(tex, { side: THREE.FrontSide, bump: true })
+  if (shape.card !== 'spun') throw new Error(`the boulder's card is '${shape.card}', and this rig stands up a spun one`)
+  // The card material reads a fade slot per instance; 1 never fades.
+  farGeo.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Array(N).fill(1), 1))
 
   // THE SAME PLACEMENTS FOR BOTH: every quarter-turn roll the bed can draw,
   // twice over, at a yaw each; the second half on the hillside, tilted to its
@@ -87,9 +92,9 @@ async function run() {
   const rand = mulberry32(7)
   const span = Math.max(measured.width, measured.height, measured.depth) * 2.2
   const meshes = new THREE.InstancedMesh(meshGeo, material, N)
-  const hulls = new THREE.InstancedMesh(farGeo, material, N)
+  const cards = new THREE.InstancedMesh(farGeo, rockCardMaterial(tex), N)
   meshes.frustumCulled = false
-  hulls.frustumCulled = false
+  cards.frustumCulled = false
   const m = new THREE.Matrix4()
   const p = new THREE.Vector3()
   const q = new THREE.Quaternion()
@@ -145,7 +150,7 @@ async function run() {
     }
     m.compose(p, yaw, s)
     meshes.setMatrixAt(i, m)
-    hulls.setMatrixAt(i, m)
+    cards.setMatrixAt(i, m)
     // Pixels are credited to the nearest rock centre: the placed box's
     // centre, which a roll leaves nowhere near the origin.
     centres.push(v.set(0, measured.height / 2, 0).applyMatrix4(m).clone())
@@ -155,7 +160,7 @@ async function run() {
   scene.add(sun)
   scene.add(new THREE.HemisphereLight(0xbfd4ee, 0x2c3140, 0.85))
   scene.add(meshes)
-  scene.add(hulls)
+  scene.add(cards)
 
   const half = Math.max(N_COLS, N_ROWS) * span * 0.5 + span
   const cam = new THREE.OrthographicCamera(-half * (W / H), half * (W / H), half, -half, 1, 400)
@@ -168,7 +173,7 @@ async function run() {
   for (let k = 0; k < SUNS.length; k++) {
     sun.position.fromArray(SUNS[k].dir).normalize()
     const row = { sun: SUNS[k].name }
-    for (const [what, obj, other] of [['mesh', meshes, hulls], ['far', hulls, meshes]]) {
+    for (const [what, obj, other] of [['mesh', meshes, cards], ['far', cards, meshes]]) {
       obj.visible = true
       other.visible = false
       renderer.setRenderTarget(rt)
@@ -178,7 +183,7 @@ async function run() {
       row[what] = measure(px)
       // Coverage does not depend on the sun; once is enough.
       if (k === 0) row[what].each = perInstance(px, centres, cam)
-      // And on screen, for a person: mesh on the left, hull on the right, one
+      // And on screen, for a person: mesh on the left, card on the right, one
       // row per sun.
       renderer.setRenderTarget(null)
       renderer.setViewport(what === 'mesh' ? 0 : W, H * (SUNS.length - 1 - k), W, H)

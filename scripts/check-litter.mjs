@@ -10,10 +10,10 @@ import { readFileSync } from 'node:fs'
 
 import THREE from '../src/three-instance.js'
 
-import { ROCK_TIERS } from '../src/props/rock.js'
+import { rockTier } from '../src/props/rock.js'
 import { setPropClock } from '../src/material.js'
 import { buildTextureArray } from '../src/textures.js'
-import { Litter, buildPebble, PEBBLE_TIER } from '../src/v2/render/litter.js'
+import { Litter, buildPebble, PEBBLE_DETAIL } from '../src/v2/render/litter.js'
 import { shade } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { taken } from '../src/v2/taken.js'
 
@@ -71,9 +71,9 @@ console.log('pebble')
 {
   const geo = buildPebble()
   const tris = geo.index.count / 3
-  const want = ROCK_TIERS[PEBBLE_TIER].faces
-  check(tris === want && tris <= 20, 'the pebble is the coarsest rung of the rock ladder: twenty triangles, closed, and nothing more',
-    `${tris} tris, ${geo.attributes.position.count} verts, rung ${PEBBLE_TIER} of ${ROCK_TIERS.length} is ${want} faces`)
+  const want = rockTier(PEBBLE_DETAIL).faces
+  check(tris === want && tris <= 20, 'the pebble is the coarsest icosphere: twenty triangles, closed, and nothing more',
+    `${tris} tris, ${geo.attributes.position.count} verts, detail ${PEBBLE_DETAIL} is ${want} faces`)
 
   // Built at unit size so the matrix scale is metres of stone directly. `size` is buildRock's largest horizontal extent, so the measured width is 1 and the height is the fraction the sink is taken of.
   const m = geo.userData.rock.measured
@@ -587,7 +587,7 @@ console.log('\ncost')
     l.update(0, 61.6, 0)
   }
   const s = l.stats
-  check(s.tris === (s.placed - s.rimHidden) * l.pebbleTris && l.pebbleTris === ROCK_TIERS[PEBBLE_TIER].faces && s.tris > 0 && s.rimFading === 0,
+  check(s.tris === (s.placed - s.rimHidden) * l.pebbleTris && l.pebbleTris === rockTier(PEBBLE_DETAIL).faces && s.tris > 0 && s.rimFading === 0,
     'the triangle count the panel shows is drawn pebbles times twenty, so the row is the layer\'s real cost',
     `${s.tris} tris = (${s.placed} placed - ${s.rimHidden} hidden) x ${l.pebbleTris}, ${s.rimFading} still fading`)
 

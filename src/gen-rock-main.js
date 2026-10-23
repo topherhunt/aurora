@@ -30,9 +30,9 @@ import rockSource from './props/rock.js?raw'
 //   that the world has one asset: the seed is the only thing separating one
 //   boulder from the next, so the gallery IS the variety argument.
 //
-//   LADDER -- the same rock at all four mesh tiers, side by side, at true
-//   size. This is the view that settles "do we need a real LOD2", because the
-//   T20 sitting next to the T80 either still reads as that rock or does not.
+//   LADDER -- the same rock at every mesh tier, side by side, at true size,
+//   so the T80 sitting next to the T320 either still reads as that rock or
+//   does not.
 //
 //   WORLD LOD -- one rock, and the camera's distance picks its tier by the rule
 //   v2/render/rocks.js applies to every instance. The ladder view says what the
@@ -81,11 +81,11 @@ const STONE_TEX = 'rocks/stone.png'
 // The optional sixth entry is the label, where the param's name is not the one
 // the page should say.
 const SLIDERS = [
-  ['tier', 0, ROCK_TIERS.length - 1, 1, `which rung of the shipping ladder is on screen: ${ROCK_TIERS.map((t, i) => `${i} is ${t.name}`).join(', ')} -- the same four the LOD ladder view lays out, one at a time and in place, so a rung can be judged against the rock it replaces. Moves \`detail\` to the rung's subdivision; dragging \`detail\` off the ladder shows here as the resolution actually built`, 'LOD'],
+  ['tier', 0, ROCK_TIERS.length - 1, 1, `which rung of the shipping ladder is on screen: ${ROCK_TIERS.map((t, i) => `${i} is ${t.name}`).join(', ')} -- the same meshes the LOD ladder view lays out, one at a time and in place, so a rung can be judged against the rock it replaces. Moves \`detail\` to the rung's subdivision; dragging \`detail\` off the ladder shows here as the resolution actually built`, 'LOD'],
   ['size', 0.06, 14, 0.02, 'largest HORIZONTAL extent in metres, measured on the dense reference. The shape is built in relative units and rescaled, and the texture scales with it, so a shape found at 2 m is the same rock at 14 m'],
   ['squash', 0.15, 2.6, 0.01, 'height / width. Under 0.4 is a slab, over 1.5 is a standing stone'],
   ['elongate', 1, 2.6, 0.01, 'x extent against z extent. 1 is round in plan'],
-  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those four whatever this says. Overrides the LOD slider's rung, except T6, which has one resolution. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
+  ['detail', 0, ROCK_MAX_DETAIL, 1, `how many times each icosahedron edge is split, which IS the vertex count: 20 x (detail+1)^2 faces per shard, so 0 is T20 and ${ROCK_MAX_DETAIL} is T${20 * (ROCK_MAX_DETAIL + 1) ** 2}. This is the dial a finer LOD0 gets CHOSEN on -- the shipping ladder carries ${ROCK_TIERS.map((t) => t.name).join('/')} and the LOD ladder view always shows those whatever this says. Overrides the LOD slider's rung. Everything else about the rock is unchanged: displacement is a function of direction, so every resolution is the same shape sampled harder`],
   ['lumps', 0, 0.9, 0.01, 'large-scale radial displacement -- the mass of the rock. Ceiling raised past the default because the default WAS the ceiling, which is never evidence that the ceiling is right'],
   ['lumpFreq', 0.6, 4, 0.05, 'how many lumps around the rock'],
   ['grain', 0, 0.5, 0.005, 'small-scale bumps that catch light along an edge. The 128px tile does the finer work'],
@@ -358,9 +358,9 @@ function rebuild() {
     }))
   } else if (mode === 'ladder' || mode === 'lod') {
     // `detail: null` hands the rungs back to ROCK_TIERS. Without it the
-    // resolution slider would win on all four and the ladder would be the same
-    // rock four times -- see buildRock, where a numeric `detail` overrides
-    // `tier` outright. World-LOD builds the same four and stacks them on the
+    // resolution slider would win on every rung and the ladder would be the same
+    // rock repeated -- see buildRock, where a numeric `detail` overrides
+    // `tier` outright. World-LOD builds the same meshes and stacks them on the
     // origin; stepLod() shows one at a time.
     items = ROCK_TIERS.map((_, i) => ({
       opts: rockOptions({ tier: i, detail: null }),
@@ -383,7 +383,7 @@ function rebuild() {
   const measured = geos[0].userData.rock.measured
 
   // Geometry in RAM is every tier built, world-LOD included -- the world holds
-  // all four too.
+  // them all too.
   let bytes = 0
   for (const geo of geos) bytes += geometryBytes(geo)
 
@@ -407,7 +407,7 @@ function rebuild() {
 
 // The one rung on screen in world-LOD, or -1 when every built geometry is drawn.
 function liveTier() {
-  return mode === 'lod' ? Math.max(0, lodTier) : -1
+  return mode === 'lod' ? Math.min(CARD - 1, Math.max(0, lodTier)) : -1
 }
 
 // What is DRAWN out of what was built: in world-LOD the live rung alone, one
@@ -431,40 +431,41 @@ function drawn() {
 // from the camera to the instance origin against ladder-size-squared times
 // ROCK_LOD_AT squared, and a rung the rock is already on -- or any finer one --
 // is left on a threshold 12% further out than it was entered on, and past
-// ROCK_LOD_FAR_MAX (left with the same slack) every rock is T6 whatever its
-// size. `cur` is the rung on screen, -1 if none yet. Anything the bench did
+// ROCK_LOD_FAR_MAX (left with the same slack) every rock is its card whatever
+// its size. `cur` is the rung on screen, -1 if none yet, and CARD is the card,
+// which this bench has no bake for and draws as the coarsest mesh. Anything the bench did
 // differently here would be a bench showing a different ladder than the one
 // that ships.
+const CARD = ROCK_TIERS.length
 function worldTier(d2, size, cur) {
-  const last = ROCK_TIERS.length - 1
-  if (d2 >= (cur >= 0 && cur < last ? ROCK_LOD_FAR_MAX : ROCK_LOD_FAR_MAX / (1 + ROCK_LOD_HYSTERESIS)) ** 2) return last
+  if (d2 >= (cur >= 0 && cur < CARD ? ROCK_LOD_FAR_MAX : ROCK_LOD_FAR_MAX / (1 + ROCK_LOD_HYSTERESIS)) ** 2) return CARD
   const sizeSq = size * size
   for (let b = 0; b < ROCK_LOD_AT.length; b++) {
     const sticky = cur >= 0 && cur <= b
     const k = ROCK_LOD_AT[b] * (sticky ? 1 + ROCK_LOD_HYSTERESIS : 1)
     if (d2 < sizeSq * k * k) return b
   }
-  return ROCK_TIERS.length - 1
+  return CARD
 }
 
 const lodHud = document.getElementById('lodhud')
 
 // Per frame in world-LOD mode. The rock sits on the origin, so the camera's
 // length IS the world's instance distance. A rung change swaps which of the
-// four stacked meshes is visible and re-reports the panel; the HUD is redrawn
+// stacked meshes is visible and re-reports the panel; the HUD is redrawn
 // every frame because the distance in it moves with every scroll notch.
 function stepLod() {
   const d2 = camera.position.lengthSq()
   const tier = worldTier(d2, built.lod, lodTier)
   if (tier !== lodTier) {
     lodTier = tier
-    group.children.forEach((mesh, i) => { mesh.visible = i === tier })
+    group.children.forEach((mesh, i) => { mesh.visible = i === Math.min(CARD - 1, tier) })
     report()
   }
   const at = ROCK_LOD_AT.map((k) => Math.min(k * built.lod, ROCK_LOD_FAR_MAX).toFixed(1))
   lodHud.innerHTML =
-    `<b>${Math.sqrt(d2).toFixed(1)} m</b> from the rock &middot; drawing <b>${ROCK_TIERS[tier].name}</b>\n` +
-    `ladder size ${built.lod.toFixed(2)} m &middot; T320 &lt; ${at[0]} &middot; T80 &lt; ${at[1]} &middot; T20 &lt; ${at[2]} &middot; T6 beyond` +
+    `<b>${Math.sqrt(d2).toFixed(1)} m</b> from the rock &middot; drawing <b>${tier === CARD ? `the card (${ROCK_TIERS[CARD - 1].name} here)` : ROCK_TIERS[tier].name}</b>\n` +
+    `ladder size ${built.lod.toFixed(2)} m &middot; ${ROCK_TIERS.map((t, i) => `${t.name} &lt; ${at[i]}`).join(' &middot; ')} &middot; card beyond` +
     ` &middot; leaves a rung ${Math.round(ROCK_LOD_HYSTERESIS * 100)}% further out`
 }
 
@@ -497,7 +498,7 @@ function frame() {
   // Fog starts past the far edge of the layout AS SEEN FROM THE CAMERA, never
   // across it: measuring a rock through haze is measuring the haze. World-LOD
   // is framed like the single rock but the camera is going to back off to the
-  // T6 threshold and past its hysteresis, so there the clear air reaches half
+  // card threshold and past its hysteresis, so there the clear air reaches half
   // again beyond it. Sized off the sliders rather than a build: `size` is the
   // horizontal extent and squash the height over it, and the ladder size is
   // the larger of the two. The ground runs out to the fog's far edge.
@@ -563,7 +564,7 @@ function table(el, rows) {
 //     switch distance = h * 928 / (TRI_PX * sqrt(F))
 //
 // This is a model, not a measurement, and it is on the page as a model: it puts
-// the four tiers in the right ORDER and to the right rough SCALE, which is what
+// the tiers in the right ORDER and to the right rough SCALE, which is what
 // a ladder decision needs. The real number comes from standing in the world.
 const PX_PER_METRE_AT_1M = 928
 const TRI_PX = 3
@@ -620,13 +621,13 @@ function report() {
     ['tile repeat', `${s.stats.texRepeat.toFixed(2)}&times; &nbsp; = ${s.stats.texMetres.toFixed(2)} m`],
     // The size the ladder is read in.
     ['ladder size', `${lod.toFixed(2)} m &nbsp; <span class="k">its ${axis}</span>`],
-    // THE HEADLINE: how far the world draws any sampled mesh at all for a rock
-    // this size. Past it the rock is the six-face hull, shards and all.
-    ['T6 past', `${farAt.toFixed(0)} m`],
+    // THE HEADLINE: how far the world draws any mesh at all for a rock this
+    // size. Past it the rock is its card, shards and all.
+    ['card past', `${farAt.toFixed(0)} m`],
   ])
   document.getElementById('geonote').innerHTML =
-    `<em>shards</em> multiplies triangles directly: ${tier.faces} faces per shard, ${shards} shard${shards > 1 ? 's' : ''} -- except on T6, which is one hull round the whole cluster. ` +
-    `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder -- that row is T20 with one shard, and it is the tier the vast majority of instances are at.`
+    `<em>shards</em> multiplies triangles directly: ${tier.faces} faces per shard, ${shards} shard${shards > 1 ? 's' : ''} -- except on the card, which is one picture of the whole cluster. ` +
+    `&sect;5's boulder row budgets <em>20 tris &times; 440 instances</em>, which predates this ladder: the vast majority of instances are on the 8-triangle card.`
 
   // --- the ladder ---
   //
@@ -645,13 +646,13 @@ function report() {
     `&times; ROCK_LOD_AT = ${ROCK_LOD_AT.join(' / ')} m per metre. A 1 m rock steps at ${ROCK_LOD_AT.join(', ')} m.`
   table(
     document.getElementById('ladderTable'),
-    ROCK_TIERS.map((t, i) => {
+    [...ROCK_TIERS, { name: 'card', faces: 8 }].map((t, i) => {
       const from = i === 0 ? 0 : shipAt[i - 1]
-      const last = i === ROCK_TIERS.length - 1
+      const last = i === CARD
       const tris = last ? t.faces : t.faces * shards
       const d = switchDistance(tris, m.height)
       // The multiplier is the boundary the rung is ENTERED on going out, which
-      // for T6 is the last one. Tenths only under 10 m, where a cobble's
+      // for the card is the last one. Tenths only under 10 m, where a cobble's
       // thresholds live. Two lines a rung: the value column is 290 px less the
       // key, and the model figure on the band's line did not fit it.
       const mult = last ? ROCK_LOD_AT[i - 1] : ROCK_LOD_AT[i]
@@ -822,8 +823,7 @@ function showValue(key, step) {
 
 // The LOD and resolution sliders are one dial: a rung sets `detail` to its
 // subdivision, and a subdivision sets `tier` to the ico rung that carries it,
-// or T320's when none does -- which leaves the hull, the one rung `detail`
-// cannot override, whenever `detail` is dragged.
+// or T320's when none does.
 function followTier(key) {
   if (key === 'tier') {
     params.detail = ROCK_TIERS[params.tier].detail

@@ -664,12 +664,12 @@ export class CaveRoom {
     })
   }
 
-  // The stones at cave-local eye (x, y, z): a boulder on its rung of the rock ladder, leaving one ROCK_LOD_HYSTERESIS further out than it came in; a pebble kept at full density inside FULL_RADIUS and thinned by rank as FULL_RADIUS / d past it, out to its own reach, as litter.js keeps the overworld's.
+  // The stones at cave-local eye (x, y, z): a boulder on its mesh rung of the rock ladder (a cave is too close for the card), leaving one ROCK_LOD_HYSTERESIS further out than it came in; a pebble kept at full density inside FULL_RADIUS and thinned by rank as FULL_RADIUS / d past it, out to its own reach, as litter.js keeps the overworld's.
   _pickStones(x, y, z) {
     this._repick(this.boulderSet, x, y, z, (i, dx, dy, dz) => {
       const d = Math.hypot(dx, dy, dz) / this.boulderSize[i], cur = this.boulderRung[i]
       let r = 0
-      while (r < ROCK_LOD_AT.length && d >= ROCK_LOD_AT[r] * (cur <= r ? 1 + ROCK_LOD_HYSTERESIS : 1)) r++
+      while (r < ROCK_TIERS.length - 1 && d >= ROCK_LOD_AT[r] * (cur <= r ? 1 + ROCK_LOD_HYSTERESIS : 1)) r++
       return (this.boulderRung[i] = r)
     })
     this._repick(this.pebbleSet, x, y, z, (i, dx, dy, dz) => {
@@ -815,7 +815,7 @@ export class CaveRoom {
       return stoneLit(b.x, b.y + 0.3 * b.r, b.z, b.seed)
     })
     this.boulderSize = Float32Array.from(big, (b) => (rockLodSize(mm) * 2 * b.r) / mm.width)
-    this.boulderRung = new Int8Array(big.length).fill(ROCK_LOD_AT.length)
+    this.boulderRung = new Int8Array(big.length).fill(ROCK_TIERS.length - 1)
     const pebble = buildPebble(), ph = pebble.userData.rock.measured.height
     const small = [...props.pebbles, ...props.boulders.filter((b) => 2 * b.r < BOULDER_FROM).map((b) => ({ ...b, y: b.y + 0.3 * b.r, s: 2 * b.r }))]
     this.pebbleSet = this._picked([pebble], small, (p) => {

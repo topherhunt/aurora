@@ -53,14 +53,14 @@ const patch = (m) => m
   const built = buildHearth(bank, 5, () => 0)
   const g = built.geometry
   const lay = g.attributes.texLayer.array, pos = g.attributes.position.array, col = g.attributes.color.array
-  const rockTris = bank.shapes.boulder.tiers[2].attributes.position.count / 3
+  const rockTris = bank.shapes.boulder.tiers[1].attributes.position.count / 3
   let rock = 0, bark = 0, other = 0
   for (let i = 0; i < lay.length; i += 3) {
     if (lay[i] === LAYER.ROCK) rock++
     else if (lay[i] === LAYER.BARK_PINE) bark++
     else other++
   }
-  check(rock === HEARTH.ring.count * rockTris, 'seven T20 boulders on the rock tile', `${rock} tris = 7 x ${rockTris}`)
+  check(rock === HEARTH.ring.count * rockTris, 'seven T80 boulders on the rock tile', `${rock} tris = 7 x ${rockTris}`)
   const logTris = HEARTH.logs.count * (5 * 2 + 3 * 2)
   const stoolTris = built.stools.length * (9 * 2 + 7 * 2)
   check(bark === logTris + stoolTris, 'six pentagon logs and the stools on the bark', `${bark} = ${logTris} + ${stoolTris}`)

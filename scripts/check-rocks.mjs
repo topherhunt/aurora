@@ -51,9 +51,9 @@ import * as THREE from 'three'
 
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_FAR_MAX, rockLodSize, ROCK_DEFAULTS, BOX_MARGIN } from '../src/props/rock.js'
 import {
-  buildRockBank, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINTS, TINT_GAIN,
+  buildRockBank, rockCardGeometry, rockParams, CAP, ENVIRONMENTS, ENV_TINTS, ROCK_BAND_COUNT, TINTS, TINT_GAIN,
 } from '../src/props/rock-bank.js'
-import { Rocks, LIFT_BEDS, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, SPAN_STRIDE, BARREN_ABOVE_SNOW } from '../src/v2/render/rocks.js'
+import { Rocks, FIXED_STONES, LIFT_BEDS, ROCK_STAND_MIN, BLOCK_SETTLE_MAX, SPAN_STRIDE, BARREN_ABOVE_SNOW } from '../src/v2/render/rocks.js'
 import { pickProp } from '../src/v2/edit/pick.js'
 import {
   LAYER, TILE_METRES, IMAGE_LAYERS, TEX_SIZE, SNOW_LAYERS, SNOW_ROCK_LAYERS, SNOW_WOOD_LAYERS, MOSS_LAYERS,
@@ -184,17 +184,12 @@ for (let seed = 1; seed <= SEEDS; seed++) {
       // it is closed because rocks.js turns it through sixteen quarter turns and
       // any face of it may end up facing the sky. Only a rock with a cut face
       // may open its bottom.
-      //
-      // THE FAR TIER IS ONE HULL FOR THE WHOLE ROCK, shards and all, and is
-      // closed whatever `sit` says: six faces, never fewer, hanging the skirt
-      // off its floor corners. Section 1b holds it to the shape it stands in for.
       const stats = geo.userData.rock
-      const far = ROCK_TIERS[t].solid === 'five'
       const shards = Math.max(1, Math.round(shape.over.shards ?? ROCK_DEFAULTS.shards))
       const sit = shape.over.sit ?? ROCK_DEFAULTS.sit
-      const full = far ? ROCK_TIERS[t].faces : ROCK_TIERS[t].faces * shards
+      const full = ROCK_TIERS[t].faces * shards
       if (stats.triangles !== full - stats.dropped) bad.triCount++
-      if (sit === 0 || far ? stats.dropped !== 0 : stats.dropped < 0) bad.closedDropped++
+      if (sit === 0 ? stats.dropped !== 0 : stats.dropped < 0) bad.closedDropped++
       totalTris += stats.triangles
 
       for (const v of lay) if (v !== LAYER.ROCK) { bad.wrongLayer++; break }
@@ -309,155 +304,31 @@ check(bad.inward === 0, 'every rock is wound outward, so FrontSide culls the rig
 console.log(`       ${builds} builds, ${totalTris} triangles`)
 
 // ---------------------------------------------------------------------------
-// 1b. The far tier is the rock's own box, on five vertices.
+// 1b. The far tier is a card the size of the rock's own box.
 // ---------------------------------------------------------------------------
 //
-// The last rung is not a sampled solid: it is five vertices and six faces fitted
-// to the measured box, textured and tinted like every other tier, and it is what
-// every rock in the world is past its last real mesh. Section 2's support
-// arithmetic is the wrong instrument for it -- a box's corners reach past any
-// hull inscribed in it -- so what is held here is what the eye reads at that
-// range: the box, the side silhouette, and that it is closed and convex.
-console.log('\nfar tier')
+// Past its last mesh every rock is one card (rock-bank.js rockCardGeometry): a
+// spun fan the card material turns to the eye and sizes from `cardBox`, or the
+// cap's flat plate. What is held here is what the shader is handed; the picture
+// on it is check-rock-far's.
+console.log('\ncard tier')
 {
-  const FAR = ROCK_TIERS.length - 1
-  check(ROCK_TIERS[FAR].solid === 'five' && ROCK_TIERS[FAR].faces === 6 && ROCK_TIERS[FAR].name === 'T6',
-    'the last rung of the ladder is the six-face hull', `${ROCK_TIERS[FAR].name}, ${ROCK_TIERS[FAR].solid}`)
-  check(ROCK_TIERS.slice(0, FAR).every((t) => t.solid !== 'five'),
-    'and it is the only one', ROCK_TIERS.map((t) => t.solid).join('/'))
-
-  // Convex hull area of a point set projected to two axes: the silhouette a
-  // mesh presents along the third.
-  const hullArea = (pos, a, b) => {
-    const pts = []
-    for (let i = 0; i < pos.length; i += 3) pts.push([pos[i + a], pos[i + b]])
-    pts.sort((p, q) => p[0] - q[0] || p[1] - q[1])
-    const cross = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
-    const lo = []
-    for (const p of pts) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p) }
-    const hi = []
-    for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p) }
-    const h = lo.slice(0, -1).concat(hi.slice(0, -1))
-    let area = 0
-    for (let i = 0; i < h.length; i++) { const j = (i + 1) % h.length; area += h[i][0] * h[j][1] - h[j][0] * h[i][1] }
-    return Math.abs(area) / 2
-  }
-
-  const farBad = { verts: 0, box: 0, concave: 0, side: 0, plan: 0, meta: 0, sameBox: 0, shoulders: 0 }
-  const farWorst = { box: 0, side: 0, sideLo: Infinity, plan: 0, planLo: Infinity, concave: 0 }
-  let farN = 0
-  for (let seed = 1; seed <= Math.min(SEEDS, 60); seed++) {
-    for (const shape of SHAPES) {
-      const fine = buildRock({ ...shape.over, seed, tier: 0 })
-      const geo = buildRock({ ...shape.over, seed, tier: FAR })
-      const pos = geo.attributes.position.array
-      const m = geo.userData.rock.measured
-      const size = shape.over.size ?? ROCK_DEFAULTS.size
-      farN++
-
-      // FIVE VERTICES AND SIX FACES: a closed hull on the fewest vertices that
-      // can hold a box's width, depth and height apart. Distinct by exact
-      // position, since the buffer is unwelded and each face owns its corners.
-      const distinct = new Set()
-      for (let i = 0; i < pos.length; i += 3) distinct.add(`${pos[i]},${pos[i + 1]},${pos[i + 2]}`)
-      if (distinct.size !== 5 || pos.length !== 18 * 3) farBad.verts++
-
-      // THE BOX IS THE MEASURED BOX, TO THE VERTEX -- not inscribed, not gained.
-      // `measured` is what every bed places and spaces by, and this tier is
-      // seen from further than any other, so it is the one whose extent has to
-      // be the rock's own. Below the floor hangs the same skirt the finer tiers
-      // hang on a seated rock, so a bed that sinks it leaves no gap.
-      const params = { ...ROCK_DEFAULTS, ...shape.over }
-      const skirtDrop = params.sit > 0 ? Math.max(0, params.skirt) * m.height : 0
-      let lo = [Infinity, Infinity, Infinity]
-      let hi = [-Infinity, -Infinity, -Infinity]
-      for (let i = 0; i < pos.length; i += 3) {
-        for (let a = 0; a < 3; a++) {
-          if (pos[i + a] < lo[a]) lo[a] = pos[i + a]
-          if (pos[i + a] > hi[a]) hi[a] = pos[i + a]
-        }
-      }
-      const boxErr = Math.max(
-        Math.abs(lo[0] + m.width / 2), Math.abs(hi[0] - m.width / 2),
-        Math.abs(lo[1] + skirtDrop), Math.abs(hi[1] - m.height),
-        Math.abs(lo[2] + m.depth / 2), Math.abs(hi[2] - m.depth / 2)) / size
-      if (boxErr > 1e-5) farBad.box++
-      farWorst.box = Math.max(farWorst.box, boxErr)
-      // And the same box every finer tier reports, since one reference measured
-      // them all.
-      const fm = fine.userData.rock.measured
-      if (fm.width !== m.width || fm.height !== m.height || fm.depth !== m.depth) farBad.sameBox++
-
-      // CONVEX AND OUTWARD: every vertex on or inside every face's plane. An
-      // inside-out or folded hull passes the signed-volume test above by
-      // accident on a shape this small, so the planes are asked one by one.
-      let concave = 0
-      for (let f = 0; f < 6; f++) {
-        const o = f * 9
-        const abx = pos[o + 3] - pos[o], aby = pos[o + 4] - pos[o + 1], abz = pos[o + 5] - pos[o + 2]
-        const acx = pos[o + 6] - pos[o], acy = pos[o + 7] - pos[o + 1], acz = pos[o + 8] - pos[o + 2]
-        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx
-        const nl = Math.hypot(nx, ny, nz)
-        for (let i = 0; i < pos.length; i += 3) {
-          const d = ((pos[i] - pos[o]) * nx + (pos[i + 1] - pos[o + 1]) * ny + (pos[i + 2] - pos[o + 2]) * nz) / nl
-          concave = Math.max(concave, d / size)
-        }
-      }
-      if (concave > 1e-6) farBad.concave++
-      farWorst.concave = Math.max(farWorst.concave, concave)
-
-      // THE SILHOUETTE IS THE MESH'S along all three axes. That is the read a
-      // rock gives at 25 sizes out -- a lump of a certain height and width
-      // against the hill -- and it is what the shoulders' height and their
-      // pull-in from the box's corners are set by. Plan gets more room above:
-      // a sunk rock's belly is flattened into the box the hull fills, while its
-      // mesh keeps only the rim an edge below the cut, and that gap is under
-      // the spread T20 already shows against T320.
-      const fp = fine.attributes.position.array
-      const sideX = hullArea(pos, 0, 1) / hullArea(fp, 0, 1)
-      const sideZ = hullArea(pos, 2, 1) / hullArea(fp, 2, 1)
-      const plan = hullArea(pos, 0, 2) / hullArea(fp, 0, 2)
-      if (sideX < 0.85 || sideX > 1.2 || sideZ < 0.85 || sideZ > 1.2) farBad.side++
-      if (plan < 0.85 || plan > 1.3) farBad.plan++
-      farWorst.side = Math.max(farWorst.side, sideX, sideZ)
-      farWorst.sideLo = Math.min(farWorst.sideLo, sideX, sideZ)
-      farWorst.plan = Math.max(farWorst.plan, plan)
-      farWorst.planLo = Math.min(farWorst.planLo, plan)
-
-      // THE SHOULDERS STAY BELOW THE CROWN AND OFF THE FLOOR IS NOT REQUIRED: a
-      // cap whose widest ring is its cut face degenerates to a square pyramid,
-      // and that is the right hull for it. What is required is that exactly one
-      // vertex stands at the crown and two on the floor.
-      let atCrown = 0
-      let atFloor = 0
-      for (const key of distinct) {
-        const y = Number(key.split(',')[1])
-        if (y === hi[1]) atCrown++
-        if (y === lo[1]) atFloor++
-      }
-      if (atCrown !== 1 || atFloor < 2) farBad.shoulders++
-
-      const u = geo.userData.rock
-      if (u.dropped !== 0 || u.gain !== 1 || u.faces !== 6 || u.triangles !== 6 || u.vertices !== 18 || u.tier !== 'T6') farBad.meta++
-
-      fine.dispose()
-      geo.dispose()
-    }
-  }
-  check(farBad.verts === 0, 'the far tier is five distinct vertices on six faces', `${farBad.verts} of ${farN} builds off`)
-  check(farBad.box === 0, 'and its box is the measured box to the vertex, every axis',
-    `worst ${farWorst.box.toExponential(1)} of size`)
-  check(farBad.sameBox === 0, 'which is the same box the finest tier reports', `${farBad.sameBox} disagree`)
-  check(farBad.concave === 0, 'and it is convex, every vertex inside every face plane',
-    `worst ${farWorst.concave.toExponential(1)} of size outside`)
-  check(farBad.side === 0, 'its side silhouette is the finest tier\'s along both horizontal axes, within 15%',
-    `${farWorst.sideLo.toFixed(2)}x .. ${farWorst.side.toFixed(2)}x of T${ROCK_TIERS[0].faces}'s`)
-  check(farBad.plan === 0, 'and in plan it covers what the mesh covers, within 15% under and 30% over',
-    `${farWorst.planLo.toFixed(2)}x .. ${farWorst.plan.toFixed(2)}x`)
-  check(farBad.shoulders === 0, 'one vertex at the crown, two on the floor, two shoulders between',
-    `${farBad.shoulders} builds otherwise`)
-  check(farBad.meta === 0, 'and it reports itself whole: T6, 6 faces, nothing dropped, no gain',
-    `${farBad.meta} builds otherwise`)
+  const m = { width: 2.4, height: 1.1, depth: 1.7 }
+  const spun = rockCardGeometry(m, 5, 'spun')
+  const box = spun.getAttribute('cardBox').array, uv = spun.getAttribute('uvProj').array
+  check(spun.getAttribute('position').count === 9 && spun.index.count === 24 && spun.userData.rock.tier === 'card',
+    'the spun card is a fan of eight triangles about its centre', `${spun.getAttribute('position').count} verts, ${spun.index.count / 3} tris`)
+  check(box.every((v, i) => v === Math.fround([m.width / 2, m.height / 2, m.depth / 2][i % 3])),
+    'every vertex carries the measured half extents the shader sizes it by', `${box.slice(0, 3).join(', ')}`)
+  check(uv.every((v) => v >= 0 && v <= 1) && spun.getAttribute('texLayer').array.every((l) => l === 5),
+    'its picture spans the photograph on the layer it was handed')
+  const plate = rockCardGeometry(m, 5, 'plate')
+  const pp = plate.getAttribute('position').array
+  check(plate.getAttribute('position').count === 4 && pp.every((v, i) => i % 3 !== 1 || v === Math.fround(m.height / 2)),
+    'the plate is one quad lying at half the rock\'s height', `${pp.length / 3} verts`)
+  check(ROCK_BAND_COUNT === ROCK_TIERS.length + 1, 'the bank\'s bands are the mesh tiers and the card', `${ROCK_BAND_COUNT} bands, ${ROCK_TIERS.length} meshes`)
+  spun.dispose()
+  plate.dispose()
 }
 
 // ---------------------------------------------------------------------------
@@ -606,17 +477,16 @@ for (let t = 1; t < MESH_TIERS; t++) {
     ROCK_TIERS.map((t) => `${t.name}/${t.faces}`).join(' > '))
 }
 
-// And the thresholds it is walked with. One per tier but the last, which has no
-// threshold of its own -- it is where a rock lands when it has fallen off the
-// end. Ascending for the same reason the faces descend: a shorter threshold
+// And the thresholds it is walked with, one per mesh tier: past the last a rock
+// is its card. Ascending for the same reason the faces descend: a shorter threshold
 // behind a longer one is a band no rock can ever be in.
 {
-  let ok = ROCK_LOD_AT.length === ROCK_TIERS.length - 1 && ROCK_LOD_AT[0] > 0
+  let ok = ROCK_LOD_AT.length === ROCK_TIERS.length && ROCK_LOD_AT[0] > 0
   for (let i = 1; i < ROCK_LOD_AT.length; i++) {
     if (!(ROCK_LOD_AT[i] > ROCK_LOD_AT[i - 1])) ok = false
   }
-  check(ok, 'ROCK_LOD_AT gives every tier but the far one an ascending threshold',
-    `${ROCK_LOD_AT.join('/')} m per metre of ladder size, ${ROCK_TIERS.length} tiers`)
+  check(ok, 'ROCK_LOD_AT gives every mesh tier its ascending threshold, past the last of which is the card',
+    `${ROCK_LOD_AT.join('/')} m per metre of ladder size, ${ROCK_TIERS.length} mesh tiers`)
 }
 
 // THE THRESHOLDS ARE PER METRE AND THAT IS THE POINT, so it is worth writing
@@ -644,19 +514,19 @@ for (let t = 1; t < MESH_TIERS; t++) {
   const torLeavesFinest = ROCK_LOD_AT[0] * rockLodSize(boulder) * TOR
   check(cobbleFar < torLeavesFinest,
     'a cobble is on its far tier before a tor has left its finest mesh',
-    `cobble ${at(boulder, COBBLE)} m then T6; tor ${at(boulder, TOR)}`)
+    `cobble ${at(boulder, COBBLE)} m then its card; tor ${at(boulder, TOR)}`)
 
   // THE SPEC THE LADDER WAS SET FROM, pinned so a later edit to ROCK_LOD_AT has
-  // to notice it: a two-metre rock steps at 6, 11 and 36 m. Two metres of WHAT
+  // to notice it: a two-metre rock steps at 6 and 36 m. Two metres of WHAT
   // is the content of rockLodSize -- of its longest axis -- so the probe is a
   // 2 m cube, whose longest axis is 2 m whichever axis you pick. Exact rather
   // than toleranced: with the longest axis as the basis there is no proportion
-  // left for the answer to depend on, so a 2 m rock steps at exactly 6/11/36 or
+  // left for the answer to depend on, so a 2 m rock steps at exactly 6/36 or
   // the ladder has been retuned and this line is the one that should say so.
-  const want = [6, 11, 36]
+  const want = [6, 36]
   const got = ROCK_LOD_AT.map((k) => k * rockLodSize({ width: 2, depth: 2, height: 2 }))
   check(got.every((d, i) => d === want[i]),
-    'a two-metre rock steps at 6, 11 and 36 m',
+    'a two-metre rock steps at 6 and 36 m',
     `${got.map((d) => d.toFixed(1)).join('/')} m, want ${want.join('/')}`)
 
   // THE LONGEST AXIS AND NOTHING ELSE, which is the whole content of
@@ -1954,27 +1824,28 @@ console.log('\nscatter')
   check(forestRocks.beds.map((b) => b.cfg.field).join(' ') === '1 2 3 4 9 5 8',
     'and every bed keeps the field number it was seeded with', forestRocks.beds.map((b) => b.cfg.field).join(' '))
   check(
-    new Set(forestRocks.meshes.meshes.map((m) => m.material)).size === 1,
-    'one material across every bed and every tier mesh',
-    'one program serves them all'
+    forestRocks.meshes.meshes.every((m, t) => m.material === (t === ROCK_BAND_COUNT - 1 ? forestRocks.cardMaterial : forestRocks.material)),
+    'one material across every bed and every mesh tier, and the card\'s own on the card',
+    'two programs serve them all'
   )
-  // SIX BEDS, FOUR DRAW CALLS: one InstancedMesh per tier, shared by every bed
+  // SEVEN BEDS, THREE DRAW CALLS: one InstancedMesh per tier, shared by every bed
   // through a view of its own, and the bed's tier ids index those meshes. Named
   // by count so a bed that quietly grew meshes of its own would fail here.
   check(
-    forestRocks.meshes.meshes.length === ROCK_TIERS.length &&
-      forestRocks.batch.children.length === ROCK_TIERS.length &&
+    forestRocks.meshes.meshes.length === ROCK_BAND_COUNT &&
+      forestRocks.batch.children.length === ROCK_BAND_COUNT &&
       forestRocks.beds.every((b) => b.batch.meshes === forestRocks.meshes.meshes &&
         Array.from(b.tierIds).every((g, t) => g === t)),
-    'the layer is one mesh per tier whatever the bed count, so six beds cost four draw calls',
+    'the layer is one mesh per tier whatever the bed count, so seven beds cost three draw calls',
     `${forestRocks.meshes.meshes.length} meshes for ${forestRocks.beds.length} beds`
   )
-  // AND EACH TIER'S CAP IS THE SUM OF WHAT THE BEDS BOUNDED FOR IT, so the
-  // refusal argument (`_tierCaps`) survives the sharing: every bed's population
-  // and ghost room fit inside its own summand.
+  // AND EACH TIER'S CAP IS THE SUM OF WHAT THE BEDS BOUNDED FOR IT, plus the
+  // placed stones' room (FIXED_STONES), so the refusal argument (`_tierCaps`)
+  // survives the sharing: every bed's population and ghost room fit inside its
+  // own summand.
   check(
-    forestRocks.meshes.capAt.every((cap, t) => cap === forestRocks.beds.reduce((n, b) => n + b.tierCaps[t], 0)),
-    'and each shared tier mesh is capped at the sum of the beds\' own tier bounds',
+    forestRocks.meshes.capAt.every((cap, t) => cap === FIXED_STONES + forestRocks.beds.reduce((n, b) => n + b.tierCaps[t], 0)),
+    'and each shared tier mesh is capped at the sum of the beds\' own tier bounds and the placed stones\' room',
     forestRocks.meshes.capAt.join(' ')
   )
   // AND A HIDE IN ONE BED MOVES ANOTHER BED'S ROCK CORRECTLY. Swap-remove
@@ -2029,18 +1900,13 @@ console.log('\nscatter')
     }
   }
 
-  // THE FAR TIER REACHES AN INSTANCE. `tierTris` is the table `update` indexes
-  // to pick geometry, so a coarsest slot reading 6 triangles is a bed that will
-  // really draw the far hull at range, and one reading 20 is a bed whose far
-  // tier is sitting unreachable in the arena.
-  //
-  // ALL OF THEM. No bed opts out: the ladder is per rock and size-relative, so
-  // where an instance reaches T6 is decided by how big it was placed and not by
-  // which bed placed it.
+  // THE CARD REACHES AN INSTANCE in every bed: `tierTris` is the table `update`
+  // indexes to pick geometry, and the ladder is per rock and size-relative, so
+  // no bed opts out.
   const coarse = ROCK_BAND_COUNT - 1
   check(
-    forestRocks.beds.every((b) => b.tierTris[coarse] === 6),
-    'every bed really does draw the 6-triangle far tier at its outermost band',
+    forestRocks.beds.every((b) => b.tierTris[coarse] === 8),
+    'every bed really does draw the 8-triangle card at its outermost band',
     forestRocks.beds.map((b) => `${b.cfg.name} ${b.tierTris[coarse]}`).join('  ')
   )
 

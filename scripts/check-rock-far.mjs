@@ -1,10 +1,10 @@
-// A far boulder's six-face hull, checked against the mesh it replaces: one
+// A far boulder's card, checked against the mesh it replaces: one
 // rock drawn both ways under the same light, the same eye and the same
 // instance matrices (rock-far-probe.html), the two pictures' mean colour,
 // mean brightness and covered ground compared.
 //
-// The hull is shaded off the ellipsoid in the mesh's box and drawn through the
-// ordinary rock material, and whether that reads as the mesh's colour and
+// The card is the baked photograph stood up to the eye, shaded as a lump and
+// sized to the ellipsoid in the mesh's box, and whether that reads as the mesh's colour and
 // outline cannot be checked without a renderer, so this gate drives the page
 // in headless Chrome over the DevTools protocol and reads the JSON it writes
 // into #out. A page that never finishes fails; a machine with no Chrome SKIPS
@@ -28,23 +28,22 @@ const arg = (flag) => process.argv.includes(flag) ? process.argv[process.argv.in
 const SHOT = arg('--shot')
 const REPORT = arg('--report')
 
-// Brightness and colour within a tenth. Ground covered: the hull is the
-// mesh's box with a vertex or an edge at every extreme, so it covers what the
-// mesh covers square on and less from every other eye -- over the flat rows
-// four fifths to nineteen twentieths on a rock, and on the hill, where the
-// bed buries a rock to its shoulders and the mesh shows a dome, the hull
-// shows a wedge: two thirds of the mesh's ground over the row, a third on the
-// rock that shows least. The gate guards a quarter over the bed, and on each
-// rock what a hull drawn on the wrong rock, at the wrong roll, or without its
-// skirt would break: on the flat within COVER_ONE either way; on the hill
-// half the row's ground and a quarter of any rock's, hidden by the hill
-// exactly when the mesh is.
+// Brightness and colour within a tenth. Ground covered: a quarter over the
+// bed, and on the flat each rock within COVER_ONE either way, which a card
+// sized off the box rather than its ellipsoid breaks on the diagonals. On the
+// hill, where the bed buries a rock to its shoulders, a flat card cannot cut
+// the slope where the dome does: half the row's ground, a quarter to
+// COVER_HILL_MAX of any rock's, and a rock the hill hides on one side only no bigger there than
+// FLIP_SHARE of a flat rock -- a card left at the box centre loses whole
+// rocks, one at the near face shows buried ones.
 const LUMA_TOL = 0.10
 const CHROMA_TOL = 0.04
 const COVER_TOL = 0.25
 const COVER_ONE = 1.4
 const COVER_HILL = 0.5
 const COVER_HILL_ONE = 0.25
+const COVER_HILL_MAX = 1.5
+const FLIP_SHARE = 0.25
 
 const chrome = findChrome()
 if (!chrome) {
@@ -113,7 +112,7 @@ if (failed) {
 
 console.log(`far rock probe on ${report.renderer}`)
 console.log(`boulder ${report.measured.width.toFixed(2)} x ${report.measured.height.toFixed(2)} x ${report.measured.depth.toFixed(2)} m`)
-check(report.far.tier === 'T6' && report.far.triangles === 6, 'the far tier drawn is the six-triangle hull', `${report.far.tier}, ${report.far.triangles} triangles`)
+check(report.far.tier === 'card' && report.far.triangles === 8, 'the far tier drawn is the eight-triangle card', `${report.far.tier}, ${report.far.triangles} triangles`)
 
 for (const row of report.rows) {
   const { mesh, far } = row
@@ -127,36 +126,38 @@ for (const row of report.rows) {
   const cover = far.pixels / mesh.pixels
   const tag = `sun ${row.sun}`
   check(Math.abs(luma - 1) <= LUMA_TOL,
-    `${tag}: the hull is as bright as the mesh`,
-    `hull/mesh luma ${luma.toFixed(3)} (mesh ${mesh.luma.toFixed(3)}, hull ${far.luma.toFixed(3)}), want within ${LUMA_TOL}`)
+    `${tag}: the card is as bright as the mesh`,
+    `card/mesh luma ${luma.toFixed(3)} (mesh ${mesh.luma.toFixed(3)}, card ${far.luma.toFixed(3)}), want within ${LUMA_TOL}`)
   check(chroma <= CHROMA_TOL,
     `${tag}: and the same colour`,
     `worst channel share off by ${chroma.toFixed(3)}, want within ${CHROMA_TOL}`)
   check(Math.abs(cover - 1) <= COVER_TOL,
     `${tag}: and covers the ground the mesh covers`,
-    `hull/mesh pixels ${cover.toFixed(3)} (${far.pixels} / ${mesh.pixels}), want within ${COVER_TOL}`)
+    `card/mesh pixels ${cover.toFixed(3)} (${far.pixels} / ${mesh.pixels}), want within ${COVER_TOL}`)
   if (mesh.each) {
     const idx = report.placements.map((p, i) => i)
     const flat = idx.filter((i) => !report.placements[i].includes('hill'))
     const hill = idx.filter((i) => report.placements[i].includes('hill'))
     const ratio = (i) => far.each[i] / mesh.each[i]
     const worst = (list) => list.reduce((w, i) => Math.abs(Math.log(ratio(i))) > Math.abs(Math.log(ratio(w))) ? i : w, list[0])
-    const px = (i) => `${report.placements[i]} (mesh ${mesh.each[i]}, hull ${far.each[i]} px)`
+    const px = (i) => `${report.placements[i]} (mesh ${mesh.each[i]}, card ${far.each[i]} px)`
     const w = worst(flat)
     check(flat.every((i) => ratio(i) <= COVER_ONE && ratio(i) >= 1 / COVER_ONE),
       `${tag}: on every roll the bed can draw on the flat`,
-      `hull/mesh ${Math.min(...flat.map(ratio)).toFixed(2)} .. ${Math.max(...flat.map(ratio)).toFixed(2)}, worst ${px(w)}, want each within ${COVER_ONE}x`)
+      `card/mesh ${Math.min(...flat.map(ratio)).toFixed(2)} .. ${Math.max(...flat.map(ratio)).toFixed(2)}, worst ${px(w)}, want each within ${COVER_ONE}x`)
     const sum = (list, each) => list.reduce((n, i) => n + each[i], 0)
     const hillCover = sum(hill, far.each) / sum(hill, mesh.each)
     check(hillCover >= COVER_HILL && hillCover <= 1 + COVER_TOL,
       `${tag}: and sunk to the bed's cap on the hill, shows the ground the mesh shows`,
-      `hull/mesh pixels ${hillCover.toFixed(3)} over the hill rows, want ${COVER_HILL} .. ${(1 + COVER_TOL).toFixed(2)}`)
-    const buried = hill.filter((i) => (mesh.each[i] === 0) !== (far.each[i] === 0))
+      `card/mesh pixels ${hillCover.toFixed(3)} over the hill rows, want ${COVER_HILL} .. ${(1 + COVER_TOL).toFixed(2)}`)
+    const flatPx = flat.map((i) => mesh.each[i]).sort((a, b) => a - b)[flat.length >> 1]
+    const flips = hill.filter((i) => (mesh.each[i] === 0) !== (far.each[i] === 0))
+    const bigFlips = flips.filter((i) => mesh.each[i] + far.each[i] > FLIP_SHARE * flatPx)
     const shown = hill.filter((i) => mesh.each[i] > 0 && far.each[i] > 0)
     const hw = worst(shown)
-    check(buried.length === 0 && shown.every((i) => ratio(i) >= COVER_HILL_ONE && ratio(i) <= COVER_ONE),
-      `${tag}: and on every rock there, hidden by the hill exactly when the mesh is`,
-      buried.length ? `hidden on one side only: ${buried.map(px).join('; ')}` : `hull/mesh ${Math.min(...shown.map(ratio)).toFixed(2)} .. ${Math.max(...shown.map(ratio)).toFixed(2)} over ${shown.length} showing, ${hill.length - shown.length} buried, worst ${px(hw)}, want each ${COVER_HILL_ONE} .. ${COVER_ONE}`)
+    check(bigFlips.length === 0 && shown.every((i) => ratio(i) >= COVER_HILL_ONE && ratio(i) <= COVER_HILL_MAX),
+      `${tag}: and on every rock there, hidden by the hill when the mesh is, but for slivers`,
+      bigFlips.length ? `hidden on one side only, past ${FLIP_SHARE} of a ${flatPx} px flat rock: ${bigFlips.map(px).join('; ')}` : `${flips.length} slivers; card/mesh ${Math.min(...shown.map(ratio)).toFixed(2)} .. ${Math.max(...shown.map(ratio)).toFixed(2)} over ${shown.length} showing, ${hill.length - shown.length} buried, worst ${px(hw)}, want each ${COVER_HILL_ONE} .. ${COVER_HILL_MAX}`)
   }
 }
 

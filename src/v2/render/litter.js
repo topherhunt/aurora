@@ -46,17 +46,16 @@ import { taken, TOLERANCE_M } from '../taken.js'
 //     (1 - cos 34 deg) on the steepest ground admitted.
 // ---------------------------------------------------------------------------
 
-// The seed of the one shape every pebble is, and the rung it is built at. T20 is
-// the coarsest rung of the shipping ladder (props/rock.js), the one the boulder
-// beds draw between 25 m per metre of rock and their card; here it is the ONLY
-// rung, because a 15 cm stone reaches its own "25 m per metre" at 3.75 m and
-// nothing finer would be seen from standing height. `smooth: 1` is ROCK_DEFAULTS
-// and is what keeps twenty faces from photographing as a gem.
+// The seed of the one shape every pebble is, and its subdivision: detail 0 is
+// T20, coarser than any rung of the boulders' ladder (props/rock.js), and the
+// pebble's ONLY rung, because nothing finer would be seen on a 15 cm stone from
+// standing height. `smooth: 1` is ROCK_DEFAULTS and is what keeps twenty faces
+// from photographing as a gem.
 //
 // Built at `size: 1` and scaled per instance: buildRock's `size` is the largest
 // horizontal extent, so the matrix scale below is metres of pebble directly.
 export const PEBBLE_SEED = 3
-export const PEBBLE_TIER = 2
+export const PEBBLE_DETAIL = 0
 
 // Largest horizontal extent of a pebble in metres, and the power that skews the
 // roll toward the small end. Two is the same skew the baked patch used, and for
@@ -303,7 +302,7 @@ function tileSeed(tx, tz, seed, slot) {
  * The caller owns it and must dispose it; the arena clones what it draws.
  */
 export function buildPebble() {
-  return buildRock({ ...rockParams(PEBBLE_SEED), size: 1, tier: PEBBLE_TIER })
+  return buildRock({ ...rockParams(PEBBLE_SEED), size: 1, detail: PEBBLE_DETAIL })
 }
 
 export class Litter {

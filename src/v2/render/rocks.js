@@ -13,6 +13,7 @@ import { shade } from '../terrain/chunk-mesh-v2.js'
 import { smoothstep } from '../../sim/mathx.js'
 import { ROCK_TILE_MEAN } from '../../textures.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { BiomeField } from '../layers/biome.js'
 import { forestKeepAt } from '../layers/forest.js'
 
@@ -110,26 +111,26 @@ import { forestKeepAt } from '../layers/forest.js'
 //
 // ONE LOD LADDER, AND THE THRESHOLDS ARE PER ROCK RATHER THAN PER BED -- the thing
 // to understand about this file if you are here about LOD at all. The boulder
-// ships T320/T80/T20 and the six-triangle T6 hull, and every instance steps
-// between them at `ROCK_LOD_AT` metres per metre of its OWN ladder size
-// (`instLod`: its footprint or what it shows above ground, the longer): 4 to T80,
-// 7.5 to T20, 25 to T6, so a 2 m rock holds sampled geometry out to 50 m, a
-// cobble to 8.5, a 12 m landmark to 300, a deep-bedded slab by the slab. A
+// ships T320, T80 and a card, and every instance steps between them at
+// `ROCK_LOD_AT` metres per metre of its OWN ladder size (`instLod`: its
+// footprint or what it shows above ground, the longer): 3 to T80, 18 to the
+// card, so a 2 m rock holds a mesh out to 36 m, a 12 m landmark to 216, a
+// deep-bedded slab by the slab. A
 // table of metres per bed was wrong in both directions at once, because a bed is
 // not one size of rock -- which is the whole reason one mesh can serve the world.
 // Two ceilings sit over the ladder, in metres rather than sizes (props/rock.js):
-// past ROCK_LOD_FAR_MAX every rock is T6, and no bed may reach past
+// past ROCK_LOD_FAR_MAX every rock is its card, and no bed may reach past
 // ROCK_LOD_GONE_MAX. Only the embedded bed's biggest blocks meet the first.
 //
-// AND NOTHING IS CULLED BEFORE IT HAS REACHED T6 -- AND STAYED WHOLE THERE FOR A
-// WHILE. A rock's thinning rank IS its far distance (`_rankOf`), and
-// `ROCK_FAR_LIFE` holds T6 whole for a band past it. A ROCK DISAPPEARING IS
+// AND NOTHING IS CULLED BEFORE IT HAS REACHED ITS CARD -- AND STAYED WHOLE THERE
+// FOR A WHILE. A rock's thinning rank IS its far distance (`_rankOf`), and
+// `ROCK_FAR_LIFE` holds the card whole for a band past it. A ROCK DISAPPEARING IS
 // STILL NOT ITS LADDER RUNNING OUT -- the ladder picks the mesh at each rung of
 // the size, the rank decides where past the last rung the rock is dropped.
 //
-// EVERY TIER IS A MESH IN THE ONE PLACEMENT MATRIX, T6 included: it is the
-// rock's measured box on five vertices (rock.js), so the far swap moves nothing
-// and there is no card frame to keep. §25 carries the argument.
+// THE CARD TAKES THE SAME PLACEMENT MATRIX AS THE MESHES: rockCardMaterial
+// stands it up to the head about the placed box, so the bed rolls, sinks and
+// tints it once like any tier. check-rock-far holds it to the mesh.
 // ---------------------------------------------------------------------------
 
 // The beds. Each is an independent scatter of the same one boulder; what a bed
@@ -204,12 +205,9 @@ const BEDS = [
     // 21 m. The ratios between the four are untouched; only the scale moved.
     envDensity: { river: 0.28, forest: 0.4, cliff: 0.4, peak: 0.32 },
     fullRadius: 95,
-    // 600, UP FROM 460, AND SET BY `sizeByEnv` BELOW RATHER THAN BY TASTE. A 10 m
-    // boulder holds a sampled tier out to 250 m under ROCK_LOD_AT and then owes
-    // T6 a full ROCK_FAR_LIFE band, so `minReach` demands 588 m; at 460 the
-    // biggest rocks in the wood would have been culled outright while still LOD2
-    // meshes. Costs (600/460)^2 = 1.7x the disc and the pool with it, which is the
-    // real price of the 10 m top end.
+    // A FLOOR SET BY `sizeByEnv` BELOW: a 10 m boulder holds a mesh out to its
+    // card under ROCK_LOD_AT and then owes the card a full ROCK_FAR_LIFE band, so
+    // `minReach` demands about 423 m. Reach is quadratic in the pool.
     radius: 600,
     tile: 28,
     // Peak 271 of 712 over the probe flight.
@@ -341,8 +339,8 @@ const BEDS = [
     // because the feet it passes sit in the 110-140 m band -- cutting this does
     // not thin the pile, it deletes whole piles. The other end is a floor rather
     // than a target, and the 4.5 m top sits just inside it: the biggest block
-    // reaches T6 at 113 m and owes a ROCK_FAR_LIFE band past that, so `minReach`
-    // refuses anything under 265 m and a top size over 4.76 m throws outright.
+    // reaches its card at 81 m by height (twice that by footprint) and owes a
+    // ROCK_FAR_LIFE band past that, so `minReach` refuses anything under ~191 m.
     radius: 280,
     tile: 14,
     // Peak 643 of 34522 over the probe flight.
@@ -371,10 +369,9 @@ const BEDS = [
     // at the same median the pile was tuned to: chips, cobbles, and the
     // occasional block big enough to scramble over.
     //
-    // THE TOP IS SET BY `radius`, NOT BY TASTE. A 4.5 m block reaches T6 at 113 m
-    // and owes a ROCK_FAR_LIFE band past that, so `minReach` demands 265 m of this
-    // bed's 280 and anything over 4.76 m throws at construction. That is the
-    // right place for the seam anyway: past it the BOULDERS bed is what piles at
+    // THE TOP IS BOUNDED BY `radius`: a 4.5 m block owes its card a
+    // ROCK_FAR_LIFE band, so `minReach` demands ~191 m of this bed's 280. That is
+    // the right place for the seam anyway: past it the BOULDERS bed is what piles at
     // a foot, which is what its `footDense` is for, and it runs to 10 m.
     //
     // THE FLOOR IS ROCK_MIN_SIZE and the roll now actually reaches it -- the
@@ -459,10 +456,9 @@ const BEDS = [
     // submerged ground is always `river`.
     envDensity: { river: 0.5, forest: 0, cliff: 0, peak: 0 },
     fullRadius: 65,
-    // Set by the `minReach` check below and not by taste: a 10 m stone holds a
-    // sampled tier to 250 m and then owes T6 the full ROCK_FAR_LIFE band, so
-    // anything under ~589 m would cull the biggest ones mid-ladder at the bed
-    // edge. Far further than you can see through this water, so the reach is
+    // A floor set by the `minReach` check below: a 10 m stone owes its card the
+    // full ROCK_FAR_LIFE band, so anything under ~424 m would cull the biggest
+    // ones on a mesh at the bed edge. Far further than you can see through this water, so the reach is
     // paid for entirely by the LOD ladder and never by the eye.
     radius: 600,
     tile: 24,
@@ -525,9 +521,9 @@ const BEDS = [
     tile: 70,
     // Peak 504 of 740 over the probe flight: the bound itself, since 1.5x that peak is past it.
     siteFrac: 1,
-    // THIS IS THE BED THE FAR TIER WAS BUILT FOR. A 7 m landmark holds T80 to 53 m
-    // and T20 to 175, then is T6 for the remaining 1075 m -- a ~4.8 km2 annulus
-    // where twenty triangles become six. Gains least from tightening the ladder:
+    // THIS IS THE BED THE FAR TIER WAS BUILT FOR. A 7 m landmark holds T80 to
+    // 126 m, then is its card for the remaining 1124 m -- a ~4.9 km2 annulus of
+    // eight triangles a rock. Gains least from tightening the ladder:
     // its rocks were always the ones big enough to earn their mesh.
     minElev: 0,
     maxSlopeDeg: 62,
@@ -644,7 +640,7 @@ const BEDS = [
     fullRadius: 120,
     // ROCK_LOD_GONE_MAX, THE MOST ANY BED MAY HAVE, and the 64 m top demands
     // nearly all of it: by size a 64 m block would be sampled to 1,600 m, so it
-    // is the far ceiling that puts it on T6 at 1,000 m, and it owes the dissolve
+    // is the far ceiling that puts it on its card at 1,000 m, and it owes the dissolve
     // band past that, so `minReach` refuses anything under 1,177 m. Burial does
     // not buy any of it back -- sinking a rock takes away its HEIGHT and the
     // ladder reads what shows, which here is the width still lying across the
@@ -733,8 +729,8 @@ const BEDS = [
     // bare rock the giants and embedded beds already furnish.
     envDensity: { river: 0.75, forest: 0.5, cliff: 0.5, peak: 0 },
     fullRadius: 25,
-    // Set by `minReach`, not taste: a 2.5 m stone reaches T6 at 62.5 m and owes
-    // the far band past it, which asks 73.5 m of this.
+    // Bounded by `minReach`: a 2.5 m stone reaches its card at 45 m and owes the
+    // far band past it, which asks 53 m of this.
     radius: 80,
     tile: 12,
     // Peak 213 of 2425 over the probe flight.
@@ -953,9 +949,9 @@ const TILT_JITTER = (15 * Math.PI) / 180
 // the rock's ladder size and then capped. Nothing here is trying to model a
 // tree's roots -- it is paying for the LOD ladder, and that is now the only
 // thing it pays for. A prop is seated against the T320's surface (blockHull) and
-// the mesh drawn at fifty metres is a T20 whose surface wanders either side of
-// it: on the shipping boulder the two agree to 2 mm at the median, and the T20
-// runs up to 52 cm inside the T320 at the worst corner of a 1.16 m rock.
+// the coarse mesh wanders either side of it. Measured on a T20, coarser than
+// the T80 that now ends the ladder: 2 mm at the median, up to 52 cm inside the
+// T320 at the worst corner of a 1.16 m rock.
 // Proportional because that gap scales with the rock, capped because on a
 // twenty-metre block the proportion alone would bury a sapling.
 const BLOCK_SETTLE = 0.04
@@ -1172,23 +1168,23 @@ const TIER_HEADROOM = 1.35
 const LOD_SQ = Float32Array.from(ROCK_LOD_AT, (k) => k * k)
 const LOD_SQ_OUT = Float32Array.from(ROCK_LOD_AT, (k) => (k * (1 + LOD_HYSTERESIS)) ** 2)
 // ROCK_LOD_FAR_MAX squared, as the ladder above is: a rock holds a mesh tier out
-// to FAR_SQ whatever its size and, once on T6, comes back only inside FAR_IN_SQ
+// to FAR_SQ whatever its size and, once on its card, comes back only inside FAR_IN_SQ
 // -- the same slack a rung leaves, applied to the ceiling.
 const FAR_SQ = ROCK_LOD_FAR_MAX ** 2
 const FAR_IN_SQ = (ROCK_LOD_FAR_MAX / (1 + LOD_HYSTERESIS)) ** 2
 
-// HOW LONG A ROCK IS WHOLE ON T6 FOR, as a multiple of the distance the far
+// HOW LONG A ROCK IS WHOLE ON ITS CARD FOR, as a multiple of the distance the far
 // tier takes over at.
 //
 // Flooring the gone-distance at exactly the far distance is the least that can
 // be called correct, and least is what it delivered: 39% of the river underfoot
-// rocks and more besides started dissolving in the same metre they reached T6,
-// so the hull showed up already dithering -- from inside the world
+// rocks and more besides started dissolving in the same metre they reached the
+// far tier, so it showed up already dithering -- from inside the world
 // indistinguishable from the finer mesh dithering out.
 //
 // So the floor is a BAND, and 1.0 is the SHORTEST one that is still a band. The
 // dissolve fires at RIM_AT rather than at FADE_BAND, and the gone-distance here
-// divides by the smaller of the two, so at 1.0 T6 is drawn solid for the 8.8% of
+// divides by the smaller of the two, so at 1.0 the card is drawn solid for the 8.8% of
 // its start distance between the two numbers before it begins to dither.
 //
 // NOT FREE IN THE OTHER DIRECTION EITHER: a bed may not end before its own ladder
@@ -1199,7 +1195,7 @@ const ROCK_FAR_LIFE = 1.0
 
 /**
  * The gone-distance a rock of ladder size `size` metres must be given, in metres,
- * for it to live a full `ROCK_FAR_LIFE` band on T6 before dithering.
+ * for it to live a full `ROCK_FAR_LIFE` band on its card before dithering.
  *
  * The one place `_fadeFloor`, `_exemptFrac` and the constructor's reach check
  * agree on what "past the end of the ladder" means, so they cannot drift.
@@ -1213,7 +1209,7 @@ function farGoneAt(size) {
   return (farAt(size) * ROCK_FAR_LIFE) / FADE_BAND
 }
 
-/** Where a rock of ladder size `size` metres is T6 from: its own rung, or the ceiling if that is sooner. */
+/** Where a rock of ladder size `size` metres is its card from: its own rung, or the ceiling if that is sooner. */
 function farAt(size) {
   return Math.min(size * ROCK_LOD_AT[ROCK_LOD_AT.length - 1], ROCK_LOD_FAR_MAX)
 }
@@ -1328,8 +1324,8 @@ function sectionRadius(geo, y, what) {
  *
  * THE FINEST TIER IS THE SUBJECT even though a distant rock is drawn coarser. It
  * is the mesh a player close enough to read a prop's foot is looking at, and its
- * plan silhouette is the widest of the three -- 15% of the footprint is stone in
- * the T320 and nothing in the T20, so seating against the coarse mesh would drop
+ * plan silhouette is the widest -- 15% of the footprint is stone in the T320
+ * and nothing in a T20, so seating against the coarse mesh would drop
  * props to the ground beside stone that plainly covers them. BLOCK_SETTLE pays
  * for the rest of the ladder.
  */
@@ -1359,6 +1355,57 @@ function blockHull(shape) {
   }
   shape.hull = { tri, radius: Math.sqrt(r2) }
   return shape.hull
+}
+
+// How far a card's normals lean out from facing the head at its rim (3 is about
+// 72 deg), so a far rock shades as the mesh's visible hemisphere does; less
+// reads too bright lit from the front and too dark from behind (check-rock-far).
+const CARD_ROUND = 3
+// How far toward the head a card stands, as a share of the rock's ellipsoid
+// depth along the view. At the centre a rock the bed sank into a hill vanishes
+// behind the slope; at the near face a fully buried one shows. check-rock-far
+// holds the hill rows' coverage to the mesh's.
+const CARD_PUSH = 0.65
+
+/**
+ * The material that draws a 'spun' card (rock-bank.js rockCardGeometry): the
+ * stone material's program with the card stood up in world space, facing the
+ * head about the instance's box centre and sized to the extent across the view
+ * of the ellipsoid in that box (a box's own extent grows 1.41x on a diagonal),
+ * and pushed CARD_PUSH of the way to its near face, then carried back into the instance's frame so three's own transform,
+ * tint and fade apply unchanged. Assumes the rock group's modelMatrix carries
+ * no rotation, since the normal is built in world space.
+ */
+export function rockCardMaterial(textureArray) {
+  const material = createPropMaterial(textureArray, { side: THREE.DoubleSide, instancedFade: true })
+  const prev = material.onBeforeCompile
+  material.onBeforeCompile = (shader, renderer) => {
+    prev.call(material, shader, renderer)
+    bindHeadEye(shader.uniforms)
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec3 cardBox;
+        ${HEAD_EYE_DECL}`)
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+        mat4 cardM = modelMatrix * instanceMatrix;
+        vec3 cardC = ( cardM * vec4( 0.0, cardBox.y, 0.0, 1.0 ) ).xyz;
+        vec3 cardD = normalize( ${HEAD_EYE_GLSL} - cardC );
+        vec3 cardR = cross( vec3( 0.0, 1.0, 0.0 ), cardD );
+        cardR = dot( cardR, cardR ) > 1e-8 ? normalize( cardR ) : vec3( 1.0, 0.0, 0.0 );
+        vec3 cardU = cross( cardD, cardR );
+        mat3 cardA = mat3( cardM );
+        vec3 cardW = cardC + cardD * ${CARD_PUSH.toFixed(3)} * length( ( cardD * cardA ) * cardBox )
+          + cardR * position.x * length( ( cardR * cardA ) * cardBox )
+          + cardU * position.y * length( ( cardU * cardA ) * cardBox );
+        vec3 cardLocal = ( inverse( cardM ) * vec4( cardW, 1.0 ) ).xyz;
+        objectNormal = transpose( mat3( instanceMatrix ) )
+          * normalize( ( cardR * position.x + cardU * position.y ) * ${CARD_ROUND.toFixed(3)} + cardD );`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        transformed = cardLocal;`)
+  }
+  const key = material.customProgramCacheKey
+  material.customProgramCacheKey = () => `${key()}-rockcard`
+  return material
 }
 
 /**
@@ -1753,7 +1800,7 @@ class RockBed {
     // THE BIGGEST ROCK THIS BED CAN PLACE, and through it the distance past which
     // no instance of it can still be on a sampled tier. `update` uses that to
     // skip whole tiles instead of walking them rock by rock -- everything out
-    // there is on T6, so one `_demote` says it for the tile.
+    // there is a card, so one `_demote` says it for the tile.
     //
     // A bound and not an average on purpose: a tile with one 10 m block in it must
     // not be demoted because the bed's typical rock is 2 m.
@@ -1808,19 +1855,19 @@ class RockBed {
     // reach against a 170 m radius killed one rock in six as an LOD2 mesh at the
     // bed edge.
     //
-    // `farGoneAt` is the figure `_fadeFloor` works to, for the same reason: T6 is
+    // `farGoneAt` is the figure `_fadeFloor` works to, for the same reason: the card is
     // meant to be whole for a `ROCK_FAR_LIFE` band past the distance it takes
     // over at, and the dissolve at `radius` STARTS at 0.85 of it. A reach of
     // exactly the far distance has the biggest rocks dithering while they are
     // still sampled; a reach of the far distance times the band has them
-    // dithering the instant they reach T6, which measured at 60% of that same bed.
+    // dithering the instant they reach the card, which measured at 60% of that same bed.
     const minReach = farGoneAt(maxLod)
     if (cfg.radius < minReach) {
       throw new Error(
         `RockBed ${cfg.name}: radius ${cfg.radius} m is inside its own far distance ` +
           `(${maxFarAt.toFixed(1)} m, needing ${minReach.toFixed(1)} m once the ${ROCK_FAR_LIFE}x ` +
           `far band and the dissolve band are allowed for) -- its biggest rocks would ` +
-          `dissolve as sampled meshes, or the instant they reached T6, at the bed edge. ` +
+          `dissolve as meshes, or the instant they reached the card, at the bed edge. ` +
           `Widen \`radius\`, or shrink the bed's top size.`
       )
     }
@@ -1904,7 +1951,7 @@ class RockBed {
     this.tierCaps = this._tierCaps()
 
     // THE TIER TABLE, one triangle count per band; the arena ids come with
-    // `attach`. The last slot is the 6-triangle T6 hull and NO BED DECLINES IT.
+    // `attach`. The last slot is the 8-triangle card and NO BED DECLINES IT.
     const geos = this.shape.tiers
     this.tierTris = new Int32Array(ROCK_BAND_COUNT)
     for (let t = 0; t < ROCK_BAND_COUNT; t++) {
@@ -2055,7 +2102,7 @@ class RockBed {
     this.tierIds = new Int32Array(ROCK_BAND_COUNT)
     for (let t = 0; t < ROCK_BAND_COUNT; t++) this.tierIds[t] = t * shared.variantCount + variant
 
-    // BORN ON T6, matching what `_growTile` writes: a pool id that somehow
+    // BORN ON THE CARD, matching what `_growTile` writes: a pool id that somehow
     // reached the arena visible before it was placed would otherwise land in the
     // tier-0 mesh, whose cap is sized for the handful of rocks inside four ladder
     // sizes rather than for the pool.
@@ -2091,9 +2138,9 @@ class RockBed {
    * and they are also what the layer costs in memory, since a cap is allocated
    * whether it ever fills or not.
    *
-   * THE FAR TIER IS THE POOL, exactly. Every rock is born on T6 (_growTile)
-   * and `_demote` puts every tile outside `nearSq` wholly back on it, so a bad
-   * frame is the whole pool on T6. It can be no MORE than the pool either: a
+   * THE FAR TIER IS THE POOL, exactly. Every rock is born on its card
+   * (_growTile) and `_demote` puts every tile outside `nearSq` wholly back on
+   * it, so a bad frame is the whole pool on the card. It can be no MORE than the pool either: a
    * cross-dissolve's ghost comes off `free` and is a pool id like any other.
    *
    * A MESH TIER IS BOUNDED BY THE LADDER AND NOT BY THE POOL, and that is the
@@ -2183,10 +2230,10 @@ class RockBed {
    * far tier takes over at.
    *
    * Three terms, all in `farGoneAt`. `size * ROCK_LOD_AT.at(-1)` is how far the
-   * rock can still be sampled; `ROCK_FAR_LIFE` is the span T6 is then whole for;
+   * rock can still be a mesh; `ROCK_FAR_LIFE` is the span the card is then whole for;
    * the `/ FADE_BAND` is not a fudge -- the rim starts its dissolve SHORT of the
    * gone-distance it is handed, so handing it the far distance would have the
-   * rock dithering before it ever reaches T6. See `farGoneAt` for why the divisor
+   * rock dithering before it ever reaches its card. See `farGoneAt` for why the divisor
    * is the old band rather than the rim's actual `RIM_AT` trigger.
    *
    * An upper bound rather than the exact figure, because the exact one needs the
@@ -2194,7 +2241,7 @@ class RockBed {
    * decides it. It takes the widest size range over every environment the bed can
    * reach, so it over-states a candidate that lands in a small-rock environment
    * and never under-states one: over-stating keeps a few rocks slightly too long,
-   * under-stating would cull one before it ever reaches T6.
+   * under-stating would cull one before it ever reaches its card.
    */
   _fadeFloor(sizeRoll) {
     return farGoneAt(this.lodP + sizeRoll * this.lodQ)
@@ -2214,7 +2261,7 @@ class RockBed {
    * lot, so a scree bed reserves for its blocks over 130 m and its cobbles over
    * 40 rather than for 196 rocks a tile over 280.
    *
-   * A rock lives until it is on T6 by construction: the gone-distance is
+   * A rock lives until it is on its card by construction: the gone-distance is
    * `_fadeFloor`, which is past the far rung, and nothing dissolves earlier.
    *
    * ONE NUMBER FOR ALL THREE CONSUMERS: the tile ladder (`_thin`), the pool bound
@@ -2943,7 +2990,7 @@ class RockBed {
 
         // The thresholds are per rock, not per bed: a 12 m tor and a 0.4 m
         // cobble read the same ladder, and the tor holds its finest mesh out to
-        // 48 m where the cobble is already on T6 at 5. All that separates
+        // 36 m where the cobble is already its card at 7. All that separates
         // them is the size they are measured in -- `instLod`, what this instance
         // shows above the ground, so a rock stood on end and bedded deep is
         // judged by its crest and its footprint and not by the length under
@@ -2951,9 +2998,9 @@ class RockBed {
         const size = this.instLod[i]
         const sizeSq = size * size
 
-        // The far ceiling first: a rock past it is T6 whatever its size, and
-        // the ladder is only read inside it. Sticky like a rung -- on a mesh
-        // tier it holds to FAR_SQ, on T6 it comes back inside FAR_IN_SQ.
+        // The far ceiling first: a rock past it is its card whatever its size,
+        // and the ladder is only read inside it. Sticky like a rung -- on a mesh
+        // tier it holds to FAR_SQ, on the card it comes back inside FAR_IN_SQ.
         let tier = coarse
         if (d2 < (cur >= 0 && cur < coarse ? FAR_SQ : FAR_IN_SQ)) {
           for (let b = 0; b < LOD_SQ.length; b++) {
@@ -3776,8 +3823,8 @@ class RockBed {
       //
       // The dissolve distance `fullRadius / rankU` is exactly `max(fullRadius,
       // fadeFloor)`, and the floor is past the far rung, so no rock starts
-      // dissolving before it has reached T6: thinning takes rocks that are already
-      // six triangles apiece rather than reaching up and taking finer meshes --
+      // dissolving before it has reached its card: thinning takes rocks that are
+      // already eight triangles apiece rather than reaching up and taking finer meshes --
       // which read as rocks culling without degrading.
       //
       // The `radius` clamp is the bed's outer reach, past which its tiles are not
@@ -4592,6 +4639,8 @@ class RockBed {
 const LOOSE_BEDS = new Set(['boulders', 'scree', 'giants'])
 // The beds a hand can lift from: the scree and the shore stones, whose small end is a stone. A boulder is a boulder at any size it comes in, and the sunken, the embedded and the giants are the hill's.
 export const LIFT_BEDS = new Set(['scree', 'shore'])
+// The placed stones a world holds at most: two Entrances' SCREEN_POOL (the world's mouths and CaveMouths') and a village's decor boulders. Rocks.stones throws past it.
+export const FIXED_STONES = 320
 const LOOSE_COUNT_CAP = 256
 const looseScratch = new Float32Array(LOOSE_COUNT_CAP * 4)
 
@@ -4614,8 +4663,9 @@ export class Rocks {
    * @param opts.ground   TerrainV2, or null for headless probes. See Trees.
    * @param opts.bank     buildRockBank()'s answer when the caller built it already (a room's shell shares it); built here otherwise.
    * @param opts.keepOut  (x, z, r) => whether a rock of radius r there would stand in something (the towns' buildings), or null.
+   * @param opts.fixed    room on every tier for the placed stones `stones()` hands out (boulders.js, entrances.js); see FIXED_STONES.
    */
-  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null, bounds = null, keepOut = null } = {}) {
+  constructor(scene, field, water, layers, textureArray, { seed = 1, ground = null, hollows = true, bank = null, bounds = null, keepOut = null, fixed = FIXED_STONES } = {}) {
     if (!field || typeof field.scatterAt !== 'function') throw new Error('Rocks: needs a V2Height with scatterAt')
     if (!water || typeof water.levelAt !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Rocks: needs WaterSurfaces with levelAt and shoreDistAt')
@@ -4634,9 +4684,8 @@ export class Rocks {
     if (bank === null) bank = buildRockBank()
     this.bank = bank
 
-    // ONE material for every bed: every tier of every bed is a rock mesh on the
-    // one stone layer, so there is one program here whatever the bed -- four
-    // draw calls for the layer, one program, one atlas.
+    // ONE material for every bed's meshes, and `cardMaterial` for the spun far
+    // tier: two programs and one atlas whatever the bed.
     //
     // FRONT FACES ONLY, alone among the prop materials. Every other one draws
     // cutout foliage, where both sides of a leaf are the same leaf; a rock is a
@@ -4658,6 +4707,7 @@ export class Rocks {
       bump: true,
       instancedFade: true,
     })
+    this.cardMaterial = rockCardMaterial(textureArray)
 
     // A room (DESIGN.md §30) has no hollow bed: no village inside a village.
     const beds = hollows ? BEDS : BEDS.filter((cfg) => !cfg.hollow)
@@ -4682,15 +4732,16 @@ export class Rocks {
     // bounded for that tier (`_tierCaps`): each bed's cap already holds its own
     // population and its ghosts' room, so the sum holds the union. A bed's shape
     // is a variant column of the set, and today every bed takes the boulder, so
-    // the set is four meshes and the cap's geometries go undrawn and disposed.
+    // the set is three meshes and the cap's geometries go undrawn and disposed.
     const shapes = []
     for (const bed of this.beds) if (!shapes.includes(bed.shape)) shapes.push(bed.shape)
-    const caps = new Array(ROCK_BAND_COUNT).fill(0)
+    const caps = new Array(ROCK_BAND_COUNT).fill(fixed)
+    this._fixedLeft = fixed
     for (const bed of this.beds) for (let t = 0; t < ROCK_BAND_COUNT; t++) caps[t] += bed.tierCaps[t]
     this.meshes = new PropMeshes(
       Array.from({ length: ROCK_BAND_COUNT }, (_, t) => ({ geometries: shapes.map((sh) => sh.tiers[t]) })),
       caps,
-      this.material,
+      (t, v) => (t === ROCK_BAND_COUNT - 1 && shapes[v].card === 'spun' ? this.cardMaterial : this.material),
       'v2-rocks'
     )
     this.batch = new THREE.Group()
@@ -5013,10 +5064,20 @@ export class Rocks {
     return false
   }
 
-  /** The boulder every bed takes, its tiers and measured extents, and the one stone material: for a layer drawing a few rocks of its own (entrances.js's flanking stones). */
+  /** The boulder every bed takes, its tiers and measured extents, and the one stone material. */
   boulder() {
     const shape = this.beds[0].shape
     return { tiers: shape.tiers, measured: shape.measured, material: this.material }
+  }
+
+  /**
+   * A view of `pool` placed boulders drawn in the rocks' own meshes, so they cost no draw call of their own: `{ arena, ids }`, `ids[t]` the geometry id of tier t (the last the card). Out of the room `opts.fixed` reserved.
+   */
+  stones(pool, name) {
+    if (pool > this._fixedLeft) throw new Error(`Rocks.stones: ${name} wants ${pool}, and ${this._fixedLeft} of opts.fixed are left`)
+    this._fixedLeft -= pool
+    const bed = this.beds[0]
+    return { arena: PropArena.over(this.meshes, pool, name), ids: bed.tierIds.slice() }
   }
 
   /** The boulder() drawn with matrix elements `e`: its stone on the vertical through `ex, ez` metres off its origin, as a shared [bottom, top] in world metres, or null over none. For entrances.js. */
@@ -5464,5 +5525,6 @@ export class Rocks {
   dispose() {
     this.meshes.dispose()
     this.material.dispose()
+    this.cardMaterial.dispose()
   }
 }

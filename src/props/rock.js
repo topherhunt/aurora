@@ -45,22 +45,20 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // The mesh tiers, coarsest last. `faces` is per SHARD on the sampled solids --
 // a 3-shard outcrop at T80 is 240 triangles -- which is why `shards` is the most
 // expensive slider on the bench by a wide margin and the budget panel prints
-// the product. The 'five' solid is one closed hull for the whole rock, shards
-// and all: five vertices on six faces, the rock's measured box to the vertex,
-// and it is what every rock is at range.
+// the product. Past the last rung a rock is a card (rock-bank.js
+// `rockCardGeometry`), not a mesh.
 //
-// EVERY ROCK SHIPS ALL FOUR, whatever size it is. The size argument lives
+// EVERY ROCK SHIPS BOTH, whatever size it is. The size argument lives
 // entirely in ROCK_LOD_AT's thresholds, never in which meshes a shape owns --
 // §23 records why a per-size-class ladder could not work.
 //
 // A RUNG IS ITS SUBDIVISION LEVEL AND NOTHING ELSE -- `rockTier` derives the name
 // and the face count from it, so the table cannot say T320 while building 80.
 // Three splits each edge into `detail + 1`, hence 20 * (detail + 1)^2 rather than
-// a doubling. The five-vertex hull has no subdivision to name.
+// a doubling.
 export function rockTier(detail, solid = 'ico') {
   const d = Math.max(0, Math.round(detail))
-  if (solid === 'five' && d > 0) throw new Error(`the five-vertex hull has no detail ${d}`)
-  const perSolid = solid === 'five' ? 6 : solid === 'oct' ? 8 : 20
+  const perSolid = solid === 'oct' ? 8 : 20
   const faces = perSolid * (d + 1) ** 2
   return { name: `T${faces}`, solid, detail: d, faces }
 }
@@ -70,43 +68,39 @@ export function rockTier(detail, solid = 'ico') {
 // REFERENCE_DETAIL, which follows whatever is asked for.
 export const ROCK_MAX_DETAIL = 5
 
-export const ROCK_TIERS = [rockTier(3), rockTier(1), rockTier(0), rockTier(0, 'five')]
+export const ROCK_TIERS = [rockTier(3), rockTier(1)]
 
 // WHEN A ROCK STEPS DOWN THAT LADDER, in metres of camera distance PER METRE of
 // the rock's own size -- `rockLodSize` below says which metre that is. One
-// number per boundary: T320 inside the first, T80 inside the second, T20 inside
-// the third, and the six-triangle T6 hull beyond it.
+// number per boundary: T320 inside the first, T80 inside the second, and the
+// card beyond it.
 //
 // Per metre because what decides whether a triangle is worth drawing is ANGULAR
-// size. A 2 m rock holds its finest mesh to 6 m, its second to 11, its third to 36,
-// and is T6 past that; a 12 m tor holds T320 to 36 m and reaches T6 at 216. One
+// size. A 2 m rock holds its finest mesh to 6 m and its second to 36, and is a
+// card past that; a 12 m tor holds T320 to 36 m and becomes a card at 216. One
 // system for every rock -- they all step at the same apparent size, only the
-// metres differ.
-//
-// Deliberately tighter than a pixel-error argument, which wants ~70 m per metre
-// before T6 against this 18: the ladder is set to buy back triangles, not to be
-// invisible. This is the number to move if a band looks wrong -- nothing else in
-// the system encodes a distance.
-export const ROCK_LOD_AT = [3, 5.5, 18]
+// metres differ. This is the number to move if a band looks wrong -- nothing
+// else in the system encodes a distance.
+export const ROCK_LOD_AT = [3, 18]
 
 // A rock only LEAVES a tier it is on this much further out than it entered it,
 // so a camera parked on a threshold does not flicker between two meshes.
 export const ROCK_LOD_HYSTERESIS = 0.12
 
 // HARD CEILINGS ON THE LADDER, in metres of camera distance, whatever the size
-// says: past ROCK_LOD_FAR_MAX every rock is T6, and past ROCK_LOD_GONE_MAX no
+// says: past ROCK_LOD_FAR_MAX every rock is a card, and past ROCK_LOD_GONE_MAX no
 // rock is drawn at all -- v2/render/rocks.js refuses a bed whose reach is
-// longer. Only the biggest rocks feel either: a 40 m block reaches T6 by size
-// exactly at the first, and the embedded bed alone places bigger. The far
+// longer. Only the biggest rocks feel either: a 56 m block reaches its card by size
+// at the first, and the embedded bed alone places bigger. The far
 // ceiling is left the same way any rung is, ROCK_LOD_HYSTERESIS inside it.
 export const ROCK_LOD_FAR_MAX = 1000
 export const ROCK_LOD_GONE_MAX = 1250
 
 // THE METRE THE LADDER IS MEASURED IN: the LONGEST AXIS of the rock's box.
 //
-// Not height: a `shingle` is 1.2 m across and 11 cm tall and would be T6 at
+// Not height: a `shingle` is 1.2 m across and 11 cm tall and would be a card at
 // 2.7 m, close enough to step on. Not width: a `spire` 2.5 m across and 6 m tall
-// would be T6 while still filling a third of the screen. The longest axis is the
+// would be a card while still filling a third of the screen. The longest axis is the
 // RIGHT quantity rather than a compromise -- the largest extent a box can present
 // to any camera. Depth is in with width because the bank elongates in plan
 // (`elongate` past 2), so the long horizontal axis is as often z as x. A CEILING
@@ -685,145 +679,14 @@ function emitShards(p, ax, ay, az, dirs, out, aux) {
   }
 }
 
-// Area of the convex hull of a set of 2D points, by monotone chain.
-function hullArea(pts) {
-  pts = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1])
-  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-  const lo = []
-  for (const q of pts) {
-    while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop()
-    lo.push(q)
-  }
-  const up = []
-  for (let i = pts.length - 1; i >= 0; i--) {
-    while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], pts[i]) <= 0) up.pop()
-    up.push(pts[i])
-  }
-  const h = lo.slice(0, -1).concat(up.slice(0, -1))
-  let area = 0
-  for (let i = 0; i < h.length; i++) {
-    const j = (i + 1) % h.length
-    area += h[i][0] * h[j][1] - h[j][0] * h[i][1]
-  }
-  return Math.abs(area) / 2
-}
-
-// THE FAR TIER: five vertices on six faces, in metres, centred like every other
-// tier -- the box is exactly `measured` (plus the skirt a cap hangs, as its
-// other tiers do), so a rock swapping down to it neither swells nor shrinks nor
-// moves on any axis. Two floor corners on one diagonal, two shoulders on the
-// other diagonal part-way up and pulled in toward the axis, and one crown. The
-// six faces are their convex hull, a bipyramid over three of them; which three
-// depends on how high the shoulders stand and where the crown leans, so the ten
-// pairings are tried and the one every vertex lies inside is kept.
-//
-// THE SHOULDERS ARE WHAT MAKE IT THE ROCK RATHER THAN A PYRAMID OR A BOX. In
-// plan the hull is a rhombus on the box's diagonals, the shoulders' pulled in
-// by `a`, so `a` is set to give it the reference's own plan area -- a cut-up
-// crag is narrower than its box, a plain boulder is an ellipse. Seen from the
-// side it is a trapezoid `s` tall under a gable, area W(s + aH)/2, so `s` is
-// set from the reference's silhouette area on each horizontal axis and the two
-// averaged: a pyramid would lose a third of a boulder's outline at range, and
-// this loses nothing on average. The crown sits over the reference's highest
-// point, held to the middle half of the box so the side faces stay steep enough
-// to read as one convex stone.
-function fiveHull(p, ref, minX, maxX, cutY, maxY, minZ, maxZ, k, measured) {
-  const W = measured.width
-  const H = measured.height
-  const D = measured.depth
-  const xy = []
-  const zy = []
-  const xz = []
-  let topY = -Infinity
-  let topX = 0
-  let topZ = 0
-  for (let i = 0; i < ref.length; i += 3) {
-    xy.push([ref[i], ref[i + 1]])
-    zy.push([ref[i + 2], ref[i + 1]])
-    xz.push([ref[i], ref[i + 2]])
-    if (ref[i + 1] > topY) {
-      topY = ref[i + 1]
-      topX = ref[i]
-      topZ = ref[i + 2]
-    }
-  }
-  const h = maxY - cutY
-  const w = Math.max(1e-9, maxX - minX)
-  const d = Math.max(1e-9, maxZ - minZ)
-  const a = Math.min(1, Math.max(0.5, hullArea(xz) / (w * d)))
-  const sx = (2 * hullArea(xy)) / w - a * h
-  const sz = (2 * hullArea(zy)) / d - a * h
-  const s = Math.min(0.85 * H, Math.max(0, ((sx + sz) / 2) * k))
-  const cx = (minX + maxX) / 2
-  const cz = (minZ + maxZ) / 2
-  const crownX = Math.min(W / 4, Math.max(-W / 4, (topX - cx) * k))
-  const crownZ = Math.min(D / 4, Math.max(-D / 4, (topZ - cz) * k))
-  // The floor corners hang the same skirt the sampled tiers do, on the same
-  // terms (see `skirt`), so a cap on T6 still plugs into a hill that falls away.
-  const drop = p.sit > 0 ? Math.max(0, p.skirt) * H : 0
-  const v = [
-    [-W / 2, -drop, -D / 2],
-    [W / 2, -drop, D / 2],
-    [(-a * W) / 2, s, (a * D) / 2],
-    [(a * W) / 2, s, (-a * D) / 2],
-    [crownX, H, crownZ],
-  ]
-  // Each face wound outward off the box centre, which is inside a convex hull;
-  // null if any vertex stands outside the face's plane.
-  const centroid = [0, H / 2, 0]
-  const wind = (f) => {
-    const [a, b, c] = f.map((i) => v[i])
-    const nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1])
-    const ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2])
-    const nz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-    const out = nx * (a[0] - centroid[0]) + ny * (a[1] - centroid[1]) + nz * (a[2] - centroid[2])
-    const sign = out >= 0 ? 1 : -1
-    const nl = Math.hypot(nx, ny, nz) * sign
-    for (const q of v) {
-      const d = ((q[0] - a[0]) * nx + (q[1] - a[1]) * ny + (q[2] - a[2]) * nz) / nl
-      if (d > 1e-9 * H) return null
-    }
-    return sign > 0 ? f : [f[0], f[2], f[1]]
-  }
-  let faces = null
-  for (let i = 0; i < 5 && !faces; i++) {
-    for (let j = i + 1; j < 5 && !faces; j++) {
-      const ring = [0, 1, 2, 3, 4].filter((n) => n !== i && n !== j)
-      const wound = []
-      for (const apex of [i, j]) for (let e = 0; e < 3; e++) wound.push(wind([apex, ring[e], ring[(e + 1) % 3]]))
-      if (wound.every(Boolean)) faces = wound
-    }
-  }
-  if (!faces) throw new Error('the five-vertex hull has a vertex inside it')
-  const positions = []
-  const shells = []
-  const facets = []
-  for (const f of faces) {
-    for (const i of f) {
-      const q = v[i]
-      positions.push(q[0], q[1], q[2])
-      // The shell is the box's ellipsoid, so `smooth` rounds the hull's lighting
-      // the way it rounds the sampled tiers'.
-      const ex = q[0] / (W * W / 4)
-      const ey = (q[1] - H / 2) / (H * H / 4)
-      const ez = q[2] / (D * D / 4)
-      const l = Math.hypot(ex, ey, ez) || 1
-      shells.push(ex / l, ey / l, ez / l)
-      facets.push(-1)
-    }
-  }
-  return { positions, shells, facets }
-}
-
 // The rung a rock is built on. `tier` names a RUNG OF THE SHIPPING LADDER;
 // `detail` names a RESOLUTION, and is how the bench looks at ones the ladder does
-// not carry yet -- a number overrides the rung, except on the hull, which has one
-// resolution. Null on every path but /gen-rock, so the world reads the ladder
+// not carry yet -- a number overrides the rung. Null on every path but /gen-rock, so the world reads the ladder
 // and nothing else. Exported so the bench's readout names the rung by this rule
 // rather than a second copy of it.
 export function rockRung(p) {
   const rung = ROCK_TIERS[Math.min(ROCK_TIERS.length - 1, Math.max(0, Math.round(p.tier)))]
-  return Number.isFinite(p.detail) && rung.solid !== 'five'
+  return Number.isFinite(p.detail)
     ? rockTier(Math.min(ROCK_MAX_DETAIL, p.detail), rung.solid)
     : rung
 }
@@ -846,8 +709,7 @@ export function buildRock(options = {}) {
   // different scale, and the rock jumps at every LOD change. One dense
   // measurement decides all three for every tier instead. What is left over
   // after that -- the AREA a coarse solid loses between its samples -- is what
-  // the support gain further down corrects, and the five-vertex hull is built
-  // straight off this measured box.
+  // the support gain further down corrects.
   const ref = []
   emitShards(p, ax, ay, az, REFERENCE_DIRS(tier.detail), ref, null)
 
@@ -889,11 +751,6 @@ export function buildRock(options = {}) {
     width: (maxX - minX) * k,
     depth: (maxZ - minZ) * k,
     height: (maxY - cutY) * k,
-  }
-
-  if (tier.solid === 'five') {
-    const hull = fiveHull(p, ref, minX, maxX, cutY, maxY, minZ, maxZ, k, measured)
-    return finishRock(p, tier, hull.positions, hull.shells, hull.facets, 1, measured)
   }
 
   // The reference's average silhouette radius, on the seated shape.
@@ -1039,9 +896,8 @@ export function buildRock(options = {}) {
   return finishRock(p, tier, positions, shells, facets, gain, measured)
 }
 
-// Normals, UVs, attributes and the report, shared by every tier: the sampled
-// solids arrive here scaled, seated and skirted, the five-vertex hull arrives
-// already in metres.
+// Normals, UVs, attributes and the report, shared by every tier: the solids
+// arrive here scaled, seated and skirted.
 function finishRock(p, tier, positions, shells, facets, gain, measured) {
   const vertexCount = positions.length / 3
   const normals = new Float32Array(vertexCount * 3)
@@ -1138,12 +994,11 @@ function finishRock(p, tier, positions, shells, facets, gain, measured) {
     shards: Math.max(1, Math.round(p.shards)),
     cuts: Math.max(0, Math.round(p.cuts)),
     // How many faces went missing against tier faces x shards. 0 for a CLOSED
-    // rock -- `sit` 0, nothing drops a face, and the five-vertex hull always --
-    // and the floor disc's face count for an open-bottomed one; see `skirt`.
+    // rock -- `sit` 0, nothing drops a face -- and the floor disc's face count for an open-bottomed one; see `skirt`.
     // Reported so that a change to the
     // shard or cut machinery that quietly loses geometry has somewhere to show
     // up. check-rocks.mjs holds it at zero wherever `sit` is.
-    dropped: tier.faces * (tier.solid === 'five' ? 1 : Math.max(1, Math.round(p.shards))) - vertexCount / 3,
+    dropped: tier.faces * Math.max(1, Math.round(p.shards)) - vertexCount / 3,
     tier: tier.name,
     // The rung that was actually BUILT, which is not always the one `tier`
     // named: /gen-rock's resolution slider builds off-ladder tiers, and a reader

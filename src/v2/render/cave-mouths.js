@@ -45,6 +45,6 @@ export class CaveMouths {
   dispose() {
     const a = this.arches
     a.dispose()
-    for (const node of [a.batch, a.flank]) node.removeFromParent()
+    a.batch.removeFromParent()
   }
 }

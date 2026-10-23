@@ -1664,7 +1664,7 @@ function applyLitterVisibility() {
 function applyRockVisibility() {
   rocks.batch.visible = questToggles.boulders
   // The village mouths are on their boulders' faces, so they go with the row.
-  if (entrances) entrances.batch.visible = entrances.flank.visible = entrances.shown = questToggles.boulders
+  if (entrances) entrances.batch.visible = entrances.shown = questToggles.boulders
 }
 
 /** The `huts`, `towns` and `townsfolk` rows. The village hearth is left to `fire`: its own update decides when its group shows. */
@@ -3798,8 +3798,7 @@ function bakeImpostors() {
   // The rock cards: one photograph per SHAPE in the bank, the boulder and the
   // cap. Unlike the four above this is not a method on the scatter, because
   // there is nothing per-bed about it -- a bed picks a shape and the shape's
-  // picture serves every bed that picked it, so it lives on the bank. See
-  // ROCK_CARD_SEED in props/rock-bank.js for the seeds and why they are pinned.
+  // picture serves every bed that picked it, so it lives on the bank.
   const rockCards = once('rocks', () => bakeRockImpostor(renderer, propTextures))
   // NOT on that list: the hearth builds a card MESH of its own each time, so its
   // bake is per-hearth and not per-atlas; the bridges' picture lives in this room's card pool.
@@ -4677,6 +4676,7 @@ async function buildRoom(room, at) {
   await bootStep('rocks')
   rocks = new Rocks(scene, height, waterSurfaces, layers, propTextures, { seed, ground: terrain, hollows: room.hollows, bank, bounds, keepOut: townPlan ? (x, z, r) => townsOccupyAt(townPlan.towns, x, z, r) || layers.clefts.occupiesAt(x, z, r) : null })
   lighting.patch(rocks.material, { mode: 'vertex', cacheKey: 'v2-rock' })
+  lighting.patch(rocks.cardMaterial, { mode: 'vertex', cacheKey: 'v2-rock-card' })
   rocks.syncBands(layers)
   rocks.place(spawn.x, spawn.z)
   const rs = rocks.stats

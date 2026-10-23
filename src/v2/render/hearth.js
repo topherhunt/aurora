@@ -11,7 +11,7 @@ import { SEAT_M } from './villagers.js'
 // ---------------------------------------------------------------------------
 // A VILLAGE'S GATHERING PLACE (DESIGN.md §30): a campfire at the centre of the
 // clearing and a ring of stools round it. The fire is a ring of seven of the
-// bank's T20 boulders with six pentagon logs leaning in over it, teepee
+// bank's T80 boulders with six pentagon logs leaning in over it, teepee
 // fashion, and one flame (fire-tris.js, the TRI_CAMPFIRE knobs) burning in the middle
 // day and night; a stool is a nonagon of pine bark with its corners jittered
 // so no two are the same block. One merged mesh in the prop layout, drawn
@@ -165,8 +165,8 @@ export function buildHearth(bank, seed, groundAt) {
   const y0 = groundAt(0, 0)
   const H = HEARTH
 
-  // The ring: the bank's T20 boulder, scaled to size, turned, and set on its own ground with `sink` of it buried.
-  const src = bank.shapes.boulder.tiers[2]
+  // The ring: the bank's T80 boulder, scaled to size, turned, and set on its own ground with `sink` of it buried.
+  const src = bank.shapes.boulder.tiers[1]
   const measured = bank.shapes.boulder.measured
   const P = src.attributes.position.array, N = src.attributes.normal.array, UV = src.attributes.uvProj.array
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0)
@@ -304,7 +304,7 @@ export function hearthKit(bank, seed, groundAt, textures, patch, { decimate = tr
 export class Hearth {
   /**
    * @param field  V2Height: heightAt, the ground it sits on
-   * @param opts.bank  buildRockBank()'s answer: the boulder's T20 is the ring. Required.
+   * @param opts.bank  buildRockBank()'s answer: the boulder's T80 is the ring. Required.
    * @param opts.at  `{ x, z }`: the clearing's centre. Required.
    * @param opts.textures  the prop atlas (DataArrayTexture). Required.
    * @param opts.patch  (material, cacheKey) => material, the lighting patch. Required.

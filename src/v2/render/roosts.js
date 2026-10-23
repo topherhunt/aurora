@@ -7,7 +7,7 @@ import { createPropMaterial } from '../../material.js'
 import { PropArena } from './prop-arena.js'
 import { RimFade } from './rim.js'
 import { taken, TOLERANCE_M } from '../taken.js'
-import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
+import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, ROCK_TIERS, rockLodSize } from '../../props/rock.js'
 import { LAYER } from '../../textures.js'
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ export const WALL = { at: 7, wander: 0.4, across: [3.6, 5.4], depth: [0.6, 0.95]
 // `apart` of a laid one's half-length, and heaps on what it lands on, tilted to it by at most `heap` radians.
 export const SCREE = { out: 6.4, across: [0.3, 2], spread: 1.1, cover: 1.8, apart: 0.45, depth: [0.6, 1], tall: [0.45, 0.85], sink: 0.2, lean: 0.25, heap: 0.6 }
 // The boulder tier per fortress tier (-1 for none) by a stone's across, largest first.
-const SIZE_TIERS = [[1.8, [0, 1, 2]], [1, [1, 2, 3]], [0.55, [1, 2, -1]], [0, [2, 3, -1]]]
+const SIZE_TIERS = [[1.8, [0, 1]], [1, [1, 1]], [0, [1, -1]]]
 // Stones under this across are cobbles she walks over: walk.js's ROCK_WALK_MIN.
 const SOLID_ACROSS = 0.5
 // The fraction of a stone's length its neighbour in the ring overlaps, before the ring is closed tighter still.
@@ -85,7 +85,7 @@ export const NEST_FERNS = { tries: 640, clear: 1.1, out: 6.6, lift: 0.3, offLog:
 // A trunk this near a roost's centre stands in its wall.
 export const REACH = WALL.at + WALL.wander / 2 + (WALL.across[1] * WALL.depth[1]) / 2
 const LOGS = { n: 7, r: [0.14, 0.26], len: [1.4, 3.2], at: [3.4, 5.2], reach: 6.4, tilt: 0.4, barkM: 1.2 }
-const LOG_SIDES = [10, 6, 4]
+const LOG_SIDES = [10, 6]
 export const LODS = LOG_SIDES.length
 // The rock size the fortress's tiers are stepped at; the far boulder steps at its own (rockLodSize).
 const FORTRESS_SIZE = 9
@@ -375,8 +375,8 @@ export function buildFortress(shape, seed, groundAt, tint) {
 /**
  * The fortress past FAR_AT: the rocks' boulder squashed to the fortress's
  * footprint `box`, from its deepest-bedded stone up to the wall's mean crest,
- * in the peak's `tint`. `{ geometries, tris, size }`, one per rung of the rocks'
- * ladder (ROCK_TIERS), and the rockLodSize it steps them at.
+ * in the peak's `tint`. `{ geometries, tris, size }`, one per mesh rung of the
+ * rocks' ladder (ROCK_TIERS; it never takes the card), and the rockLodSize it steps them at.
  */
 function farBoulder(shape, box, stones, tint) {
   const b = shape.tiers[0].boundingBox
@@ -388,7 +388,7 @@ function farBoulder(shape, box, stones, tint) {
     .multiply(new THREE.Matrix4().makeScale(across / w, tall / h, deep / d))
     .multiply(new THREE.Matrix4().makeTranslation(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2))
   const grain = Math.sqrt(Math.max(across, deep) / w)
-  const geometries = shape.tiers.map((tier) => mergeParts([placedRock(tier, m, grain, tint)]))
+  const geometries = shape.tiers.slice(0, ROCK_TIERS.length).map((tier) => mergeParts([placedRock(tier, m, grain, tint)]))
   return { geometries, tris: geometries.map((g) => g.index.count / 3), size: rockLodSize({ width: across, height: tall, depth: deep }) }
 }
 
@@ -575,7 +575,7 @@ export class Roosts {
       const d2 = (site.x - camX) ** 2 + (site.y - camY) ** 2 + (site.z - camZ) ** 2
       const cur = tile.tier
       const tier = d2 >= (cur < LODS ? FAR_SQ : FAR_IN_SQ)
-        ? LODS + rockRung(d2, tile.farSizeSq, cur - LODS)
+        ? LODS + Math.min(ROCK_TIERS.length - 1, rockRung(d2, tile.farSizeSq, cur - LODS))
         : Math.min(LODS - 1, rockRung(d2, FORTRESS_SIZE ** 2, cur < LODS ? cur : -1))
       if (tier !== cur) {
         tile.tier = tier

@@ -495,9 +495,10 @@ export class PropArena extends THREE.Group {
     return this._setFor(geometryId).roomAt(this._localOf(geometryId))
   }
 
-  /** Disposes the mesh set. A view over a shared set leaves that to the set's owner. */
+  /** Disposes the mesh set. A view over a shared set hides its instances and leaves the set to its owner. */
   dispose() {
     if (this._owns) this.shared.dispose()
+    else for (let i = 0; i < this._next; i++) this._display(i, false)
     return this
   }
 }

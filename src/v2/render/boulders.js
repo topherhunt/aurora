@@ -1,6 +1,5 @@
 import THREE from '../../three-instance.js'
 
-import { PropArena } from './prop-arena.js'
 import { ladderTris } from './gen-props.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
@@ -11,9 +10,9 @@ import { ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.
 // scattered. The rocks' own bed cannot do this -- its tiles pack by rank and
 // would move a stone off the wall it is meant to bite into -- so this is the
 // entrances' flanking stones (entrances.js _flank) with a fixed list in place
-// of the roll: one arena over the rocks' boulder shape, every instance placed
-// at construction and none ever evicted, re-runged by distance on the rocks'
-// own thresholds. Each is stone to the walker (walk.js addStone) as a cylinder
+// of the roll: a view over the rocks' own meshes (Rocks.stones), every instance
+// placed at construction and none ever evicted, re-runged by distance on the
+// rocks' own thresholds. Each is stone to the walker (walk.js addStone) as a cylinder
 // at its plan radius, the same crude column the flanking stones use.
 // ---------------------------------------------------------------------------
 
@@ -36,16 +35,16 @@ export class Boulders {
    */
   constructor(scene, field, rocks, { boulders = [], seed = 1 } = {}) {
     if (!field || typeof field.heightAt !== 'function') throw new Error('Boulders: needs a V2Height with heightAt')
-    if (!rocks || typeof rocks.boulder !== 'function') throw new Error('Boulders: needs the Rocks, for its boulder shape')
+    if (!rocks || typeof rocks.stones !== 'function') throw new Error('Boulders: needs the Rocks, for its boulder shape')
     if (!Array.isArray(boulders) || boulders.some((b) => ![b.x, b.z, b.across, b.yaw].every(Number.isFinite) || !(b.across > 0))) {
       throw new Error('Boulders: `boulders` is a list of { x, z, across, yaw }')
     }
-    // Cloned, because PropMeshes hangs its fade attribute on the geometry it is given and the rocks' own meshes already hold that on these.
     const shape = rocks.boulder()
-    const pool = Math.max(1, boulders.length)
-    this.batch = new PropArena(pool, shape.tiers.map((g) => ({ geometries: [g.clone()] })), new Array(shape.tiers.length).fill(pool), () => shape.material, 'v2-boulders')
+    const { arena, ids } = rocks.stones(boulders.length, 'v2-boulders')
+    this.batch = arena
+    this.ids = ids
     this.tris = ladderTris(shape.tiers)
-    this.tierAt = new Int8Array(pool).fill(-1)
+    this.tierAt = new Int8Array(boulders.length).fill(-1)
     this.drawn = 0
 
     const mm = shape.measured
@@ -59,7 +58,7 @@ export class Boulders {
       const radius = 0.5 * Math.max(mm.width, mm.depth) * scale
       const height = mm.height * scale
       const y = field.heightAt(b.x, b.z) - BED.sink * height
-      const id = this.batch.addInstance(0)
+      const id = this.batch.addInstance(ids[0])
       this.batch.setVisibleAt(id, false)
       q.setFromAxisAngle(up, b.yaw)
       this.batch.setMatrixAt(id, m.compose(p.set(b.x, y, b.z), q, s.setScalar(scale)))
@@ -67,7 +66,6 @@ export class Boulders {
       this.batch.setColorAt(id, c.setRGB(v, v, v))
       this.stones.push({ id, x: b.x, z: b.z, y, r: radius * BED.r, top: y + height, size: rockLodSize(mm) * scale })
     }
-    scene.add(this.batch)
   }
 
   /** Re-rung every stone by its distance, on the rocks' own thresholds: a stone leaves a rung 12% further out than it came in. */
@@ -83,7 +81,7 @@ export class Boulders {
       }
       if (tier !== cur) {
         this.tierAt[f.id] = tier
-        this.batch.setGeometryIdAt(f.id, tier)
+        this.batch.setGeometryIdAt(f.id, this.ids[tier])
         this.batch.setVisibleAt(f.id, true)
       }
       drawn += this.tris[tier]
@@ -121,7 +119,6 @@ export class Boulders {
   }
 
   dispose() {
-    this.batch.parent?.remove(this.batch)
     this.batch.dispose()
   }
 }

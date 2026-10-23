@@ -457,12 +457,12 @@ console.log('\nthe ladder')
   const stoned = e.sites().find((s) => s.flank.some((f) => f.kind === 'boulder'))
   const stone = stoned.flank.find((f) => f.kind === 'boulder')
   const stoneTiers = []
-  for (const k of [0.5, 1.5, 4, 9]) {
+  for (const k of [0.5, 2, 9]) {
     const d = ROCK_LOD_AT[0] * stone.size * k
     e.update(stone.x + stoned.nx * d, 0.5 * (stone.y + stone.top), stone.z + stoned.nz * d)
-    stoneTiers.push(`${e.stones.tier[stone.id]}${e.flank.getVisibleAt(stone.id) ? '' : 'hidden'}`)
+    stoneTiers.push(`${e.stones.tier[stone.id]}${e.stones.arena.getVisibleAt(stone.id) ? '' : 'hidden'}`)
   }
-  check(stoneTiers.join(' ') === '0 1 2 3', `a ${stone.size.toFixed(1)} m stone steps down the rocks' four tiers at ROCK_LOD_AT, standing past the arch's cull`, `tiers ${stoneTiers.join(' ')} at ${ROCK_LOD_AT.join('/')} m per metre`)
+  check(stoneTiers.join(' ') === '0 1 2', `a ${stone.size.toFixed(1)} m stone steps down the rocks' two meshes to the card at ROCK_LOD_AT, standing past the arch's cull`, `tiers ${stoneTiers.join(' ')} at ${ROCK_LOD_AT.join('/')} m per metre`)
   check(RADIUS_M >= 200, 'a site is resident past the leafkin\'s roam', `${RADIUS_M} m`)
 }
 

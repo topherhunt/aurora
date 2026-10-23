@@ -268,20 +268,17 @@ export class Entrances {
     // Each arch's hole in the world, drawn as part of its arch: where check-entrances finds it.
     this.holeM = new Float32Array(pool * 16)
 
-    // The screen's stones: the tiers are cloned because PropMeshes hangs its
-    // fade attribute on the geometry it is given, and the rocks' own meshes
-    // already hold that on these.
+    // The screen's stones, drawn in the rocks' own meshes (Rocks.stones), so they hide with the rocks' row.
     const boulder = rocks.boulder()
     this.boulder = boulder.measured
-    const a = new PropArena(SCREEN_POOL, boulder.tiers.map((g) => ({ geometries: [g.clone()] })), new Array(boulder.tiers.length).fill(SCREEN_POOL), () => boulder.material, 'v2-entrance-stones')
+    const { arena: a, ids } = rocks.stones(SCREEN_POOL, 'v2-entrance-stones')
     const free = new Int32Array(SCREEN_POOL)
     for (let i = 0; i < SCREEN_POOL; i++) {
-      const id = a.addInstance(0)
+      const id = a.addInstance(ids[0])
       a.setVisibleAt(id, false)
       free[SCREEN_POOL - 1 - i] = id
     }
-    this.stones = { arena: a, free, freeCount: SCREEN_POOL, tier: new Int8Array(SCREEN_POOL).fill(-1), tris: ladderTris(boulder.tiers) }
-    this.flank = a
+    this.stones = { arena: a, ids, free, freeCount: SCREEN_POOL, tier: new Int8Array(SCREEN_POOL).fill(-1), tris: ladderTris(boulder.tiers) }
 
     // key -> site, the resident mouths; `memory` keeps a site's `state` past its eviction, for the leafkin's cooldown.
     this.resident = new Map()
@@ -302,7 +299,6 @@ export class Entrances {
     this.placeMs = 0
 
     scene.add(this.batch)
-    scene.add(this.flank)
 
     // The rocks ask whether a mouth fits each entrance boulder as it grows, and sink or grow one it does not (rocks.js HOLLOW_LADDER); key -> { cy, r, mouth }.
     this.found = new Map()
@@ -383,7 +379,7 @@ export class Entrances {
         }
         if (ft !== fcur) {
           s.tier[f.id] = ft
-          s.arena.setGeometryIdAt(f.id, ft)
+          s.arena.setGeometryIdAt(f.id, s.ids[ft])
           s.arena.setVisibleAt(f.id, true)
         }
         tris += s.tris[ft]
@@ -872,7 +868,7 @@ export class Entrances {
 
   dispose() {
     this.batch.dispose()
-    this.flank.dispose()
+    this.stones.arena.dispose()
     for (const s of this.shadows) {
       this.scene.remove(s)
       s.geometry.dispose()

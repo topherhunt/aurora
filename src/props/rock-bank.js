@@ -1,11 +1,12 @@
+import THREE from '../three-instance.js'
 import { buildRock, ROCK_TIERS, ROCK_DEFAULTS } from './rock.js'
-import { bakeImpostor, bakeImpostorPlate, BAKE_ROCK_BOUNCE } from './impostor.js'
+import { bakeImpostor, bakeImpostorPlate, impostorCardExtents, plateCardExtents } from './impostor.js'
 import { LAYER, ROCK_TILE_MEAN } from '../textures.js'
 
 // ---------------------------------------------------------------------------
 // The shipping rock bank: A BOULDER AND A CAP. Two shapes, the tints they wear,
-// and the baked geometry for each of their tiers, the last of them the
-// five-vertex T6 hull every rock is at range.
+// and the baked geometry for each of their tiers, the last of them the card
+// every rock is at range.
 //
 // TWO ASSETS, AND THE SECOND IS NOT A SECOND ROCK. There is still no variant
 // table, no per-environment species and no site-tagged families: a stone
@@ -229,10 +230,9 @@ function geometryBytes(geo) {
 }
 
 // ---------------------------------------------------------------------------
-// THE PHOTOGRAPHS. Nothing draws them: the far band is the T6 hull, a mesh like
-// the rest. `bakeRockImpostor` and what it leans on survive only because
-// v2/main.js still calls it at boot and logs the rows; take the two out
-// together, with LAYER.IMPOSTOR_ROCK and LAYER.IMPOSTOR_ROCK_CAP.
+// THE PHOTOGRAPHS the far tier's card draws, as flat albedo: the card is lit
+// live and tinted per instance like the meshes, so a lit or tinted bake would
+// light and tint it twice. v2/main.js bakes them at boot.
 // ---------------------------------------------------------------------------
 
 /**
@@ -246,9 +246,6 @@ export function rockBakeFrame(measured) {
   }
   return { width: Math.max(measured.width, measured.depth), height: measured.height }
 }
-
-/** The seed the photograph is taken at, fixed so the bank's own seed dial cannot move it. */
-export const ROCK_CARD_SEED = 1978
 
 /** The atlas layer each shape is photographed into, keyed by its bank name. */
 export const ROCK_IMPOSTOR_LAYERS = {
@@ -273,7 +270,7 @@ export const ROCK_SHAPES = [
  */
 export function bakeRockImpostor(renderer, texArray) {
   return ROCK_SHAPES.map(({ name, params, layer, card }) => {
-    const geo = buildRock({ ...params(ROCK_CARD_SEED), tier: 0 })
+    const geo = buildRock({ ...params(), tier: 0 })
     const measured = geo.userData.rock.measured
     // A plate is photographed down its own +Y, so there is no bearing to search
     // for and no widest one to find: a top-down ortho shot frames the whole plan
@@ -284,7 +281,7 @@ export function bakeRockImpostor(renderer, texArray) {
         width: measured.width,
         depth: measured.depth,
         height: measured.height,
-        bounce: BAKE_ROCK_BOUNCE,
+        unlit: true,
       })
       : bakeImpostor(renderer, geo, texArray, layer, {
         ...rockBakeFrame(measured), azimuth, unlit: true,
@@ -325,11 +322,57 @@ function widestAzimuth(geo, steps = 180) {
 }
 
 /**
- * How many tiers a shape reports -- exactly ROCK_TIERS, the T6 hull last. One
+ * How many tiers a shape reports: ROCK_TIERS' meshes, then the card. One
  * number for both shapes: a bed indexes its tier table by band, and a cap that
  * reported a shorter ladder would need a second one.
  */
-export const ROCK_BAND_COUNT = ROCK_TIERS.length
+export const ROCK_BAND_COUNT = ROCK_TIERS.length + 1
+
+/**
+ * The far tier of a shape measured `measured`, drawing its photograph in `layer`.
+ *
+ * 'spun' is a 3x3 fan the card material (v2/render/rocks.js) stands up facing the
+ * head about the rock's box centre and sizes to the box's extent across that
+ * view: `position` holds the card's own coordinates, x across and y up in units
+ * of that half extent with the bake's margin multiplied in, and `cardBox` the
+ * box's half extents. 'plate' is a quad laid flat at half height in the rock's
+ * own frame, matching bakeImpostorPlate's top-down shot, and needs no patch.
+ */
+export function rockCardGeometry(measured, layer, card) {
+  const hx = measured.width / 2, hy = measured.height / 2, hz = measured.depth / 2
+  const pos = [], uv = [], box = [], index = []
+  let normal
+  if (card === 'spun') {
+    const { width: mw, height: mh } = impostorCardExtents({ width: 1, height: 1 })
+    const at = [[0, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]]
+    for (const [px, py] of at) {
+      pos.push(px * mw, -1 + (py + 1) * mh, 0)
+      uv.push((px + 1) / 2, (1 - py) / 2)
+      box.push(hx, hy, hz)
+    }
+    for (let i = 1; i <= 8; i++) index.push(0, i, (i % 8) + 1)
+    normal = new Array(at.length).fill([0, 0, 1]).flat()
+  } else if (card === 'plate') {
+    const { width: cw, depth: cd } = plateCardExtents({ width: measured.width, depth: measured.depth })
+    for (const [px, pz] of [[-1, 1], [1, 1], [1, -1], [-1, -1]]) {
+      pos.push((px * cw) / 2, hy, (pz * cd) / 2)
+      uv.push((px + 1) / 2, (pz + 1) / 2)
+    }
+    index.push(0, 1, 2, 0, 2, 3)
+    normal = [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]
+  } else {
+    throw new Error(`rockCardGeometry: no card kind '${card}'`)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3))
+  geo.setAttribute('uvProj', new THREE.Float32BufferAttribute(uv, 2))
+  geo.setAttribute('texLayer', new THREE.Float32BufferAttribute(new Array(pos.length / 3).fill(layer), 1))
+  if (card === 'spun') geo.setAttribute('cardBox', new THREE.Float32BufferAttribute(box, 3))
+  geo.setIndex(index)
+  geo.userData.rock = { triangles: index.length / 3, vertices: pos.length / 3, tier: 'card', card, measured }
+  return geo
+}
 
 /**
  * Build the bank: every shape in ROCK_SHAPES at every tier.
@@ -337,15 +380,13 @@ export const ROCK_BAND_COUNT = ROCK_TIERS.length
  * Returns `{ shapes, geometries, triangles, bytes }`.
  *
  *   `shapes` is keyed by name -- `shapes.boulder`, `shapes.cap` -- each
- *   `{ name, seed, measured, tiers }`, where `tiers` is ALWAYS ROCK_BAND_COUNT
- *   long so a band index is a straight lookup. A bed names the one it wants.
+ *   `{ name, seed, measured, skirt, card, tiers }`, where `tiers` is ALWAYS
+ *   ROCK_BAND_COUNT long so a band index is a straight lookup, and `card` is the
+ *   last tier's kind ('spun' or 'plate'). A bed names the shape it wants.
  *
- *   `geometries` is every geometry the bank made, in the order they should enter
- *   an arena. The caller owns them and MUST dispose them once every consumer holds
- *   its own copy -- a bed CLONES its shape's four into its PropArena, and the
- *   shell's BatchedMesh copies the vertices it is handed. A BED TAKES ONLY ITS OWN
- *   SHAPE'S FOUR, which is why the bank being two shapes costs the world one extra
- *   arena's worth of vertices rather than eight.
+ *   `geometries` is every geometry the bank made. The caller owns them and MUST
+ *   dispose the ones no mesh took: v2/render/rocks.js draws only the shapes a bed
+ *   names, and the shell's BatchedMesh copies the vertices it is handed.
  *
  * `seed` DEFAULTS TO EACH SHAPE'S OWN and the world does not pass one -- see
  * BOULDER for why the assets are pinned while the scatter around them is not. The
@@ -360,15 +401,14 @@ export function buildRockBank({ seed = null } = {}) {
 
   for (const spec of ROCK_SHAPES) {
     const params = seed === null ? spec.params() : spec.params(seed)
-    const tiers = ROCK_TIERS.map((_, tier) => {
-      const g = buildRock({ ...params, tier })
+    const tiers = ROCK_TIERS.map((_, tier) => buildRock({ ...params, tier }))
+    const measured = tiers[0].userData.rock.measured
+    tiers.push(rockCardGeometry(measured, spec.layer, spec.card))
+    for (const g of tiers) {
       geometries.push(g)
       triangles += g.userData.rock.triangles
       bytes += geometryBytes(g)
-      return g
-    })
-
-    const measured = tiers[0].userData.rock.measured
+    }
 
     // `skirt` IN METRES, at the size the shape was measured at, because the one
     // consumer that needs it is doing arithmetic in metres. rock.js hangs the rim
@@ -383,6 +423,7 @@ export function buildRockBank({ seed = null } = {}) {
       seed: params.seed,
       measured,
       skirt: (params.skirt ?? 0) * measured.height,
+      card: spec.card,
       tiers,
     }
   }
