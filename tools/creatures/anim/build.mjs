@@ -32,7 +32,9 @@ export const CLIPS = path.join(HERE, 'clips')
 
 /** A rig map that does not say is a quadruped -- that is what every Tripo rig is. */
 export const DEFAULT_PLAN = 'quadruped'
-export const plans = () => fs.readdirSync(CLIPS, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+/** Clip families baked by their own tool (ship-crab.mjs): specs here, but not solved by this pipeline. */
+export const SELF_BAKED = new Set(['crab'])
+export const plans = () => fs.readdirSync(CLIPS, { withFileTypes: true }).filter((e) => e.isDirectory() && !SELF_BAKED.has(e.name)).map((e) => e.name)
 
 function planDir(plan) {
   const dir = path.join(CLIPS, plan)

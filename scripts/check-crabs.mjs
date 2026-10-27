@@ -41,6 +41,8 @@ import { taken } from '../src/v2/taken.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 import { LitterCards } from '../src/v2/render/litter-cards.js'
+import { loadTiers } from '../tools/creatures/rig-crab.mjs'
+import { BOUT_S, CRAB_ANIM_URL, FADE_S, parseCrabAnim, pickIdle, poseWeight, writeAnim } from '../src/v2/render/crab-anim.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -165,13 +167,16 @@ const asset = {
   idx: Array.from(box.index.array),
   map: null,
 }
+// The real baked clips on the slab: every vertex of the stand-in sits on the body bone.
+const REAL_ANIM = parseCrabAnim(fs.readFileSync(new URL(`../public/${CRAB_ANIM_URL}`, import.meta.url)).buffer.slice(0))
+const anim = { ...REAL_ANIM, tiers: [new Array(box.getAttribute('position').count).fill(0)] }
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const crabs = new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset })
+const crabs = new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, anim })
 check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'asset set: visible, span 1', `span ${crabs.span}`)
 {
-  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n#include <dithering_fragment>\n' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <beginnormal_vertex>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n#include <dithering_fragment>\n' }
   crabs.material.onBeforeCompile(shader)
   // The tint row (critters.js tierTintSplice): the one mesh wears tier 0, painted over the encoded output after dithering. The far card is the shared pool's and wears no tint.
   check(shader.fragmentShader.includes('uniform vec4 uTierTint;') && /<dithering_fragment>\nif \( uTierTint\.w > 0\.5 \) gl_FragColor\.rgb = uTierTint\.xyz;/.test(shader.fragmentShader), 'the tint row paints over the output after dithering')
@@ -180,8 +185,9 @@ check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'as
   check(mt.w === 1, 'the row switches the mesh on')
   setTierTint(false)
   check(mt.w === 0, 'and off again')
-  check(shader.vertexShader.includes('attribute vec2 aLegs') && shader.vertexShader.includes('legW') && shader.vertexShader.includes('transformed.y +='), 'leg wiggle spliced into begin_vertex')
-  check(crabs.mesh.geometry.getAttribute('aLegs').isInstancedBufferAttribute, 'aLegs is per instance')
+  check(shader.vertexShader.includes('attribute float aBone;') && shader.vertexShader.includes('attribute vec4 aAnim;') && shader.vertexShader.includes('uniform highp sampler2D uCrabAnim;') && shader.uniforms.uCrabAnim.value === anim.texture, 'the animation texture sampler and bone attributes are spliced into the vertex shader')
+  check(/<beginnormal_vertex>[\s\S]*objectNormal = vec3\( dot\( crabR0/.test(shader.vertexShader) && /<begin_vertex>[\s\S]*transformed = vec3\( dot\( crabR0/.test(shader.vertexShader), 'the bone matrix moves the normal and then the vertex')
+  check(crabs.mesh.geometry.getAttribute('aAnim').isInstancedBufferAttribute && !crabs.mesh.geometry.getAttribute('aBone').isInstancedBufferAttribute && crabs.mesh.geometry.getAttribute('aBone').count === 24, 'aAnim is per instance and aBone per vertex')
   // The hue turn: read per instance on the mesh and applied to the sampled map before it is lit; the pool's card carries no aHue and takes it as an instanceColor tint.
   check(crabs.mesh.geometry.getAttribute('aHue') === crabs.hue && crabs.hue.isInstancedBufferAttribute && !crabs.litterCards.meshes.meshes[0].geometry.getAttribute('aHue'), 'hue rides in aHue on the mesh and not on the pool\'s card')
   check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\s*\{[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
@@ -200,7 +206,7 @@ live = BOULDERS
 const SEEDS = 16
 const pool = []
 for (let seed = 1; seed <= SEEDS; seed++) {
-  const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+  const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset, anim })
   k.place(15, 0)
   check(k.overflow === 0 && k.saturated === 0, `seed ${seed}: nothing was dropped for want of room`)
   for (const c of alive(k)) pool.push({ x: c.x, y: c.y, z: c.z, size: c.size, hue: c.hue, depth: c.depth })
@@ -246,7 +252,7 @@ check(alive().length === 0, 'nothing away from the lake')
 {
   // The first frame empties the buffers; after that a frame with no crab uploads nothing.
   for (let i = 0; i < 2; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
-  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.legs.version, crabs.hue.version, crabs.litterCards.meshes.meshes[0].instanceMatrix.version, crabs.litterCards.meshes.meshes[0].instanceColor.version].join(',')
+  const versions = () => [crabs.mesh.instanceMatrix.version, crabs.animAttr.version, crabs.hue.version, crabs.litterCards.meshes.meshes[0].instanceMatrix.version, crabs.litterCards.meshes.meshes[0].instanceColor.version].join(',')
   const v0 = versions()
   for (let i = 0; i < 72; i++) crabs.update(200, LEVEL + 1.6, 200, (T += DT))
   check(versions() === v0 && crabs.mesh.count === 0, 'and a second of frames there re-uploads no buffer', `versions ${v0}`)
@@ -379,7 +385,7 @@ const sinkOf = (c) => SINK * 0.3 * c.size
   const tintNear = (p, q) => Math.abs(p.r - q.r) < 1e-6 && Math.abs(p.g - q.g) < 1e-6 && Math.abs(p.b - q.b) < 1e-6
   const near = [], far = []
   for (let seed = 1; seed <= SEEDS; seed++) {
-    const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+    const k = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset, anim })
     // A sandy picture of opaque texels, standing in for the bake.
     const px = k.litterCards.pixels(k.cardPicture)
     for (let i = 0; i < px.length; i += 4) px.set([200, 150, 90, 255], i)
@@ -424,7 +430,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   // The first seed that puts a crab on the floor stone AND one on the beach.
   let k = null
   for (let seed = 1; seed <= 16 && !k; seed++) {
-    const t = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+    const t = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset, anim })
     t.place(15, 0)
     if (alive(t).some((c) => c.y < c.perch.level) && alive(t).some((c) => !(c.y < c.perch.level))) k = t
     else t.dispose()
@@ -450,7 +456,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
 // Before the hands below: `taken` is a module-global, and a crab caught there would be missing from every shore rolled after.
 {
   const pose = (of) => alive(of).map((c) => `${c.key}|${c.x.toFixed(9)},${c.y.toFixed(9)},${c.z.toFixed(9)}|${c.yaw.toFixed(9)}|${c.state}`).sort().join('\n')
-  const make = () => new Crabs(scene, height, water, { seed: 4, rocks, cards: new LitterCards(4096), assets: asset })
+  const make = () => new Crabs(scene, height, water, { seed: 4, rocks, cards: new LitterCards(4096), assets: asset, anim })
   const slow = make(); slow.place(15, 0, 4000)
   const fast = make(); fast.place(15, 0, 4000)
   // One at 24 fps from the shore's first second; one at 144 with a stutter every seventh frame, joining at the same second.
@@ -505,7 +511,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   let k = null
   let seed = 0
   while (!k && ++seed <= 16) {
-    const t = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+    const t = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset, anim })
     t.place(15, 0)
     if (alive(t).some((c) => c.y >= LEVEL)) k = t
     else t.dispose()
@@ -523,7 +529,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   const sunk = alive(k).find((g) => g.y < LEVEL)
   check(!sunk || k.pickAt(sunk.x, sunk.y, sunk.z, 0.3, 2) === null, 'a sunk crab is not picked from the air')
   const rec = k.take(hit, 1)
-  check(rec.kind === 'crab' && rec.size === c.size && rec.geometry === k.mesh.geometry && rec.material === k.material && rec.attrs.aLegs[1] === 0 && rec.attrs.aHue[0] === c.hue && rec.color === null && Math.abs(rec.scale[1] / rec.scale[0] - STRETCH_Y) < 1e-6 && rec.stowable === true, 'take hands back the record', JSON.stringify({ size: rec.size, scale: rec.scale }))
+  check(rec.kind === 'crab' && rec.size === c.size && rec.geometry === k.mesh.geometry && rec.material === k.material && rec.attrs.aAnim.length === 4 && rec.attrs.aHue[0] === c.hue && rec.color === null && Math.abs(rec.scale[1] / rec.scale[0] - STRETCH_Y) < 1e-6 && rec.stowable === true, 'take hands back the record', JSON.stringify({ size: rec.size, scale: rec.scale }))
   const { geometry: _g, material: _m, ...slot } = rec
   check(k.dress(slot).geometry === rec.geometry && k.dress(slot).material === rec.material, 'dress puts the packed record back on the mesh geometry and material')
   k.loaded = false
@@ -534,7 +540,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   check(wrong, 'and throws for another kind')
   check(c.perch === null && !perch.crabs.includes(c) && alive(k).length === before - 1, 'and the crab is off its stone')
   // The same world again: every crab but that one.
-  const again = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset })
+  const again = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset, anim })
   again.place(15, 0)
   const key = (of) => alive(of).map((g) => `${g.x.toFixed(3)},${g.z.toFixed(3)},${g.size.toFixed(3)}`).sort()
   check(JSON.stringify(key(again)) === JSON.stringify(key(k)) && alive(again).length === before - 1, 'the perch regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
@@ -572,7 +578,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
 // --- at an eighth of her size a crab near her comes for her and bites; grown, it goes home ---
 {
   const hits = []
-  const k = new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, harm: (n) => hits.push(n) })
+  const k = new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, anim, harm: (n) => hits.push(n) })
   k.update(15, HEAD_Y(), 0, (T += DT))
   const c = alive(k)[0]
   const her = { x: c.x + 2, y: c.y + 0.2, z: c.z }
@@ -594,7 +600,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
 // --- her bug held at a crab: eaten, the crab grown and at her heels, and a peer's client told ---
 {
   const eaten = []
-  const make = (eat) => new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, eat })
+  const make = (eat) => new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, anim, eat })
   const k = make((l) => { eaten.push(l); return true })
   const peer = make(() => true)
   const head = { x: 15, y: HEAD_Y(), z: 0 }
@@ -645,6 +651,87 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   peer.apply(took[0], T)
   check(peer.pets.length === 0, 'and the peer lets it go too')
   k.dispose(); peer.dispose()
+}
+
+// --- the rig and its clips -----------------------------------------------------
+// The bake (tools/creatures/ship-crab.mjs) is a file; these are the ways it can be wrong without anything throwing.
+{
+  const { rig, tiers } = loadTiers()
+  const glbVerts = [909, 534, 281, 113]
+  check(REAL_ANIM.tiers.length === 4 && REAL_ANIM.tiers.every((t, i) => t.length === tiers[i].V.length && t.length === glbVerts[i]), 'the bake binds every LOD tier, one bone a vertex, at the shipped vertex counts', REAL_ANIM.tiers.map((t) => t.length).join('/'))
+  check(REAL_ANIM.tiers.every((t, i) => t.every((b, v) => b === tiers[i].bone[v])), 'and binds them as the rig finds them now (a stale bake fails here)')
+  check(REAL_ANIM.tiers.every((t) => t.every((b) => Number.isInteger(b) && b >= 0 && b < REAL_ANIM.bones)), 'every vertex names a bone the texture has', `${REAL_ANIM.bones} bones`)
+  const names = rig.bones.map((b) => b.name)
+  check(names.length === REAL_ANIM.bones, 'the rig and the texture agree on the bone count', `${names.length}`)
+  const count = (tier, name) => REAL_ANIM.tiers[tier].filter((b) => b === names.indexOf(name)).length
+  const legs = names.filter((n) => /leg/i.test(n))
+  const claws = names.filter((n) => /claw|pincer|finger/i.test(n))
+  check(legs.length >= 14 && claws.length >= 4, 'seven walking legs of at least two segments and two claws with a finger', `${legs.length} leg bones, ${claws.length} claw bones`)
+  check([...legs, ...claws].every((n) => count(0, n) >= 8), 'every leg and claw bone owns a plausible share of the body', [...legs, ...claws].map((n) => `${n}:${count(0, n)}`).join(' '))
+  check(count(0, names[0]) > 100 && count(0, names[0]) < REAL_ANIM.tiers[0].length * 0.7, 'the body bone owns the shell but not the whole mesh', `${count(0, names[0])} of ${REAL_ANIM.tiers[0].length}`)
+  for (let t = 1; t < 4; t++) console.log(`  info  LOD${t} bones without verts: ${[...legs, ...claws].filter((n) => count(t, n) === 0).join(', ') || 'none'}`)
+  check([...legs, ...claws].every((n) => count(1, n) > 0), 'LOD1 still has verts on every leg and claw bone')
+
+  // Half floats back to numbers.
+  const half = (h) => { const e = (h >> 10) & 31, m = h & 1023, sg = h & 0x8000 ? -1 : 1; return e === 0 ? sg * m * 2 ** -24 : sg * (1 + m / 1024) * 2 ** (e - 15) }
+  const rowAt = (r) => Array.from(REAL_ANIM.data.subarray(r * REAL_ANIM.bones * 12, (r + 1) * REAL_ANIM.bones * 12), half)
+  const stepOf = (a, b) => { const x = rowAt(a), y = rowAt(b); let d = 0; for (let i = 0; i < x.length; i++) d = Math.max(d, Math.abs(x[i] - y[i])); return d }
+  const IDENT = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+  for (const c of [REAL_ANIM.walk, ...REAL_ANIM.idles]) {
+    const steps = Array.from({ length: c.frames - 1 }, (_, f) => stepOf(c.base + f, c.base + f + 1))
+    const wrap = stepOf(c.base + c.frames - 1, c.base)
+    const typical = Math.max(...steps)
+    check(wrap <= typical * 1.5 + 1e-3, `${c.name} loops: its last frame steps to its first no harder than the clip steps within itself`, `wrap ${wrap.toFixed(4)}, largest inner ${typical.toFixed(4)}`)
+    const f0 = rowAt(c.base)
+    if (c.kind === 'idle') check(f0.every((v, i) => Math.abs(v - IDENT[i % 12]) < 2e-3), `${c.name} starts on the bind pose`)
+    check(c.name === 'walk' || BOUT_S % c.seconds === 0, `${c.name} divides a ${BOUT_S} s bout`, `${c.seconds} s`)
+  }
+  check(REAL_ANIM.idles.length >= 4 && new Set(REAL_ANIM.idles.map((c) => c.name)).size === REAL_ANIM.idles.length, 'four or more distinct idles', REAL_ANIM.idles.map((c) => c.name).join(', '))
+  check(REAL_ANIM.walk.cycle > 0 && Number.isFinite(REAL_ANIM.walk.cycle), 'the walk says how far a cycle carries the body', `${REAL_ANIM.walk.cycle.toFixed(3)} mesh units`)
+
+  // Which clip, and when, is a function of the key and the clock alone.
+  const sample = (key, salt) => Array.from({ length: 24 }, (_, b) => pickIdle(REAL_ANIM, key, salt, b).name)
+  check(JSON.stringify(sample(123456, 3)) === JSON.stringify(sample(123456, 3)), 'pickIdle is a pure function of key, standstill and bout')
+  const spread = new Set()
+  for (let key = 1; key <= 200; key++) for (const n of sample(key * 7919, 1)) spread.add(n)
+  check(spread.size === REAL_ANIM.idles.length, 'every idle is chosen by some crab, bout or standstill', [...spread].join(', '))
+  check(new Set(Array.from({ length: 40 }, (_, k) => pickIdle(REAL_ANIM, k * 104729 + 5, 0, 0).name)).size > 1, 'different crabs roll different idles')
+  const out = (c) => { const o = new Float32Array(4); writeAnim(REAL_ANIM, c, o, 0); return Array.from(o) }
+  const still = (t) => ({ state: 'pause', key: 777, phase0: 0.3, side: 1, phase: 0, still: t, stillSalt: 2, w: 1 })
+  const bout = still(5 * BOUT_S + 2.5)
+  check(JSON.stringify(out(bout)) === JSON.stringify(out({ ...bout })) && out(still(2)).length === 4, 'writeAnim of a standstill is a pure function of the crab\'s fields')
+  const lo = Math.min(...REAL_ANIM.idles.map((c) => c.base)), hi = Math.max(...REAL_ANIM.idles.map((c) => c.base + c.frames))
+  check([0, 3, 17, 40, 99].every((t) => { const [a, b] = out(still(t)); return a >= lo && a < hi && b >= lo && b < hi }), 'a resting crab reads idle rows')
+  const go = (ph) => ({ state: 'go', key: 777, phase0: 0.3, side: 1, phase: ph, still: 0, stillSalt: 0, w: 1 })
+  check([0, 0.37, 5.9, 120.2].every((ph) => { const [a, b] = out(go(ph)); return a >= 0 && a < REAL_ANIM.walk.frames && b >= 0 && b < REAL_ANIM.walk.frames }), 'a moving crab reads walk rows')
+  const fwd = out(go(0.1)), back = out({ ...go(0.1), side: -1 })
+  check(fwd[0] !== back[0] || fwd[2] !== back[2], 'the end that leads reverses the walk')
+  const c1 = out(go(0.123)), c2 = out(go(1.123))
+  check(c1[0] === c2[0] && c1[1] === c2[1] && Math.abs(c1[2] - c2[2]) < 1e-3, 'one walk cycle later is the same pose')
+  check(poseWeight(0, 10) === 0 && poseWeight(5, 10) === 1 && poseWeight(10, 10) === 0 && poseWeight(FADE_S / 2, 10) > 0 && poseWeight(FADE_S / 2, 10) < 1 && poseWeight(0, 0) === 0, 'the pose fades in and out over FADE_S at the ends of a phrase')
+}
+
+// A crab's anim as drawn is the same at any frame rate, and the same for a client that joins late.
+{
+  const mk = () => new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, anim })
+  const a = mk(), b = mk()
+  a.place(15, 0); b.place(15, 0)
+  const read = (k) => alive(k).map((c) => { const o = new Float32Array(4); writeAnim(anim, c, o, 0); return `${c.state}:${Array.from(o).map((v) => v.toFixed(3))}` })
+  let t0 = T
+  let sawGo = 0, sawPause = 0, agree = true
+  for (let s = 0; s < 60; s++) {
+    const now = t0 + s * 7.3
+    for (const c of alive(a)) a._play(c, now)
+    // B jumps straight there, as a client that has only just walked in.
+    for (const c of alive(b)) b._play(c, now)
+    const ra = read(a), rb = read(b)
+    if (JSON.stringify(ra) !== JSON.stringify(rb)) agree = false
+    for (const c of alive(a)) { if (c.state === 'go') sawGo++; else sawPause++ }
+  }
+  check(agree, 'two clients holding the same room clock draw every crab\'s clip frame identically')
+  check(sawGo > 0 && sawPause > 0, 'the shore holds crabs that walk and crabs that rest', `${sawGo} walking samples, ${sawPause} resting`)
+  check(alive(a).filter((c) => c.state === 'go').every((c) => { const o = new Float32Array(4); writeAnim(anim, c, o, 0); return o[0] < anim.walk.frames }) && alive(a).filter((c) => c.state === 'pause').every((c) => { const o = new Float32Array(4); writeAnim(anim, c, o, 0); return o[0] >= anim.walk.frames }), 'at the last sample the walkers read walk rows and the resters idle rows')
+  a.dispose(); b.dispose()
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

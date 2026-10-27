@@ -1,10 +1,11 @@
 import THREE from '../../three-instance.js'
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { CURRENT } from '../../water.js'
-import { tileSeed, walkTiles } from './critters.js'
+import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
+import { SPUN_VIEWS, bakeCritterCard, billboardVertex, setCritterCard, spunBounds, tileSeed, walkTiles } from './critters.js'
 import { seaweedGeometry, seaweedMaterial } from './seaweed.js'
 
-// Seaweed on lake and river beds: clump SEED of render/seaweed.js, instanced, one draw call.
+// Seaweed on lake and river beds: clump SEED of render/seaweed.js, instanced, near her as its mesh and farther as a baked card (two draw calls).
 //
 // The water within RADIUS of her is cut into TILE-metre tiles, each rolling its sites from its tile seed (critters.js
 // tileSeed), so a bed is a pure function of position like the fish beds. A clump stands only where the water over its
@@ -15,7 +16,12 @@ import { seaweedGeometry, seaweedMaterial } from './seaweed.js'
 export const SEAWEED_SCATTER = {
   seed: 42,
   tile: 12,
-  // CULL_M past her the vertex stage drops a clump (UNDERWATER.visibility is 20 m). Tiles are walked from the middle of her own, so RADIUS is CULL_M plus two half-diagonals (hers off that middle, a clump's off its tile's) plus a patch's widest spread.
+  // Within NEAR_M of her (level) a clump is its mesh, past it its card, re-sorted each SPLIT_M she moves.
+  nearM: 15,
+  splitM: 1,
+  // The card's normal tips up from level by this rise per unit across, as the clump's blades mostly stand.
+  cardRise: 0.35,
+  // CULL_M past her eye the vertex stage drops a card (UNDERWATER.visibility is 20 m). Tiles are walked from the middle of her own, so RADIUS is CULL_M plus two half-diagonals (hers off that middle, a clump's off its tile's) plus a patch's widest spread.
   cullM: 30,
   radius: 52,
   // Noise cells of the density field in metres, coarse and fine, and the fine octave's weight.
@@ -97,64 +103,84 @@ export function weedSites(tx, tz, worldSeed, levelAt, bedAt) {
 
 const TAU = (Math.PI * 2).toFixed(6)
 
-// A wave climbing each blade along its own bearing (seaweed.js `blade`, at its own phase and the clump's hash), then the current's along-and-across of water.js currentDrift leaning the whole clump by its height squared.
-const SWAY_GLSL = /* glsl */ `
-  {
+const SWAY_DECL = 'uniform float uSwayT;\nuniform float uSwayGeoH;\nuniform vec2 uSwayDir;'
+const SWAY_VARS = /* glsl */ `
     vec3 swRoot = instanceMatrix[3].xyz;
     float swK2 = dot( instanceMatrix[0].xyz, instanceMatrix[0].xyz );
     float swK = sqrt( swK2 );
     float swHash = fract( sin( dot( swRoot.xz, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
-    float swFrac = transformed.y / uSwayGeoH;
-    vec2 swOut = blade.xy;
+    float swFrac = transformed.y / uSwayGeoH;`
+// A wave climbing each blade along its own bearing (seaweed.js `blade`, at its own phase and the clump's hash).
+const RIPPLE_GLSL = /* glsl */ `
     float swRip = ${TAU} * ( transformed.y * swK / ${SEAWEED_SCATTER.ripple.wave.toFixed(4)} - uSwayT / ${SEAWEED_SCATTER.ripple.period.toFixed(4)} + swHash ) + blade.z;
-    vec2 swWrithe = ( swOut * sin( swRip ) + vec2( -swOut.y, swOut.x ) * ( ${SEAWEED_SCATTER.ripple.across.toFixed(4)} * cos( swRip ) ) ) * ( ${SEAWEED_SCATTER.ripple.amp.toFixed(4)} * swFrac / swK );
-    transformed.xz += swWrithe;
+    transformed.xz += ( blade.xy * sin( swRip ) + vec2( -blade.y, blade.x ) * ( ${SEAWEED_SCATTER.ripple.across.toFixed(4)} * cos( swRip ) ) ) * ( ${SEAWEED_SCATTER.ripple.amp.toFixed(4)} * swFrac / swK );`
+// The current's along-and-across of water.js currentDrift, leaning the whole clump (or its card) by its height squared.
+const LEAN_GLSL = /* glsl */ `
     float swT = uSwayT + dot( swRoot.xz, uSwayDir ) * ${SEAWEED_SCATTER.lag.toFixed(4)} + swHash * 2.0;
     float swAlong = ${CURRENT.slowShare.toFixed(4)} * sin( ${TAU} * swT / ${CURRENT.slow.toFixed(4)} ) + ${(1 - CURRENT.slowShare).toFixed(4)} * sin( ${TAU} * swT / ${CURRENT.fast.toFixed(4)} + 1.7 );
     float swAcross = ${CURRENT.cross.toFixed(4)} * sin( ${TAU} * swT / ${(CURRENT.slow * 0.61).toFixed(4)} + 0.9 );
     vec3 swWorld = vec3( uSwayDir.x * swAlong - uSwayDir.y * swAcross, 0.0, uSwayDir.y * swAlong + uSwayDir.x * swAcross ) * ( ${SEAWEED_SCATTER.sway.toFixed(4)} * swFrac * swFrac * uSwayGeoH * swK );
     // Back through the instance's rotation and scale, so the lean runs down the current in the world whatever the clump's yaw.
-    transformed += transpose( mat3( instanceMatrix ) ) * swWorld / swK2;
-  }`
-
+    transformed += transpose( mat3( instanceMatrix ) ) * swWorld / swK2;`
 
 export class SeaweedScatter {
-  /** @param height V2Height: heightAt(x, z); @param water WaterSurfaces: levelAt(x, z) */
+  /**
+   * @param height V2Height: heightAt(x, z); @param water WaterSurfaces: levelAt(x, z)
+   * @param patch (material, cacheKey) => lights it; called for the clump and for its card
+   */
   constructor(scene, height, water, { seed, patch }) {
     if (typeof height.heightAt !== 'function') throw new Error('SeaweedScatter needs a height field with heightAt')
     if (typeof water.levelAt !== 'function') throw new Error('SeaweedScatter needs WaterSurfaces, for levelAt')
+    const C = SEAWEED_SCATTER
     this.height = height
     this.water = water
     this.seed = seed
     this.tiles = new Map()
-    const geo = seaweedGeometry(SEAWEED_SCATTER.seed)
+    const geo = seaweedGeometry(C.seed)
     geo.computeBoundingBox()
-    this.geoHeight = geo.boundingBox.max.y
-    this.material = seaweedMaterial()
+    const box = geo.boundingBox
+    this.geoHeight = box.max.y
+    this.bounds = { halfX: Math.max(-box.min.x, box.max.x), halfZ: Math.max(-box.min.z, box.max.z), height: box.max.y }
     const heading = (CURRENT.heading * Math.PI) / 180
     this.uniforms = {
       uSwayT: { value: 0 },
       uSwayGeoH: { value: this.geoHeight },
       uSwayDir: { value: new THREE.Vector2(Math.sin(heading), -Math.cos(heading)) },
     }
+
+    this.material = seaweedMaterial()
     this.material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, this.uniforms)
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec3 blade;\nuniform float uSwayT;\nuniform float uSwayGeoH;\nuniform vec2 uSwayDir;')
-        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${SWAY_GLSL}`)
-        // Behind the far plane with w positive, so the clipper drops the whole clump.
-        .replace('#include <project_vertex>', `#include <project_vertex>
-          if ( distance( ( modelMatrix * instanceMatrix[3] ).xyz, cameraPosition ) > ${SEAWEED_SCATTER.cullM.toFixed(1)} ) gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );`)
+        .replace('#include <common>', `#include <common>\nattribute vec3 blade;\n${SWAY_DECL}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n  {${SWAY_VARS}${RIPPLE_GLSL}${LEAN_GLSL}\n  }`)
     }
-    patch(this.material)
-    this.mesh = new THREE.InstancedMesh(geo, this.material, SEAWEED_SCATTER.capacity)
-    this.mesh.name = 'v2-seaweed'
-    // Instances span the whole radius and never move once placed; the one bounding sphere would have to be the radius anyway.
-    this.mesh.frustumCulled = false
-    this.mesh.count = 0
-    this.mesh.visible = false
+    patch(this.material, 'v2-seaweed')
+    this.mesh = this._layer(geo, this.material, 'v2-seaweed')
     scene.add(this.mesh)
+
+    // The far rung: the clump's side view on one quad spun to her about its own Y (critters.js billboardVertex), lit as the clump is and leaning with it. Its picture arrives with bakeCard; until then it draws nothing.
+    this.cardMaterial = new THREE.MeshStandardMaterial({ alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.8, metalness: 0 })
+    this.cardMaterial.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.uniforms)
+      bindHeadEye(shader.uniforms)
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${HEAD_EYE_DECL}\n${SWAY_DECL}`)
+        // Lit facing her and near level: the quad's own up normal takes the whole sky and reads pale beside the mesh.
+        .replace('#include <beginnormal_vertex>', `vec3 objectNormal = transpose( mat3( instanceMatrix ) ) * normalize( vec3( normalize( ${HEAD_EYE_GLSL}.xz - instanceMatrix[3].xz + vec2( 1e-4, 0.0 ) ), ${C.cardRise.toFixed(2)} ).xzy );`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n  {${SWAY_VARS}\n${billboardVertex(false)}${LEAN_GLSL}\n  }`)
+        // Behind the far plane with w positive, so the clipper drops the whole card.
+        .replace('#include <project_vertex>', `#include <project_vertex>
+          if ( distance( ( modelMatrix * instanceMatrix[3] ).xyz, cameraPosition ) > ${C.cullM.toFixed(1)} ) gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );`)
+    }
+    patch(this.cardMaterial, 'v2-seaweed-card')
+    this.cards = this._layer(new THREE.BufferGeometry(), this.cardMaterial, 'v2-seaweed-card')
+    setCritterCard(this.cards, spunBounds(this.bounds), SPUN_VIEWS)
+    scene.add(this.cards)
+    this.cardReady = false
+
     this.at = null
+    this.splitAt = null
     this._m = new THREE.Matrix4()
     this._q = new THREE.Quaternion()
     this._s = new THREE.Vector3()
@@ -162,41 +188,92 @@ export class SeaweedScatter {
     this._up = new THREE.Vector3(0, 1, 0)
   }
 
-  /** Brings the tiles in reach of (x, z) up to date, cheap when she has not crossed into a new tile, and sets the sway to wall-clock second `t` (the clock water.js currentDrift runs on). */
+  _layer(geo, material, name) {
+    const mesh = new THREE.InstancedMesh(geo, material, SEAWEED_SCATTER.capacity)
+    mesh.name = name
+    // Instances span the whole radius and never move once placed; the one bounding sphere would have to be the radius anyway.
+    mesh.frustumCulled = false
+    mesh.count = 0
+    mesh.visible = false
+    return mesh
+  }
+
+  /** Photograph the clump onto its card and start drawing the far clumps as cards. Once. */
+  bakeCard(renderer) {
+    if (this.cardReady) throw new Error('SeaweedScatter.bakeCard: already baked')
+    this.cardMaterial.map = bakeCritterCard(renderer, this.mesh.geometry, this.material.map, spunBounds(this.bounds), SPUN_VIEWS)
+    this.cardMaterial.needsUpdate = true
+    this.cardReady = true
+    this.splitAt = null
+  }
+
+  /**
+   * Brings the tiles in reach of (x, z) up to date (on crossing into a new tile) and re-sorts the clumps between the mesh
+   * and the card (on moving SPLIT_M), and sets the sway to wall-clock second `t` (the clock water.js currentDrift runs on).
+   */
   place(x, z, t) {
     this.uniforms.uSwayT.value = t
     const C = SEAWEED_SCATTER
     const gx = Math.floor(x / C.tile), gz = Math.floor(z / C.tile)
-    if (this.at !== null && this.at[0] === gx && this.at[1] === gz) return
-    this.at = [gx, gz]
-    const changed = walkTiles(
-      this.tiles, (gx + 0.5) * C.tile, (gz + 0.5) * C.tile, C.tile, C.radius,
-      (tx, tz) => ({ tx, tz, sites: weedSites(tx, tz, this.seed, (px, pz) => this.water.levelAt(px, pz), (px, pz) => this.height.heightAt(px, pz)) }),
-      () => {},
-    )
-    if (changed > 0) this._upload()
+    if (this.at === null || this.at[0] !== gx || this.at[1] !== gz) {
+      this.at = [gx, gz]
+      const changed = walkTiles(
+        this.tiles, (gx + 0.5) * C.tile, (gz + 0.5) * C.tile, C.tile, C.radius,
+        (tx, tz) => this._tile(tx, tz),
+        () => {},
+      )
+      if (changed > 0) this.splitAt = null
+    }
+    if (this.splitAt !== null && Math.hypot(x - this.splitAt[0], z - this.splitAt[1]) < C.splitM) return
+    this.splitAt = [x, z]
+    this._split(x, z)
   }
 
-  _upload() {
-    let n = 0
+  _tile(tx, tz) {
+    const sites = weedSites(tx, tz, this.seed, (px, pz) => this.water.levelAt(px, pz), (px, pz) => this.height.heightAt(px, pz))
+    const mats = new Float32Array(sites.length * 16)
+    sites.forEach((s, i) => {
+      const k = s.h / this.geoHeight
+      this._q.setFromAxisAngle(this._up, s.yaw)
+      this._m.compose(this._p.set(s.x, s.y, s.z), this._q, this._s.set(k, k, k)).toArray(mats, i * 16)
+    })
+    return { tx, tz, sites, mats }
+  }
+
+  /** Clumps within NEAR_M of (x, z) into the mesh, the rest into the card (or nowhere, before the card is baked). */
+  _split(x, z) {
+    const C = SEAWEED_SCATTER
+    const near2 = C.nearM * C.nearM
+    const nearArr = this.mesh.instanceMatrix.array
+    const cardArr = this.cards.instanceMatrix.array
+    let n = 0, c = 0
     for (const t of this.tiles.values()) {
-      for (const s of t.sites) {
-        if (n === SEAWEED_SCATTER.capacity) throw new Error(`SeaweedScatter: more than ${SEAWEED_SCATTER.capacity} clumps in reach`)
-        const k = s.h / this.geoHeight
-        this._q.setFromAxisAngle(this._up, s.yaw)
-        this.mesh.setMatrixAt(n++, this._m.compose(this._p.set(s.x, s.y, s.z), this._q, this._s.set(k, k, k)))
-      }
+      t.sites.forEach((s, i) => {
+        const dx = s.x - x, dz = s.z - z
+        if (dx * dx + dz * dz <= near2) {
+          if (n === C.capacity) throw new Error(`SeaweedScatter: more than ${C.capacity} clumps near her`)
+          nearArr.set(t.mats.subarray(i * 16, i * 16 + 16), 16 * n++)
+        } else if (this.cardReady) {
+          if (c === C.capacity) throw new Error(`SeaweedScatter: more than ${C.capacity} clumps on cards`)
+          cardArr.set(t.mats.subarray(i * 16, i * 16 + 16), 16 * c++)
+        }
+      })
     }
     this.mesh.count = n
     this.mesh.visible = n > 0
     this.mesh.instanceMatrix.needsUpdate = true
+    this.cards.count = c
+    this.cards.visible = c > 0
+    this.cards.instanceMatrix.needsUpdate = true
   }
 
   dispose() {
-    this.mesh.removeFromParent()
-    this.mesh.geometry.dispose()
-    this.material.map.dispose()
-    this.material.dispose()
-    this.mesh.dispose()
+    for (const mesh of [this.mesh, this.cards]) {
+      mesh.removeFromParent()
+      mesh.geometry.dispose()
+      if (mesh.material.map) mesh.material.map.dispose()
+      mesh.material.dispose()
+      mesh.dispose()
+    }
   }
 }

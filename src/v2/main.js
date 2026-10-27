@@ -5548,7 +5548,8 @@ async function buildRoom(room, at) {
   water.uniforms.uClarity.value.set(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180))
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
-  seaweed = new SeaweedScatter(scene, height, waterSurfaces, { seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-seaweed' }) })
+  seaweed = new SeaweedScatter(scene, height, waterSurfaces, { seed, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+  seaweed.bakeCard(renderer)
   seaweed.place(spawn.x, spawn.z, performance.now() / 1000)
   fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
   window.v2fish = fish

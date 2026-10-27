@@ -46,9 +46,10 @@
 //
 // The mesh faces +X with its claws and is broad along Z; a crab scuttles
 // sideways, along its own ±Z, and rides the stone's slope (a finite-difference
-// normal off the same surface query). The legs -- the parts of the mesh out past
-// the body along Z and below its middle -- lift and fall in the vertex shader
-// while it moves.
+// normal off the same surface query). Its mesh is rigged (tools/creatures/rig-crab.mjs,
+// one bone a vertex) and played from an animation texture (crab-anim.js): a
+// walk whose cadence is the distance travelled, and idles -- claw sways, eating,
+// a threat, leg shuffles -- chosen from the key and the clock alone.
 //
 // A crab that EATS the bug in her hand (held within EAT of it) leaves its rock
 // as her PET, GROW the size, and scuttles after her (or the peer who fed it)
@@ -67,6 +68,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { keyHash, phraseRand } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 import { PropArena } from './prop-arena.js'
+import { CRAB_ANIM_NORMAL, CRAB_ANIM_PARS, CRAB_ANIM_VERTEX, loadCrabAnim, poseWeight, writeAnim } from './crab-anim.js'
 import {
   CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, critterCardExtents, glint, hueTurnTint, hueVary, loadCritterGlb, makeHueAttribute,
   setCritterAsset, tierTintSplice, tileKey, walkTiles,
@@ -115,9 +117,6 @@ const RESCAN_FRAMES = 4
 // The normal is read from the surface NORMAL_SPAN of the crab's span either side of it; two sides whose rises differ by more than LIP of that are a lip, not a slope (see _slope).
 const NORMAL_SPAN = 0.25
 const LIP = 2
-// The leg wiggle: amplitude in unit-mesh metres, and the wave's cadence in cycles per span travelled.
-const LEG_AMP = 0.04
-const LEG_CYCLES = 1.5
 
 // A crab she let go of: it scuttles away from the drop over the ground at LOOSE_SPEED sizes a second in LOOSE_LEGS legs a spell -- a second each, so it jinks about once a second -- each leg's line swung off the outward one by up to LOOSE_WOBBLE radians, until it is RADIUS from where it was let go and forgotten. The drop, not her head, is what it runs from: her head is a different point on every client.
 export const LOOSE_SPEED = 1.5
@@ -169,11 +168,12 @@ export class Crabs {
    * @param water   WaterSurfaces: lakeLevelAt, lakeShoreDistAt
    * @param opts.rocks   Rocks: perchesInto and blockTopAt(x, z, min, false)
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
+   * @param opts.anim    the parsed crab animation (crab-anim.js) for a gate; the world fetches it
    * @param opts.cards   the shared LitterCards: the far crabs are its instances, one per slot
    * @param opts.harm    (n, why) => her hurt by a crab's bite (HUNT)
    * @param opts.eat     (lure) => whether her hand gives up the bug a crab is eating (hands.js eatLure)
    */
-  constructor(scene, height, water, { seed = 1, rocks, assets = null, cards = null, harm = null, eat = () => false } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, assets = null, anim = null, cards = null, harm = null, eat = () => false } = {}) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Crabs needs the LitterCards its far card is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function') {
       throw new Error('Crabs needs a height field with heightAt and heightAndSlopeAt')
@@ -196,16 +196,14 @@ export class Crabs {
 
     // A wet shell glints: critters.js's glint.
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
-    // `aLegs` is per instance: the wave's phase and its amplitude (zero at rest). Weighted onto the parts of the unit mesh that are legs -- out past the body along Z and low -- so the shell holds still.
+    // Each vertex is one bone's (`aBone`); `aAnim` per instance picks the two texture rows of its clip frame, their blend, and the pose's weight over the bind pose (crab-anim.js).
     this.material.onBeforeCompile = (shader) => {
+      if (this.anim === null) throw new Error('Crabs: drawn before its animation landed')
+      shader.uniforms.uCrabAnim = { value: this.anim.texture }
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec2 aLegs;')
-        .replace(
-          '#include <begin_vertex>',
-          '#include <begin_vertex>\n' +
-            'float legW = smoothstep( 0.18, 0.36, abs( position.z ) ) * ( 1.0 - smoothstep( 0.08, 0.22, position.y ) );\n' +
-            'transformed.y += legW * aLegs.y * sin( aLegs.x + 12.0 * position.x + sign( position.z ) * 1.5708 );'
-        )
+        .replace('#include <common>', `#include <common>\n${CRAB_ANIM_PARS}`)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>\n${CRAB_ANIM_NORMAL}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${CRAB_ANIM_VERTEX}`)
       glint(shader)
       hueVary(shader)
       tierTintSplice(shader, 0)
@@ -218,9 +216,10 @@ export class Crabs {
     this.mesh.visible = false
     this.mesh.frustumCulled = false
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    this.legs = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2)
-    this.legs.setUsage(THREE.DynamicDrawUsage)
-    this.mesh.geometry.setAttribute('aLegs', this.legs)
+    this.animAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4)
+    this.animAttr.setUsage(THREE.DynamicDrawUsage)
+    this.mesh.geometry.setAttribute('aAnim', this.animAttr)
+    this.anim = null
     this.hue = makeHueAttribute(this.mesh, MAX)
     // The far crabs, one litter-card instance per slot (a slot's id is its card's); drawn once the picture is baked, and until then every crab is the mesh.
     cards.claim('crabs', CARD_CLAIM)
@@ -248,8 +247,8 @@ export class Crabs {
         // The spot the rock's own roll gave it, which every spell falls back to, and the heading rolled with it.
         seatX: 0, seatZ: 0, seatYaw: 0,
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, hue: 0, speed: 0,
-        // The spell planned (_spell), the phrase of it playing -- 'pause' at a spot, 'go' from one spot to another -- and how far into that phrase the pose is. `phase` drives the legs and `amp` is their swing.
-        spell: null, phrase: null, elapsed: 0, state: 'pause', phase: 0, amp: 0, depth: 0,
+        // The spell planned (_spell), the phrase of it playing -- 'pause' at a spot, 'go' from one spot to another -- and how far into that phrase the pose is. The clip: `phase` the walk's cycles, `phase0` the crab's own offset into every clip (0..1), `still` the seconds into this standstill and `stillSalt` which standstill it is (so it rolls its own idles), `w` the pose's weight (crab-anim.js).
+        spell: null, phrase: null, elapsed: 0, state: 'pause', phase: 0, phase0: 0, still: 0, stillSalt: 0, w: 1, depth: 0,
         // The composed instance matrix, rebuilt only while `stale`; a pausing crab copies it.
         m: new Float32Array(16), stale: true,
         // Which of its perch's rolled crabs it is, for the taken registry; and, for one she let go of, the drop it runs from -- off any perch, on no rock.
@@ -293,7 +292,8 @@ export class Crabs {
     this.saturated = 0
 
     if (assets) {
-      this.setAsset(assets)
+      if (!anim) throw new Error('Crabs: an asset needs its anim')
+      this.setAsset(assets, anim)
       this.ready = Promise.resolve(true)
     } else {
       this.ready = this.load()
@@ -301,11 +301,16 @@ export class Crabs {
   }
 
   async load() {
-    this.setAsset(await loadCritterGlb(CRITTER_GLB.crab))
+    const [asset, anim] = await Promise.all([loadCritterGlb(CRITTER_GLB.crab), loadCrabAnim()])
+    this.setAsset(asset, anim)
     return true
   }
 
-  setAsset(asset) {
+  setAsset(asset, anim) {
+    const verts = asset.pos.length / 3
+    if (anim.tiers[0].length !== verts) throw new Error(`Crabs: the animation binds ${anim.tiers[0].length} vertices, the mesh has ${verts}`)
+    this.anim = anim
+    this.mesh.geometry.setAttribute('aBone', new THREE.BufferAttribute(Float32Array.from(anim.tiers[0]), 1))
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
     this.span = this.bounds.span
     this.bodyH = this.bounds.height
@@ -440,7 +445,10 @@ export class Crabs {
         c.state = 'pause'
         c.speed = 0
         c.phase = 0
-        c.amp = 0
+        c.phase0 = (keyHash(c.key) % 1024) / 1024
+        c.still = 0
+        c.stillSalt = 0
+        c.w = 1
         c.stale = true
         this._seat(c, x, y, z, yaw)
         perch.crabs.push(c)
@@ -562,7 +570,7 @@ export class Crabs {
       size: c.size,
       geometry: this.mesh.geometry,
       material: this.material,
-      attrs: { aLegs: [c.phase, 0], aHue: [c.hue] },
+      attrs: { aAnim: [0, 0, 0, 0], aHue: [c.hue] },
       color: null,
       scale: [k, k * STRETCH_Y, k],
       stowable: c.size < stowMax,
@@ -710,7 +718,10 @@ export class Crabs {
     c.state = 'go'
     c.speed = LOOSE_SPEED
     c.phase = 0
-    c.amp = LEG_AMP
+    c.phase0 = (keyHash(c.key) % 1024) / 1024
+    c.still = 0
+    c.stillSalt = 0
+    c.w = 1
     c.stale = true
     this._play(c, now)
     this.loose.push(c)
@@ -954,14 +965,16 @@ export class Crabs {
 
   /**
    * Crab `c` posed `e` seconds into phrase `ph`: sat on its spot, or along the
-   * line between two of them at the pace the spell rolled, its legs waving
-   * through LEG_CYCLES cycles a span travelled.
+   * line between two of them at the pace the spell rolled, its walk at the
+   * cadence of the ground it has covered.
    */
   _pose(c, ph, e) {
     if (ph.kind === 'pause') {
       c.state = 'pause'
       c.speed = 0
-      c.amp = 0
+      c.still = e
+      c.stillSalt = c.spell.seg * 4 + c.spell.phrases.indexOf(ph)
+      c.w = poseWeight(e, ph.dur)
       if (c.x === ph.at.x && c.z === ph.at.z && c.yaw === ph.yaw) return
       this._seat(c, ph.at.x, ph.at.y, ph.at.z, ph.yaw, ph.at.stone)
       return
@@ -970,13 +983,14 @@ export class Crabs {
     const { from, to } = ph
     c.state = 'go'
     c.speed = ph.speed
-    c.amp = LEG_AMP
+    // A loose crab's legs are one run, so it never fades between them.
+    c.w = c.drop ? 1 : poseWeight(e, ph.dur)
     const x = from.x + (to.x - from.x) * u
     const z = from.z + (to.z - from.z) * u
     // The stone under the line, where there is any: a rock's disc is circumscribed, so a line across it can cross air, and there the two ends' own heights carry it.
     const top = this.stoneAt(x, z)
     const y = top === -Infinity ? from.y + (to.y - from.y) * u : top
-    c.phase = (Math.PI * 2 * LEG_CYCLES * Math.hypot(to.x - from.x, to.z - from.z) * u) / c.size
+    c.phase = this._cycles(c, Math.hypot(to.x - from.x, to.z - from.z) * u)
     this._seat(c, x, y, z, ph.yaw ?? this._facing(from, to, c.yaw), top !== -Infinity)
   }
 
@@ -1035,7 +1049,7 @@ export class Crabs {
     if (this.bait.length > 0) this._bite(this.bait, now)
 
     const mat = this.mesh.instanceMatrix.array
-    const legs = this.legs.array
+    const anim = this.animAttr.array
     const hue = this.hue.array
     const card2 = this.cardReady ? CARD_M * CARD_M : Infinity
     let n = 0
@@ -1060,8 +1074,7 @@ export class Crabs {
         this._writeCard(c)
       } else {
         mat.set(c.m, n * 16)
-        legs[n * 2] = c.phase
-        legs[n * 2 + 1] = c.amp
+        writeAnim(this.anim, c, anim, n * 4)
         hue[n] = c.hue
         n++
       }
@@ -1088,7 +1101,7 @@ export class Crabs {
       if (!hers && dist > RADIUS) { this._unpet(c); this.free.push(c); continue }
       const m = c.pet.by === null ? (this.wait !== null ? this.wait : this.head) : peers.find((p) => p.by === c.pet.by)
       const speed = hers ? this.her.pace(PET.speed * c.size) / c.size : PET.speed
-      if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, speed)) { c.state = 'pause'; c.speed = 0; c.amp = 0 }
+      if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, speed)) this._halt(c, dt)
       const to = hers && this.wait === null ? this.her.keepUp(c.way, c.x, c.z, dist > PET.m + c.size, now, () => true) : null
       if (to !== null) {
         const s = this._looseSpot(c, to.x, to.z, c.yaw)
@@ -1116,7 +1129,7 @@ export class Crabs {
     // A buffer that held nothing and holds nothing is not re-uploaded.
     if (n > 0 || this.mesh.count > 0) {
       this.mesh.instanceMatrix.needsUpdate = true
-      this.legs.needsUpdate = true
+      this.animAttr.needsUpdate = true
       this.hue.needsUpdate = true
     }
     this.mesh.count = n
@@ -1179,20 +1192,38 @@ export class Crabs {
     return true
   }
 
+  /** The walk cycles a crab covers over `dist` m: one cycle is the baked clip's `cycle` mesh units, drawn at the crab's scale. */
+  _cycles(c, dist) {
+    return dist / (this.anim.walk.cycle * (c.size / this.span))
+  }
+
+  /** An integrated crab (a pet, a hunter) that is not moving this frame: a standstill whose seconds count, and whose idle it rolls as it begins. */
+  _halt(c, dt) {
+    if (c.state === 'go') {
+      c.state = 'pause'
+      c.still = 0
+      c.stillSalt++
+    } else {
+      c.still += dt
+    }
+    c.speed = 0
+    c.w = 1
+  }
+
   /** A frame's scuttle of `c` toward (tx, tz) at `speed` body lengths a second, stopping `stop` m short over whatever ground is there; false, and still, once it is there. */
   _scuttle(c, tx, tz, stop, dt, speed = HUNT.speed) {
     const dx = tx - c.x, dz = tz - c.z
     const d = Math.hypot(dx, dz)
     const yaw = d > 1e-9 ? Math.atan2(dx, dz) : c.yaw
     if (d <= stop) {
-      c.state = 'pause'; c.speed = 0; c.amp = 0
+      this._halt(c, dt)
       if (c.yaw !== yaw) this._seat(c, c.x, c.y, c.z, yaw, this.stoneAt(c.x, c.z) > -Infinity)
       return false
     }
     const step = Math.min(d - stop, speed * c.size * dt)
     const s = this._looseSpot(c, c.x + (dx / d) * step, c.z + (dz / d) * step, yaw)
-    c.state = 'go'; c.speed = speed; c.amp = LEG_AMP
-    c.phase += (Math.PI * 2 * LEG_CYCLES * step) / c.size
+    c.state = 'go'; c.speed = speed; c.w = 1
+    c.phase += this._cycles(c, step)
     this._seat(c, s.x, s.y, s.z, yaw, s.stone)
     return true
   }

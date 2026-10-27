@@ -86,46 +86,64 @@ for (const s of deep) {
 }
 check(tall > 20 && short / crowd > 0.6, 'patches gather many short clumps about a few tall ones', `${tall} crowded tall clumps, ${(crowd / Math.max(tall, 1)).toFixed(1)} neighbours each, ${((100 * short) / Math.max(crowd, 1)).toFixed(0)}% short`)
 
-// The instanced layer: one mesh, one draw call, each instance standing on its bed and as tall as its clump.
-const m0 = new THREE.Matrix4()
+// The instanced layers: the clump's mesh within NEAR_M of her and its card past that, each instance standing on its bed and as tall as its clump. No renderer here to bake the card's picture, so the gate flips `cardReady` itself.
 const scene = new THREE.Scene()
 const field = { heightAt: bedAt }
 const water = { levelAt }
-let patched = 0
-const sw = new SeaweedScatter(scene, field, water, { seed: 5, patch: () => patched++ })
+const keys = []
+const sw = new SeaweedScatter(scene, field, water, { seed: 5, patch: (_, key) => keys.push(key) })
 sw.place(0, 0, 0)
 const meshes = []
 scene.traverse((o) => { if (o.isMesh) meshes.push(o) })
-check(meshes.length === 1 && meshes[0].isInstancedMesh && patched === 1, 'the layer is one instanced mesh with its material patched once', `${meshes.length} mesh`)
-check(sw.mesh.count > 100 && sw.mesh.count <= C.capacity, 'the clumps in reach are uploaded', `${sw.mesh.count} instances`)
-let reach = 0, missed = 0
+check(meshes.length === 2 && meshes.every((o) => o.isInstancedMesh) && new Set(keys).size === 2 && keys.length === 2, 'the layer is two instanced meshes, each material patched once under its own key', `${meshes.length} meshes, keys ${keys.join(' ')}`)
+check(sw.mesh.count > 0 && sw.cards.count === 0 && !sw.cards.visible, 'before the card is baked only the near clumps are drawn', `${sw.mesh.count} near, ${sw.cards.count} cards`)
+sw.cardReady = true
+sw.splitAt = null
+
+const m0 = new THREE.Matrix4()
+const drawn = (mesh) => {
+  const out = []
+  for (let i = 0; i < mesh.count; i++) { mesh.getMatrixAt(i, m0); out.push(m0.clone()) }
+  return out
+}
+let reach = 0, missed = 0, wrongRung = 0
 for (let tx = -8; tx <= 8; tx++) for (let tz = -8; tz <= 8; tz++) for (const s of weedSites(tx, tz, 5, levelAt, bedAt)) if (Math.hypot(s.x - 1, s.z - 1) <= C.cullM) reach++
 for (const [px, pz] of [[1, 1], [11.9, 11.9], [0.1, 11.9]]) {
   sw.place(px, pz, 0)
   const have = new Set()
-  for (let i = 0; i < sw.mesh.count; i++) { sw.mesh.getMatrixAt(i, m0); have.add(`${m0.elements[12].toFixed(3)},${m0.elements[14].toFixed(3)}`) }
+  for (const [mesh, near] of [[sw.mesh, true], [sw.cards, false]]) {
+    for (const mm of drawn(mesh)) {
+      const d = Math.hypot(mm.elements[12] - px, mm.elements[14] - pz)
+      if ((d <= C.nearM) !== near) wrongRung++
+      have.add(`${mm.elements[12].toFixed(3)},${mm.elements[14].toFixed(3)}`)
+    }
+  }
   for (let tx = -8; tx <= 8; tx++) for (let tz = -8; tz <= 8; tz++) for (const s of weedSites(tx, tz, 5, levelAt, bedAt)) if (Math.hypot(s.x - px, s.z - pz) <= C.cullM && !have.has(`${s.x.toFixed(3)},${s.z.toFixed(3)}`)) missed++
 }
 check(reach > 0 && missed === 0, `every clump within ${C.cullM} m is uploaded, wherever she stands in her tile`, `${missed} missing of ~${reach}`)
+check(wrongRung === 0, `clumps within ${C.nearM} m are meshes and the rest cards`, `${wrongRung} on the wrong rung`)
 sw.place(0, 0, 0)
+check(sw.mesh.count > 20 && sw.cards.count > 3 * sw.mesh.count, 'most clumps in reach are cards', `${sw.mesh.count} meshes, ${sw.cards.count} cards`)
+
 const geo = seaweedGeometry(C.seed)
 geo.computeBoundingBox()
 const gh = geo.boundingBox.max.y
 let bad = 0, worst = Infinity
-const m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3()
-for (let i = 0; i < sw.mesh.count; i++) {
-  sw.mesh.getMatrixAt(i, m)
-  m.decompose(p, q, sc)
+const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3()
+for (const mm of [...drawn(sw.mesh), ...drawn(sw.cards)]) {
+  mm.decompose(p, q, sc)
   const top = p.y + sc.y * gh
   if (Math.abs(p.y - bedAt(p.x, p.z)) > 1e-4 || LEVEL - top < 1 - 1e-4 || sc.y * gh < 1 - 1e-4 || sc.y * gh > 8 + 1e-4) bad++
   worst = Math.min(worst, LEVEL - top)
 }
 check(bad === 0, 'every instance roots on the bed, stands 1 to 8 m tall and tops out 1 m under the water', `${bad} bad, nearest tip ${worst.toFixed(3)} m under`)
-const before = sw.mesh.count
-sw.place(1, 1, 0)
-check(sw.mesh.count === before, 'staying in a tile re-rolls nothing')
+const version = sw.mesh.instanceMatrix.version
+sw.place(0.6, 0.6, 0)
+check(sw.mesh.instanceMatrix.version === version, `moving less than ${C.splitM} m re-sorts nothing`)
+sw.place(1.6, 0.6, 0)
+check(sw.mesh.instanceMatrix.version > version, `moving ${C.splitM} m re-sorts the rungs`)
 sw.place(800, 800, 0)
-check(sw.mesh.count === 0, 'far from any water the layer is empty', `${sw.mesh.count} instances`)
+check(sw.mesh.count === 0 && sw.cards.count === 0 && !sw.mesh.visible && !sw.cards.visible, 'far from any water both layers are empty and hidden', `${sw.mesh.count} + ${sw.cards.count} instances`)
 sw.dispose()
 
 if (failures > 0) { console.log(`\n${failures} failures`); process.exit(1) }
