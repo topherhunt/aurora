@@ -94,6 +94,11 @@ export class Layers {
     return clamp01(a > b ? a : b)
   }
 
+  // PathSet.roadFrameAt: where on the painted road (x, z) lies, for the cobble texture.
+  roadFrameAt(x, z, out) {
+    return this.paths.roadFrameAt(x, z, out)
+  }
+
   // The per-chunk early-out, and the actual performance story of this whole subsystem. An 8 km world at MAX_DEPTH 13 selects thousands of chunks and a dozen authored objects touch a small minority of them; every other chunk answers false here and skips the per-vertex carve entirely. check-v2-layers.mjs measures the fraction and prints it.
   //
   // The one place the rate is genuinely poor is the far field, where a leaf is a kilometre across and three roads crossing the world cross nearly all of them. That is not the early-out failing; those chunks really do contain a road. It is worth knowing because it means the win is concentrated where the chunks are small, which is where they are also numerous.

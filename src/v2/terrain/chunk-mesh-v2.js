@@ -84,6 +84,15 @@ function writeStippleFrame(stipple, s, kGround, floor, wx, wy, wz) {
   stipple[s + 2] = phase(k * (plane === 0 ? wz : wy))
 }
 
+// ---- THE ROAD FRAME, one vec3 per vertex: (metres along the road, metres
+// across it, distance in half-widths) from Layers.roadFrameAt, for the cobble
+// layer in terrain-material.js. Interpolated, so the texture runs along a bend
+// continuously. A vertex no painted road reaches gets ROAD_NONE half-widths and
+// a zero along/across: interpolated toward it the half-widths only grow, so
+// the zero never reaches a fragment the cobble is drawn on.
+export const ROAD_NONE = 9
+const FRAME = { along: 0, across: 0, halfWidth: 0 }
+
 /** The four skirt edges as rows of interior vertex indices, in skirt-vertex order. */
 export function skirtEdges(res) {
   const vpr = res + 1
@@ -617,7 +626,7 @@ function shade(h, ny, snowLine, snowBand, dirt01, shore01, altLo, altSpan, wx, w
  *   the gates measure against. The shipped worker passes the real field.
  * @param ground GroundTint, or null for a world whose ground is grass everywhere; see layers/ground.js.
  * @param hearths town hearth flames `{x, y, z}` whose glow is baked per vertex, with `biome`'s labyrinth torches'; see v2/hearth-light.js.
- * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, stipFloor:Float32Array, forest:Float32Array, hearth:Float32Array, grain:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
+ * @returns {{positions:Float32Array, normals:Float32Array, colors:Float32Array, stipple:Float32Array, stipFloor:Float32Array, forest:Float32Array, hearth:Float32Array, grain:Float32Array, road:Float32Array, indices:Uint16Array, minY:number, maxY:number, skirtDepth:number, culled:boolean}}
  */
 export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = null, ground = null, hearths = []) {
   if (!cam || !Number.isFinite(cam.x) || !Number.isFinite(cam.y) || !Number.isFinite(cam.z)) {
@@ -762,6 +771,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   const forest = new Float32Array(total)
   const hearth = new Float32Array(total)
   const grain = new Float32Array(total)
+  const road = new Float32Array(total * 3)
   const glows = hearthsReach(hearths, ox, oz, size, step)
   const torches = labyrinthTorchesNear(biome === null ? null : biome.labyrinths, ox, oz, size, step)
 
@@ -863,6 +873,11 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       if (ground) ground.tintAt(wx, wz, tint)
       shade(h, nyClass, snowLine, snowBand, touched ? layers.dirtAt(wx, wz) : 0, touched ? layers.shoreAt(wx, wz, h) : 0, altLo, altSpan, wx, wz, colors, o, tint)
       forest[vi] = forestKeepAt(h, Math.sqrt(1 - nyClass * nyClass) / nyClass, h - snowLine, biome, wx, wz)
+      if (touched && layers.roadFrameAt(wx, wz, FRAME)) {
+        road[o] = FRAME.along
+        road[o + 1] = FRAME.across
+        road[o + 2] = Math.abs(FRAME.across) / FRAME.halfWidth
+      } else road[o + 2] = ROAD_NONE
       if (glows || torches.length > 0) {
         const town = glows ? hearthGlowAt(hearths, wx, h, wz, step) : 0
         const maze = torches.length > 0 ? labyrinthGlowAt(torches, wx, wz, step) : 0
@@ -919,6 +934,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
       forest[sv] = forest[vi]
       hearth[sv] = hearth[vi]
       grain[sv] = grain[vi]
+      for (let c = 0; c < 3; c++) road[o + c] = road[vi * 3 + c]
       row.push(sv)
       sv++
     }
@@ -973,7 +989,7 @@ export function buildChunkV2(field, layers, { ox, oz, size, res, cam }, biome = 
   // `culled` travels with the mesh so the panel and the gate can report the
   // fraction of chunks that took the cheap path -- §18 puts a number on that
   // claim rather than asserting it.
-  return { positions, normals, colors, stipple, stipFloor, forest, hearth, grain, indices, minY, maxY, skirtDepth, culled: !touched }
+  return { positions, normals, colors, stipple, stipFloor, forest, hearth, grain, road, indices, minY, maxY, skirtDepth, culled: !touched }
 }
 
 // C_GRASS is exported because the quest flat-ground card has to paint itself the

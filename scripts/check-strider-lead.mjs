@@ -28,6 +28,7 @@ function layer(trusted) {
   S.torches = []
   S.blades = []
   S.cuts = new Map()
+  S.wait = null
   S.now = 0
   S.ridden = S.led = S.leadBy = null
   S.walkV = 1

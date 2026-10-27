@@ -204,11 +204,13 @@ function normalise(rec, where) {
 }
 
 // Reused result slots. nearest() hands back a fresh object because it is a public API and the editor calls it once per click; the carve path uses these, because it is called once per VERTEX and one allocation there is one allocation per vertex.
-const HIT_A = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
-const HIT_B = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
-const HIT_C = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
+const HIT_A = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null, seg: 0, t: 0 }
+const HIT_B = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null, seg: 0, t: 0 }
+const HIT_C = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null, seg: 0, t: 0 }
+// roadFrameAt's.
+const HIT_FRAME = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null, seg: 0, t: 0 }
 // _roadAt's answer, kept for the next ask at the same point: heightAt asks once for the flatten weight and again for the smooth.
-const HIT_ROAD = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null }
+const HIT_ROAD = { dist: 0, y: 0, halfWidth: 0, id: null, kind: null, rec: null, seg: 0, t: 0 }
 // _trunkAt's answer. Module-level like the HITs: the pin walk asks it per sample.
 const TRUNK = { inset: 0, level: 0, over: 0 }
 
@@ -228,6 +230,8 @@ export class PathSet {
     this.grid = new UniformGrid(SEG_CELL)
     this._seg = new Float64Array(0)
     this._segPath = new Int32Array(0)
+    // Each segment's start as horizontal metres along its path from the first sample.
+    this._segAlong = new Float64Array(0)
     this._pathList = []
     this._segCount = 0
     this._indexDirty = true
@@ -463,6 +467,7 @@ export class PathSet {
     if (this._seg.length < total * STRIDE) {
       this._seg = new Float64Array(total * STRIDE)
       this._segPath = new Int32Array(total)
+      this._segAlong = new Float64Array(total)
     }
     const seg = this._seg
     let n = 0
@@ -471,6 +476,7 @@ export class PathSet {
       const s = rec.samples
       const samples = s.length / 4
       rec.segStart = n
+      let along = 0
       for (let k = 0; k < samples - 1; k++) {
         const a = k * 4
         const b = a + 4
@@ -484,6 +490,8 @@ export class PathSet {
         seg[o + 6] = s[b + 2]
         seg[o + 7] = s[b + 3]
         this._segPath[n] = pi
+        this._segAlong[n] = along
+        along += Math.hypot(s[b] - s[a], s[b + 2] - s[a + 2])
         // Swept box: the segment's own extent padded by the widest half-width it carries plus that path's reach. Every query the carve functions can answer non-trivially is inside this box, so a miss in the index is the same answer as a miss in the profile.
         const hw = Math.max(s[a + 3], s[b + 3])
         const pad = hw + reachOf(rec, hw)
@@ -810,6 +818,21 @@ export class PathSet {
     out.id = rec.id
     out.kind = rec.kind
     out.rec = rec
+    out.seg = best
+    out.t = bestT
+    return true
+  }
+
+  // The painted road's surface frame at (x, z), for laying a texture along it: `out.along` metres from the road's first sample to the nearest foot, `out.across` metres from the centreline, its sign the side, and `out.halfWidth`. False where no painted road reaches. `along` jumps where the nearest road changes, so a junction is a seam.
+  roadFrameAt(x, z, out) {
+    if (!this._nearestInto(x, z, 'road', HIT_FRAME, null, true)) return false
+    const o = HIT_FRAME.seg * STRIDE
+    const seg = this._seg
+    const ex = seg[o + 4] - seg[o]
+    const ez = seg[o + 6] - seg[o + 2]
+    out.along = this._segAlong[HIT_FRAME.seg] + HIT_FRAME.t * Math.hypot(ex, ez)
+    out.across = ex * (z - seg[o + 2]) - ez * (x - seg[o]) < 0 ? HIT_FRAME.dist : -HIT_FRAME.dist
+    out.halfWidth = HIT_FRAME.halfWidth
     return true
   }
 

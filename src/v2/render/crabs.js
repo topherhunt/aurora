@@ -278,6 +278,8 @@ export class Crabs {
     this.head = { x: 0, z: 0 }
     // Her, as her pets keep up with her (keep-up.js); null and one she leaves RADIUS behind is forgotten.
     this.her = null
+    // While she is underground, the cave's apron { x, y, z }, where her pets wait for her; null above ground.
+    this.wait = null
     // Whether the last update stepped the crabs under the water too (she was submerged).
     this.under = true
     this.perchBuf = new Float32Array(PERCH_BUF * PERCH_STRIDE)
@@ -1084,10 +1086,10 @@ export class Crabs {
       const hers = c.pet.by === null && this.her !== null
       const dist = Math.hypot(c.x - hx, c.z - hz)
       if (!hers && dist > RADIUS) { this._unpet(c); this.free.push(c); continue }
-      const m = c.pet.by === null ? this.head : peers.find((p) => p.by === c.pet.by)
+      const m = c.pet.by === null ? (this.wait !== null ? this.wait : this.head) : peers.find((p) => p.by === c.pet.by)
       const speed = hers ? this.her.pace(PET.speed * c.size) / c.size : PET.speed
       if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, speed)) { c.state = 'pause'; c.speed = 0; c.amp = 0 }
-      const to = hers ? this.her.keepUp(c.way, c.x, c.z, dist > PET.m + c.size, now, () => true) : null
+      const to = hers && this.wait === null ? this.her.keepUp(c.way, c.x, c.z, dist > PET.m + c.size, now, () => true) : null
       if (to !== null) {
         const s = this._looseSpot(c, to.x, to.z, c.yaw)
         this._seat(c, s.x, s.y, s.z, Math.atan2(hx - s.x, hz - s.z), s.stone)

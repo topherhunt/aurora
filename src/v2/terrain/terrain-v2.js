@@ -254,6 +254,8 @@ export class TerrainV2 {
     this._scratch.setAttribute('hearth', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS), 1))
     // Per-vertex 50 cm brightness grain; see chunk-mesh-v2 GRAIN.
     this._scratch.setAttribute('grain', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS), 1))
+    // Per-vertex road frame (along, across, half-widths); see chunk-mesh-v2 ROAD FRAME.
+    this._scratch.setAttribute('road', new THREE.BufferAttribute(new Float32Array(CHUNK_VERTS * 3), 3))
     this._scratch.setIndex(new THREE.BufferAttribute(new Uint16Array(CHUNK_INDICES), 1))
     this._scratch.boundingSphere = new THREE.Sphere()
 
@@ -864,6 +866,10 @@ export class TerrainV2 {
       const { depth, ix, iz } = unpackKey(msg.key)
       throw new Error(`v2 chunk ${depth}/${ix}/${iz} grain has ${msg.grain.length} floats, slots hold ${CHUNK_VERTS}`)
     }
+    if (msg.road.length !== CHUNK_VERTS * 3) {
+      const { depth, ix, iz } = unpackKey(msg.key)
+      throw new Error(`v2 chunk ${depth}/${ix}/${iz} road has ${msg.road.length} floats, slots hold ${CHUNK_VERTS * 3}`)
+    }
 
     // An entry that already holds a slot is an invalidated chunk that kept its old
     // geometry on screen (_invalidateRect); it is REPLACED IN PLACE, which is the
@@ -889,6 +895,7 @@ export class TerrainV2 {
     g.attributes.forest.array.set(msg.forest)
     g.attributes.hearth.array.set(msg.hearth)
     g.attributes.grain.array.set(msg.grain)
+    g.attributes.road.array.set(msg.road)
     g.index.array.set(msg.indices)
 
     // Keep the interior heights. setGeometryAt copies the positions into the

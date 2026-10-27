@@ -25,7 +25,7 @@ The names avoid the iron-copper-titanium ladder. Bog iron is how the Norse got t
 ## Where it lies
 
 - **Scree.** A new scatter of dark-grey shiny pebbles at cliff feet (cave mouths are already sited at cliff feet; reuse that finder). Flint is cheap and common: it goes through `taken.js` like a mushroom, regrows on reload, and never enters the loot ledger.
-- **Caves.** Ore veins are pried from the wall with a pickaxe. Bog iron anywhere, lodestone only in the deeper regions, rimesilver only in the great cavern (one a system, design/39-caves.md §3). Gems sit in nooks and lobes and **glint only when her light falls on them**, which rewards carrying a light and pairs with the light-hating horrors planned for the deep.
+- **Caves.** Ore veins are pried from the wall with a pickaxe, three fast strikes a vein (design/39-caves.md §9). Bog iron anywhere, lodestone only in the deeper regions, rimesilver only in the great cavern (one a system, design/39-caves.md §3). Gems sit in nooks and lobes and **glint only when her light falls on them**, which rewards carrying a light and pairs with the light-hating horrors planned for the deep.
 - **Labyrinths.** Each labyrinth's open middle holds a stone plinth with one gem on it. The gem's tier follows the labyrinth's ring count, so the bigger the maze, the better the prize; only the largest hold a diamond.
 - **Roosts.** Every nest holds one egg at its centre (today half do: `render/roosts.js` THE EGG) and a hoard of 1-2 drawn from diamond, sapphire, ruby and firestone.
 - **Leafkin glades.** Not a place things lie but a trade: see Flows.
@@ -48,7 +48,7 @@ A shiny is also what opens a glade: leafkin push a stranger away unless she brin
 The intended order of discovery falls out of who needs what tool:
 
 1. A labyrinth's plinth needs no tool: her first gem.
-2. Sold to a human, it buys a pickaxe from a blacksmith (about 60 coins, so one gem's worth).
+2. Sold to a human, it buys a pickaxe from a blacksmith (50 coins, about one gem's worth).
 3. The pickaxe opens the caves: bog iron, deeper lodestone, rare glinting gems, rimesilver in the great cavern.
 4. Bog iron makes climbing picks, brittle and spent as she climbs; with them, the roosts.
 5. Shinies open the leafkin glades, and with them a supply of metal no human will sell.

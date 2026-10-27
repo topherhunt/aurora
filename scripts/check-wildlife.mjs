@@ -35,7 +35,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
-  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR, MAD, BUTT,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR, MAD, BUTT, FOX_IDLE, CAVE_LEAD,
 } from '../src/v2/render/wildlife.js'
 import { MEAL } from '../src/v2/eating.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
@@ -1282,6 +1282,80 @@ const differ = (p, q) => {
       if (Math.hypot(c.sx - was.x, c.sz - was.z) > 3) warps++
     }
     check(warps === 0 && c.live?.mode === 'tame', 'a pet she is looking at is never warped, however stuck it is', `${warps} warps, ${Math.hypot(o.x + 3 + 29 - c.sx, o.z - c.sz).toFixed(1)} m off`)
+    a.dispose()
+  }
+  {
+    // She stands still: her pet fox circles her, then turns to the mark, yips twice and lies facing it; she walks on and it follows.
+    const bearing = (p, q) => Math.atan2(-(q.z - p.z), q.x - p.x)
+    const a = make(7, { walk: plain, water: noWater })
+    a.place(0, 0)
+    const c = beside(a, 'fox')
+    const hm = { x: c.sx + 2, z: c.sz }
+    const mark = { x: hm.x - 30, z: hm.z + 40 }
+    a.marks = () => mark
+    a.her = new Her()
+    a._golive(c, 'tame', null, null, timeOf(a))
+    const t0 = timeOf(a)
+    let swept = 0, yips = 0, lay = null, prev = bearing(hm, { x: c.sx, z: c.sz })
+    const acts = new Set()
+    for (let f = 0; f < 30 / dt && lay === null; f++) {
+      a.her.update(hm.x, hm.z, 1, 0, t0 + f * dt)
+      step(a, hm.x, GROUND + 1.6, hm.z, dt)
+      acts.add(c.act)
+      if (c.act === 'circle') { const b = bearing(hm, { x: c.sx, z: c.sz }); swept += Math.abs(Math.atan2(Math.sin(b - prev), Math.cos(b - prev))); prev = b }
+      else prev = bearing(hm, { x: c.sx, z: c.sz })
+      yips += a.voices([]).filter((v) => v.sound === c.sp.call.sound).length
+      if (c.clip === 'lie') lay = Math.abs(Math.atan2(Math.sin(c.sh - bearing({ x: c.sx, z: c.sz }, mark)), Math.cos(c.sh - bearing({ x: c.sx, z: c.sz }, mark))))
+    }
+    check(acts.has('circle') && swept > 1.5 * Math.PI && yips === 2 && lay !== null && lay < 0.2, `she stands still: her pet fox walks round her, turns to the nearest mark, yips twice and lies facing it`, `${[...acts].join(' ')}; swept ${(swept * 180 / Math.PI).toFixed(0)} deg, ${yips} yips, lying ${lay === null ? 'never' : `${(lay * 180 / Math.PI).toFixed(0)} deg off the mark`}`)
+    for (let f = 0; f < 4 / dt; f++) {
+      const hx = hm.x + 2.9 * f * dt
+      a.her.update(hx, hm.z, 1, 0, timeOf(a))
+      step(a, hx, GROUND + 1.6, hm.z, dt)
+    }
+    check(c.act === 'follow' && c.live.idle === 0, 'she walks on and it leaves off and follows her', `${c.act}/${c.clip}, idle ${c.live.idle}`)
+    a.dispose()
+  }
+  {
+    // She goes down a cave mouth with a pet fox, hare and stag: the fox and hare go under with her and lead, the stag waits at the mouth; she surfaces and they come up behind her.
+    const CY = GROUND - 2000
+    const up = (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { out.x = 0; out.y = 1; out.z = 0; return out }
+    const cave = { hintY: CY, heightAt: () => CY, normalAt: up, trueWaterAt: () => null, obstacleAt: () => null }
+    const a = make(7, { walk: plain, water: noWater })
+    a.place(0, 0)
+    a.her = new Her()
+    const [fox, hare, stag] = ['fox', 'hare', 'stag'].map((k) => { const c = beside(a, k); a._golive(c, 'tame', null, null, timeOf(a)); return c })
+    const apron = { x: fox.sx, y: GROUND, z: fox.sz }
+    a._setDown(hare, apron.x, GROUND, apron.z + 1, 0, timeOf(a))
+    a._setDown(stag, apron.x - 3, GROUND, apron.z, 0, timeOf(a))
+    a.goUnder(cave, apron, { x: apron.x + 2, y: CY, z: apron.z, dx: 1, dz: 0 }, timeOf(a))
+    check(fox.under && hare.under && !stag.under && fox.y === CY && Math.hypot(fox.sx - apron.x - 2 - CAVE_LEAD.door, fox.sz - apron.z) <= CAVE_LEAD.side + 1e-9, 'she goes under: her pet fox and hare are set down inside the door, her stag is not', `fox ${fox.under} at ${fox.y}, hare ${hare.under}, stag ${stag.under}`)
+    const dt = 1 / 30, t0 = timeOf(a)
+    let calls = 0, worstY = 0, stagFar = 0
+    for (let f = 0; f < 12 / dt; f++) {
+      const hx = apron.x + 4 + 0.8 * f * dt
+      a.her.update(hx, apron.z, 1, 0, t0 + f * dt)
+      a.leads = { treasure: [{ x: hx, z: apron.z }, { x: hx + 40, z: apron.z }], exit: [{ x: hx, z: apron.z }, { x: apron.x, z: apron.z }] }
+      step(a, hx, CY + 1.6, apron.z, dt)
+      calls += a.voices([]).filter((v) => v.sound === fox.sp.call.sound).length
+      worstY = Math.max(worstY, Math.abs(fox.y - CY), Math.abs(hare.y - CY))
+      stagFar = Math.max(stagFar, Math.hypot(stag.sx - apron.x, stag.sz - apron.z))
+    }
+    const hx = apron.x + 4 + 0.8 * 12
+    check(worstY < 0.05 && Math.abs(fox.sx - (hx + CAVE_LEAD.ahead)) < 1.5 && Math.abs(hare.sx - (hx - CAVE_LEAD.ahead)) < 1.5 && calls >= 2, `under, they stand on the cave floor, the fox ${CAVE_LEAD.ahead} m on along the way to treasure and the hare ${CAVE_LEAD.ahead} m back along the way out, calling now and then`, `fox ${(fox.sx - hx).toFixed(1)} m, hare ${(hare.sx - hx).toFixed(1)} m off her; ${calls} fox calls; floor off by ${worstY.toFixed(2)}`)
+    check(stag.live?.mode === 'tame' && !stag.under && Math.abs(stag.y - GROUND) < 0.05 && stagFar < KEEP_UP.m, 'her stag waits by the mouth, tame, on the ground above, never warped down to her', `${stag.live?.mode}, ${stagFar.toFixed(1)} m off the mouth at worst, y ${stag.y.toFixed(1)}`)
+    a.goUp({ x: apron.x, y: GROUND, z: apron.z }, -1, 0, timeOf(a))
+    for (let f = 0; f < 10; f++) step(a, apron.x, GROUND + 1.6, apron.z, dt)
+    check(!fox.under && !hare.under && a.cave === null && [fox, hare].every((c) => Math.abs(c.y - GROUND) < 0.05 && Math.hypot(c.sx - apron.x, c.sz - apron.z) < CAVE_LEAD.door + 2), 'she surfaces and they come up behind her, on the ground again', `fox ${Math.hypot(fox.sx - apron.x, fox.sz - apron.z).toFixed(1)} m off at ${fox.y.toFixed(2)}`)
+    // She runs past where their home tiles are resident; they come along, kept stepped.
+    const runS = (RADIUS + 2 * TILE) / 5.8
+    for (let f = 0; f < runS / dt; f++) {
+      const x = apron.x + 5.8 * f * dt
+      a.her.update(x, apron.z, 1, 0, timeOf(a) + dt)
+      step(a, x, GROUND + 1.6, apron.z, dt)
+    }
+    const ends = apron.x + 5.8 * (Math.ceil(runS / dt) - 1) * dt
+    check([fox, hare, stag].every((c) => c.live?.mode === 'tame' && Math.hypot(c.sx - ends, c.sz - apron.z) < KEEP_UP.m && a.kept.spawns.includes(c.spawn)), `run ${((RADIUS + 2 * TILE) / TILE).toFixed(1)} tiles from home, her pets are still awake at her heel, their spawns kept`, `${[fox, hare, stag].map((c) => `${c.sp.key} ${c.live?.mode} ${Math.hypot(c.sx - ends, c.sz - apron.z).toFixed(1)} m`).join(', ')}; ${a.kept.spawns.length} kept`)
     a.dispose()
   }
   const h = new Her()

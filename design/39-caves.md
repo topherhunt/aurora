@@ -104,6 +104,10 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 
 **Look.** One merged mesh in one draw call (6.6k-10.9k triangles a system). Ore is lumpy knots lit by the torch; a gem is nearly black until a torch is near, then glints, a different facet each moment (`render/veins.js`).
 
+**Mining.** Either end of a held pickaxe moving over 3 m/s within 0.35 m of a vein strikes it; 3 strikes on one vein, each within 3 s of the last, pry it loose (`pickaxe.js` PICK). It goes to her other hand if free, else the backpack, and stays in the wall when neither has room. The ledger place is `place('c', system seed)` and a vein's bit is its index in `veinsOf` (design/42-valuables.md, The loot ledger); `main.js` minedOf feeds the ledger's bits to `setMined` on every build and whenever the room's loot comes in.
+
+**Pets.** Her pet foxes and hares within `KEEP_UP.m` of the mouth go under with her, set down inside the door; a fox keeps 3 m ahead along `routeFrom(..., 'treasure')`, yipping, a hare 3 m back along the way out (`render/wildlife.js` CAVE_LEAD; `main.js` refreshes the routes once a second). Frogs go under too and keep up as above ground. Stags, crabs, snowmen and striders wait at the mouth's apron. Surfacing, the ones under are set down behind her. A pet whose home tile leaves residency stays stepped (`Wildlife.kept`).
+
 ## 10. Giant cave spiders
 
 `spiderHomes(plan)` seats them on the walls and ceilings of caverns and chambers at least 50 m from a mouth. `CaveSpiders` (render/cave-spiders.js) crawls them over the rock by Newton-seating on the field every `TICK_S`, sleeping past `sleepM` (70 m) from her eye. They are darker than the forest's wood spiders. A torch within `hissM` (6 m) makes one rear and hiss, then back away from the light facing it, until the light is `calmM` away; they never attack. One instanced draw of 224 triangles each, at most 40.

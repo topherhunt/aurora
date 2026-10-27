@@ -50,7 +50,7 @@ function seamOf(position, ox, oy, oz) {
 function deepEqual(a, b) {
   if (a === b) return true
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return Number.isNaN(a) && Number.isNaN(b)
-  if (ArrayBuffer.isView(a)) return ArrayBuffer.isView(b) && a.length === b.length && a.every((v, i) => v === b[i])
+  if (ArrayBuffer.isView(a)) return ArrayBuffer.isView(b) && a.length === b.length && a.every((v, i) => v === b[i] || (v !== v && b[i] !== b[i]))
   const ka = Object.keys(a), kb = Object.keys(b)
   return Array.isArray(a) === Array.isArray(b) && ka.length === kb.length && ka.every((k) => deepEqual(a[k], b[k]))
 }

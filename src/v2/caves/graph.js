@@ -525,11 +525,11 @@ function relieve(n, edges, nooks, lobes, pools, rand) {
     if (n.dish > 0 && rhoOf(n, { x, z }) < 0.7) P[c] = 0
     if (i === 0 || k === 0 || i === nx - 1 || k === nz - 1) P[c] = N[c] = 0
   }
-  // Level where a passage or nook crosses the rim band, and under a drop's whole line in. A great cavern's hollows also keep out from under a passage's whole line: its floor runs level to the centre, and over a hollow it is a ledge wherever the wall's octaves stand a pillar beside it.
+  // Level where a passage or nook crosses the rim band, and under a drop's whole line in. Hollows keep out from under a passage's whole line in any room: its floor runs level to the centre, and over a hollow it is a ledge (in a great cavern, wherever the wall's octaves stand a pillar beside it).
   const lines = [...edges.filter((e) => e.a === n.i || e.b === n.i).map((e) => ({ pts: e.pts, drop: e.kind === 'drop' })), ...nooks.filter((o) => o.node === n.i).map((o) => ({ pts: o.pts, drop: false }))]
   for (const { pts, drop } of lines) for (const q of pts) {
     const rho = rhoOf(n, q), rim = drop || rho >= (great ? 0.8 : 0.55)
-    if (rho > 1.6 || (!rim && !great)) continue
+    if (rho > 1.6) continue
     const reach = q.w + (drop ? 2.5 : 1)
     for (let k = Math.max(0, Math.floor((q.z - reach - z0) / cell)); k <= Math.min(nz - 1, Math.ceil((q.z + reach - z0) / cell)); k++) {
       for (let i = Math.max(0, Math.floor((q.x - reach - x0) / cell)); i <= Math.min(nx - 1, Math.ceil((q.x + reach - x0) / cell)); i++) {

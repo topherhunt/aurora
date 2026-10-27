@@ -176,6 +176,8 @@ export class WildStriders {
     this.peers = []
     // Her, as one following her keeps up (keep-up.js); null and it loses her past W.follow.lose.
     this.her = null
+    // While she is underground, the cave's apron { x, y, z }, where one of hers following or led waits; null above ground.
+    this.wait = null
     this.feet = { x: 0, z: 0 }
     this.anchors = new Map()
     this.outbox = []
@@ -751,8 +753,9 @@ export class WildStriders {
         return
       }
       case 'follow': case 'led': {
-        const F = m.state === 'led' ? W.lead : W.follow, d = Math.hypot(feet.x - p.x, feet.z - p.z)
-        const keeps = mine && m.state === 'follow' && this.her !== null
+        const goal = mine && this.wait !== null ? this.wait : feet
+        const F = m.state === 'led' ? W.lead : W.follow, d = Math.hypot(goal.x - p.x, goal.z - p.z)
+        const keeps = mine && m.state === 'follow' && this.her !== null && this.wait === null
         if (mine && !keeps && d > F.lose) { this._enter(m, 'calm'); return }
         if (mine && m.state === 'follow' && this._offered(m, lures)) { this._enter(m, 'eat'); return }
         if (d > F.walk) m.moving = true
@@ -760,7 +763,7 @@ export class WildStriders {
         if (m.moving) {
           const own = (d > F.run ? this.runV : this.walkV) * p.size
           const v = keeps ? this.her.pace(own) : own
-          this._turn(m, Math.atan2(-(feet.z - p.z), feet.x - p.x), dt)
+          this._turn(m, Math.atan2(-(goal.z - p.z), goal.x - p.x), dt)
           if (this._move(m, v, dt)) this._set(m, d > F.run ? 'run' : 'walk', v)
           else this._set(m, 'idle', 0)
           m.want.yaw = m.want.pitch = 0

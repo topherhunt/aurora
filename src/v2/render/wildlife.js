@@ -145,7 +145,7 @@ import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials,
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { EAT, MEAL, atMost } from '../eating.js'
 import { FELL, SINGE, recut, redAt, reddened, touches } from '../singe.js'
-import { headway } from '../keep-up.js'
+import { KEEP_UP, headway } from '../keep-up.js'
 import { setPropSolidAt } from '../../material.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
@@ -247,6 +247,10 @@ export const FACE_M = 0.7
 export const FACE_DY = 0.8
 // A gaze is an idle held GAZE_S, then one alert look.
 const GAZE_S = [1.5, 4]
+// A pet fox of hers, once she has stood still `waitS`, trots once round her `ring` m out, then turns to the nearest mark (this.marks), yips once a `yipS` alert, twice, and lies facing it; once each time she stops.
+export const FOX_IDLE = { waitS: 2, ring: 1.6, yipS: 0.7 }
+// Her pets of `kinds` within KEEP_UP.m of the mouth go underground with her, set down `door` m in and `side` m apart; the rest wait at the mouth. Down there a fox keeps `ahead` m along the way to treasure (this.leads), a hare `ahead` m back along the way out, each to `near` m, and calls every `callS`.
+export const CAVE_LEAD = { kinds: ['fox', 'hare'], door: 1.5, side: 0.7, ahead: 3, near: 0.6, callS: [4, 9] }
 // The authority publishes a live animal's anchor every ANCHOR_S; a peer's anchor older than ANCHOR_STALE_S with no hand in sight ends the lure here; a peer's animal is nudged onto each anchor over CORRECT_S.
 export const ANCHOR_S = 1
 // Tiles rolled for the dragons past the resident set, and the stags' free plans kept for them.
@@ -332,6 +336,16 @@ export const SPECIES = [
 ]
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
+/** The point `m` along the polyline `pts` across the ground, or its end. */
+function along(pts, m) {
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i]
+    const d = Math.hypot(b.x - a.x, b.z - a.z)
+    if (d >= m) return { x: a.x + ((b.x - a.x) * m) / d, z: a.z + ((b.z - a.z) * m) / d }
+    m -= d
+  }
+  return pts[pts.length - 1]
+}
 /** Seconds on the tick grid: every phrase and step is a whole number of ticks, so a walk's length in ticks is a count and not a rounding. */
 const ticksOf = (s) => Math.round(s * TICK_HZ)
 const onGrid = (s) => ticksOf(s) * TICK_S
@@ -357,6 +371,7 @@ const _cargo = new THREE.Matrix4()
 const _hang = new THREE.Matrix4()
 const _dim = new THREE.Color()
 const _norm = { x: 0, y: 1, z: 0 }
+const _stone = { x: 0, z: 0, r: 0 }
 const _tickPose = { x: 0, z: 0, heading: 0 }
 const _farPose = { x: 0, z: 0, heading: 0 }
 
@@ -423,6 +438,15 @@ export class Wildlife {
     this.butts = new Map()
     // Her, as a tame one keeps up with her (keep-up.js); null and a tame one forgets her past LURE_FORGET_M.
     this.her = null
+    // (x, z) -> the nearest mark { x, z } a pet fox points out (FOX_IDLE): a cave mouth, labyrinth, roost or town; null for none.
+    this.marks = null
+    // Her pets stepped though their home tile has left (_leave): a tile of its own.
+    this.kept = { spawns: [] }
+    // The cave she is in ({ walk, apron }, goUnder), or null; and the ways from her feet a pet under it leads along ({ treasure, exit }, world polylines or null each), or null.
+    this.cave = null
+    this.leads = null
+    // The cave walk the animal being stepped stands on, for seat; null on the overworld.
+    this._in = null
     // Whether the animals near her come for her (madden).
     this.maddened = false
     // Her size, a multiple of her full height (sized).
@@ -544,7 +568,9 @@ export class Wildlife {
     this.blades = NO_LURES
     this.cuts = new Map()
     // Her head this frame, what a wary animal flees and a tame one follows.
-    this.head = { x: Infinity, y: Infinity, z: Infinity }
+    // Her head, and the head the animal being stepped heeds: hers, or underground for one not under with her, the cave's apron.
+    this._head = { x: Infinity, y: Infinity, z: Infinity }
+    this.head = this._head
     // One-shots since the ear last drained them (voices).
     this.said = []
 
@@ -628,11 +654,25 @@ export class Wildlife {
    * every client plans the same walk. The normal there goes into `_norm`.
    */
   seat(x, z) {
+    if (this._in !== null) return this._caveSeat(x, z)
     if (this.avoid !== null && this.avoid(x, z)) return null
     const y = this.height.heightAt(x, z)
     if (this.water.isSubmerged(x, z, y)) return null
     if (y > this.height.snowLineAt(x, z) - SNOW_MARGIN) return null
     this.height.normalAt(x, z, undefined, _norm)
+    if (Math.acos(Math.min(1, _norm.y)) > MAX_SLOPE) return null
+    return y
+  }
+
+  /** seat in the cave this._in about her feet: floor within a step up or a drop down, gentle, dry and clear of stone. */
+  _caveSeat(x, z) {
+    const w = this._in, y0 = w.hintY
+    const y = w.heightAt(x, z, y0)
+    if (y > y0 + 0.6 || y < y0 - 1.5) return null
+    const level = w.trueWaterAt(x, z, y0)
+    if (level !== null && level > y) return null
+    if (w.obstacleAt(x, z, _stone) !== null) return null
+    w.normalAt(x, z, undefined, _norm, y0)
     if (Math.acos(Math.min(1, _norm.y)) > MAX_SLOPE) return null
     return y
   }
@@ -677,9 +717,16 @@ export class Wildlife {
   /** The tile becoming resident: the roll the dragons may already have asked for, else a fresh one. */
   _grow(tx, tz) {
     const key = tileKey(tx, tz)
-    const had = this.rolled.get(key)
-    if (had) { this.rolled.delete(key); return had }
-    return this._roll(tx, tz)
+    let t = this.rolled.get(key)
+    if (t) this.rolled.delete(key)
+    else t = this._roll(tx, tz)
+    // A pet of hers kept off this tile comes home to it.
+    const kept = this.kept.spawns
+    for (let i = 0; i < t.spawns.length; i++) {
+      const j = kept.findIndex((s) => s.key === t.spawns[i].key)
+      if (j >= 0) t.spawns[i] = kept.splice(j, 1)[0]
+    }
+    return t
   }
 
   /** The tile (tx, tz) resident or not: the resident one, or the same roll from a bounded cache. */
@@ -696,7 +743,7 @@ export class Wildlife {
   /** The spawn keyed `key`, woken or not, resident or not; a key no tile rolled throws. */
   _spawnOf(key) {
     const m = /^[a-z]+:(-?\d+),(-?\d+):\d+$/.exec(key)
-    const s = m && this._tileOf(Number(m[1]), Number(m[2])).spawns.find((c) => c.key === key)
+    const s = this.kept.spawns.find((c) => c.key === key) ?? (m && this._tileOf(Number(m[1]), Number(m[2])).spawns.find((c) => c.key === key))
     if (!s) throw new Error(`Wildlife: no animal keyed ${key}`)
     return s
   }
@@ -724,6 +771,7 @@ export class Wildlife {
     c.puppet = null
     c.cardWant = false
     c.cardP = 1
+    c.under = false
     s.slot = c
     this.byKey.set(c.key, c)
     this._replace(c, now)
@@ -753,18 +801,71 @@ export class Wildlife {
     this.score.forget(c.key)
     c.spawn = null
     c.live = c.rejoin = c.lure = null
+    c.under = false
     s.slot = null
     s.sp.free.push(c)
   }
 
+  /** The tile no longer resident: its animals asleep, but for her pets (_hers), kept stepped wherever they have followed her. */
   _leave(t, fade = true) {
-    for (const s of t.spawns) this._sleep(s, fade)
+    for (const s of t.spawns) {
+      if (fade && s.slot !== null && this._hers(s.slot)) this.kept.spawns.push(s)
+      else this._sleep(s, fade)
+    }
     t.spawns.length = 0
+  }
+
+  /** Whether it is live at her heel, hers: tame, or a pet stag charging a dragon. */
+  _hers(c) {
+    return c.live !== null && (c.live.mode === 'tame' || c.live.mode === 'butt') && c.live.by === null && this.her !== null
+  }
+
+  /**
+   * She goes underground: her pets of CAVE_LEAD.kinds near `apron` (the
+   * mouth's, { x, y, z }) set down inside `door` ({ x, y, z, dx, dz }, world,
+   * facing in) to stand on `walk` (caves/walk.js); every other animal heeds
+   * the apron as her head while she is down.
+   */
+  goUnder(walk, apron, door, now) {
+    this.cave = { walk, apron }
+    let n = 0
+    for (const c of this.byKey.values()) {
+      if (!this._hers(c) || !CAVE_LEAD.kinds.includes(c.sp.key) || Math.hypot(c.sx - apron.x, c.sz - apron.z) > KEEP_UP.m) continue
+      const side = (n % 2 ? -1 : 1) * Math.ceil(n / 2) * CAVE_LEAD.side
+      this._setDown(c, door.x + door.dx * CAVE_LEAD.door - door.dz * side, door.y, door.z + door.dz * CAVE_LEAD.door + door.dx * side, Math.atan2(-door.dz, door.dx), now)
+      c.under = true
+      n++
+    }
+  }
+
+  /** She surfaces at `at` ({ x, y, z }) facing (fx, fz): her pets under with her set down behind her. */
+  goUp(at, fx, fz, now) {
+    let n = 0
+    for (const c of this.byKey.values()) {
+      if (!c.under) continue
+      const side = (n % 2 ? -1 : 1) * Math.ceil(n / 2) * CAVE_LEAD.side
+      this._setDown(c, at.x - fx * CAVE_LEAD.door - fz * side, at.y, at.z - fz * CAVE_LEAD.door + fx * side, Math.atan2(-fz, fx), now)
+      c.under = false
+      n++
+    }
+    this.cave = this.leads = null
+  }
+
+  /** A live animal put at (x, y, z) heading `h`, its ground read afresh and the room owed its anchor. */
+  _setDown(c, x, y, z, h, now) {
+    c.sx = c.lx = c.x = x
+    c.sz = c.lz = c.z = z
+    c.sh = c.lh = h
+    c.y = y
+    c.px = NaN
+    c.way = headway()
+    c.live.sendTick = tickOf(now)
   }
 
   /** Rebuild every tile around (cx, cz). Boot, and whenever the ground moves under her. Nothing fades: the ground a body was standing on is not there to fade on. The room's anchors are kept. */
   place(cx, cz) {
     for (const t of this.tiles.values()) this._leave(t, false)
+    this._leave(this.kept, false)
     for (const f of this.fading) this._park(f.puppet, f.sp)
     this.fading.length = 0
     for (const f of this.fadingCards) this._freeCard(f.id)
@@ -1024,6 +1125,7 @@ export class Wildlife {
       case 'flee': return [[sp.flee, onGrid(FLEE_S)]]
       case 'look': return [['alert', onGrid(FEAR.lookS)]]
       case 'gaze': return [['idle', onGrid(between(rand, GAZE_S))], ['alert', onGrid(d.alert)]]
+      case 'point': return [['alert', onGrid(FOX_IDLE.yipS)], ['alert', onGrid(FOX_IDLE.yipS)], ['lie', onGrid(d.lie)]]
       default: throw new Error(`Wildlife: no activity named ${act}`)
     }
   }
@@ -1419,7 +1521,7 @@ export class Wildlife {
     c.cycle = c.sp.durations[c.clip] / c.pace
     c.cue++
     c.speed = gait ? this._mps(c, c.clip) : 0
-    if (c.act === 'eat' && c.clip === 'eat-up') this._say(c)
+    if ((c.act === 'eat' && c.clip === 'eat-up') || (c.act === 'point' && c.clip === 'alert')) this._say(c)
   }
 
   /** A live activity begun at `now`: its steps. Eating takes her carrot, and makes the animal tame; one that cannot have it begs. */
@@ -1430,6 +1532,8 @@ export class Wildlife {
     if (act === 'follow') {
       const behind = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
       q.push([c.sp.follow.find(([, m]) => behind < m)[0], FOLLOW_STEP_S])
+    } else if (act === 'circle') {
+      q.push(['trot', onGrid((2 * Math.PI * FOX_IDLE.ring) / this._mps(c, 'trot'))])
     } else {
       if (act === 'eat') {
         if (this.eat === null) throw new Error('Wildlife: a carrot of hers at its face, and no eat() to take it with')
@@ -1528,7 +1632,8 @@ export class Wildlife {
 
   /** Off the score in `mode`, live from `now`. `by` is the client that set it live, null for this client, which then owes the room the anchors. Its dice are the moment it went live. */
   _golive(c, mode, lure, by, now) {
-    c.live = { mode, by, anchor: null, sendTick: tickOf(now), rand: mulberry32(hash32(keyHash(c.key), tickOf(now))) }
+    // `idle` is how far a pet fox is through FOX_IDLE since she last moved, `mark` what it points to; `callAt` when one leading her underground next calls (CAVE_LEAD).
+    c.live = { mode, by, anchor: null, sendTick: tickOf(now), rand: mulberry32(hash32(keyHash(c.key), tickOf(now))), idle: 0, mark: null, callAt: 0 }
     c.rejoin = null
     c.lure = lure
     c.goal = null
@@ -1577,6 +1682,11 @@ export class Wildlife {
     c.aim = bearing({ x: c.sx, z: c.sz }, g)
   }
 
+  /** Whether it is her pet fox and she has stood still FOX_IDLE.waitS on the overworld. */
+  _idles(c, now) {
+    return c.sp.key === 'fox' && c.live.mode === 'tame' && c.live.by === null && this.her !== null && this.cave === null && this.her.stillFor(now) >= FOX_IDLE.waitS
+  }
+
   /** Whether it follows its goal: anything but a wary animal after a lure. */
   _roams(c) { return !(c.sp.wary && c.live.mode === 'lure') }
 
@@ -1600,6 +1710,11 @@ export class Wildlife {
     if (l !== null && this._atFace(c)) { this._begin(c, c.sp.heel !== undefined && l.by === null ? 'eat' : 'beg', now); return }
     const dist = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
     if (c.live.mode === 'mad' || c.live.mode === 'hunt' || c.live.mode === 'butt') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
+    if (this._idles(c, now) && c.live.idle < 2 && dist <= FOX_IDLE.ring + RESUME_M) {
+      if (c.live.idle === 1) c.live.mark = this.marks === null ? null : this.marks(c.sx, c.sz)
+      c.live.idle++
+      if (c.live.idle === 1 || c.live.mark !== null) { this._begin(c, c.live.idle === 1 ? 'circle' : 'point', now); return }
+    }
     if (this._roams(c) && dist > c.near + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
     this._begin(c, c.sp.court, now)
   }
@@ -1699,13 +1814,24 @@ export class Wildlife {
     }
     c.goal = h
     c.near = c.sp.heel
+    if (c.under) this._lead(c, now)
     // A meal of hers in reach is one it eats (_heed, _court).
     const l = this._lure(c)
     c.lure = l !== null && l.by === null ? l : null
     if (c.act !== 'eat') this._heed(c, k)
+    if (!this._idles(c, now)) {
+      c.live.idle = 0
+      if (c.act === 'circle' || c.act === 'point') { c.queue.length = 0; c.stepEndTick = k }
+    }
     if (k >= c.stepEndTick) this._next(c, now)
+    if (c.act === 'circle' && c.detour === 0) {
+      // Round her: square to the line out from her, turned in as it strays past the ring.
+      const r = Math.hypot(c.sx - h.x, c.sz - h.z)
+      c.aim = bearing(h, { x: c.sx, z: c.sz }) + Math.PI / 2 + Math.max(-0.6, Math.min(0.6, r - FOX_IDLE.ring))
+    } else if (c.act === 'point') c.aim = bearing({ x: c.sx, z: c.sz }, c.live.mark)
     this._move(c, k)
-    if (this.her !== null) {
+    // Underground, one waiting at the mouth keeps no pace with her.
+    if (this.her !== null && (this.cave === null || c.under)) {
       const to = this.her.keepUp(c.way, c.sx, c.sz, c.act !== 'eat' && dist > c.near + RESUME_M, now, (x, z) => this.seat(x, z) !== null)
       if (to !== null) {
         c.sx = c.lx = to.x
@@ -1715,6 +1841,17 @@ export class Wildlife {
       }
     }
     return true
+  }
+
+  /** Under with her, its goal CAVE_LEAD.ahead along its way from her feet (a fox's to treasure, a hare's out), and its call every CAVE_LEAD.callS; at her heel while there is no way. */
+  _lead(c, now) {
+    const way = this.leads === null ? null : c.sp.key === 'fox' ? this.leads.treasure : this.leads.exit
+    if (way === null) return
+    c.goal = along(way, CAVE_LEAD.ahead)
+    c.near = CAVE_LEAD.near
+    if (now < c.live.callAt) return
+    this._say(c)
+    c.live.callAt = now + between(c.live.rand, CAVE_LEAD.callS)
   }
 
   /** Maddened: after her to MAD.reach body lengths, striking there. Her past LURE_FORGET_M, or the chanterelle worn off, ends it. False once it is off. */
@@ -2098,6 +2235,11 @@ export class Wildlife {
     this.cardIds.push(id)
   }
 
+  * _stepped() {
+    yield* this.tiles.values()
+    yield this.kept
+  }
+
   /** Draw the whole layer or none of it; the cards are shared instances, so the batch's `visible` alone would leave them. */
   setShown(shown) {
     this.batch.visible = shown
@@ -2117,9 +2259,15 @@ export class Wildlife {
     this.last = now
     this.lures = lures
     this.torches = torches
-    this.head.x = hx
-    this.head.y = hy
-    this.head.z = hz
+    this._head.x = hx
+    this._head.y = hy
+    this._head.z = hz
+    const kept = this.kept.spawns
+    for (let i = kept.length - 1; i >= 0; i--) {
+      if (kept[i].slot !== null && this._hers(kept[i].slot)) continue
+      this._sleep(kept[i])
+      kept.splice(i, 1)
+    }
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._grow(tx, tz), (t) => this._leave(t))
       this.walkedX = hx
@@ -2142,9 +2290,12 @@ export class Wildlife {
     }
 
     const want = tickOf(now)
-    for (const t of this.tiles.values()) {
+    for (const t of this._stepped()) {
       for (const s of t.spawns) {
         if (now < s.deadUntil) continue
+        const under = s.slot !== null && s.slot.under
+        this._in = under ? this.cave.walk : null
+        this.head = this.cave === null || under ? this._head : this.cave.apron
         // Asleep, it is measured from home; awake, from wherever the score has walked it -- and past its card, not stepped, from where the score has it now, as a joiner waking it would.
         const live = s.slot
         let ax = live ? live.x : s.x
@@ -2223,9 +2374,10 @@ export class Wildlife {
         // the last probe measured, which is what makes a long stride cost
         // nothing visible and a standing animal cost no ground at all.
         const probing = (this.frame + c.id) % PROBE_EVERY[tier] === 0 || Number.isNaN(c.px)
+        const ground = under ? this._in : this.walk
         if (probing && (c.x !== c.px || c.z !== c.pz)) {
-          c.y = this.walk.heightAt(c.x, c.z)
-          this.walk.normalAt(c.x, c.z, undefined, _norm)
+          c.y = ground.heightAt(c.x, c.z)
+          ground.normalAt(c.x, c.z, undefined, _norm)
           c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
           c.px = c.x; c.pz = c.z
         } else {
@@ -2260,7 +2412,7 @@ export class Wildlife {
         _mat.compose(_pos, _quat, _scl)
 
         puppet.play(c.clip, c.cue)
-        groundFeet(puppet, c, this.walk, PLANTED, probing)
+        groundFeet(puppet, c, ground, PLANTED, probing)
         puppet.mixer.timeScale = c.pace
         puppet.step(dt)
         // Every frame, whether or not it re-posed: a held puppet slides on in the pose its bone texture holds (puppet.js POSE_EVERY).
@@ -2268,6 +2420,8 @@ export class Wildlife {
         puppet.group.matrixWorldNeedsUpdate = true
       }
     }
+    this.head = this._head
+    this._in = null
 
     // The felled, on their dead clip where they fell: pulsing red, then black, then dissolving. carry() hangs a body GRIP of its height under the matrix, so the matrix is raised that much.
     for (let i = this.corpses.length - 1; i >= 0; i--) {

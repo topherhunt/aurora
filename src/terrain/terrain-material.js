@@ -1703,6 +1703,34 @@ export const FOREST_TINT_FAR = 250
 // route): past it a coarser chunk shows a sparser lattice, and a split pops.
 export const GRAIN_NEAR = 8
 export const GRAIN_FAR = 16
+// The cobbled road (the stipple rung's COBBLES block): metres of road per tile,
+// the eye distance it fades out over, and the tile's mean linear colour, which
+// the shader divides out so the tile only varies the road's own vertex colour.
+export const COBBLE_METRES = 3
+export const COBBLE_NEAR = 80
+export const COBBLE_FAR = 100
+const COBBLE_MEAN = [0.297, 0.269, 0.224]
+
+// Shared by every stipple material: 0 until the tile has loaded, because an
+// unloaded texture samples black with alpha 1, which reads as solid stone.
+const COBBLE_ON = { value: 0 }
+let cobbleCached = null
+
+// The tile (tmp/cobble bake): sRGB colour, and in alpha 0.5 + 0.5 * the stone
+// mask, kept off zero so the browser's premultiply cannot wipe the dirt's colour.
+function cobbleTile() {
+  if (cobbleCached === null) {
+    cobbleCached = new THREE.TextureLoader().load('/terrain/cobble.webp', () => {
+      COBBLE_ON.value = 1
+    }, undefined, (e) => {
+      throw new Error(`terrain-material: /terrain/cobble.webp failed to load: ${e?.message ?? e}`)
+    })
+    cobbleCached.colorSpace = THREE.SRGBColorSpace
+    cobbleCached.wrapS = cobbleCached.wrapT = THREE.RepeatWrapping
+    cobbleCached.anisotropy = 4
+  }
+  return cobbleCached
+}
 
 /**
  * @param {THREE.Material} source  the material createTerrainMaterial built, for
@@ -1744,6 +1772,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       // Bump only, on the wall planes (1, 2): a cliff's relief is the
       // stipple's to carry, since its mesh is starved of vertices.
       uStippleWallBump: { value: 2.0 },
+      uCobbleMap: { value: cobbleTile() },
+      uCobbleOn: COBBLE_ON,
     })
   }
 
@@ -1762,7 +1792,10 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         flat varying vec3 vStipAnchor;
         varying vec3 vStipPos;
         varying float vStipK;
-        varying float vStipSnow;` : ''}`)
+        varying float vStipSnow;
+        attribute vec3 road;
+        varying vec3 vRoad;
+        varying float vRoadFade;` : ''}`)
       // AFTER project_vertex, NOT at color_vertex: three applies the BatchedMesh
       // per-chunk matrix (batching_vertex) between the two, so this is the first
       // hook where mvPosition is the vertex's real view-space position and its
@@ -1802,7 +1835,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         vStipFrame = stipple;
         vStipAnchor = transformed;
         vStipPos = transformed;
-        vStipK = stipple.x;`
+        vStipK = stipple.x;
+        vRoad = road;
+        vRoadFade = 1.0 - smoothstep( ${COBBLE_NEAR.toFixed(1)}, ${COBBLE_FAR.toFixed(1)}, length( mvPosition.xyz ) );`
       )
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
@@ -1816,6 +1851,10 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         varying vec3 vStipPos;
         varying float vStipK;
         varying float vStipSnow;
+        uniform sampler2D uCobbleMap;
+        uniform float uCobbleOn;
+        varying vec3 vRoad;
+        varying float vRoadFade;
         // Filled at color_fragment, read at normal_fragment_begin.
         vec3 auroraStippleTilt;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
@@ -1849,7 +1888,37 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
           * ( vStipFrame.w < 0.5 ? 1.0 : uStippleWallBump );
         auroraStippleTilt = vStipFrame.w < 0.5 ? vec3( auroraStipGrad.x, 0.0, auroraStipGrad.y )
           : vStipFrame.w < 1.5 ? vec3( 0.0, auroraStipGrad.y, auroraStipGrad.x )
-          : vec3( auroraStipGrad, 0.0 );`)
+          : vec3( auroraStipGrad, 0.0 );
+
+        // ---- THE COBBLES, on the road frame (chunk-mesh-v2 ROAD FRAME): the
+        // tile's rows run across the road. The UV's derivatives are taken here,
+        // in uniform flow, and the fetch sits behind the branch as a textureGrad,
+        // so ground off the road pays a little ALU and no fetch.
+        vec2 auroraCobUv = vRoad.yx * ${(1 / COBBLE_METRES).toFixed(6)};
+        vec2 auroraCobDx = dFdx( auroraCobUv );
+        vec2 auroraCobDy = dFdy( auroraCobUv );
+        // Where the nearest road changes (a junction, a ring's two ends), the
+        // frame jumps inside one triangle and the interpolated UV smears the
+        // tile into a stripe. A road's frame is near enough an isometry, so a
+        // pixel whose frame moves much faster than its world position is on a
+        // seam and gets the plain dirt instead.
+        float auroraCobSeam = max( length( vec2( dFdx( vRoad.x ), dFdx( vRoad.y ) ) ), length( vec2( dFdy( vRoad.x ), dFdy( vRoad.y ) ) ) )
+          / max( max( length( dFdx( vViewPosition ) ), length( dFdy( vViewPosition ) ) ), 1e-5 );
+        float auroraCobGate = uCobbleOn * vRoadFade * ( 1.0 - smoothstep( 1.6, 2.5, auroraCobSeam ) );
+        if ( vRoad.z < 1.45 && auroraCobGate > 0.0 ) {
+          vec4 auroraCob = textureGrad( uCobbleMap, auroraCobUv, auroraCobDx, auroraCobDy );
+          // The hem: half-widths from the centreline, waved along the road and
+          // differently on each side. Inside it the whole tile, dirt and all;
+          // past it only stones, fewer the further out, so the edge is stones
+          // thinning into the verge rather than a line.
+          float auroraHem = vRoad.z + 0.12 * sin( vRoad.x * 0.83 + sign( vRoad.y ) * 2.1 ) + 0.07 * sin( vRoad.x * 2.9 );
+          float auroraStone = auroraCob.a * 2.0 - 1.0;
+          float auroraKeep = smoothstep( 0.75, 1.3, auroraHem );
+          float auroraCobW = max( 1.0 - smoothstep( 0.7, 0.95, auroraHem ), smoothstep( auroraKeep, auroraKeep + 0.15, auroraStone ) * ( 1.0 - step( 1.3, auroraHem ) ) ) * auroraCobGate;
+          vec3 auroraCobbled = vColor.rgb * auroraCob.rgb / vec3( ${COBBLE_MEAN.map((v) => v.toFixed(3)).join(', ')} );
+          diffuseColor.rgb = mix( diffuseColor.rgb, auroraCobbled, auroraCobW );
+          auroraStippleTilt *= 1.0 - auroraCobW;
+        }`)
         // Lambert lights per fragment in every three this runs on, so a tilted
         // normal is a tilted N.L. `normal` is view space here, so the world
         // tilt is rotated in, as the shipping shader does with auroraBump.

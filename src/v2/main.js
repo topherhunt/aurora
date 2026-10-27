@@ -90,7 +90,7 @@ import { Loot, place } from './loot.js'
 import { ALTAR, LABYRINTH } from './layers/labyrinths.js'
 import { mulberry32 } from '../sim/mathx.js'
 import { ITEMS, SMALL, Items, itemUrl } from './items.js'
-import { SWORD, shielded } from './singe.js'
+import { SINGE, SWORD, recut, shielded } from './singe.js'
 import { Her } from './keep-up.js'
 import { Conversations } from './conversations.js'
 import { Mic } from './audio/mic.js'
@@ -164,6 +164,8 @@ import { Bites, EAT, Effects, atMost, buzzBuffer, edible, reversedBuffer } from 
 import { siteCellars, groupSystems, caveEntries } from './caves/sites.js'
 import { planCave, EXIT_R } from './caves/build.js'
 import { CaveWalk } from './caves/walk.js'
+import { routeFrom, veinsOf } from './caves/veins.js'
+import { PICK, Pick } from './pickaxe.js'
 import { CaveMouths } from './render/cave-mouths.js'
 import { CaveRoom, CAVE_AIR, CAVE_MURK, DOOR as CAVE_DOOR } from './render/cave-room.js'
 import { ChalkStones, KIND as CHALK } from './render/chalk.js'
@@ -2499,6 +2501,54 @@ function updateBlades(dt) {
   }
 }
 
+// Her pickaxe (pickaxe.js) on the veins of the cave she is in: either end of a pick she holds, moving faster than PICK.mps, strikes.
+const pickEnds = new Map()
+const pickTips = []
+function updatePicks(dt) {
+  for (const key of HAND_KEYS) {
+    if (!pickEnds.has(key)) pickEnds.set(key, { held: false, a: new THREE.Vector3(), b: new THREE.Vector3(), pick: new Pick() })
+    const ends = pickEnds.get(key)
+    const was = ends.held
+    ends.held = hands.holding(key)?.kind === 'pickaxe'
+    if (!ends.held) continue
+    hands.heldFrame(key, bladeFrame)
+    items.half('pickaxe', bladeHalf)
+    _bladeA.copy(bladeHalf).applyMatrix4(bladeFrame)
+    _bladeB.copy(bladeHalf).negate().applyMatrix4(bladeFrame)
+    const fast = was && dt > 0 && Math.max(_bladeA.distanceTo(ends.a), _bladeB.distanceTo(ends.b)) / dt > PICK.mps
+    ends.a.copy(_bladeA)
+    ends.b.copy(_bladeB)
+    if (cave === null) continue
+    pickTips.length = 0
+    if (fast) pickTips.push(ends.a, ends.b)
+    const { room } = caveBuild
+    const at = ends.pick.at
+    const v = ends.pick.step(pickTips, caveBuild.veins.filter((q) => !room.mined.has(q.id)), clock.seconds)
+    if (ends.pick.at !== at && ambience) sound.play('thud', { bus: 'near', rate: THREE.MathUtils.randFloat(1.6, 1.9), gain: 0.6 })
+    if (v !== null) mineVein(key, v)
+  }
+}
+
+/** Vein `v` pried loose by the pick in hand `key`: taken in the ledger, gone from the wall, into her other hand if it is free, else the backpack; left in the wall when neither has room. */
+function mineVein(key, v) {
+  const free = (sceneEl.is('vr-mode') ? ['left', 'right'] : ['desk']).find((k) => k !== key && hands.holding(k) === null && items.dress({ kind: v.kind }) !== null)
+  if (free === undefined && !SMALL.includes(v.kind) && backpack.indexOf(null) < 0) { console.warn(`[v2] pickaxe: no free hand or backpack slot for the ${v.kind}; it stays in the wall`); return }
+  const { sys, room } = caveBuild
+  if (loot.take(place('c', sys.seed), caveBuild.veins.indexOf(v))) {
+    if (free !== undefined) hands.give(free, items.slot(v.kind), handsHead())
+    else if (!pack.add(v.kind)) throw new Error(`v2: no room for the mined ${v.kind}`)
+    playPick()
+  }
+  room.mined.add(v.id)
+  room.setMined(room.mined)
+}
+
+/** The ids of system `seed`'s veins the ledger says are taken: a vein's bit is its place in `veins` (veinsOf). */
+function minedOf(seed, veins) {
+  const p = place('c', seed)
+  return new Set(veins.filter((v, i) => loot.taken(p, i)).map((v) => v.id))
+}
+
 // What of a creature's blow from `from` gets past the shields she holds (singe.js SHIELD).
 const shieldFrame = new THREE.Matrix4()
 function shieldFor(from) {
@@ -2607,6 +2657,10 @@ function syncTrust() {
   if (netplay.welcomes !== chalkWelcomes) { chalkWelcomes = netplay.welcomes; chalk.resend() }
   chalk.flush((batch) => netplay.sendChalk(batch))
   loot.merge(netplay.loot)
+  if (netplay.loot.length > 0 && caveBuild !== null) {
+    const mined = minedOf(caveBuild.sys.seed, caveBuild.veins)
+    if (mined.size !== caveBuild.room.mined.size) caveBuild.room.setMined(mined)
+  }
   netplay.loot.length = 0
   if (netplay.welcomes !== lootWelcomes) { lootWelcomes = netplay.welcomes; loot.resend() }
   loot.flush((batch) => netplay.sendLoot(batch))
@@ -4413,6 +4467,9 @@ let caveJob = 0
 // Underground, every scene child but these is hidden each frame (several layers set their own visibility), and caveHidden put back as she surfaces.
 const caveKeep = new Set()
 const caveHidden = new Set()
+let caveLeadAt = 0
+// When her sword last cut each cave spider (singe.js recut), keyed system seed and spider id.
+const spiderCuts = new Map()
 // In a house, the same hiding: everything but its view and residents, put back by closeHouse.
 const houseKeep = new Set()
 const houseHidden = new Set()
@@ -4460,7 +4517,8 @@ function buildCave(sys, door) {
   const id = ++caveJob
   if (caveWorker === null) caveWorker = new Worker(new URL('./caves/worker.js', import.meta.url), { type: 'module' })
   let nearIn
-  caveBuild = { sys, plan, room, near: new Promise((resolve) => { nearIn = resolve }) }
+  caveBuild = { sys, plan, room, veins: veinsOf(room), near: new Promise((resolve) => { nearIn = resolve }) }
+  room.setMined(minedOf(sys.seed, caveBuild.veins))
   caveWorker.onmessage = (ev) => {
     const d = ev.data
     if (d.id !== caveJob) return
@@ -4534,6 +4592,9 @@ async function enterCave(sys, door, back) {
   aimFish(pools.bed, pools.water, pools.spots, sys.seed, d.x, d.z)
   player.teleportTo(d.x, d.z, d.y + CAVE_OY)
   faceAlong(d.dx, d.dz)
+  if (wildlife) wildlife.goUnder(inner, back, { x: d.x, y: d.y + CAVE_OY, z: d.z, dx: d.dx, dz: d.dz }, clock.seconds)
+  if (frogs) frogs.goUnder(inner, back, { x: d.x, y: d.y + CAVE_OY, z: d.z, dx: d.dx, dz: d.dz })
+  for (const l of [crabs, snowmen, wildStriders]) if (l) l.wait = back
   console.log(`[v2] into cave ${sys.id} by door ${door} of ${sys.mouths.length} mouths and ${sys.cellars.length} cellars`)
   ready = true
   await fade(0)
@@ -4553,6 +4614,8 @@ async function leaveCave(i) {
     const at = caveMouths.apron(m)
     player.teleportTo(at.x, at.z, at.y)
     faceAlong(m.nx, m.nz)
+    if (wildlife) wildlife.goUp(at, m.nx, m.nz, clock.seconds)
+    if (frogs) frogs.goUp(at, m.nx, m.nz)
   } else {
     const c = caveSites.cellars[sys.cellars[i - sys.mouths.length]]
     if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
@@ -4561,6 +4624,10 @@ async function leaveCave(i) {
     const o = indoors.view.group.position, d = indoors.room.cellar
     player.teleportTo(o.x + d.door.x - d.nx * CELLAR.foot, o.z + d.door.z - d.nz * CELLAR.foot)
     faceAlong(-d.nx, -d.nz)
+    // Her pets wait outside the house's door.
+    const b = indoors.back, e = indoors.door
+    if (wildlife) wildlife.goUp(b, -e.nx, -e.nz, clock.seconds)
+    if (frogs) frogs.goUp(b, -e.nx, -e.nz)
   }
   ready = true
   await fade(0)
@@ -4576,6 +4643,7 @@ function closeCave() {
   for (const o of caveHidden) o.visible = true
   caveHidden.clear()
   caveBuild.room.group.removeFromParent()
+  for (const l of [crabs, snowmen, wildStriders]) if (l) l.wait = null
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = cave.outside
   if (player) player.setGround(walk)
@@ -4615,8 +4683,21 @@ function stepIndoors() {
 /** Each frame underground, after every layer's own update: the overworld out of the draw, and the cave's fog, culling and creatures. */
 function stepCave(head, t) {
   caveKeep.clear()
-  keepUnderRoof(caveKeep).add(caveBuild.room.group).add(fish.batch)
+  keepUnderRoof(caveKeep).add(caveBuild.room.group).add(fish.batch).add(wildlife.batch).add(frogs.batch)
   hideOutside(caveKeep, caveHidden)
+  // The ways her pets under with her lead along (wildlife.js CAVE_LEAD), from her feet once a second.
+  if (t >= caveLeadAt) {
+    caveLeadAt = t + 1
+    const feet = player.originPosition()
+    wildlife.leads = { treasure: routeFrom(caveBuild.room, feet, 'treasure'), exit: routeFrom(caveBuild.room, feet, 'exit') }
+  }
+  // Her sword on a cave spider: on a wall or a roof it has no feet-up body for touches(), so any blade point within SINGE.reach of its size from its middle.
+  if (blades.length > 0) {
+    const spiders = caveBuild.room.spiders
+    for (const s of spiders.list()) {
+      if (s.state !== 'dead' && blades.some((b) => Math.hypot(b.x - s.x, b.y - s.y, b.z - s.z) <= SINGE.reach * s.size) && recut(spiderCuts, `${caveBuild.sys.seed}:${s.id}`, t)) spiders.hurt(s.id, SINGE.hp)
+    }
+  }
   caveBuild.room.setDay(dayness)
   caveBuild.room.update(head, submerged, t, player.flying)
   if (questToggles.reflections && !submerged) caveBuild.room.reflect(renderer, scene, head)
@@ -5438,6 +5519,18 @@ async function buildRoom(room, at) {
   const wildAvoid = towns || palisades ? (x, z) => (towns !== null && towns.nearBuildingAt(x, z, 20)) || (palisades !== null && palisades.labyrinths.keepOutAt(x, z, 2)) : null
   wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: wildAvoid, eat: (lure, sp) => hands.eatLure(lure, sp), harm, butt: (key, hp, x, z, now) => dragons.butted(key, hp, x, z, now) })
   wildlife.her = her
+  wildlife.marks = (x, z) => {
+    const R = LABYRINTH.region
+    const marks = [
+      ...(townPlan ? townPlan.towns : []),
+      ...(caveSites !== null ? caveSites.mouths : []),
+      ...(roosts ? roosts.sites() : []),
+      ...(palisades ? palisades.labyrinths.sitesIn(x - R, z - R, x + R, z + R).map((s) => ({ x: s.cx, z: s.cz })) : []),
+    ]
+    let best = null
+    for (const m of marks) if (best === null || Math.hypot(m.x - x, m.z - z) < Math.hypot(best.x - x, best.z - z)) best = m
+    return best
+  }
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -8343,6 +8436,7 @@ function tick() {
   visions.update(dt, flarePx.y)
   updateFire(dt)
   updateBlades(dt)
+  updatePicks(dt)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()
   // After the wildlife, so the anchor an animal owes this frame leaves this frame, and a peer's anchor lands before the animal's next step.

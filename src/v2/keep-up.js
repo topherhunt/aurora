@@ -1,5 +1,5 @@
 // A pet or snowman following her keeps up: on her heels it goes as fast as she does, `over` her pace, and one past `m` behind, or `stallS` s further than `near` without closing `moveM` on her, is warped to ground `backM` behind her that she cannot see, from a spot she cannot see either. Unseen is off her gaze by more than `deg`, or past `farM`.
-export const KEEP_UP = { m: 25, near: 6, stallS: 2, moveM: 0.5, over: 1.15, tau: 0.5, jumpM: 3, backM: [4, 6, 3], deg: 70, farM: 80, trail: 60 }
+export const KEEP_UP = { m: 25, near: 6, stallS: 2, moveM: 0.5, over: 1.15, tau: 0.5, jumpM: 3, backM: [4, 6, 3], deg: 70, farM: 80, trail: 60, stillMps: 0.3 }
 
 /** Her, as her followers keep up with her: her ground speed, her gaze, and the ground she walked since her last jump. One a frame from main.js. */
 export class Her {
@@ -8,6 +8,8 @@ export class Her {
     this.z = NaN
     this.t = NaN
     this.speed = 0
+    // When her speed was last past KEEP_UP.stillMps, or she last jumped.
+    this.moved = -Infinity
     this.fx = 1
     this.fz = 0
     // Her last KEEP_UP.trail footfalls a metre apart, newest last: ground she stood on.
@@ -20,6 +22,7 @@ export class Her {
     const dt = now - this.t
     if (!(d <= KEEP_UP.jumpM)) this.trail.length = 0
     else if (dt > 0) this.speed += (d / dt - this.speed) * Math.min(1, dt / KEEP_UP.tau)
+    if (!(d <= KEEP_UP.jumpM) || this.speed > KEEP_UP.stillMps) this.moved = now
     const last = this.trail[this.trail.length - 1]
     if (last === undefined || Math.hypot(x - last.x, z - last.z) >= 1) {
       if (this.trail.length === KEEP_UP.trail) this.trail.shift()
@@ -34,6 +37,9 @@ export class Her {
 
   /** A follower's speed whose own gait goes at `own`: KEEP_UP.over hers when that is the faster. */
   pace(own) { return Math.max(own, this.speed * KEEP_UP.over) }
+
+  /** Seconds she has stood still at `now`. */
+  stillFor(now) { return now - this.moved }
 
   /** Whether (x, z) is in her sight. */
   sees(x, z) {

@@ -89,7 +89,7 @@ import {
   CRITTER_GLB, LOD_RUNGS, TIER_TINTS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
 } from './critters.js'
 import { MEAL } from '../eating.js'
-import { headway } from '../keep-up.js'
+import { KEEP_UP, headway } from '../keep-up.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
@@ -185,6 +185,8 @@ const _nrm = new THREE.Vector3()
 const _pos = new THREE.Vector3()
 const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
+const _stone = { x: 0, z: 0, r: 0 }
+const _her = new THREE.Vector3()
 
 export class Frogs {
   /**
@@ -256,6 +258,8 @@ export class Frogs {
         caught: null, calm: -Infinity,
         // A loose frog's pet bond: null, or `{ by, at }`, by null for her, else the peer who fed it last, on second `at`.
         pet: null,
+        // A loose frog in the cave she is in (goUnder), sitting on its walk.
+        under: false,
       })
     }
     this.free = this.slots.slice()
@@ -284,6 +288,9 @@ export class Frogs {
     this.me = { kind: 'mate', x: 0, y: 0, z: 0, by: null }
     // Her, as her pets keep up with her (keep-up.js); null and one she leaves RADIUS behind is forgotten.
     this.her = null
+    // The cave she is in ({ walk, apron }, goUnder), or null; and the cave walk the loose frog being stepped sits on, for seat, or null.
+    this.cave = null
+    this._in = null
     this.stats = { alive: 0, tiles: 0, overflow: 0, segments: 0 }
     // This frame's one-shots for the ear, drained by voices(): { sound, rule, x, y, z }.
     this.calls = []
@@ -320,7 +327,7 @@ export class Frogs {
   }
 
   _groundFor(x, z, fieldH) {
-    if (this.ground) {
+    if (this.ground && this._in === null) {
       const g = this.ground.groundAt(x, z)
       if (g !== null) return g
     }
@@ -354,6 +361,7 @@ export class Frogs {
    * A loose frog (`banks` false) may sit anywhere else as well, its `shore` NaN.
    */
   seat(x, z, banks = true) {
+    if (this._in !== null) return this._caveSeat(x, z)
     const s = this.height.heightAndSlopeAt(x, z)
     const { h, tan } = s
     if (h > this.height.snowLineAt(x, z) - SNOW_MARGIN) return null
@@ -367,6 +375,59 @@ export class Frogs {
     if (!(shore < SHORE_M && shore > -SHORE_M)) return null
     s.shore = shore
     return s
+  }
+
+  /** seat in the cave this._in about her feet, as a loose frog takes it: dry floor within a step up or a drop down, gentle and clear of stone. */
+  _caveSeat(x, z) {
+    const w = this._in, y0 = w.hintY
+    const h = w.heightAt(x, z, y0)
+    if (h > y0 + 0.6 || h < y0 - 1.5) return null
+    const level = w.trueWaterAt(x, z, y0)
+    if ((level !== null && level > h) || w.obstacleAt(x, z, _stone) !== null) return null
+    const n = w.normalAt(x, z, undefined, undefined, y0)
+    const gx = -n.x / n.y, gz = -n.z / n.y, tan = Math.hypot(gx, gz)
+    if (tan > MAX_TAN) return null
+    return { h, gx, gz, tan, wet: false, level: null, shore: NaN }
+  }
+
+  /**
+   * Her loose pets near `apron` (the mouth's, { x, y, z }) set down inside
+   * `door` ({ x, y, z, dx, dz }, world, facing in) to sit on `walk`
+   * (caves/walk.js); the rest heed the apron as her while she is down.
+   */
+  goUnder(walk, apron, door) {
+    this.cave = { walk, apron }
+    this._in = walk
+    let n = 0
+    for (const f of this.loose) {
+      if (f.pet === null || f.pet.by !== null || this.her === null || Math.hypot(f.x - apron.x, f.z - apron.z) > KEEP_UP.m) continue
+      const side = (n % 2 ? -0.5 : 0.5) * Math.ceil((n + 1) / 2)
+      this._setDown(f, door.x + door.dx - door.dz * side, door.z + door.dz + door.dx * side, Math.atan2(-door.dz, door.dx))
+      f.under = true
+      n++
+    }
+    this._in = null
+  }
+
+  /** She surfaces at `at` ({ x, y, z }) facing (fx, fz): her pets under with her set down behind her. */
+  goUp(at, fx, fz) {
+    let n = 0
+    for (const f of this.loose) {
+      if (!f.under) continue
+      const side = (n % 2 ? -0.5 : 0.5) * Math.ceil((n + 1) / 2)
+      f.under = false
+      this._setDown(f, at.x - fx - fz * side, at.z - fz + fx * side, Math.atan2(-fz, fx))
+      n++
+    }
+    this.cave = null
+  }
+
+  /** Loose frog `f` sat down at (x, z) facing `yaw`, on its seat there or, with none, the bare ground (this._in's while it is set). */
+  _setDown(f, x, z, yaw) {
+    const s = this.seat(x, z, false)
+    f.live = { ph: { kind: 'sit', dur: 0, at: s === null ? this._groundSpot(f, x, z, yaw) : this._spot(f, x, z, s, yaw) }, at: this.now, queue: null, until: Infinity }
+    f.way = headway()
+    this._pose(f, f.live.ph, 0)
   }
 
   /** A spot frog `f` can sit at: the seat `s` at (x, z) as a landing, on the drawn ground or sunk into the water, with the normal it sits along (the world's up on the water) and the way it faces. */
@@ -744,7 +805,7 @@ export class Frogs {
 
   /** A spot on the ground under (x, z), not seated: where a frog let go in the air lands. */
   _groundSpot(f, x, z, yaw) {
-    const h = this.height.heightAt(x, z)
+    const h = this._in !== null ? this._in.heightAt(x, z) : this.height.heightAt(x, z)
     return { x, z, h, y: this._groundFor(x, z, h), wet: false, level: null, nx: 0, ny: 1, nz: 0, yaw }
   }
 
@@ -887,9 +948,10 @@ export class Frogs {
     if (!f) { this.overflow++; return null }
     const key = dropKey(drop.x, drop.z, drop.yaw)
     Object.assign(f, { tile: null, key, index: -1, offset: 0, homeX: from.x, homeZ: from.z, size: look.size, hue: look.hue, r: look.color[0], g: look.color[1], b: look.color[2] })
-    Object.assign(f, { breath: (keyHash(key) % 628) / 100, lod: LOD_TIERS, seg: null, lured: false, lure: null, caught: null, calm: -Infinity, pet: null, drop })
+    Object.assign(f, { breath: (keyHash(key) % 628) / 100, lod: LOD_TIERS, seg: null, lured: false, lure: null, caught: null, calm: -Infinity, pet: null, drop, under: this.cave !== null && from.y < this.cave.apron.y - 100 })
     f.rand = mulberry32(hash32(keyHash(key), 0x1e))
     this.drops.add(key)
+    this._in = f.under ? this.cave.walk : null
     const s = this.seat(from.x, from.z, false)
     const to = s === null ? this._groundSpot(f, from.x, from.z, from.yaw) : this._spot(f, from.x, from.z, s, from.yaw)
     let hops = null
@@ -905,6 +967,7 @@ export class Frogs {
     const start = { x: from.x, y: from.y, z: from.z, h: from.y, wet: false, level: null, nx: 0, ny: 1, nz: 0, yaw: from.yaw }
     f.live = { ph: { kind: 'hop', dur: fall, from: start, to, rise: 0, bout: LEAP }, at: now, queue: [{ kind: 'sit', dur: NOTICE_S, at: to }, ...(hops ?? []), { kind: 'sit', dur: Infinity, at: end }], until: Infinity }
     this._pose(f, f.live.ph, 0)
+    this._in = null
     this.loose.push(f)
     return f
   }
@@ -914,6 +977,7 @@ export class Frogs {
     if (i < 0) throw new Error(`Frogs: loose frog ${f.key} is not in the loose list`)
     this.loose.splice(i, 1)
     f.pet = null
+    f.under = false
     this.free.push(f)
   }
 
@@ -1139,18 +1203,24 @@ export class Frogs {
       const hers = f.pet !== null && f.pet.by === null && this.her !== null
       const dist = Math.hypot(f.x - hx, f.z - hz)
       if (!hers && dist > RADIUS) { this._unloose(f); continue }
+      // Underground, one not under with her takes the apron for her.
+      this._in = f.under ? this.cave.walk : null
+      const m = this.cave === null || f.under ? _her.set(hx, hy, hz) : this.cave.apron
+      this.me.x = m.x; this.me.y = m.y; this.me.z = m.z
       const prev = f.ph
       this._live(f, now)
       this._heard(f, prev, hx, hy, hz)
       this._notice(f, lures, now, mates)
       this._eats(f, now)
-      const to = hers ? this.her.keepUp(f.way, f.x, f.z, dist > LURE_M, now, (x, z) => this.seat(x, z, false) !== null) : null
+      const to = hers && (this.cave === null || f.under) ? this.her.keepUp(f.way, f.x, f.z, dist > LURE_M, now, (x, z) => this.seat(x, z, false) !== null) : null
       if (to !== null) {
         f.live = { ph: { kind: 'sit', dur: 0, at: this._spot(f, to.x, to.z, this.seat(to.x, to.z, false), bearing(to, this.me)) }, at: now, queue: null, until: Infinity }
         this._pose(f, f.live.ph, 0)
       }
       this._draw(f, counts, breath, bob, hx, hy, hz)
     }
+    this._in = null
+    this.me.x = hx; this.me.y = hy; this.me.z = hz
     // A tier that held nothing and holds nothing is not re-uploaded.
     this.tiers.forEach((tier, k) => {
       if (counts[k] > 0 || tier.count > 0) {

@@ -242,6 +242,8 @@ export class Snowmen {
     this.hx = 0; this.hy = 0; this.hz = 0
     // Her, as one following her keeps up (keep-up.js); null and it forgets her past FORGET_M.
     this.her = null
+    // While she is underground, the cave's apron { x, y, z }, where one following her waits; null above ground.
+    this.wait = null
     this.peers = []
     // The room's latest anchor per key, and the anchors this client owes it.
     this.anchored = new Map()
@@ -644,9 +646,9 @@ export class Snowmen {
    */
   _stepLive(c, k) {
     const live = c.live
-    const p = this._player(live.by)
+    const p = live.by === null && this.wait !== null ? this.wait : this._player(live.by)
     const fresh = live.by === null || (live.anchor !== null && k * TICK_S - live.anchor[1] < ANCHOR_STALE_S)
-    const keeps = live.by === null && this.her !== null
+    const keeps = live.by === null && this.her !== null && this.wait === null
     if (p === null || !fresh || (!keeps && this._dist(c, p) > FORGET_M)) { this._unlive(c, k); return }
     const dist = this._dist(c, p)
     if (c.state === 'watch') {
