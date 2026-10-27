@@ -253,6 +253,8 @@ const FREE_PLANS = 256
 export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
+// An animal her torches bring to 0 hp falls on its dead clip, goes black over `dark` s and dissolves `lie` s after the fall.
+const FELL = { dark: 1.5, lie: 3.5 }
 // The modes an anchor may carry besides 'rejoin', each a live animal.
 const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt'])
 // Under her chanterelle (eating.js), an animal within `m` m of her comes for her and strikes from `reach` body lengths: `harm` every strike, a strike `strikeS` then `idleS` before the next.
@@ -349,6 +351,7 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 // A quarter roll about the body's own forward axis: a standing body laid on its flank.
 const _lay = new THREE.Matrix4().makeRotationX(Math.PI / 2)
+const _cargo = new THREE.Matrix4()
 const _hang = new THREE.Matrix4()
 const _dim = new THREE.Color()
 const _norm = { x: 0, y: 1, z: 0 }
@@ -507,6 +510,8 @@ export class Wildlife {
     this.behind = 0
     // Puppets outliving the animal they were: whatever unloaded with its tile, dissolving on the spot.
     this.fading = []
+    // Animals her torches brought to 0 hp, lying where they fell ({ c, at, x, y, z, heading }), each seized off its spawn for good.
+    this.corpses = []
     // The card rung: ids in the shared pool, enough for every slot plus the dropped kills still dissolving ({ id, p }); the animals holding one.
     const cardIds = this.species.length * MAX + KILL_CARDS
     cards.claim('wildlife', cardIds)
@@ -854,6 +859,8 @@ export class Wildlife {
    */
   kill(key, now) {
     const s = this._spawnOf(key)
+    // Felled by her torches: there is no stag left to take.
+    if (s.deadUntil === Infinity) return null
     const at = this.score.at(key, now)
     s.deadUntil = at.phrase.kind === 'dead' ? at.start + at.phrase.dur : chapterOf(now, key, this.score.chapterS).start + this.score.chapterS
     if (s.slot) return this._seize(s.slot)
@@ -944,6 +951,13 @@ export class Wildlife {
       : _mat.makeTranslation(0, -GRIP * height, 0)
     puppet.group.matrix.multiplyMatrices(matrix, body)
     puppet.group.matrixWorldNeedsUpdate = true
+  }
+
+  /** A woken animal felled at `at` out of the world and onto the ground where it stands, for update() to draw until it dissolves. */
+  _fell(c, at) {
+    const { x, y, z, heading } = c
+    this._seize(c)
+    this.corpses.push({ c, at, x, y, z, heading })
   }
 
   /** A seized stag let go: its body -- puppet or card -- dissolves where it is (or vanishes, with `fade` off, when the ground has gone) and the slot goes back to the pool. */
@@ -1816,10 +1830,13 @@ export class Wildlife {
   _burn(c, now) {
     c.singe = 0
     const was = this.scars.get(c.key)
-    this.scars.set(c.key, { hp: Math.max(0, (was ? was.hp : SINGE.max) - SINGE.hp), at: now })
+    const hp = Math.max(0, (was ? was.hp : SINGE.max) - SINGE.hp)
+    this.scars.set(c.key, { hp, at: now })
     if (c.live?.mode !== 'flee') this._golive(c, 'flee', null, null, now)
     c.live.sendTick = tickOf(now)
     this._say(c, c.sp.hurt)
+    // Its last anchor, the room's word that it fell: update() lays it down after this step.
+    if (hp === 0) this._owe(c, now, 'flee')
   }
 
   /** The anchors this client owes the room since the last call, moved into `into`. */
@@ -2052,6 +2069,13 @@ export class Wildlife {
           continue
         }
 
+        const scar = this.scars.get(s.key)
+        if (scar && scar.hp === 0) {
+          // Felled, by her torch or a peer's: a woken one lies down where it is, and none is woken again.
+          s.deadUntil = Infinity
+          if (live) this._fell(live, scar.at)
+          continue
+        }
         if (!live) {
           // Struck this chapter: not woken, and not measured again until its chapter turns.
           const at = this.score.at(s.key, now)
@@ -2107,7 +2131,7 @@ export class Wildlife {
         const puppet = this._takePuppet(c, Math.max(0, now - c.stepStart))
         if (!puppet) continue
         puppet.show(tier)
-        const scar = this.scars.get(c.key), red = scar ? redAt(scar.at, now) : 0
+        const red = scar ? redAt(scar.at, now) : 0
         if (puppet.baked && (red > 0 || c.red)) { tintFor(puppet, c.key, c.sp.tint); reddened(puppet.tint, red) }
         c.red = red > 0
         _pos.set(c.x, c.y, c.z)
@@ -2125,6 +2149,25 @@ export class Wildlife {
         // Every frame, whether or not it re-posed: a held puppet slides on in the pose its bone texture holds (puppet.js POSE_EVERY).
         puppet.group.matrix.copy(_mat)
         puppet.group.matrixWorldNeedsUpdate = true
+      }
+    }
+
+    // The felled, on their dead clip where they fell: pulsing red, then black, then dissolving. carry() hangs a body GRIP of its height under the matrix, so the matrix is raised that much.
+    for (let i = this.corpses.length - 1; i >= 0; i--) {
+      const f = this.corpses[i], c = f.c
+      if (now - f.at >= FELL.lie) {
+        this.drop(c)
+        this.corpses[i] = this.corpses[this.corpses.length - 1]
+        this.corpses.pop()
+        continue
+      }
+      _pos.set(f.x, f.y + GRIP * c.sp.asset.height * c.k, f.z)
+      _quat.setFromAxisAngle(UP, f.heading)
+      _scl.setScalar(c.k)
+      this.carry(c, _cargo.compose(_pos, _quat, _scl), Math.hypot(f.x - hx, f.y - hy, f.z - hz), dt)
+      if (c.puppet && c.puppet.baked) {
+        tintFor(c.puppet, c.key, c.sp.tint)
+        reddened(c.puppet.tint, redAt(f.at, now)).multiplyScalar(Math.max(0, 1 - (now - f.at) / FELL.dark))
       }
     }
 

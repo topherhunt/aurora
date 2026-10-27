@@ -32,6 +32,22 @@ export const LK = {
   busy: ['Busy-busy! Later.', 'No time! Later-later.', 'Busy! Momo wait. Bye!'],
   rumour: ['Listen!', 'Hear this!', 'Psst!', 'Ooh, know what?'],
   off: ['Leafkin go now.', 'Enough talk. Bye-bye.', 'Tired ears. Go now.', 'Talk-talk done. Leafkin go.'],
+  // Dressing for an answer (speak.js `_dress`): a lead-in, an aside, a tail.
+  lead: ['Hm!', 'Ooh.', 'Listen-listen.', 'Hee!', 'Ah, ah.', 'Look-look.'],
+  detail: ['Leafkin sure-sure.', 'Old leafkin say same.', 'Tikka remember this.', 'True-true.', 'Mama-leafkin say so.'],
+  tail: ['Hee.', 'Ask more?', 'Tikka want more?', 'Hoola!'],
+  // A leafkin of a glade she wronged (trust.js `hob-fed`): `scold` is what one says following her; `furious*` are its talk.
+  scold: ['Bad tikka! Feed hob to frog! Bad-bad!', 'Hob-friend gone! Tikka do this! Keesh!', 'Frog eat hob! Tikka give! Leafkin angry-angry!', 'Bad, bad, bad tikka! Hob never hurt!', 'Tikka heart black! Hob pet, now frog belly!', 'No forgive! Hob gone, tikka fault!'],
+  furiousGreet: ['Keesh! Hob-killer!', 'Bad tikka here! Go away!', 'Frog-feeder! Leafkin no talk!', 'You! Hob-killer! Shoo!'],
+  furiousLead: ['Hob-killer!', 'Frog-feeder!', 'Bad tikka!', 'Keesh!'],
+  furiousWitness: ['Leafkin SEE! Tikka feed hob to frog! Keesh-keesh!', 'Leafkin watch tikka do it! Never forgive!', 'Saw it! Hob go in frog mouth! Tikka bad-bad!'],
+  // Trade (trade.js): want of her held {item}, a deal offered, done, or refused.
+  tradeWant: ['{item}! Leafkin love {item}! What trade?', 'Ooh, {item}! Give {item}, get what?', '{item}! Big want! What tikka give-for?', 'Leafkin look-look at {item}. Trade?'],
+  tradeOffer: ['Leafkin have: {list}. Want?', 'Leafkin give: {list}. Pick-pick!', 'Trade for: {list}. Which?'],
+  tradeNone: ['Leafkin want nothing from big-folk hand.', 'No trade for that. Sorry-sorry.', 'Hm. Nothing to trade for that.'],
+  tradeDone: ['Trade done! Hee!', 'Good-good trade! Tikka friend!', 'Done! {name} happy.', 'Yes! Trade! Hoola!'],
+  tradeShort: ['Tikka no have enough! Need {need}.', 'Not enough. Need {need}.', 'Hm, short. Need {need}.'],
+  tradeFull: ['Tikka hands full-full. Make room.', 'No room in pack! Drop something.', 'Pack stuffed. Make space first.'],
 }
 
 /** Wording `r` (0..1) of line `key`, its slots filled from `vars`, the first letter raised. */

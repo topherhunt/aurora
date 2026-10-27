@@ -1101,6 +1101,13 @@ const differ = (p, q) => {
   check(cb.live?.mode === 'flee' && cb.live.by === 7 && b.scars.get(cb.key)?.hp === SINGE.max - SINGE.hp && b.voices([]).some((v) => v.sound === cb.sp.hurt.sound), 'and b\'s copy runs too, as hurt, crying out', `${cb.live?.mode} by ${cb.live?.by}, ${b.scars.get(cb.key)?.hp} HP`)
   hold(SINGE.s + 0.1)
   check(a.scars.get(ca.key).hp === SINGE.max - 2 * SINGE.hp && b.scars.get(cb.key).hp === a.scars.get(ca.key).hp, 'held in it as it runs, another second costs it another ten, on both', `${a.scars.get(ca.key).hp} / ${b.scars.get(cb.key).hp}`)
+  for (let n = 0; n < 9 && a.scars.get(ca.key).hp > 0; n++) hold(SINGE.s + 0.1)
+  const lying = (w, c) => w.corpses.some((f) => f.c === c) && !w.byKey.has(c.key) && c.act === 'dead' && c.clip === 'dead'
+  check(a.scars.get(ca.key).hp === 0 && lying(a, ca) && lying(b, cb), 'held in it until it has no HP left, it falls on its dead clip and lies there, on both', `${a.scars.get(ca.key).hp} HP, a ${a.corpses.length} b ${b.corpses.length} lying, ${ca.act}/${cb.act}`)
+  hold(4, false)
+  check(a.corpses.length === 0 && b.corpses.length === 0 && ca.sp.free.includes(ca) && cb.sp.free.includes(cb), 'and a few seconds after it fell its body is let go and its slot pooled, on both', `${a.corpses.length} / ${b.corpses.length}`)
+  hold(5, false)
+  check(!a.byKey.has(ca.key) && !b.byKey.has(cb.key) && a.kill(ca.key, timeOf(a)) === null, 'and is never woken again, nor there for a dragon to take')
   a.dispose()
   b.dispose()
 }

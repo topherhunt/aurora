@@ -1,5 +1,7 @@
 // What there is to talk about (_notes/conversation-and-quests.md): the towns, their buildings and their people as named things with places, built from layers/towns.js `planTowns` and the seed. Every answer an NPC gives is a claim about one of these, so it can be checked by walking there. Three-free.
 
+import { mulberry32 } from '../../sim/mathx.js'
+import { hash32 } from '../../sim/score.js'
 import { castMinds, townName } from './mind.js'
 
 // North is -z (sim/horizon.js), east +x.
@@ -27,6 +29,23 @@ export class TalkWorld {
     this.towns = towns.map((town, index) => ({ town, index, name: townName(seed, index), minds: castMinds(seed, town, index) }))
     this.people = new Map()
     for (const t of this.towns) for (const m of t.minds) this.people.set(m.id, m)
+    this.seatDeer(null)
+  }
+
+  /**
+   * Seats the town whose man took credit for a dragon his pet deer fought off: the one nearest any of `sites` (roosts, `{ x, z }`), else a seeded pick. Sets and returns `deer`, `{ town, owner }`, `owner` that town's grown-up of greatest boast.
+   */
+  seatDeer(sites) {
+    let town
+    if (sites === null || sites.length === 0) town = Math.min(this.towns.length - 1, (mulberry32(hash32(this.seed, 0xdee7))() * this.towns.length) | 0)
+    else {
+      const near = (t) => Math.min(...sites.map((s) => Math.hypot(s.x - t.town.x, s.z - t.town.z)))
+      town = this.towns.reduce((best, t) => (near(t) < near(this.towns[best]) ? t.index : best), 0)
+    }
+    const folk = this.towns[town].minds.filter((m) => m.cls !== 'child').sort((a, b) => b.traits.boast - a.traits.boast || a.index - b.index)
+    if (folk.length === 0) throw new Error(`TalkWorld: town ${town} has no grown-up to own the deer`)
+    this.deer = { town, owner: folk[0].id }
+    return this.deer
   }
 
   person(id) {

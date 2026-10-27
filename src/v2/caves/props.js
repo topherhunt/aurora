@@ -17,13 +17,29 @@ const CLEAR = 2.0
 const PEBBLE_M2 = 3
 const PEBBLE_STEP = 2
 
+// Metres from (x, y, z), in air, to the first rock along the vertical `dir` (+1 up, -1 down), or `limit` if none: sphere-traced on the field, then bisected to 0.1 m.
+function reach(field, x, y, z, dir, limit) {
+  let t = 0, v = field.at(x, y, z)
+  while (t < limit) {
+    const nt = Math.min(limit, t + Math.max(0.1, -v * 0.8))
+    v = field.at(x, y + dir * nt, z)
+    if (v > 0) {
+      let lo = t, hi = nt
+      while (hi - lo > 0.1) {
+        const mid = (lo + hi) / 2
+        if (field.at(x, y + dir * mid, z) > 0) hi = mid; else lo = mid
+      }
+      return (lo + hi) / 2
+    }
+    t = nt
+  }
+  return limit
+}
+
 /** Floor and roof on the vertical through (x, z), marching from `y` (in air): { floor, roof } or null when `y` is in rock. */
 export function columnAt(field, x, z, y) {
   if (field.at(x, y, z) > 0) return null
-  let floor = y, roof = y
-  while (field.at(x, floor, z) <= 0 && floor > y - 60) floor -= 0.1
-  while (field.at(x, roof, z) <= 0 && roof < y + 60) roof += 0.1
-  return { floor: floor + 0.05, roof: roof - 0.05 }
+  return { floor: y - reach(field, x, y, z, -1, 60), roof: y + reach(field, x, y, z, 1, 60) }
 }
 
 // The rock face met marching from `y` (in air) in direction `dir` (+1 up, -1 down) within `reach` metres, or null.

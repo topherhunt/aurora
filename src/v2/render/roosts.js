@@ -110,9 +110,8 @@ const ROLLED_CAP = 256
 
 const SEED_SALT = 0xd7a6
 
-// The egg: what ships, the chance a nest holds one, and its metres tall.
+// The egg every nest holds: what ships, and its metres tall.
 export const EGG_GLB = 'gen-props/egg-dragon.glb'
-export const EGG_ODDS = 0.5
 export const EGG_HEIGHT = [0.45, 0.6]
 // The clutch's colours, one rolled per egg, multiplied over the pale shell. Never white: a white egg is the unpainted pick.
 export const EGG_TINTS = [
@@ -692,7 +691,7 @@ export class Roosts {
   _roll(key, tx, tz) {
     const rand = mulberry32(tileSeed(tx, tz, this.seed))
     const fortress = (rand() * 0x100000000) >>> 0
-    const egg = { keep: rand(), tint: EGG_TINTS[(rand() * EGG_TINTS.length) | 0][1], height: between(rand, EGG_HEIGHT), yaw: rand() * Math.PI * 2, lie: between(rand, EGG_LIE), bearing: rand() * Math.PI * 2 }
+    const egg = { tint: EGG_TINTS[(rand() * EGG_TINTS.length) | 0][1], height: between(rand, EGG_HEIGHT), yaw: rand() * Math.PI * 2, lie: between(rand, EGG_LIE), bearing: rand() * Math.PI * 2 }
     const out = { site: null, fortress, egg }
     const top = this._summit(tx, tz)
     if (!top) return out
@@ -733,7 +732,7 @@ export class Roosts {
     return out
   }
 
-  /** Grow the territory's roost: its fortress built on its own ground, tinted the peak's stone, with its egg or none. */
+  /** Grow the territory's roost: its fortress built on its own ground, tinted the peak's stone, with its egg unless one was taken. */
   _growTile(key, tx, tz) {
     const roll = this._rollOf(key, tx, tz)
     this.rolled.delete(key)
@@ -754,7 +753,7 @@ export class Roosts {
     this.tiles.set(key, tile)
     // A nest whose egg was taken from it (hands.js) lays no other.
     const { egg } = roll
-    if (this.egg && egg.keep < EGG_ODDS && !taken.has('egg', x, z)) {
+    if (this.egg && !taken.has('egg', x, z)) {
       this._tilt.setFromUnitVectors(this._up, this._n.set(-gx, 1, -gz).normalize())
       this._layEgg(tile, x, y, z, egg.tint, egg.height, egg.yaw, egg.lie, egg.bearing)
     }

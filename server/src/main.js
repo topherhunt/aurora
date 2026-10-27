@@ -122,7 +122,7 @@ function roomFor(name) {
     // `flames` and `mrev`: the flames lit on trees, ferns and sticks, see applyFlame.
     // `trust` and `trev`: which villager trusts which player, see applyTrust.
     // `chalk` and `krev`: the strokes drawn on cave walls, see applyChalk.
-    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, recalls: [], rrev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0, chalk: new Map(), krev: 0 }
+    room = { clients: new Map(), anchorMs: Date.now(), skipHours: 0, boats: new Map(), loose: new Map(), gone: [], taken: [], rev: 0, anchors: new Map(), lured: new Map(), crev: 0, flares: [], frev: 0, recalls: [], rrev: 0, flames: [], mrev: 0, trust: new Map(), trev: 0, chalk: new Map(), krev: 0, loot: new Map(), lrev: 0 }
     rooms.set(name, room)
   }
   return room
@@ -248,6 +248,32 @@ function applyTrust(room, client, list) {
     room.trust.set(key, { data: t, rev: ++room.trev, by: client.id })
     if (room.trust.size > TRUST_CAP) room.trust.delete(room.trust.keys().next().value)
   }
+}
+
+// LOOT (src/v2/loot.js): [place, bit], a thing taken from a place, kept and
+// told like trust. The first to reach the relay wins; a later taker's client
+// learns it was beaten when the entry comes back from a peer.
+const LOOT_CAP = 4096
+const LOOT_BATCH = 64
+function validLoot(t) {
+  return Array.isArray(t) && t.length === 2 && typeof t[0] === 'string' && /^[lrcd][0-9a-z]{1,12}$/.test(t[0]) && Number.isInteger(t[1]) && t[1] >= 0 && t[1] < 4096
+}
+
+function applyLoot(room, client, list) {
+  for (const t of list) {
+    const key = t.join(' ')
+    if (room.loot.has(key)) continue
+    room.loot.set(key, { data: t, rev: ++room.lrev, by: client.id })
+    if (room.loot.size > LOOT_CAP) room.loot.delete(room.loot.keys().next().value)
+  }
+}
+
+function lootFor(room, client) {
+  if (client.seenLrev === room.lrev) return null
+  const out = []
+  for (const e of room.loot.values()) if (e.rev > client.seenLrev && e.by !== client.id) out.push(e.data)
+  client.seenLrev = room.lrev
+  return out.length ? out : null
 }
 
 /** The trust this client has not been told, none of it its own; null when there is none. */
@@ -571,6 +597,7 @@ wss.on('connection', (ws, request) => {
     seenTrev: 0,
     // How far through the room's chalk it has been told.
     seenKrev: 0,
+    seenLrev: 0,
     // Who it is in this relay's log, and the diag lines it has said.
     tag: '',
     diags: 0,
@@ -640,6 +667,13 @@ wss.on('connection', (ws, request) => {
       }
       return
     }
+    if (message && message.type === 'loot') {
+      if (Array.isArray(message.loot) && message.loot.length <= LOOT_BATCH && message.loot.every(validLoot)) {
+        applyLoot(room, client, message.loot)
+        client.lastSeen = now
+      }
+      return
+    }
     if (message && message.type === 'chalk') {
       if (Array.isArray(message.chalk) && message.chalk.length <= CHALK_BATCH && message.chalk.every(validChalk)) {
         applyChalk(room, client, message.chalk)
@@ -702,7 +736,7 @@ setInterval(() => {
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
-      // The things, the creatures, the flares, their recalls, the flames, the trust and the chalk ride only when something changed since this client last heard.
+      // The things, the creatures, the flares, their recalls, the flames, the trust, the chalk and the loot ride only when something changed since this client last heard.
       const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
@@ -718,6 +752,8 @@ setInterval(() => {
       if (trust) snapshot.trust = trust
       const chalk = chalkFor(room, client)
       if (chalk) snapshot.chalk = chalk
+      const loot = lootFor(room, client)
+      if (loot) snapshot.loot = loot
       send(client, snapshot)
     }
   }

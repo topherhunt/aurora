@@ -11,9 +11,11 @@ export const BATCH = 8
 // A pen that moves further than this between frames has left the wall: the stroke ends and a new one starts.
 const JUMP_M = 0.25
 const LIMIT = 32767
-// The ribbon: its half-width, and how far it stands off the rock.
+// The ribbon's half-width.
 const HALF_M = 0.012
-const LIFT_M = 0.008
+// Ribbons sit OFF_M out from the drawn surface; a stroke point further than SNAP_M from it is not on this cave.
+export const OFF_M = 0.025
+const SNAP_M = 0.6
 
 export function encode(pts, ox, oz) {
   if (pts.length % 3 !== 0 || pts.length === 0 || pts.length > STROKE_MAX * 3) throw new Error(`chalk.encode: ${pts.length / 3} points`)
@@ -212,38 +214,48 @@ export function rayRock(field, ox, oy, oz, dx, dy, dz, maxDist, out) {
 }
 
 /**
- * Strokes as one ribbon each, laid LIFT_M off the rock along its normal: { position, normal, grain, index }. `grain` is (metres along, -1..1 across, a seed per stroke) for the shader's broken chalk; a one-point stroke is a dab.
+ * Strokes as one ribbon each, laid OFF_M out from the drawn surface (surface.js) along its face normal: { position, normal, grain, index, skipped }. `grain` is (metres along, -1..1 across, a seed per stroke) for the shader's broken chalk; a one-point stroke is a dab.
+ * A stroke with a point further than SNAP_M from the drawn surface is left out and counted in `skipped`: its chunk has not meshed yet, or the cave it was drawn on no longer exists.
  */
-export function ribbons(strokes, field) {
+export function ribbons(strokes, surface) {
+  const lifted = []
+  const lift = [0, 0, 0, 0, 0, 0]
+  let skipped = 0
+  strokes.forEach((p, s) => {
+    const pts = new Float32Array(p.length * 2)
+    for (let k = 0; k < p.length / 3; k++) {
+      if (!surface.lifted(p[k * 3], p[k * 3 + 1], p[k * 3 + 2], SNAP_M, OFF_M, lift)) { skipped++; return }
+      pts.set(lift, k * 6)
+    }
+    lifted.push({ p, pts, s })
+  })
   let verts = 0, tris = 0
-  for (const p of strokes) { const n = Math.max(2, p.length / 3); verts += n * 2; tris += (n - 1) * 2 }
+  for (const { p } of lifted) { const n = Math.max(2, p.length / 3); verts += n * 2; tris += (n - 1) * 2 }
   const position = new Float32Array(verts * 3), normal = new Float32Array(verts * 3), grain = new Float32Array(verts * 3)
   const index = new Uint32Array(tris * 3)
   let v = 0, f = 0
-  const n = [0, 0, 0]
-  strokes.forEach((p, s) => {
+  for (const { p, pts: lp, s } of lifted) {
     const seed = ((s * 0.618034) % 1) * 97
-    const pts = p.length === 3 ? [p[0], p[1], p[2], p[0], p[1], p[2]] : p
-    const count = pts.length / 3
+    const dab = p.length === 3
+    const at = (k, c) => lp[(dab ? 0 : k) * 6 + c]
+    const count = dab ? 2 : p.length / 3
     let along = 0
     for (let k = 0; k < count; k++) {
-      const x = pts[k * 3], y = pts[k * 3 + 1], z = pts[k * 3 + 2]
-      gradient(field, x, y, z, n)
-      n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2]
+      const n = [at(k, 3), at(k, 4), at(k, 5)]
       const a = Math.max(0, k - 1), b = Math.min(count - 1, k + 1)
-      let tx = pts[b * 3] - pts[a * 3], ty = pts[b * 3 + 1] - pts[a * 3 + 1], tz = pts[b * 3 + 2] - pts[a * 3 + 2]
+      let tx = at(b, 0) - at(a, 0), ty = at(b, 1) - at(a, 1), tz = at(b, 2) - at(a, 2)
       // A dab has no direction: any line across the wall.
       if (Math.hypot(tx, ty, tz) < 1e-6) { tx = Math.abs(n[1]) < 0.9 ? 0 : 1; ty = Math.abs(n[1]) < 0.9 ? 1 : 0; tz = 0 }
       let sx = n[1] * tz - n[2] * ty, sy = n[2] * tx - n[0] * tz, sz = n[0] * ty - n[1] * tx
       const sl = Math.hypot(sx, sy, sz) || 1
-      const w = p.length === 3 ? HALF_M * 1.5 : HALF_M
+      const w = dab ? HALF_M * 1.5 : HALF_M
       sx *= w / sl; sy *= w / sl; sz *= w / sl
-      if (k > 0) along += Math.hypot(x - pts[k * 3 - 3], y - pts[k * 3 - 2], z - pts[k * 3 - 1])
-      const cx = x + n[0] * LIFT_M, cy = y + n[1] * LIFT_M, cz = z + n[2] * LIFT_M
+      if (k > 0) along += Math.hypot(at(k, 0) - at(k - 1, 0), at(k, 1) - at(k - 1, 1), at(k, 2) - at(k - 1, 2))
+      const cx = at(k, 0), cy = at(k, 1), cz = at(k, 2)
       for (const side of [-1, 1]) {
         position.set([cx + sx * side, cy + sy * side, cz + sz * side], v * 3)
         normal.set(n, v * 3)
-        grain.set([p.length === 3 ? (k - 0.5) * 2 * w : along, side, seed], v * 3)
+        grain.set([dab ? (k - 0.5) * 2 * w : along, side, seed], v * 3)
         v++
       }
       if (k > 0) {
@@ -252,6 +264,6 @@ export function ribbons(strokes, field) {
         f += 6
       }
     }
-  })
-  return { position, normal, grain, index }
+  }
+  return { position, normal, grain, index, skipped }
 }

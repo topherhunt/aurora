@@ -13,8 +13,13 @@ export const GRADE_MAX = 0.42
 // The fraction of a node's radius (toward the passage) its passage stays flat for: out to where the node's own floor meets its wall, so no step is left at the doorway.
 const FLAT_IN = 0.92
 const FLAT_OUT = 0.97
-const SPACING = 15
-const LINK_MAX = 44
+// Plan metres between body nodes, the longest link a passage is laid for, and the plan area one body node takes. The disc the body fills is at least BODY_R, and no node stands more than NODE_LIMIT from the system's centre (chalk.js packs points about it).
+const SPACING = 26
+const LINK_MAX = 76
+const NODE_AREA = 900
+const BODY_R = 240
+const BODY_CAP = 260
+const NODE_LIMIT = 540
 // Rock kept between two nodes' ellipses, so no two floors merge into a step.
 const NODE_GAP = 4
 // Metres of a drop's lip: over her reach, so it cannot be climbed back up, and short of a fall that hurts her badly (vitals.js FALL).
@@ -64,11 +69,15 @@ export function buildGraph({ seed, entries }) {
   // The body: darts in a disc round the throats, at SPACING, as many as the disc holds.
   const cx = throats.reduce((s, n) => s + n.x, 0) / throats.length
   const cz = throats.reduce((s, n) => s + n.z, 0) / throats.length
-  const R = Math.max(75, 35 + Math.max(...throats.map((n) => Math.hypot(n.x - cx, n.z - cz))))
-  const want = Math.min(150, Math.round((Math.PI * R * R) / 300))
-  for (let tries = 0; tries < 6000 && nodes.length < want + 2 * entries.length; tries++) {
+  const R = Math.max(BODY_R, 60 + Math.max(...throats.map((n) => Math.hypot(n.x - cx, n.z - cz))))
+  const want = Math.min(BODY_CAP, Math.round((Math.PI * R * R) / NODE_AREA))
+  const sys = entries.filter((q) => q.cellar !== true)
+  const sx = (sys.length > 0 ? sys : entries).reduce((s, q) => s + q.x, 0) / (sys.length > 0 ? sys.length : entries.length)
+  const sz = (sys.length > 0 ? sys : entries).reduce((s, q) => s + q.z, 0) / (sys.length > 0 ? sys.length : entries.length)
+  for (let tries = 0; tries < 12000 && nodes.length < want + 2 * entries.length; tries++) {
     const a = rand() * Math.PI * 2, r = R * Math.sqrt(rand())
     const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r
+    if (Math.hypot(x - sx, z - sz) > NODE_LIMIT) continue
     if (nodes.some((n) => Math.hypot(n.x - x, n.z - z) < (n.kind === 'mouth' ? SPACING * 1.4 : SPACING))) continue
     add({ kind: 'junction', entry: -1, x, z, y: 0, rx: 3, rz: 3, rot: 0, h: 3.4 })
   }
@@ -77,25 +86,25 @@ export function buildGraph({ seed, entries }) {
   const fromMouth = (n) => Math.min(...nodes.filter((m) => m.kind === 'mouth').map((m) => Math.hypot(m.x - n.x, m.z - n.z)))
   const body = nodes.filter((n) => n.kind === 'junction' && !throats.includes(n))
   const byFar = [...body].sort((a, b) => fromMouth(b) - fromMouth(a))
-  // The first, where there is room, is a great cavern (§3): 30 to 200 m long, its roof out of a torch's sight, kept 35 m clear of every mouth.
+  // The first, where there is room, is a great cavern (§3): 60 to 400 m long, its roof out of a torch's sight, kept 70 m clear of every mouth.
   const caverns = []
   for (const n of byFar) {
     if (caverns.length >= 1 + Math.floor(want / 40)) break
-    if (fromMouth(n) < 55 || caverns.some((c) => Math.hypot(c.x - n.x, c.z - n.z) < 80 + Math.max(c.rx, c.rz))) continue
+    if (fromMouth(n) < 110 || caverns.some((c) => Math.hypot(c.x - n.x, c.z - n.z) < 160 + Math.max(c.rx, c.rz))) continue
     n.kind = 'cavern'
     n.rot = rand() * Math.PI
-    const len = (30 + 170 * rand() ** 1.3) / 2
-    if (caverns.length === 0 && fromMouth(n) - 35 >= 15) {
+    const len = 30 + 170 * rand() ** 1.3
+    if (caverns.length === 0 && fromMouth(n) - 70 >= 30) {
       n.great = true
-      n.rx = Math.min(len, fromMouth(n) - 35); n.rz = Math.max(12, n.rx * rr(0.35, 0.7)); n.h = rr(40, 70)
+      n.rx = Math.min(len, fromMouth(n) - 70); n.rz = Math.max(24, n.rx * rr(0.35, 0.7)); n.h = rr(55, 90)
     } else {
-      n.rx = rr(17, 25); n.rz = rr(14, 21); n.h = rr(30, 48)
+      n.rx = rr(34, 50); n.rz = rr(28, 42); n.h = rr(45, 70)
       // A pool's cavern is two to four times the size, as far as the mouths and the caverns before it leave room.
       n.pool = rand() < 0.65
       if (n.pool) {
-        const room = Math.min(fromMouth(n) - 35, ...caverns.map((c) => Math.hypot(c.x - n.x, c.z - n.z) - Math.max(c.rx, c.rz) - 20))
+        const room = Math.min(fromMouth(n) - 70, ...caverns.map((c) => Math.hypot(c.x - n.x, c.z - n.z) - Math.max(c.rx, c.rz) - 40))
         const k = Math.max(1, Math.min(rr(2, 4), room / Math.max(n.rx, n.rz)))
-        n.rx *= k; n.rz *= k; n.h = Math.min(70, n.h * Math.sqrt(k))
+        n.rx *= k; n.rz *= k; n.h = Math.min(100, n.h * Math.sqrt(k))
       }
     }
     caverns.push(n)
@@ -104,17 +113,17 @@ export function buildGraph({ seed, entries }) {
   for (const c of caverns) for (const n of nodes) if (n !== c && n.kind === 'junction' && !throats.includes(n) && rhoOf(c, n, 8) < 1) swallowed.add(n)
   for (const n of body) {
     if (swallowed.has(n) || n.kind !== 'junction') continue
-    n.rx = n.rz = rr(2.2, 3.2); n.h = rr(3, 4.2)
+    n.rx = n.rz = rr(3.4, 5); n.h = rr(4, 5.6)
   }
   const live = nodes.filter((n) => !swallowed.has(n))
   // Chambers grow only as far as their neighbours leave room.
   const room = (n) => Math.min(...live.filter((m) => m !== n).map((m) => Math.hypot(m.x - n.x, m.z - n.z) - Math.max(m.rx, m.rz) - NODE_GAP))
   for (const n of live) {
     if (n.kind !== 'junction' || throats.includes(n) || rand() < 0.45) continue
-    const r = Math.min(9, room(n))
-    if (r < 4.5) continue
+    const r = Math.min(18, room(n))
+    if (r < 9) continue
     n.kind = 'chamber'
-    n.rx = rr(4.5, r); n.rz = rr(4, Math.min(8, n.rx)); n.rot = rand() * Math.PI; n.h = rr(5, 9)
+    n.rx = rr(9, r); n.rz = rr(8, Math.min(16, n.rx)); n.rot = rand() * Math.PI; n.h = rr(8, 14)
   }
   const remap = new Map(live.map((n, i) => [n, i]))
   nodes.length = 0
@@ -203,7 +212,7 @@ export function buildGraph({ seed, entries }) {
       seen.add(j)
       const A = nodes[i], B = nodes[j]
       const run = between(A, B)
-      const g = B.kind === 'cavern' ? GRADE_MAX * 0.95 : A.kind === 'mouth' ? 0.12 : rand() < 0.2 ? -rr(0.04, 0.3) : rr(0.04, 0.38)
+      const g = B.kind === 'cavern' ? GRADE_MAX * 0.95 : A.kind === 'mouth' ? 0.12 : (rand() < 0.2 ? -rr(0.04, 0.3) : rr(0.04, 0.38)) * 0.65
       B.y = Math.max(-160, A.y - run * g)
       queue.push(j)
     }
@@ -445,9 +454,9 @@ function lobesAndNooks(nodes, edges, rand) {
     const nl = great ? 10 + Math.floor(rand() * 10) : cavern ? 4 + Math.floor(rand() * 5) : chamber ? 2 + Math.floor(rand() * 4) : Math.floor(rand() * 3)
     for (let k = 0; k < nl; k++) {
       const a = rand() * Math.PI * 2
-      const r = great ? rr(6, Math.max(8, n.rz * 0.6)) : cavern ? rr(3, 7) : chamber ? rr(1.8, 3.5) : rr(1.4, 2.4)
+      const r = great ? rr(6, Math.max(8, n.rz * 0.6)) : cavern ? rr(5, 11) : chamber ? rr(2.4, 5) : rr(1.4, 2.4)
       const at = rDir(n, a) * rr(0.8, 1.0)
-      const l = { node: n.i, region: n.region, x: n.x + Math.cos(a) * at, z: n.z + Math.sin(a) * at, y: n.y, rx: r, rz: r * rr(0.6, 1), rot: a, h: great ? rr(12, 30) : cavern ? rr(4, 10) : chamber ? rr(2.6, 5) : rr(2.4, 3.4) }
+      const l = { node: n.i, region: n.region, x: n.x + Math.cos(a) * at, z: n.z + Math.sin(a) * at, y: n.y, rx: r, rz: r * rr(0.6, 1), rot: a, h: great ? rr(12, 30) : cavern ? rr(6, 14) : chamber ? rr(3, 6) : rr(2.4, 3.4) }
       if (!foreign(l.x, l.z, l.y, l.y + l.h, r, n.i, null)) lobes.push(l)
     }
     const nn = great ? 8 + Math.floor(rand() * 6) : cavern ? 2 + Math.floor(rand() * 4) : chamber ? 1 + Math.floor(rand() * 3) : Math.floor(rand() * 3)
@@ -585,16 +594,39 @@ function hollows(n, pools, floored) {
   const { nx, nz, v, x0, z0, cell } = n.relief
   const fill = new Float32Array(nx * nz).fill(Infinity)
   const done = new Uint8Array(nx * nz)
-  const open = []
-  const push = (c, h) => { if (h < fill[c]) { fill[c] = h; open.push(c) } }
+  // A binary heap of cells by fill height; a cell is pushed again whenever its fill drops, and the stale entries are skipped when popped.
+  const heap = []
+  const push = (c, h) => {
+    if (h >= fill[c]) return
+    fill[c] = h
+    let i = heap.length
+    heap.push(c)
+    while (i > 0) {
+      const up = (i - 1) >> 1
+      if (fill[heap[up]] <= fill[c]) break
+      heap[i] = heap[up]; i = up
+    }
+    heap[i] = c
+  }
+  const pop = () => {
+    const top = heap[0], last = heap.pop()
+    if (heap.length > 0) {
+      let i = 0
+      for (;;) {
+        let k = 2 * i + 1
+        if (k >= heap.length) break
+        if (k + 1 < heap.length && fill[heap[k + 1]] < fill[heap[k]]) k++
+        if (fill[heap[k]] >= fill[last]) break
+        heap[i] = heap[k]; i = k
+      }
+      heap[i] = last
+    }
+    return top
+  }
   for (let i = 0; i < nx; i++) { push(i, v[i]); push((nz - 1) * nx + i, v[(nz - 1) * nx + i]) }
   for (let k = 0; k < nz; k++) { push(k * nx, v[k * nx]); push(k * nx + nx - 1, v[k * nx + nx - 1]) }
-  // A bucket-free priority flood: the open list is small, and planning runs once per system.
-  while (open.length > 0) {
-    let b = 0
-    for (let j = 1; j < open.length; j++) if (fill[open[j]] < fill[open[b]]) b = j
-    const c = open[b]
-    open[b] = open[open.length - 1]; open.pop()
+  while (heap.length > 0) {
+    const c = pop()
     if (done[c]) continue
     done[c] = 1
     const i = c % nx, k = Math.floor(c / nx)
@@ -634,9 +666,27 @@ export function reliefAt(n, x, z) {
 // Rock under this much between two passages stacked in one plan spot. The field eats about 3.5 m of it: the lower vault's octaves and roughness carve up, the upper floor's bump dips down.
 const SILL = 4
 
+// A passage's plan box grown by its widest half-width plus the clash margin, cached on its pts array.
+const BOXES = new WeakMap()
+function planBox(e) {
+  let b = BOXES.get(e.pts)
+  if (b === undefined) {
+    b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity }
+    for (const q of e.pts) {
+      b.x0 = Math.min(b.x0, q.x - q.w - 1); b.x1 = Math.max(b.x1, q.x + q.w + 1)
+      b.z0 = Math.min(b.z0, q.z - q.w - 1); b.z1 = Math.max(b.z1, q.z + q.w + 1)
+    }
+    BOXES.set(e.pts, b)
+  }
+  return b
+}
+
 /** Whether passage e's samples come within a wall of another built passage or a node it does not end at, with less than SILL of rock between them. */
 export function clashes(e, built, nodes) {
+  const be = planBox(e)
   for (const f of built) {
+    const bf = planBox(f)
+    if (be.x0 > bf.x1 || bf.x0 > be.x1 || be.z0 > bf.z1 || bf.z0 > be.z1) continue
     // Two passages from one node meet in it; past its walls they must part like any other two.
     const shared = [e.a, e.b].filter((i) => i === f.a || i === f.b).map((i) => nodes[i])
     if (shared.length === 2) continue

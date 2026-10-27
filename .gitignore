@@ -13,4 +13,5 @@ devops/deploy.env
 .DS_Store
 .claude/settings.local.json
 chrome-profile
+tools/mesh/.pydeps/
 Trace-*

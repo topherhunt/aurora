@@ -10,6 +10,8 @@ import { WORLD_HALF } from './sim/terrain-height.js'
 
 export const LOCOMOTION = {
   maxSpeed: 1.45, // m/s -- normal walking pace
+  // The desktop walk, closer to what a VR teleport covers.
+  deskSpeed: 2.9,
   // Seconds. The ease-in curve is what prevents nausea, not the top speed -- but
   // it is nausea from a moving world your inner ear disagrees with, which only
   // happens in the headset. On a monitor the ramp is pure input lag, so the
@@ -552,7 +554,7 @@ export class Player {
       this.held = false
     }
 
-    const top = this.flying ? this.flySpeedAt(origin) : L.maxSpeed * this.scale
+    const top = this.flying ? this.flySpeedAt(origin) : (input.instant ? L.deskSpeed : L.maxSpeed) * this.scale
     if (drive <= 0) {
       this.speed = 0 // instant stop on release (§12)
     } else if (input.instant) {

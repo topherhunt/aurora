@@ -34,7 +34,7 @@ import {
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
   Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, FAR_AT, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, NEST_FERNS, REACH, buildFortress, layFortress, gridCell,
-  EGG_GLB, EGG_ODDS, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
+  EGG_GLB, EGG_HEIGHT, EGG_TINTS, EGG_LIE, EGG_SINK, EGG_ROUGHNESS, eggBankFrom,
 } from '../src/v2/render/roosts.js'
 import { buildRockBank } from '../src/props/rock-bank.js'
 import { ROCK_LOD_AT, ROCK_TIERS } from '../src/props/rock.js'
@@ -365,7 +365,7 @@ const pickOf = (w, h, d) => {
   check(Math.abs(egg.bounds.height - 1) < 1e-6 && Math.abs(egg.bounds.width - 0.6) < 1e-6 && Math.abs(bb.min.y + 0.5) < 1e-6 && Math.abs(bb.max.y - 0.5) < 1e-6 && egg.tris > 0, 'and takes a standing one, its origin moved from the foot to the middle it is turned about', `${fmt(egg.bounds.width)} x ${fmt(egg.bounds.height)}, y ${fmt(bb.min.y)}..${fmt(bb.max.y)}, ${egg.tris} tris`)
   const c = new THREE.Color()
   check(EGG_TINTS.length === 5 && EGG_TINTS.every(([name, hex]) => typeof name === 'string' && !(c.setHex(hex).r > 0.8 && c.g > 0.8 && c.b > 0.8)), 'five clutch colours, none of them white -- a white tint is the unpainted pick', EGG_TINTS.map(([n]) => n).join(' '))
-  check(EGG_ODDS > 0 && EGG_ODDS < 1 && EGG_LIE[0] > 0 && EGG_LIE[1] < Math.PI / 2 && EGG_HEIGHT[0] > 0 && EGG_HEIGHT[1] < 1, 'an egg is a chance, lies over short of flat, and is under a metre tall')
+  check(EGG_LIE[0] > 0 && EGG_LIE[1] < Math.PI / 2 && EGG_HEIGHT[0] > 0 && EGG_HEIGHT[1] < 1, 'an egg lies over short of flat, and is under a metre tall')
 
   const r = roostsOn({ egg })
   const bare = roostsOn()
@@ -414,7 +414,7 @@ const pickOf = (w, h, d) => {
     }
     w.dispose()
   }
-  check(Math.abs(eggCount - placed * EGG_ODDS) < 3.5 * Math.sqrt(placed * EGG_ODDS * (1 - EGG_ODDS)), `over sixty seeds ${EGG_ODDS} of the roosts hold an egg and the rest are empty`, `${eggCount} eggs in ${placed} roosts`)
+  check(placed > 0 && eggCount === placed, 'over sixty seeds every roost holds an egg', `${eggCount} eggs in ${placed} roosts`)
   check(alongOff < 1e-3, 'every egg is lifted from its floor\'s centre along the floor\'s normal', `off the normal by ${alongOff.toExponential(1)} m`)
   check(lieLo >= EGG_LIE[0] - 1e-6 && lieHi <= EGG_LIE[1] + 1e-6 && lieHi - lieLo > 0.2, `laid over ${EGG_LIE[0]}..${EGG_LIE[1]} rad off the floor's normal, no two alike`, `lie ${fmt(lieLo)}..${fmt(lieHi)}`)
   check(hLo >= EGG_HEIGHT[0] - 1e-6 && hHi <= EGG_HEIGHT[1] + 1e-6 && hHi - hLo > 0.05 && badScale === 0, `${EGG_HEIGHT[0]}..${EGG_HEIGHT[1]} m tall, scaled evenly, its height its rim size`, `${fmt(hLo)}..${fmt(hHi)} m, ${badScale} scaled unevenly`)

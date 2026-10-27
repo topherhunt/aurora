@@ -22,6 +22,7 @@ import { QuestLog, questsFor, missingChild, MESSAGES } from '../src/v2/talk/ques
 import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
+import * as trade from '../src/v2/talk/trade.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -39,7 +40,21 @@ const { towns } = planTowns({ ground: (x, z) => hm.sample(x, z), surface: (x, z)
 const world = new TalkWorld(SEED, towns)
 const EPOCH = 7
 const quests = questsFor(world, EPOCH)
-const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), ...more })
+// A pack in the shape main.js's has: `have` counts by kind, `slots` the large slots in all.
+const LARGE_KINDS = new Set(['bog-iron', 'lodestone', 'rimesilver', 'firestone', 'flint', 'egg', 'pickaxe', 'sword', 'shield'])
+const stubPack = (have = {}, slots = 12) => {
+  const n = { ...have }
+  const used = () => Object.entries(n).filter(([k]) => LARGE_KINDS.has(k)).reduce((a, [, c]) => a + c, 0)
+  return {
+    n,
+    count: (k) => n[k] ?? 0,
+    freeLarge: () => slots - used(),
+    held: () => null,
+    add(k, c = 1) { if (LARGE_KINDS.has(k) && slots - used() < c) return false; n[k] = (n[k] ?? 0) + c; return true },
+    remove(k, c = 1) { if ((n[k] ?? 0) < c) return false; n[k] -= c; return true },
+  }
+}
+const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), pack: stubPack(), wants: null, inWorkshop: false, wronged: false, witness: null, ...more })
 const fire = (t) => ({ x: t.town.x, z: t.town.z })
 // A mind with some traits pinned, for testing one lever at a time.
 const as = (m, traits) => ({ ...m, traits: { ...m.traits, ...traits } })
@@ -407,14 +422,14 @@ const opinion = grudge.say(`ask:person:${rival.id}`)
 const fm = grudge.menu()
 check(fm[0].topic === `why:person:${rival.id}` && fm.some((x) => x.label === `Where is ${rival.name}?`), 'told of a rival, her first chips ask why, and where the rival is', `${opinion.text} -> ${fm.slice(0, 3).map((x) => x.label).join(' / ')}`)
 const why = grudge.say(`why:person:${rival.id}`)
-check(why.text.startsWith(`${rival.name}? `) && why.moment === 'nv.sigh', 'asked why, they tell the grudge', why.text)
+check(why.text.includes(`${rival.name}? `) && why.moment === 'nv.sigh', 'asked why, they tell the grudge', why.text)
 let late = null
 for (const t of world.towns) {
   const speaker = t.minds.find((m) => m.cls !== 'child')
   const p = speaker && t.minds.find((o) => o.id !== speaker.id && !speaker.household.includes(o.index) && world.placeOf(o).building === o.home && world.placeOf(o).label !== 'the inn')
   if (p) { late = { p, l: new Conversation(as(speaker, STRAIGHT), ctxAt(fire(t), { hour: 22 })).say(`where:person:${p.id}`) }; break }
 }
-check(late !== null && late.l.text.startsWith(late.p.voice.he ? "He's likely home by now." : "She's likely home by now.") && !late.l.text.includes(`${late.p.name}'s house`), 'asked at night where someone is, they say the person is likely home by now', late?.l.text)
+check(late !== null && late.l.text.includes(late.p.voice.he ? "He's likely home by now." : "She's likely home by now.") && !late.l.text.includes(`${late.p.name}'s house`), 'asked at night where someone is, they say the person is likely home by now', late?.l.text)
 
 // --- kind words ---
 const MOVE_NAMES = ['greet', 'thanks', 'work', 'life', 'town', 'craft', 'sorry', 'leave']
@@ -510,7 +525,7 @@ walk(new DialogGrid(), 0)
 check(gm.every((c) => reach.has(c.topic)), 'every chip can be reached through the grid', gm.filter((c) => !reach.has(c.topic)).map((c) => c.label).join(' | '))
 
 // --- a conversation lived ---
-const cheery = as(all.find((m) => m.cls === 'folk'), { kindness: 1, chattiness: 1, wariness: 0 })
+const cheery = as(all.find((m) => m.cls === 'folk' && !trade.isSmith(m)), { kindness: 1, chattiness: 1, wariness: 0 })
 const open1 = new Chat(cheery, ctxAt(fire(world.townOf(cheery)))).open()
 check(!open1.ended && open1.moment.startsWith('greet.'), 'a cheery person hailed by a stranger greets her', open1.text)
 const shunned = ctxAt(fire(world.townOf(cheery)))
@@ -578,6 +593,145 @@ if (formed) {
   const [mom] = formed
   const p = new LinePicker(table, 1).pool(speaker, mom, { form: 'she' })
   check(p.length > 0 && p.every((l) => !l.includes('{') && !/-(he|him)$/.test(l)), 'a line recorded in forms is said in the form for who is meant', `${mom}: ${p.join(' ')}`)
+}
+
+// --- stream T: wording, pointing, shop, trade, hearsay, fury ---
+{
+const human = as(all.find((m) => m.cls === 'folk' && !trade.isSmith(m)), STRAIGHT)
+const humanTown = world.townOf(human)
+const askMany = (mind, topic, ctx, n = 20) => {
+  const conv = new Conversation(mind, ctx)
+  return Array.from({ length: n }, () => conv.say(topic).text)
+}
+for (const [who, topics] of [[human, ['talk:self', 'talk:town', 'talk:needs', 'where:title:smith', 'where:here', 'lore:striders', 'nice:work']], [leaf[0], ['talk:self', 'lore:striders', 'talk:needs']]]) {
+  for (const topic of topics) {
+    const texts = askMany(who, topic, ctxAt(fire(humanTown)))
+    const backToBack = texts.filter((t, i) => i > 0 && t === texts[i - 1]).length
+    check(backToBack === 0 && new Set(texts).size >= 6, `${who.kind} asked ${topic} 20 times: no back-to-back repeat, 6+ wordings`, `${new Set(texts).size} distinct, ${backToBack} repeats`)
+  }
+}
+
+const busyTown = humanTown
+const passed = []
+for (let salt = 0; salt < 40; salt++) {
+  const o = new Chat(as(human, { chattiness: 0 }), ctxAt(fire(busyTown)), { busy: true, salt }).open()
+  if (o.ended && o.moment === 'mood.busy' && o.about) passed.push(o)
+}
+check(passed.length > 0, 'a busy person sometimes points her to a friendlier person and says where to find them', passed[0]?.text)
+check(passed.every((o) => /^person:/.test(o.about) && world.person(o.about.slice(7)).town === humanTown.index), 'the person a busy one points to lives in the same town', passed[0]?.about)
+
+const smithTown = world.towns.find((t) => world.titled(t, 'smith'))
+const smith = as(world.titled(smithTown, 'smith'), STRAIGHT)
+const inShop = (pack, more = {}) => ctxAt(fire(smithTown), { inWorkshop: true, pack, ...more })
+const opening = new Conversation(smith, inShop(stubPack())).opener()
+check(opening.shop === true && /quick|orders|piling|need/i.test(opening.text), 'the blacksmith in his workshop asks what she needs and hurries her', opening.text)
+const away = new Conversation(smith, ctxAt(fire(smithTown))).opener()
+check(away.shop === 'tired' && /workshop|smithy|forge/i.test(away.text), 'the blacksmith elsewhere is tired and tells her to come to his workshop', away.text)
+const shopChips = new Conversation(smith, inShop(stubPack())).menu().map((c) => c.topic)
+check(['shop:buy:sword', 'shop:buy:shield', 'shop:buy:pickaxe', 'shop:offer'].every((t) => shopChips.includes(t)), 'in his workshop her options are to buy each tool or ask what he has on offer', shopChips.join(' '))
+check(!new Conversation(smith, ctxAt(fire(smithTown))).menu().some((c) => c.topic.startsWith('shop:')), 'away from his workshop the blacksmith offers no shop chips')
+const offer = new Conversation(smith, inShop(stubPack())).say('shop:offer').text
+check(/sword/.test(offer) && /shield/.test(offer) && /pickaxe/.test(offer) && /100 coins/.test(offer) && /3 bog iron/.test(offer) && /50 coins/.test(offer), 'asked what he has, he lists the sword, shield and pickaxe with their prices', offer)
+check(trade.SHOP.sword.coin === 100 && trade.SHOP.sword['bog-iron'] === 3 && trade.SHOP.shield.coin === 100 && trade.SHOP.shield['bog-iron'] === 3 && trade.SHOP.pickaxe.coin === 50 && trade.SHOP.pickaxe['bog-iron'] === undefined, 'the shop prices are sword and shield 100 coins and 3 bog iron, pickaxe 50 coins')
+for (const [item, have] of [['sword', { coin: 100, 'bog-iron': 3 }], ['shield', { coin: 100, 'bog-iron': 3 }], ['pickaxe', { coin: 50 }]]) {
+  const pk = stubPack(have)
+  const sold = new Conversation(smith, inShop(pk)).say(`shop:buy:${item}`)
+  check(pk.count(item) === 1 && pk.count('coin') === 0 && pk.count('bog-iron') === 0 && sold.moment === 'give.thanks', `buying a ${item} with the coins and iron it costs hands it over and takes the payment`, JSON.stringify(pk.n))
+}
+const lack = [['no coins', { 'bog-iron': 3 }, /coin/], ['too little iron', { coin: 100, 'bog-iron': 2 }, /iron/]]
+for (const [what, have, word] of lack) {
+  const pk = stubPack(have)
+  const before = JSON.stringify(pk.n)
+  const no = new Conversation(smith, inShop(pk)).say('shop:buy:sword')
+  check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'refuse.price', `a sword sale with ${what} fails, says what is short and leaves the pack as it was`, no.text)
+}
+const full = stubPack({ coin: 100, 'bog-iron': 3 }, 3)
+const fullBefore = JSON.stringify(full.n)
+const noRoom = new Conversation(smith, inShop(full)).say('shop:buy:sword')
+check(JSON.stringify(full.n) === fullBefore && /room|space|slot|full|pack|hands/i.test(noRoom.text), 'a sale with no free large slot (the iron would free three) still fails when it cannot fit, and changes nothing', noRoom.text)
+const tight = stubPack({ coin: 100, 'bog-iron': 3 }, 3)
+const squeezed = new Conversation(smith, inShop(tight)).say('shop:buy:sword')
+check(tight.count('sword') === 1 && squeezed.moment === 'give.thanks', 'the iron paid frees its slots, so a full pack of exactly the iron still buys a sword', JSON.stringify(tight.n))
+const stuffed = stubPack({ coin: 100, 'bog-iron': 3, flint: 9 }, 12)
+const stuffedBefore = JSON.stringify(stuffed.n)
+const none = new Conversation(smith, inShop(stuffed)).say('shop:buy:sword')
+check(JSON.stringify(stuffed.n) === stuffedBefore && none.moment === 'refuse.price', 'with every slot held by other things and no room for the sword, nothing is sold', none.text)
+const elsewhere = stubPack({ coin: 100, 'bog-iron': 3 })
+const elseBefore = JSON.stringify(elsewhere.n)
+const refused = new Conversation(smith, ctxAt(fire(smithTown), { pack: elsewhere })).say('shop:buy:sword')
+check(JSON.stringify(elsewhere.n) === elseBefore && /workshop|smithy|forge/i.test(refused.text), 'the blacksmith away from his workshop will not sell, even to someone who can pay', refused.text)
+
+const gearAsker = as(humanTown.minds.find((m) => !trade.isSmith(m) && m.cls !== 'child'), STRAIGHT)
+const gearChips = new Conversation(gearAsker, ctxAt(fire(humanTown))).menu().map((c) => c.topic)
+check(gearChips.includes('where:gear'), 'townsfolk have a "where do I get weapons, armour and gear" option', gearChips.join(' '))
+const smithsHome = world.towns.find((t) => world.titled(t, 'smith'))
+const gearHere = as(smithsHome.minds.find((m) => !trade.isSmith(m) && m.cls !== 'child'), STRAIGHT)
+const gear = new Conversation(gearHere, ctxAt(fire(smithsHome))).say('where:gear')
+check(gear.text.includes(smith.name) && /workshop|smithy/i.test(gear.text) && /grump|surly|sour|short-tempered|ill-tempered|sharp/i.test(gear.text) && /blame/i.test(gear.text), 'asked about gear they name the blacksmith, warn he only talks shop in his workshop and is grumpy elsewhere, and do not blame him', gear.text)
+
+const buyer = as(world.towns.flatMap((t) => t.minds).find((m) => m.body === 'innkeeper'), STRAIGHT)
+const buyerTown = world.townOf(buyer)
+const wantsCtx = (kind, have) => ctxAt(fire(buyerTown), { wants: kind, pack: stubPack(have) })
+const tradeOpen = new Conversation(buyer, wantsCtx('ruby', { ruby: 2 })).opener()
+check(tradeOpen.trade === true && /ruby/i.test(tradeOpen.text) && /interest|trade|offer|swap/i.test(tradeOpen.text), 'someone who wants what she holds says they are very interested and asks what she would trade', tradeOpen.text)
+const tradeChips = new Conversation(buyer, wantsCtx('ruby', { ruby: 2 })).menu().map((c) => c.topic)
+check(tradeChips.includes('trade:offer') && tradeChips.some((t) => t.startsWith('trade:take:')), 'her options are to ask what they have on offer or to name something she would take', tradeChips.join(' '))
+const noWant = new Conversation(buyer, wantsCtx(null, {})).opener()
+check(noWant.trade === undefined, 'someone who wants nothing she holds does not open with a trade')
+const pk2 = stubPack({ ruby: 2 })
+const sellCtx = ctxAt(fire(buyerTown), { wants: 'ruby', pack: pk2 })
+const sc = new Conversation(buyer, sellCtx)
+const sellTopic = sc.menu().map((c) => c.topic).find((t) => t === 'trade:take:sell:ruby')
+const sold = sellTopic ? sc.say(sellTopic) : null
+check(sold !== null && pk2.count('ruby') === 1 && pk2.count('coin') === trade.PRICE.ruby, 'selling a ruby pays the table price in coins', JSON.stringify(pk2.n))
+const emptyHanded = stubPack({})
+const noGoods = new Conversation(buyer, ctxAt(fire(buyerTown), { pack: emptyHanded })).say('trade:take:sell:ruby')
+check(emptyHanded.count('coin') === 0 && noGoods.moment === 'refuse.price', 'a trade she cannot cover gives nothing and says so', noGoods.text)
+check(trade.buys(smith).every((k) => trade.ORES.includes(k)) && trade.buys(smith).length > 0, 'the blacksmith buys ores and nothing else')
+check(trade.buys(leaf[0]).includes('coin') && trade.buys(leaf[0]).every((k) => trade.GEMS.includes(k) || k === 'coin'), 'leafkin take gems and coin, no ore')
+const lkPack = stubPack({ jade: 1 })
+const lkc = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }, { pack: lkPack, wants: 'jade' }))
+check(/jade/i.test(lkc.opener().text) && lkc.opener().trade === true, 'a leafkin wanting her jade opens in pidgin about it', lkc.opener().text)
+const lkDeal = lkc.menu().map((c) => c.topic).find((t) => t.startsWith('trade:take:'))
+const lkSaid = lkDeal ? lkc.say(lkDeal) : null
+check(lkSaid !== null && lkSaid.moment === 'give.thanks' && lkPack.count('jade') === 0 && lkPack.count('bog-iron') + lkPack.count('lodestone') > 0, 'a leafkin trade swaps her jade for iron or lodestone', JSON.stringify(lkPack.n))
+
+// Dragon-fighting deer, cave rabbit and fox hearsay.
+const dw = new TalkWorld(SEED, towns)
+const deerSame = new TalkWorld(SEED, towns).deer
+check(JSON.stringify(dw.deer) === JSON.stringify(deerSame), 'the town of the dragon-fighting deer is the same for every client of one world')
+const nearSite = { x: dw.towns[dw.towns.length - 1].town.x + 30, z: dw.towns[dw.towns.length - 1].town.z }
+check(dw.seatDeer([nearSite]).town === dw.towns.length - 1, 'the deer town is the town nearest a roost')
+const ownerMind = dw.person(dw.deer.owner)
+check(ownerMind.town === dw.deer.town && ownerMind.cls !== 'child', 'the man who took the credit lives in the deer town and is grown')
+const deerCtx = (mind) => ({ ...ctxAt(fire(dw.townOf(mind))), world: dw })
+const heard = (mind, topic, n = 30) => {
+  const out = []
+  for (let salt = 0; salt < n; salt++) out.push(new Conversation(as(mind, STRAIGHT), deerCtx(mind), salt).say(topic))
+  return out
+}
+const stranger = dw.towns.find((t) => t.index !== dw.deer.town).minds.find((m) => m.cls !== 'child')
+const away1 = heard(stranger, 'lore:dragons').filter((l) => /deer/i.test(l.text))
+check(away1.length > 0 && away1.every((l) => !/enormous pet deer/i.test(l.text)), 'elsewhere they say someone in the deer town fought off a dragon', away1[0]?.text)
+check(away1.every((l) => l.text.includes(dw.towns[dw.deer.town].name)), 'the hearsay names the deer town, so people point the way', away1[0]?.text)
+const resident = dw.towns[dw.deer.town].minds.find((m) => m.cls !== 'child' && m.id !== dw.deer.owner)
+const home1 = heard(resident, 'lore:dragons').filter((l) => /deer/i.test(l.text))
+check(home1.some((l) => dw.person(dw.deer.owner).name && l.text.includes(dw.person(dw.deer.owner).name) && /pet/i.test(l.text) && /feisty|fed|enough/i.test(l.text)), 'in the deer town they say who took the credit, that it was his enormous pet deer, and that deer turn feisty if fed enough', home1[0]?.text)
+const cavesAll = world.towns.flatMap((t) => t.minds).filter((m) => m.cls !== 'child').slice(0, 60).flatMap((m) => Array.from({ length: 12 }, (_, salt) => new Conversation(as(m, STRAIGHT), ctxAt(fire(world.townOf(m))), salt).say('lore:caves').text))
+check(cavesAll.some((t) => /rabbit/i.test(t) && /(lost|child)/i.test(t)), 'someone tells of getting lost in a cave as a child and being led out by a pet rabbit', cavesAll.find((t) => /rabbit/i.test(t)))
+check(cavesAll.some((t) => /fox/i.test(t) && /(sniff|treasure)/i.test(t)), 'someone tells that foxes sniff out cave treasure', cavesAll.find((t) => /fox/i.test(t)))
+
+// Furious leafkin of a glade she wronged.
+const fl = leaf[0]
+const furyCtx = (witness) => ctxAt({ x: 0, z: 0 }, { wronged: true, witness })
+const furious = new Chat(fl, furyCtx(null), { trusted: true, salt: 1 }).open()
+check(furious.mood === 'angry' && /hob|bad|keesh|frog/i.test(furious.text), 'a leafkin of a wronged glade greets her furious about the hob', furious.text)
+const wit = new Chat(fl, furyCtx(fl.id), { trusted: true, salt: 1 }).open()
+check(wit.mood === 'angry' && (wit.fury ?? 0) > (furious.fury ?? 0), 'the leafkin who witnessed it is angrier than the rest', `${wit.fury} vs ${furious.fury}: ${wit.text}`)
+check(LK.scold.length >= 6 && LK.scold.every((l) => /hob|frog|bad/i.test(l)), 'the scolding a leafkin shouts following her is six or more pidgin lines about the hob')
+const calm = new Chat(fl, ctxAt({ x: 0, z: 0 }), { trusted: true, salt: 1 }).open()
+check(calm.mood !== 'angry', 'a leafkin of a glade she has not wronged is not furious', calm.text)
+
 }
 
 if (process.argv.includes('--transcript')) {

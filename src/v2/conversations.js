@@ -5,6 +5,8 @@
 import { TalkWorld } from './talk/world.js'
 import { villageMinds } from './talk/mind.js'
 import { Chat, chatterStep, wantsHer } from './talk/chat.js'
+import * as trade from './talk/trade.js'
+import { TILE } from './render/roosts.js'
 import { DialogGrid, GRID } from './talk/grid.js'
 import { LinePicker, leafkinTier } from './talk/lines.js'
 import { epochOf, questsFor } from './talk/quests.js'
@@ -38,10 +40,25 @@ export class Conversations {
   /**
    * `towns` planTowns' (the same `townsfolk.towns`); `villagers` the room's leafkin village or null, `villageSeed` its
    * seed. `known`, `rapport` and `log` outlive the room (main.js). `upload` puts a canvas on the GPU; `engine()` is the
-   * SoundEngine once it is open and `mic()` her Mic once asked for, else null.
+   * SoundEngine once it is open and `mic()` her Mic once asked for, else null. `pack` is what she carries (main.js),
+   * `roosts` the dragon roosts or null in a village (the deer town stands near one), and `wrongs` the glade she wronged:
+   * `{ wronged(): boolean, witness(): villager id or null }`.
    */
-  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic }) {
+  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs }) {
     this.world = new TalkWorld(seed, towns)
+    this.pack = pack
+    this.wrongs = wrongs
+    if (roosts) {
+      const sites = []
+      for (const { town } of this.world.towns) {
+        const tx = Math.floor(town.x / TILE), tz = Math.floor(town.z / TILE)
+        for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+          const site = roosts.siteAt(tx + dx, tz + dz)
+          if (site) sites.push(site)
+        }
+      }
+      this.world.seatDeer(sites)
+    }
     this.townsfolk = townsfolk
     this.villagers = villagers
     this.village = villagers ? villageMinds(villageSeed, villagers.all.length, villagers.all.map((c) => villagers.graph.doorNodes.indexOf(c.home))) : []
@@ -88,13 +105,30 @@ export class Conversations {
     this.panel.group.removeFromParent()
   }
 
-  _ctx(p) {
+  /** The talk's view of the moment with `p.mind` (null for chatter, which trades nothing). */
+  _ctx(p, mind = null) {
     const epoch = epochOf(this.now)
     if (epoch !== this.epoch) {
       this.epoch = epoch
       this.quests = questsFor(this.world, epoch)
     }
-    return { world: this.world, rapport: this.rapport, quests: this.quests, log: this.log, epoch, from: { x: p.c.pose.x, z: p.c.pose.z }, hour: this.hour, known: this.known }
+    const held = this.pack.held()
+    const wants = mind !== null && held !== null && trade.wants(mind, held) ? held : null
+    const leaf = mind !== null && mind.kind === 'leafkin'
+    const witness = this.wrongs.witness()
+    return {
+      world: this.world, rapport: this.rapport, quests: this.quests, log: this.log, epoch, from: { x: p.c.pose.x, z: p.c.pose.z }, hour: this.hour, known: this.known,
+      pack: this.pack, wants, inWorkshop: mind !== null && this._inWorkshop(p, mind),
+      wronged: leaf && this.wrongs.wronged(), witness: leaf && witness !== null ? this.village[witness].id : null,
+    }
+  }
+
+  /** Whether the smith `mind` stands at his workshop (a smith with none is always in it); false for anyone else. */
+  _inWorkshop(p, mind) {
+    if (!trade.isSmith(mind)) return false
+    if (mind.work === null) return true
+    const w = this.world.townOf(mind).town.works[mind.work]
+    return Math.hypot(p.c.pose.x - w.x, p.c.pose.z - w.z) < 8
   }
 
   /** Townsperson `id` of alive town `t`, or null for a traveller, who has no mind. */
@@ -160,7 +194,7 @@ export class Conversations {
     if (this.chat !== null && this.chat.p.mind === mind) return
     if (this.picker === null || this.voices === null && !this._voices()) return
     const was = this.pairs.get(pair)
-    const step = chatterStep(mind, this._ctx({ c: { pose: { x, z } } }), was === undefined || this.now - was.time > TALK.pairGap ? null : was.at, { hour: this.hour, r: Math.random(), alt: Math.random() })
+    const step = chatterStep(mind, this._ctx({ c: { pose: { x, z } } }, mind), was === undefined || this.now - was.time > TALK.pairGap ? null : was.at, { hour: this.hour, r: Math.random(), alt: Math.random() })
     const pick = this.picker.pick(mind, step.moment, { now: this.now, tier: 'native', only: step.only })
     if (pick === null) return
     this.pairs.set(pair, { at: step.at, time: this.now })
@@ -201,7 +235,7 @@ export class Conversations {
       if (warmth < RAPPORT.fed) this.rapport.warm(p.mind.id, RAPPORT.fed - warmth)
     }
     this._hold(p)
-    const chat = new Chat(p.mind, this._ctx(p), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
+    const chat = new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
     const [lo, hi] = TALK.answer
     this.chat = { p, chat, closing: null, trusted, answerAt: approached ? this.now : this.now + lo + Math.random() * (hi - lo) }
     this.grid.reset()
@@ -295,7 +329,7 @@ export class Conversations {
       if (Math.hypot(c.pose.x - head.x, c.pose.z - head.z) > A.m * scale) continue
       if ((this.alone.get(id) ?? -Infinity) > this.now || (this.asked.get(id) ?? -Infinity) > this.now) continue
       this.asked.set(id, this.now + A.again)
-      if (!wantsHer(p.mind, this._ctx(p), Math.random())) continue
+      if (!wantsHer(p.mind, this._ctx(p, p.mind), Math.random())) continue
       this.townsfolk.approach(c, this.now, A.come * scale)
       this.coming = { p, until: Infinity, hailed: false }
       return

@@ -85,6 +85,10 @@ import { Leafkin } from './render/leafkin.js'
 import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
 import { Trust } from './trust.js'
+import { Loot, place } from './loot.js'
+import { ALTAR, LABYRINTH } from './layers/labyrinths.js'
+import { mulberry32 } from '../sim/mathx.js'
+import { ITEMS, SMALL, Items, itemUrl } from './items.js'
 import { Conversations } from './conversations.js'
 import { Mic } from './audio/mic.js'
 import { Rapport } from './talk/rapport.js'
@@ -913,13 +917,16 @@ let questBackpackSlots = null
 
 // --- backpack ----------------------------------------------------------------
 
-// Eight slots, each null or what her hand put there, packed (hands.pack): the
-// record without its geometry and material, which its source dresses it in
-// again on the way out. Saved and loaded with her position; see saveGame.
-const BACKPACK_SLOTS = 8
+// The large slots, each null or what her hand put there, packed (hands.pack):
+// the record without its geometry and material, which its source dresses it in
+// again on the way out; and the purse, a count of each small kind (items.js
+// SMALL), the brown row over them. Both saved with her position; see saveGame.
+const BACKPACK_SLOTS = 12
 const backpack = new Array(BACKPACK_SLOTS).fill(null)
-// The photograph of each slot, in pixels a side, in one render target of two rows.
+const purse = Object.fromEntries(SMALL.map((k) => [k, 0]))
+// The photograph of each cell, in pixels a side, in one render target of BACKPACK_PHOTO_COLS columns.
 const BACKPACK_PHOTO_PX = 192
+const BACKPACK_PHOTO_COLS = 5
 
 // --- settings ----------------------------------------------------------------
 
@@ -930,14 +937,24 @@ const BACKPACK_PHOTO_PX = 192
 // not in it: she saves only on waking, when it is full.
 const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
-const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : JSON.parse(raw) }
+const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : migrateSave(JSON.parse(raw)) }
+/** A save from before the purse: its 8 large slots padded to 12, an empty purse, no loot. */
+function migrateSave(doc) {
+  if (doc.purse !== undefined) return doc
+  if (doc.backpack.length !== 8) throw new Error(`v2: a save with no purse has ${doc.backpack.length} slots, not 8`)
+  return { ...doc, backpack: [...doc.backpack, null, null, null, null], purse: Object.fromEntries(SMALL.map((k) => [k, 0])), loot: [] }
+}
 // Which villagers trust which player, she among them as `trust.player` (trust.js).
 const trust = new Trust()
 // Every chalk stroke on every cave's walls she knows of, hers by trust.player (caves/chalk.js).
 const chalk = new Chalk(() => trust.player)
+// What the room has taken from which place (loot.js); a new game keeps it, as the world does.
+const loot = new Loot()
 // What the talk has given her (conversations.js): the topics she has heard of, saved; how each person stands with her and the quests she has taken, for the session.
 const talkKnown = new Set()
 const talkRapport = new Rapport()
+// The glade she wronged (trust.js 'hob-fed'), for the talk: whether it is furious and which villager saw. Stream C replaces this with the trust ledger's.
+const talkWrongs = { wronged: () => false, witness: () => null }
 const talkLog = new QuestLog()
 // The labyrinths whose middle she has stood in, by `rx,rz`, saved: their drums are still for good.
 const drumsStilled = new Set()
@@ -961,6 +978,8 @@ function saveGame() {
     rigYaw: 2 * Math.atan2(q.y, q.w),
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
+    purse: { ...purse },
+    loot: loot.save(),
     held: {},
     hour: clock.hour,
     room: currentRoom.id,
@@ -994,7 +1013,10 @@ function applySave(doc) {
   rig.rotation.set(0, doc.rigYaw, 0)
   // In XR the headset owns the camera's rotation and overwrites it every frame.
   if (!sceneEl.is('vr-mode')) camera.rotation.set(doc.camPitch, doc.camYaw, 0)
+  if (doc.backpack.length !== BACKPACK_SLOTS) throw new Error(`v2: a save with ${doc.backpack.length} backpack slots`)
   backpack.splice(0, BACKPACK_SLOTS, ...doc.backpack)
+  for (const k of SMALL) purse[k] = doc.purse[k]
+  loot.load(doc.loot)
   // A save from before the hands were written has no `held`.
   restoreHeld(doc.held ?? {})
   // A save from before the hour was written has no `hour`.
@@ -1102,6 +1124,7 @@ function newGame() {
     else hands.drop(key, handsHead())
   }
   backpack.fill(null)
+  for (const k of SMALL) purse[k] = 0
   flares.clear()
   chalk.clear()
   trust.clear()
@@ -1745,21 +1768,23 @@ const QUEST_SETTING_GAP = 0.10
 const QUEST_SETTING_ROW_H = 0.34
 const QUEST_SETTING_BTN_H = 0.26
 const QUEST_SETTING_TOP = 0.78
-// The backpack view: the slots in two rows on one canvas plane, half a gap of
-// margin inside each edge, set half their own height under the tabs with as
-// much plate again below them, so the rows sit where a look down at the ground
-// finds them while the tabs stay up where the debug view needs them.
-const QUEST_SLOT = 0.50
-const QUEST_SLOT_GAP = 0.10
-const QUEST_SLOTS_H = 2 * (QUEST_SLOT + QUEST_SLOT_GAP)
-const QUEST_SLOTS_TOP = QUEST_VIEW_TOP - QUEST_SLOTS_H / 2
+// The backpack view: the purse's 5 brown cells in a row as wide as the 4
+// columns of large slots under it, all on one canvas plane with half a gap of
+// margin inside each edge, a row's height under the tabs with as much plate
+// again below, so the slots sit where a look down at the ground finds them.
+const QUEST_SLOT = 0.40
+const QUEST_SLOT_GAP = 0.08
+const QUEST_SLOT_COLS = 4
+const QUEST_PURSE_SLOT = (QUEST_SLOT_COLS * (QUEST_SLOT + QUEST_SLOT_GAP)) / SMALL.length - QUEST_SLOT_GAP
+const QUEST_SLOTS_H = QUEST_PURSE_SLOT + QUEST_SLOT_GAP + (BACKPACK_SLOTS / QUEST_SLOT_COLS) * (QUEST_SLOT + QUEST_SLOT_GAP)
+const QUEST_SLOTS_TOP = QUEST_VIEW_TOP - (QUEST_SLOT + QUEST_SLOT_GAP)
 // The help view: one canvas plane of text, QUEST_HELP_H tall, from QUEST_VIEW_TOP.
 const QUEST_HELP_H = 1.40
 // Where a view's plate ends: a grid's last row with 5 cm to spare.
 const questGridBottom = (top, rows, rowH, btnH) => top - (rows - 1) * rowH - btnH / 2 - 0.05
 const questDebugBottom = () => questGridBottom(QUEST_ROW_TOP, questRowsPerCol(), QUEST_ROW_H, QUEST_BTN_H)
 const QUEST_SETTINGS_BOTTOM = questGridBottom(QUEST_SETTING_TOP, Math.ceil(QUEST_SETTING_ROWS.length / QUEST_SETTING_COLS), QUEST_SETTING_ROW_H, QUEST_SETTING_BTN_H)
-const QUEST_BACKPACK_BOTTOM = QUEST_SLOTS_TOP - QUEST_SLOTS_H * 1.5
+const QUEST_BACKPACK_BOTTOM = QUEST_SLOTS_TOP - QUEST_SLOTS_H - (QUEST_SLOT + QUEST_SLOT_GAP)
 const QUEST_HELP_BOTTOM = QUEST_VIEW_TOP - QUEST_HELP_H - 0.05
 // Canvas pixels per metre of panel, so every button's type is the same size
 // whatever its shape: 96 px for the 18 cm button the debug rows were tuned on.
@@ -2047,18 +2072,35 @@ function buildQuestPlate(bottom) {
   return plate
 }
 
+// The backpack's cells, top to bottom: the purse's brown row, each with its
+// `kind`, then the large slots, each with its backpack index `i`; centres and
+// sides in panel metres.
+function backpackCells() {
+  const cells = []
+  const pitch = QUEST_PURSE_SLOT + QUEST_SLOT_GAP
+  SMALL.forEach((kind, c) => cells.push({ kind, i: -1, side: QUEST_PURSE_SLOT, x: (c - (SMALL.length - 1) / 2) * pitch, y: QUEST_SLOTS_TOP - pitch / 2 }))
+  const big = QUEST_SLOT + QUEST_SLOT_GAP
+  for (let i = 0; i < BACKPACK_SLOTS; i++) {
+    const col = i % QUEST_SLOT_COLS
+    const row = Math.floor(i / QUEST_SLOT_COLS)
+    cells.push({ kind: null, i, side: QUEST_SLOT, x: (col - (QUEST_SLOT_COLS - 1) / 2) * big, y: QUEST_SLOTS_TOP - pitch - row * big - big / 2 })
+  }
+  return cells
+}
+
 // The slots are rounded squares, so they are drawn on one canvas plane rather
 // than built as quads. Over each sits a quad of the thing in it, photographed
-// by hands.js into one render target of two rows -- the quads are one mesh on
-// that one texture, as buildQuestGrid's are on its atlas -- and a press on a
-// quad is the thing back in her hand.
+// by hands.js into one render target -- the quads are one mesh on that one
+// texture, as buildQuestGrid's are on its atlas -- and a press on a quad is
+// the thing back in her hand. A brown cell shows one of its kind and the count.
 function buildBackpackView() {
   if (!hands) throw new Error('buildBackpackView: the hands are not built, and the slots are their photographs')
   const group = new THREE.Group()
   group.add(buildQuestPlate(QUEST_BACKPACK_BOTTOM))
   const { canvas, ctx, texture } = questCanvasTexture(Math.round(PANEL_W * QUEST_PX_PER_M), Math.round(QUEST_SLOTS_H * QUEST_PX_PER_M))
-  const cols = BACKPACK_SLOTS / 2
-  const rows = BACKPACK_SLOTS / cols
+  const cells = backpackCells()
+  const cols = BACKPACK_PHOTO_COLS
+  const rows = Math.ceil(cells.length / cols)
   const px = QUEST_PX_PER_M
   const PX = BACKPACK_PHOTO_PX
   const photos = new THREE.WebGLRenderTarget(cols * PX, rows * PX, {
@@ -2066,28 +2108,37 @@ function buildBackpackView() {
     generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true,
   })
   // Row 0 is the top row, and the target's rows run upward from its bottom.
-  const rectOf = (i) => ({ x: (i % cols) * PX, y: (rows - 1 - Math.floor(i / cols)) * PX, w: PX, h: PX })
+  const rectOf = (n) => ({ x: (n % cols) * PX, y: (rows - 1 - Math.floor(n / cols)) * PX, w: PX, h: PX })
+  // One unchanging slot a small kind, so a brown cell is photographed once.
+  const one = Object.fromEntries(SMALL.map((k) => [k, items.slot(k, 1)]))
+  const shown = (cell) => (cell.kind === null ? backpack[cell.i] : purse[cell.kind] > 0 ? one[cell.kind] : null)
   // The packed slot each cell is a photograph of, so a repaint photographs only what changed -- and a slot whose source has not landed its asset stays unshot until the next paint.
-  const shot = new Array(BACKPACK_SLOTS).fill(null)
+  const shot = new Array(cells.length).fill(null)
   paintBackpack = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-    for (let i = 0; i < BACKPACK_SLOTS; i++) {
-      const col = i % cols
-      const row = Math.floor(i / cols)
-      const x = canvas.width / 2 + ((col - (cols - 1) / 2) * (QUEST_SLOT + QUEST_SLOT_GAP) - QUEST_SLOT / 2) * px
-      const y = (QUEST_SLOT_GAP / 2 + row * (QUEST_SLOT + QUEST_SLOT_GAP)) * px
+    cells.forEach((cell, n) => {
+      const x = canvas.width / 2 + (cell.x - cell.side / 2) * px
+      const y = (QUEST_SLOTS_TOP - cell.y - cell.side / 2) * px
       ctx.beginPath()
-      ctx.roundRect(x, y, QUEST_SLOT * px, QUEST_SLOT * px, 0.08 * px)
-      ctx.fillStyle = '#173154'
+      ctx.roundRect(x, y, cell.side * px, cell.side * px, 0.08 * px)
+      ctx.fillStyle = cell.kind === null ? '#173154' : '#3d2a17'
       ctx.fill()
       ctx.lineWidth = 4
-      ctx.strokeStyle = '#2f5f95'
+      ctx.strokeStyle = cell.kind === null ? '#2f5f95' : '#8a6234'
       ctx.stroke()
-      if (shot[i] !== backpack[i]) {
-        const taken = hands.photograph(renderer, backpack[i], photos, rectOf(i))
-        shot[i] = taken || backpack[i] === null ? backpack[i] : null
+      const slot = shown(cell)
+      if (shot[n] !== slot) {
+        const taken = hands.photograph(renderer, slot, photos, rectOf(n))
+        shot[n] = taken || slot === null ? slot : null
       }
-    }
+      if (cell.kind !== null && purse[cell.kind] > 0) {
+        setQuestFont(ctx, QUEST_SERIF(26))
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'bottom'
+        ctx.fillStyle = '#ffe9c0'
+        ctx.fillText(String(purse[cell.kind]), x + (cell.side * px) / 2, y + cell.side * px - 4)
+      }
+    })
     uploadQuestTexture(texture)
   }
   paintBackpack()
@@ -2095,25 +2146,23 @@ function buildBackpackView() {
   slots.position.set(0, QUEST_SLOTS_TOP - QUEST_SLOTS_H / 2, 0.02)
   group.add(slots)
 
-  // The photograph quads: one loose quad a slot, inset from the frame, over the target as an atlas.
-  const inset = 0.04
-  const positions = new Float32Array(BACKPACK_SLOTS * 4 * 3)
-  const uvs = new Float32Array(BACKPACK_SLOTS * 4 * 2)
-  const indices = new Uint16Array(BACKPACK_SLOTS * 6)
-  for (let i = 0; i < BACKPACK_SLOTS; i++) {
-    const col = i % cols
-    const row = Math.floor(i / cols)
-    const cx = (col - (cols - 1) / 2) * (QUEST_SLOT + QUEST_SLOT_GAP)
-    const cy = QUEST_SLOTS_TOP - QUEST_SLOT_GAP / 2 - row * (QUEST_SLOT + QUEST_SLOT_GAP) - QUEST_SLOT / 2
-    const half = QUEST_SLOT / 2 - inset
-    const x0 = cx - half, x1 = cx + half, y0 = cy - half, y1 = cy + half
+  // The photograph quads: one loose quad a cell, inset from the frame, over the target as an atlas; a brown cell's over its count.
+  const positions = new Float32Array(cells.length * 4 * 3)
+  const uvs = new Float32Array(cells.length * 4 * 2)
+  const indices = new Uint16Array(cells.length * 6)
+  cells.forEach((cell, n) => {
+    const half = cell.side * (cell.kind === null ? 0.42 : 0.32)
+    const cy = cell.kind === null ? cell.y : cell.y + cell.side * 0.12
+    const x0 = cell.x - half, x1 = cell.x + half, y0 = cy - half, y1 = cy + half
+    const col = n % cols
+    const row = Math.floor(n / cols)
     const u0 = col / cols, u1 = (col + 1) / cols
     const v1 = 1 - row / rows, v0 = 1 - (row + 1) / rows
-    positions.set([x0, y0, 0.03, x1, y0, 0.03, x1, y1, 0.03, x0, y1, 0.03], i * 12)
-    uvs.set([u0, v0, u1, v0, u1, v1, u0, v1], i * 8)
-    const v = i * 4
-    indices.set([v, v + 1, v + 2, v + 2, v + 3, v], i * 6)
-  }
+    positions.set([x0, y0, 0.03, x1, y0, 0.03, x1, y1, 0.03, x0, y1, 0.03], n * 12)
+    uvs.set([u0, v0, u1, v0, u1, v1, u0, v1], n * 8)
+    const v = n * 4
+    indices.set([v, v + 1, v + 2, v + 2, v + 3, v], n * 6)
+  })
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
   geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
@@ -2122,26 +2171,36 @@ function buildBackpackView() {
   group.add(mesh)
   questBackpackSlots = {
     mesh,
-    indexAt(hit) {
-      if (!hit || hit.object !== mesh || hit.faceIndex === undefined || hit.faceIndex === null) return -1
-      return Math.floor(hit.faceIndex / 2)
+    cellAt(hit) {
+      if (!hit || hit.object !== mesh || hit.faceIndex === undefined || hit.faceIndex === null) return null
+      return cells[Math.floor(hit.faceIndex / 2)]
     },
   }
   return group
 }
 
-// A press on a slot by the hand that pressed -- the pointing controller in
-// the headset, the desk's hand otherwise. An empty hand takes what is in the
-// slot; a full hand puts what it holds there, with the bag's closing voice,
-// and takes what the slot held, if anything, in exchange.
+const pressKey = () => (sceneEl.is('vr-mode') ? (questPointerHand === leftHandEl ? 'left' : 'right') : 'desk')
+
+/** A packed or held small thing's count into the purse; false for anything else. */
+function intoPurse(slot) {
+  if (!SMALL.includes(slot.kind)) return false
+  if (!Number.isInteger(slot.count) || slot.count < 1) throw new Error(`v2: a ${slot.kind} with a count of ${slot.count}`)
+  purse[slot.kind] += slot.count
+  return true
+}
+
+// A press on a large slot by the hand that pressed -- the pointing controller
+// in the headset, the desk's hand otherwise. An empty hand takes what is in
+// the slot; a full hand puts what it holds there (a fistful into the purse),
+// with the bag's closing voice, and takes what the slot held, if anything.
 function pressBackpackSlot(i) {
   const was = backpack[i]
-  const key = sceneEl.is('vr-mode') ? (questPointerHand === leftHandEl ? 'left' : 'right') : 'desk'
+  const key = pressKey()
   if (was !== null && hands.dressed(was) === null) { console.warn(`[v2] backpack: the ${was.kind} has not landed its asset yet`); return }
   if (hands.holding(key)) {
     const slot = hands.put(key)
     if (slot === null) { console.warn('[v2] backpack: what the hand holds is too big for a slot'); return }
-    backpack[i] = slot
+    backpack[i] = intoPurse(slot) ? null : slot
     playStow()
   } else {
     if (was === null) return
@@ -2150,6 +2209,90 @@ function pressBackpackSlot(i) {
   if (was !== null) { hands.give(key, was, handsHead()); playPick() }
   paintBackpack()
 }
+
+// A press on a brown cell (design/42-valuables.md, A fistful): one more of its
+// kind into a hand already holding that kind; otherwise what the hand holds
+// goes back -- a fistful to the purse, a large thing to a free slot -- and one
+// of the kind comes out.
+function pressPurse(kind) {
+  const key = pressKey()
+  const held = hands.holding(key)
+  if (purse[kind] === 0) return
+  if (items.dress({ kind }) === null) { console.warn(`[v2] backpack: the ${kind} has not landed its asset yet`); return }
+  if (held !== null && held.kind === kind) {
+    purse[kind]--
+    held.count++
+    hands.rehold(key)
+  } else {
+    if (held !== null) {
+      if (!SMALL.includes(held.kind) && backpack.indexOf(null) < 0) { console.warn('[v2] backpack: no free slot for what the hand holds'); return }
+      const slot = hands.put(key)
+      if (slot === null) { console.warn('[v2] backpack: what the hand holds is too big for a slot'); return }
+      if (!intoPurse(slot)) backpack[backpack.indexOf(null)] = slot
+      playStow()
+    }
+    purse[kind]--
+    hands.give(key, items.slot(kind, 1), handsHead())
+  }
+  playPick()
+  paintBackpack()
+}
+
+/** What she carries, for the talk to trade against (conversations ctx.pack): the purse, the large slots and both hands. */
+const pack = {
+  count(kind) {
+    if (!ITEMS[kind]) throw new Error(`pack.count: no item ${kind}`)
+    let n = SMALL.includes(kind) ? purse[kind] : backpack.filter((s) => s !== null && s.kind === kind).length
+    for (const key of HAND_KEYS) {
+      const rec = hands.holding(key)
+      if (rec !== null && rec.kind === kind) n += SMALL.includes(kind) ? rec.count : 1
+    }
+    return n
+  },
+  freeLarge() { return backpack.filter((s) => s === null).length },
+  held() {
+    for (const key of HAND_KEYS) {
+      const rec = hands.holding(key)
+      if (rec !== null) return rec.kind
+    }
+    return null
+  },
+  add(kind, n = 1) {
+    if (!ITEMS[kind] || !Number.isInteger(n) || n < 1) throw new Error(`pack.add: ${n} of ${kind}`)
+    if (SMALL.includes(kind)) purse[kind] += n
+    else {
+      if (pack.freeLarge() < n) return false
+      for (let k = 0; k < n; k++) backpack[backpack.indexOf(null)] = items.slot(kind)
+    }
+    paintBackpack()
+    return true
+  },
+  /** From the purse and slots first, then from a hand. */
+  remove(kind, n = 1) {
+    if (!Number.isInteger(n) || n < 1) throw new Error(`pack.remove: ${n} of ${kind}`)
+    if (pack.count(kind) < n) return false
+    if (SMALL.includes(kind)) {
+      const fromPurse = Math.min(n, purse[kind])
+      purse[kind] -= fromPurse
+      let left = n - fromPurse
+      for (const key of HAND_KEYS) {
+        const rec = hands.holding(key)
+        if (left === 0 || rec === null || rec.kind !== kind) continue
+        if (rec.count > left) { rec.count -= left; left = 0; hands.rehold(key) } else { left -= rec.count; hands.put(key) }
+      }
+    } else {
+      let left = n
+      for (let i = 0; i < BACKPACK_SLOTS && left > 0; i++) if (backpack[i] !== null && backpack[i].kind === kind) { backpack[i] = null; left-- }
+      for (const key of HAND_KEYS) {
+        const rec = hands.holding(key)
+        if (left > 0 && rec !== null && rec.kind === kind) { hands.put(key); left-- }
+      }
+    }
+    paintBackpack()
+    return true
+  },
+}
+window.v2pack = pack
 
 /** The bag's closing voice, for a thing put in it: the same one-shot as the menu closing. */
 function playStow() {
@@ -2397,7 +2540,7 @@ const trustsHer = (id) => trust.trusts(villagers.seed, id)
 const befriended = []
 let trustWelcomes = 0
 
-/** The villagers she fed this frame trusting her, the room's trust and chalk learned, and hers told to the relay -- all of it again when it welcomes her. */
+/** The villagers she fed this frame trusting her, the room's trust, chalk and loot learned, and hers told to the relay -- all of it again when it welcomes her. */
 function syncTrust() {
   befriended.length = 0
   if (villagers) {
@@ -2413,8 +2556,48 @@ function syncTrust() {
   netplay.chalk.length = 0
   if (netplay.welcomes !== chalkWelcomes) { chalkWelcomes = netplay.welcomes; chalk.resend() }
   chalk.flush((batch) => netplay.sendChalk(batch))
+  loot.merge(netplay.loot)
+  netplay.loot.length = 0
+  if (netplay.welcomes !== lootWelcomes) { lootWelcomes = netplay.welcomes; loot.resend() }
+  loot.flush((batch) => netplay.sendLoot(batch))
 }
 let chalkWelcomes = 0
+let lootWelcomes = 0
+
+// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins (design/42-valuables.md). Bit 0 is the coins.
+const RINGS_MOST = Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)
+const ALTAR_GEMS = ['diamond', 'sapphire', 'ruby']
+const HOARD = ['diamond', 'sapphire', 'ruby', 'firestone']
+
+function layLoot() {
+  if (palisades) {
+    for (const { site: s } of palisades.active.values()) {
+      const key = (s.rx + 0x8000) * 0x10000 + (s.rz + 0x8000)
+      const rand = mulberry32((SEED ^ Math.imul(key, 0x9e3779b1)) >>> 0)
+      const al = palisades.labyrinths.mazeOf(s).altar
+      const y = height.heightAt(al.x, al.z) + ALTAR.height
+      const tier = RINGS_MOST - s.rings
+      items.lay(place('l', key), 0, 'coin', al.x - al.uz * 0.2, y, al.z + al.ux * 0.2, 20 + Math.floor(rand() * 41))
+      items.lay(place('l', key), 1, tier < ALTAR_GEMS.length ? ALTAR_GEMS[tier] : 'jade', al.x + al.ux * 0.22, y, al.z + al.uz * 0.22)
+    }
+  }
+  if (roosts && dragons) {
+    for (const r of roosts.sites(roostSites)) {
+      const key = (r.tx + 0x8000) * 0x10000 + (r.tz + 0x8000)
+      const rand = mulberry32((SEED ^ Math.imul(key, 0x85ebca6b)) >>> 0)
+      const at = (d) => {
+        const a = rand() * Math.PI * 2, u = Math.cos(a) * d, v = Math.sin(a) * d
+        return [r.x + u, r.y + r.gx * u + r.gz * v, r.z + v]
+      }
+      items.lay(place('r', key), 0, 'coin', ...at(1.1), 30 + Math.floor(rand() * 51))
+      const gems = 1 + Math.floor(rand() * 2)
+      for (let k = 1; k <= gems; k++) items.lay(place('r', key), k, HOARD[Math.floor(rand() * HOARD.length)], ...at(0.9 + 0.3 * k))
+    }
+    roostSites.length = 0
+  }
+  items.update(headTmp.x, headTmp.z)
+}
+const roostSites = []
 
 function buildSettingsView() {
   const group = new THREE.Group()
@@ -2719,8 +2902,8 @@ function questActionAt(hit) {
   if (!hit) return null
   const t = questTabs.indexAt(hit)
   if (t >= 0) return () => setQuestView(QUEST_VIEWS[t])
-  const b = questBackpackSlots.indexAt(hit)
-  if (b >= 0) return () => pressBackpackSlot(b)
+  const cell = questBackpackSlots.cellAt(hit)
+  if (cell !== null) return cell.kind === null ? () => pressBackpackSlot(cell.i) : () => pressPurse(cell.kind)
   const s = questSettingsGrid.indexAt(hit)
   if (s >= 0) return () => activateQuestButton(QUEST_SETTING_ROWS[s].key)
   const d = questDebugGrid.indexAt(hit)
@@ -3216,6 +3399,8 @@ const flareGuns = new FlareGuns()
 let flares = null
 let sparks = null
 const flints = new Flints()
+// The valuables and the smith's tools (items.js), worn once at boot; their spots in the world are the room's.
+const items = new Items(loot)
 const FLARE_HEARD_M = 1000
 const FLARE_RATE = 0.8
 let roosts = null
@@ -3648,6 +3833,9 @@ async function propAtlas() {
 async function bootWorld() {
   // The flare gun's mesh, worn before the first room: a saved gun in a hand or the backpack is dressed as the room builds.
   const flareGunMesh = loadCritterGlb(FLAREGUN_GLB, { origin: [0, 0, 0] })
+  // The items' meshes land in the background; until one has, its kind dresses nothing (items.js).
+  for (const kind of Object.keys(ITEMS)) loadCritterGlb(itemUrl(kind), { origin: [0, 0, 0] }).then((asset) => { items.wear(kind, asset); if (paintBackpack) paintBackpack() }).catch(reportRuntimeError)
+  scene.add(items.group)
 
   // The ambient sound's clips (audio/) load in the background so a slow fetch
   // never holds the world; until they land, and forever if one fails, the
@@ -3875,6 +4063,7 @@ function disposeRoom() {
   closeCave()
   dropCaveBuild()
   if (caveMouths) { caveMouths.dispose(); caveMouths = null }
+  items.clear()
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
     boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
@@ -5233,11 +5422,13 @@ async function buildRoom(room, at) {
     water: waterSurfaces,
     haptic: questPulse,
     stow: (rec) => {
-      const slot = backpack.indexOf(null)
-      if (slot < 0) return false
-      // A stowed torch goes out.
-      rec.lit = false
-      backpack[slot] = hands.pack(rec)
+      if (!intoPurse(rec)) {
+        const slot = backpack.indexOf(null)
+        if (slot < 0) return false
+        // A stowed torch goes out.
+        rec.lit = false
+        backpack[slot] = hands.pack(rec)
+      }
       paintBackpack()
       playStow()
       return true
@@ -5270,6 +5461,7 @@ async function buildRoom(room, at) {
   hands.addSource(flints, FLINT)
   hands.addSource(sticks, STICK)
   hands.addSource(chalkStones, CHALK)
+  hands.addSource(items, Object.keys(ITEMS))
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
   deskHand = new THREE.Group()
@@ -5343,7 +5535,7 @@ async function buildRoom(room, at) {
   window.v2villagers = villagers
   window.v2hobs = hobs
   if (townsfolk || villagers) {
-    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic })
+    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs })
   }
   window.v2conversations = conversations
 
@@ -5504,6 +5696,7 @@ function restoreHeld(held) {
     if (!(key in held)) continue
     const slot = held[key]
     if (hands.dressed(slot) !== null) { hands.give(key, slot, handsHead()); continue }
+    if (intoPurse(slot)) continue
     const free = backpack.indexOf(null)
     if (free >= 0) { backpack[free] = slot; console.warn(`[v2] the ${slot.kind} in the ${key} hand is not dressed yet, put in slot ${free}`) }
     else console.warn(`[v2] the ${slot.kind} in the ${key} hand is not dressed yet and the backpack is full; lost`)
@@ -8037,6 +8230,7 @@ function tick() {
   shotFlash.update(dt, headTmp)
   drainFlares()
   syncTrust()
+  layLoot()
   flares.update(dt, renderer.getDrawingBufferSize(flarePx).y)
   sparks.update(dt, flarePx.y)
   visions.update(dt, flarePx.y)

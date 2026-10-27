@@ -41,20 +41,16 @@ export function chunkList(field) {
   return [...out].map((s) => s.split(',').map(Number))
 }
 
-/**
- * Meshes chunk [ci, cj, ck] at every LOD, an array with one entry per LODS tier. `lights` are [{ x, y, z, color, reach, power }] baked into the glow attribute where they can see the wall, or into the `day` scalar for a light with `day` set, which the room tints by the hour.
- * Each entry is null where the tier has no surface, else { position, normal, color, glow, day, index, parts } typed arrays, the triangles grouped by region and `parts` holding [region, first index, index count] for each group.
- */
-export function meshChunk(field, ci, cj, ck, lights) {
+// The finest surface-nets mesh of a chunk, before clustering: { list, pos, cell, index, CELLS }, or null where the chunk holds no surface.
+function fineMesh(field, ci, cj, ck) {
   const voxel = LODS[0].voxel
-  const none = LODS.map(() => null)
   const CELLS = Math.round(CHUNK / voxel)
   const S = CELLS + 3
   const idx = (i, j, k) => ((k + 1) * S + (j + 1)) * S + (i + 1)
   const ox = ci * CHUNK, oy = cj * CHUNK, oz = ck * CHUNK
   const pad = voxel * 2
   const list = field.primsIn(ox - pad, oy - pad, oz - pad, ox + CHUNK + pad, oy + CHUNK + pad, oz + CHUNK + pad)
-  if (list.length === 0) return none
+  if (list.length === 0) return null
   const f = new Float32Array(S * S * S)
   let air = false, rock = false
   for (let k = -1; k <= CELLS + 1; k++) {
@@ -66,7 +62,7 @@ export function meshChunk(field, ci, cj, ck, lights) {
       }
     }
   }
-  if (!air || !rock) return none
+  if (!air || !rock) return null
 
   // A vertex in every cell (-1..CELLS) whose corners disagree, at the mean of its edge crossings.
   const vid = new Int32Array(S * S * S).fill(-1)
@@ -120,11 +116,30 @@ export function meshChunk(field, ci, cj, ck, lights) {
       }
     }
   }
-  if (index.length === 0) return none
-  return LODS.map((l, lod) => {
-    const m = cluster(pos, cell, index, Math.round(l.voxel / voxel), CELLS)
-    return m.index.length === 0 ? null : shade(field, list, lights, ox, oy, oz, m.pos, m.index)
+  if (index.length === 0) return null
+  return { list, pos, cell, index, CELLS }
+}
+
+/**
+ * Meshes chunk [ci, cj, ck] at every LOD, an array with one entry per LODS tier. `lights` are [{ x, y, z, color, reach, power }] baked into the glow attribute where they can see the wall, or into the `day` scalar for a light with `day` set, which the room tints by the hour.
+ * Each entry is null where the tier has no surface, else { position, normal, color, glow, day, index, parts } typed arrays, the triangles grouped by region and `parts` holding [region, first index, index count] for each group.
+ */
+export function meshChunk(field, ci, cj, ck, lights) {
+  const fine = fineMesh(field, ci, cj, ck)
+  if (fine === null) return LODS.map(() => null)
+  const ox = ci * CHUNK, oy = cj * CHUNK, oz = ck * CHUNK
+  return LODS.map((l) => {
+    const m = cluster(fine.pos, fine.cell, fine.index, Math.round(l.voxel / LODS[0].voxel), fine.CELLS)
+    return m.index.length === 0 ? null : shade(field, fine.list, lights, ox, oy, oz, m.pos, m.index)
   })
+}
+
+/** The triangles tier 0 draws for chunk [ci, cj, ck], { pos, index } plain arrays in cave-local metres, or null where it draws none. */
+export function drawnSurface(field, ci, cj, ck) {
+  const fine = fineMesh(field, ci, cj, ck)
+  if (fine === null) return null
+  const m = cluster(fine.pos, fine.cell, fine.index, 1, fine.CELLS)
+  return m.index.length === 0 ? null : m
 }
 
 // The fine mesh with every vertex merged into one per `k`-cell cube, at their mean, and the triangles that collapse dropped. A seam row's vertices merge in pairs along the face instead, the same at every tier. Cell CELLS's vertices belong to no triangle and are skipped: their cube slot would spill into the next row's. A seam vertex whose every triangle the cubes collapse keeps those triangles with their fine corners, or it would vanish from this tier only and open a crack.

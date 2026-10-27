@@ -7,6 +7,7 @@
     "dev": "vite --host",
     "start": "AURORA_HTTP=1 vite --host",
     "build": "vite build",
+    "mesh:pydeps": "python3 -m pip install --no-deps --target tools/mesh/.pydeps --python-version 3.13 --platform macosx_11_0_arm64 --only-binary=:all: xatlas==0.0.11",
     "preview": "vite preview --host",
     "relay": "npm start --prefix server",
     "check-net": "node scripts/check-net.mjs",
