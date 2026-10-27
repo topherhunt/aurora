@@ -10,8 +10,8 @@ import { seaweedGeometry, seaweedMaterial } from './seaweed.js'
 // The water within RADIUS of her is cut into TILE-metre tiles, each rolling its sites from its tile seed (critters.js
 // tileSeed), so a bed is a pure function of position like the fish beds. A clump stands only where the water over its
 // root is its height plus TOP_GAP_M: its tip is never nearer the surface than TOP_GAP_M, so nothing grows in less than 2 m
-// of water. A slow two-octave noise field (densityAt) thins the beds: dense ground takes patches -- a few tall clumps
-// near a middle ringed by many short ones -- and loose singles, sparse ground only the odd single.
+// of water. A slow two-octave noise field (densityAt) thins the beds: dense ground takes patches and loose singles,
+// sparse ground only the odd single.
 
 export const SEAWEED_SCATTER = {
   seed: 42,
@@ -30,9 +30,10 @@ export const SEAWEED_SCATTER = {
   // Single clumps rolled per tile, each kept at `floor` odds on the sparsest ground, rising to 1 on the densest.
   singles: 4,
   floor: 0.12,
-  singleM: [1, 8],
-  // One patch rolled per tile, kept at `odds` times density squared: `count` clumps within `spread` metres, `big` of them `bigM` tall inside `core` of the spread, the rest `smallM`.
-  patch: { odds: 0.7, count: [10, 30], spread: [2, 5], big: [1, 3], core: 0.35, bigM: [2.8, 8], smallM: [1, 2] },
+  // Every clump, single or in a patch, stands evenly anywhere in this many metres.
+  heightM: [1, 6],
+  // One patch rolled per tile, kept at `odds` times density squared: `count` clumps within `spread` metres.
+  patch: { odds: 0.7, count: [10, 30], spread: [2, 5] },
   topGapM: 1,
   // Metres of tip travel per metre of clump height at peak current, and seconds of phase lag per metre down the current.
   sway: 0.08,
@@ -82,23 +83,64 @@ export function weedSites(tx, tz, worldSeed, levelAt, bedAt) {
     const x = (tx + rand()) * C.tile, z = (tz + rand()) * C.tile
     const keep = rand()
     const r = mulberry32((rand() * 4294967296) >>> 0)
-    if (keep < C.floor + (1 - C.floor) * densityAt(x, z, worldSeed)) grow(x, z, C.singleM, r)
+    if (keep < C.floor + (1 - C.floor) * densityAt(x, z, worldSeed)) grow(x, z, C.heightM, r)
   }
   const cx = (tx + rand()) * C.tile, cz = (tz + rand()) * C.tile
   const keep = rand()
   const r = mulberry32((rand() * 4294967296) >>> 0)
   if (keep < P.odds * densityAt(cx, cz, worldSeed) ** 2) {
     const n = Math.round(P.count[0] + (P.count[1] - P.count[0]) * r())
-    const big = Math.round(P.big[0] + (P.big[1] - P.big[0]) * r())
     const spread = P.spread[0] + (P.spread[1] - P.spread[0]) * r()
     for (let k = 0; k < n; k++) {
       const a = r() * Math.PI * 2
-      // sqrt spreads the small ones evenly over the disc; the big ones keep to its core.
-      const d = spread * (k < big ? P.core * r() : Math.sqrt(r()))
-      grow(cx + Math.cos(a) * d, cz + Math.sin(a) * d, k < big ? P.bigM : P.smallM, r)
+      const d = spread * Math.sqrt(r())
+      grow(cx + Math.cos(a) * d, cz + Math.sin(a) * d, C.heightM, r)
     }
   }
   return sites
+}
+
+/**
+ * The turn about Y at which the side view (from +Z) covers the most picture: blades are flat ribbons, so at a bad turn
+ * most stand edge-on or behind one another and the card shows two. Counted on a coarse grid of the projected triangles.
+ */
+export function cardYaw(geo, reach, steps = 36, grid = 48) {
+  const pos = geo.attributes.position
+  const index = geo.index.array
+  const height = geo.boundingBox.max.y
+  const cells = new Uint8Array(grid * grid)
+  const px = new Float32Array(pos.count), py = new Float32Array(pos.count)
+  let best = 0, bestYaw = 0
+  for (let k = 0; k < steps; k++) {
+    // A half turn photographs the mirror image, so half a circle of turns covers every picture.
+    const yaw = (k / steps) * Math.PI
+    const c = Math.cos(yaw), s = Math.sin(yaw)
+    for (let i = 0; i < pos.count; i++) {
+      px[i] = ((pos.getX(i) * c + pos.getZ(i) * s) / reach + 1) * 0.5 * grid
+      py[i] = (pos.getY(i) / height) * grid
+    }
+    cells.fill(0)
+    for (let t = 0; t < index.length; t += 3) {
+      const a = index[t], b = index[t + 1], d = index[t + 2]
+      const area = (px[b] - px[a]) * (py[d] - py[a]) - (px[d] - px[a]) * (py[b] - py[a])
+      if (Math.abs(area) < 1e-9) continue
+      const x0 = Math.max(0, Math.floor(Math.min(px[a], px[b], px[d]))), x1 = Math.min(grid - 1, Math.ceil(Math.max(px[a], px[b], px[d])))
+      const y0 = Math.max(0, Math.floor(Math.min(py[a], py[b], py[d]))), y1 = Math.min(grid - 1, Math.ceil(Math.max(py[a], py[b], py[d])))
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const cx = x + 0.5, cy = y + 0.5
+          const w0 = ((px[b] - px[a]) * (cy - py[a]) - (cx - px[a]) * (py[b] - py[a])) / area
+          const w1 = ((px[d] - px[b]) * (cy - py[b]) - (cx - px[b]) * (py[d] - py[b])) / area
+          const w2 = ((px[a] - px[d]) * (cy - py[d]) - (cx - px[d]) * (py[a] - py[d])) / area
+          if (w0 >= 0 && w1 >= 0 && w2 >= 0) cells[y * grid + x] = 1
+        }
+      }
+    }
+    let covered = 0
+    for (let i = 0; i < cells.length; i++) covered += cells[i]
+    if (covered > best) { best = covered; bestYaw = yaw }
+  }
+  return bestYaw
 }
 
 const TAU = (Math.PI * 2).toFixed(6)
@@ -138,9 +180,12 @@ export class SeaweedScatter {
     this.tiles = new Map()
     const geo = seaweedGeometry(C.seed)
     geo.computeBoundingBox()
-    const box = geo.boundingBox
-    this.geoHeight = box.max.y
-    this.bounds = { halfX: Math.max(-box.min.x, box.max.x), halfZ: Math.max(-box.min.z, box.max.z), height: box.max.y }
+    this.geoHeight = geo.boundingBox.max.y
+    // Round about the stem, since the card photographs the clump turned to cardYaw.
+    const pos = geo.attributes.position
+    let reach = 0
+    for (let i = 0; i < pos.count; i++) reach = Math.max(reach, Math.hypot(pos.getX(i), pos.getZ(i)))
+    this.bounds = { halfX: reach, halfZ: reach, height: this.geoHeight }
     const heading = (CURRENT.heading * Math.PI) / 180
     this.uniforms = {
       uSwayT: { value: 0 },
@@ -201,7 +246,12 @@ export class SeaweedScatter {
   /** Photograph the clump onto its card and start drawing the far clumps as cards. Once. */
   bakeCard(renderer) {
     if (this.cardReady) throw new Error('SeaweedScatter.bakeCard: already baked')
-    this.cardMaterial.map = bakeCritterCard(renderer, this.mesh.geometry, this.material.map, spunBounds(this.bounds), SPUN_VIEWS)
+    // Double-sided like the clump, or every blade whose back faces the camera drops out of the picture.
+    const material = new THREE.MeshBasicMaterial({ map: this.material.map, toneMapped: false, alphaTest: 0.5, side: THREE.DoubleSide })
+    const subject = new THREE.Mesh(this.mesh.geometry, material)
+    subject.rotation.y = cardYaw(this.mesh.geometry, this.bounds.halfX)
+    this.cardMaterial.map = bakeCritterCard(renderer, subject, null, spunBounds(this.bounds), SPUN_VIEWS)
+    material.dispose()
     this.cardMaterial.needsUpdate = true
     this.cardReady = true
     this.splitAt = null

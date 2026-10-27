@@ -45,7 +45,7 @@ console.log(`\nseaweed   ${SEEDS} world seeds over a synthetic lake and river`)
 check(sites > SEEDS * 100, 'beds grow clumps', `${sites} clumps`)
 check(nearest >= C.topGapM - 1e-9, 'no clump tip is nearer the surface than 1 m', `nearest ${nearest.toFixed(3)} m`)
 check(shallowest >= 2 - 1e-9, 'no clump roots in less than 2 m of water', `shallowest ${shallowest.toFixed(3)} m`)
-check(hMin >= 1 && hMax <= 8 && hMax - hMin > 4, 'clumps stand 1 to 8 m tall, over most of that range', `${hMin.toFixed(2)}..${hMax.toFixed(2)} m`)
+check(hMin >= 1 && hMax <= 6 && hMax - hMin > 4.5, 'clumps stand 1 to 6 m tall, over most of that range', `${hMin.toFixed(2)}..${hMax.toFixed(2)} m`)
 check(dry === 0, 'no clump stands on dry land', `${dry} dry`)
 check(rivers > 0, 'a river bed 3 m deep at its middle takes clumps where it is deep enough', `${rivers} in the river`)
 
@@ -57,7 +57,8 @@ check(JSON.stringify(weedSites(3, -2, 8, levelAt, bedAt)) !== JSON.stringify(aga
 let deepArea = 0, deepSites = 0
 for (let x = -120; x < 120; x += 2) for (let z = -120; z < 120; z += 2) if (levelAt(x, z) !== null && LEVEL - bedAt(x, z) >= 5) deepArea += 4
 const deep = []
-for (let seed = 1; seed <= 20; seed++) for (let tx = -10; tx <= 9; tx++) for (let tz = -10; tz <= 9; tz++) for (const s of weedSites(tx, tz, seed, levelAt, bedAt)) if (LEVEL - s.y >= 5) { deepSites++; if (seed === 1) deep.push(s) }
+const bands = [0, 0, 0, 0, 0]
+for (let seed = 1; seed <= 20; seed++) for (let tx = -10; tx <= 9; tx++) for (let tz = -10; tz <= 9; tz++) for (const s of weedSites(tx, tz, seed, levelAt, bedAt)) if (LEVEL - s.y >= 5) { deepSites++; if (seed === 1) deep.push(s); if (LEVEL - s.y >= 7) bands[Math.min(4, Math.floor(s.h - 1))]++ }
 const perHa = deepSites / 20 / (deepArea / 1e4)
 check(perHa > 100 && perHa < 1500, 'a reasonable density on the deep bed', `${perHa.toFixed(0)} clumps per hectare`)
 
@@ -74,17 +75,11 @@ let dense = 0, sparse = 0
 for (let x = -1000; x < 1000; x += 10) for (let z = -1000; z < 1000; z += 10) { const d = densityAt(x, z, 3); if (d > 0.9) dense++; if (d < 0.1) sparse++ }
 check(dense > 2000 && sparse > 2000, 'the density field has both thick and bare ground', `${dense} dense, ${sparse} sparse of 40000 samples`)
 
-// Patches: a tall clump has many neighbours within 5 m, most of them short.
-let tall = 0, crowd = 0, short = 0
-for (const s of deep) {
-  if (s.h < C.patch.bigM[0]) continue
-  const near = deep.filter((o) => o !== s && Math.hypot(o.x - s.x, o.z - s.z) < 5)
-  if (near.length < 9) continue
-  tall++
-  crowd += near.length
-  short += near.filter((o) => o.h <= C.patch.smallM[1]).length
-}
-check(tall > 20 && short / crowd > 0.6, 'patches gather many short clumps about a few tall ones', `${tall} crowded tall clumps, ${(crowd / Math.max(tall, 1)).toFixed(1)} neighbours each, ${((100 * short) / Math.max(crowd, 1)).toFixed(0)}% short`)
+// Patches crowd many clumps together, and over beds deep enough for any height (7 m), heights fall evenly: each metre of the 1..6 m range holds about a fifth.
+const crowded = deep.filter((s) => deep.filter((o) => Math.hypot(o.x - s.x, o.z - s.z) < 5).length >= 10).length
+check(crowded > 100, 'patches crowd ten or more clumps within 5 m', `${crowded} clumps in a crowd`)
+const total = bands.reduce((a, b) => a + b, 0)
+check(total > 3000 && bands.every((b) => b / total > 0.17 && b / total < 0.23), 'heights spread evenly over 1 to 6 m, with no peak of short or tall', `${total} clumps, ${bands.map((b) => ((100 * b) / total).toFixed(0) + '%').join(' ')} per metre`)
 
 // The instanced layers: the clump's mesh within NEAR_M of her and its card past that, each instance standing on its bed and as tall as its clump. No renderer here to bake the card's picture, so the gate flips `cardReady` itself.
 const scene = new THREE.Scene()
@@ -133,10 +128,10 @@ const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector
 for (const mm of [...drawn(sw.mesh), ...drawn(sw.cards)]) {
   mm.decompose(p, q, sc)
   const top = p.y + sc.y * gh
-  if (Math.abs(p.y - bedAt(p.x, p.z)) > 1e-4 || LEVEL - top < 1 - 1e-4 || sc.y * gh < 1 - 1e-4 || sc.y * gh > 8 + 1e-4) bad++
+  if (Math.abs(p.y - bedAt(p.x, p.z)) > 1e-4 || LEVEL - top < 1 - 1e-4 || sc.y * gh < 1 - 1e-4 || sc.y * gh > 6 + 1e-4) bad++
   worst = Math.min(worst, LEVEL - top)
 }
-check(bad === 0, 'every instance roots on the bed, stands 1 to 8 m tall and tops out 1 m under the water', `${bad} bad, nearest tip ${worst.toFixed(3)} m under`)
+check(bad === 0, 'every instance roots on the bed, stands 1 to 6 m tall and tops out 1 m under the water', `${bad} bad, nearest tip ${worst.toFixed(3)} m under`)
 const version = sw.mesh.instanceMatrix.version
 sw.place(0.6, 0.6, 0)
 check(sw.mesh.instanceMatrix.version === version, `moving less than ${C.splitM} m re-sorts nothing`)
