@@ -17,7 +17,7 @@
 // under the ambience. That needs ears.
 
 import fs from 'node:fs'
-import { Music, POOLS, PAUSE_S, LEVEL, FADE_OUT_S, FADE_IN_S, LATE_S, INDOOR_GAIN, INDOOR_LP, OPEN_LP, poolFor, musicFromWire } from '../src/v2/audio/music.js'
+import { Music, POOLS, PAUSE_S, LEVEL, MUSIC_VOLUMES, FADE_OUT_S, FADE_IN_S, LATE_S, INDOOR_GAIN, INDOOR_LP, OPEN_LP, poolFor, musicFromWire } from '../src/v2/audio/music.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -124,8 +124,16 @@ console.log('player')
   m.until('forest-day', PAUSE_S[1] + 1)
   const el = m.els[0], track = m.music.playing.track
   check(el.plays === 1 && !el.paused && el.currentTime === 0, 'the song plays from its start')
-  check(gainOf(m).value === LEVEL && LEVEL === 0.5, 'at half volume')
-  check(el.source === track.gain && track.gain.to === m.music.room && m.music.room.to === m.music.muffle && m.music.muffle.to === m.engine.master, 'through its own gain, the room gain and the muffle, onto the master bus')
+  check(gainOf(m).value === LEVEL && LEVEL === 0.25, 'at quarter volume')
+  check(el.source === track.gain && track.gain.to === m.music.room && m.music.room.to === m.music.muffle && m.music.muffle.to === m.music.fader && m.music.fader.to === m.engine.master, 'through its own gain, the room gain, the muffle and the fader, onto the master bus')
+  check(m.music.fader.gain.value === 1, 'the fader starts open')
+  const half = MUSIC_VOLUMES.find((v) => v.name === '50%').gain
+  m.music.setVolume(half)
+  check(LEVEL * m.music.fader.gain.value === 0.125, 'the Music row at 50% plays a song at 0.125')
+  m.music.setVolume(MUSIC_VOLUMES.find((v) => v.name === 'Off').gain)
+  check(m.music.fader.gain.value === 0 && !el.paused, 'Off silences the song without stopping it')
+  m.music.setVolume(1)
+  check(new Music({ engine: fakeEngine(), createElement: fakeElements().createElement, volume: half }).fader.gain.value === half, 'a Music made after the row is set starts at its volume')
   const w = m.music.wire()
   check(w[0] === 'forest-day' && w[1] === m.music.playing.song && Math.abs(w[2] - m.world) < 1e-6, 'its wire names the pool, the song and the world second it started')
 

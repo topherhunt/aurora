@@ -156,7 +156,7 @@ import { EYE_LINE, FIT_MIN, FIT_MAX } from './render/avatar-rig.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, RULES as SOUND_RULES, SOUNDS } from './audio/ambience.js'
-import { Music, musicFromWire, poolFor } from './audio/music.js'
+import { Music, MUSIC_VOLUMES, musicFromWire, poolFor } from './audio/music.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 import { WarnMark } from './render/warn-mark.js'
@@ -1548,6 +1548,7 @@ const QUEST_SETTING_ROWS = [
   // desktop walks on WASD and lobs the arc off the T key.
   { key: 'teleport', text: 'Move', on: 'Teleport', off: 'Walk' },
   { key: 'sound', text: 'Sound', on: 'On', off: 'Off' },
+  { key: 'music', text: 'Music', action: () => cycleMusicVolume(), value: () => MUSIC_VOLUMES[musicVolume].name },
   // Standing: every wearer's eye at one height, so a seated one is not penalised (eye-level.js).
   { key: 'standHeight', text: 'Height', on: 'Standard', off: 'Real' },
 ]
@@ -3723,6 +3724,12 @@ let sound = null
 let ambience = null
 // The score (audio/music.js): made once with the engine and kept across rooms, so its silences run on through a room swap.
 let music = null
+// The Music row's index into MUSIC_VOLUMES; it outlives `music`, which is made only once the sound loads.
+let musicVolume = 0
+function cycleMusicVolume() {
+  musicVolume = (musicVolume + 1) % MUSIC_VOLUMES.length
+  if (music) music.setVolume(MUSIC_VOLUMES[musicVolume].gain)
+}
 let ready = false
 
 // The menu's toggle state. The world boots as it ships -- every layer the
@@ -4073,7 +4080,7 @@ async function bootWorld() {
       sound.buffers.set('zoomBack', reversedBuffer(sound.ctx, sound.buffers.get('zoom')))
       sound.buffers.set('flaregunBack', reversedBuffer(sound.ctx, sound.buffers.get('flaregun')))
       buzz = startBuzz(sound)
-      music = new Music({ engine: sound })
+      music = new Music({ engine: sound, volume: MUSIC_VOLUMES[musicVolume].gain })
       window.v2music = music
       console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
     (err) => { console.error('[v2] sound disabled:', err); return false },

@@ -20,6 +20,7 @@ The town already casts each person: a body (one of 19 avatars, at most one per t
   - *greed*: do they want something back?
   - *kindness*: do they help when it costs them?
 - **Knowledge**: which facts they hold and how surely. Grounded in where they live: their own town fully, roads they travel (travellers know distant towns, a child never left), their trade's ground (a hunter knows the woods, a fisherman the water), and gossip.
+- **Quirk** (`quirks.js`): one comic streak per townsperson. They are bitter, timid or adoring, or they have a need they keep coming back to (a gnome, a lost goat, a saga about themself; children pine for a pony or a pocket frog). Unkind folk lean bitter, wary folk timid, kind folk adoring. The quirk claims nothing about the world. It shows in an aside after about a third of their answers, where a need's asides tell its story in order. It is added to half their greetings and goodbyes, always comes out when she asks about them, and a need answers "Do you need anything?" when they have no errand or wish. A parent whose child is missing drops it. Leafkin have none. No quirk line may name a lore topic (check-talk).
 - **Wants**: needs that come from role and situation. These seed quests.
 - **Disposition toward you**: graded, not boolean. Warmth, debt (favours you did), suspicion (lies caught). Today's leafkin trust (`trust.js`, fed or not) becomes one input to warmth.
 

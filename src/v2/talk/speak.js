@@ -10,6 +10,7 @@ import { LK, lkLine } from './leafkin.js'
 import { dress } from './words.js'
 import * as trade from './trade.js'
 import { armedRefusal } from './armed.js'
+import { QUIRKS, quirkLines } from './quirks.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -345,12 +346,28 @@ export class Conversation {
     if (line.plain || line.quest !== undefined || line.price || line.mood === 'distress' || line.mood === 'cold' || line.mood === 'angry') return line
     if (/^(nice|bye|shop|trade)\b/.test(topic) || ['refuse.wary', 'refuse.price', 'answer.unknown'].includes(line.moment)) return line
     const prefixed = line.how !== undefined && (line.how.again || line.how.changed)
+    const aside = this._quirk('aside')
     const text = this._fresh(`say:${topic}`, (n) => {
       const r = [0, 1, 2, 3, 4, 5].map((i) => this._roll(`dress${i}`, n))
       if (this.leafkin) return `${r[0] < 0.6 && !prefixed ? `${this._leaf('lead', r[1])} ` : ''}${line.text}${r[2] < 0.3 ? ` ${this._leaf('detail', r[3])}` : ''}${r[4] < 0.3 ? ` ${this._leaf('tail', r[5])}` : ''}`
-      return dress(line.text, this.tone, r, !prefixed)
+      if (aside !== '') r[2] = 1
+      return dress(aside === '' ? line.text : `${line.text} ${aside}`, this.tone, r, !prefixed)
     })
     return { ...line, text }
+  }
+
+  /** A word from a human's quirk (quirks.js) for `where` ('aside', 'greet' or 'bye'), or '' when it does not show this time or their child is missing. A need's asides come in story order. */
+  _quirk(where) {
+    if (this.leafkin || this._worried() || this._roll(`quirk:${where}`) >= QUIRKS.odds[where]) return ''
+    const lines = quirkLines(this.mind.quirk)[where]
+    if (where === 'aside' && this.mind.quirk.kind === 'need') return lines[this.ctx.rapport.get(this.mind.id).quirked++ % lines.length]
+    return lines.length === 1 ? lines[0] : this._pick(`quirk:${where}`, lines)
+  }
+
+  /** `text` with their quirk's word for `where` after it, when it shows. */
+  _withQuirk(text, where) {
+    const q = this._quirk(where)
+    return q === '' ? text : `${text} ${q}`
   }
 
   _leaf(key, r) {
@@ -385,7 +402,7 @@ export class Conversation {
   bye() {
     const warm = this._standing() >= 0 && this.tone !== 'curt'
     if (this.leafkin) return this._line(this._lk(warm ? 'byeWarm' : 'byeCurt'), 'wave', { moment: warm ? 'bye.warm' : 'bye.curt' })
-    const text = warm ? this._pick('bye', ['Safe roads.', 'Take care of yourself.', 'Come back any time.', 'Go well.', 'Until next time.']) : this._pick('bye', ['Right.', 'Well, then.', 'Off you go.', 'Mm.'])
+    const text = this._withQuirk(warm ? this._pick('bye', ['Safe roads.', 'Take care of yourself.', 'Come back any time.', 'Go well.', 'Until next time.']) : this._pick('bye', ['Right.', 'Well, then.', 'Off you go.', 'Mm.']), 'bye')
     return this._line(text, warm ? 'wave' : 'talk-shrug', { moment: warm ? 'bye.warm' : 'bye.curt', mood: warm ? 'warm' : 'cold', plain: true })
   }
 
@@ -423,11 +440,11 @@ export class Conversation {
     }
     if (this.leafkin) return this._line(this._lk(s > 0.3 ? 'greetFriend' : 'greetCold'), s > 0.3 ? 'wave' : 'talk-shrug', { moment: s > 0.3 ? 'greet.friend' : 'greet.cold' })
     if (s < -0.2) return this._line('You again.', 'talk-shrug', { mood: 'cold', moment: 'greet.cold' })
-    if (s > 0.3) return this._line('Good to see you!', 'wave', { mood: 'warm', moment: 'greet.friend' })
+    if (s > 0.3) return this._line(this._withQuirk('Good to see you!', 'greet'), 'wave', { mood: 'warm', moment: 'greet.friend' })
     const tone = this.tone
-    if (tone === 'curt') return this._line('What is it?', 'talk-shrug', { moment: 'greet.cold' })
+    if (tone === 'curt') return this._line(this._withQuirk('What is it?', 'greet'), 'talk-shrug', { moment: 'greet.cold' })
     if (tone === 'cheery') this.ctx.known.add(`person:${this.mind.id}`)
-    return this._line(tone === 'cheery' ? `Well met, stranger! I'm ${this.mind.name}.` : 'Well met, stranger.', 'wave', { moment: 'greet.stranger' })
+    return this._line(this._withQuirk(tone === 'cheery' ? `Well met, stranger! I'm ${this.mind.name}.` : 'Well met, stranger.', 'greet'), 'wave', { moment: 'greet.stranger' })
   }
 
   /** A line: `{ text, gesture, toward, claim, mood, moment, unlocks, about }`, `moment` what its voice clip says (lines.js), `about` what it names for follow-ups (`_followUps`). */
@@ -708,7 +725,8 @@ export class Conversation {
       this.heardWork = true
       const trade = BODY_UNLOCKS[mind.body] ?? []
       const unlocks = this._unlock(trade)
-      if (this.tone === 'curt') return this._line(text, 'talk-gesture', { moment: 'talk.self', unlocks, about: this._named(trade) })
+      const quirk = quirkLines(mind.quirk).self
+      if (this.tone === 'curt') return this._line(`${text} ${quirk}`, 'talk-gesture', { moment: 'talk.self', unlocks, about: this._named(trade) })
       const about = this._named(trade)
       const kin = mind.household.map((i) => this.town.minds[i])
       if (kin.length > 0) {
@@ -727,7 +745,7 @@ export class Conversation {
         this._mention(`ask:person:${o.id}`, o.name)
         about.push({ kind: 'person', id: o.id, rel: 'rival' })
       }
-      return this._line(text, 'talk-gesture', { moment: 'talk.self', unlocks, about })
+      return this._line(`${text} ${quirk}`, 'talk-gesture', { moment: 'talk.self', unlocks, about })
     }
     if (arg === 'town') {
       const t = this.town
@@ -769,7 +787,11 @@ export class Conversation {
     if (q !== null && q.parent === mind.id && ctx.log.state(q.id) !== 'done') return ctx.log.state(q.id) === null ? this._plea(q) : this._lastSeen(q)
     const m = this._message('giver')
     if (m !== null && [null, 'accepted', 'delivered'].includes(ctx.log.state(m.id))) return this._errand(m)
-    return this.wish() ?? this._line(this.leafkin ? this._lk('needsNo') : this._pick('needsNo', ["I'm all right, thank you.", 'Nothing, thank you.', 'I have all I need.', 'Not a thing, but thank you for asking.', 'I manage. Thank you.']), 'talk-nod', { moment: 'needs.no' })
+    const wish = this.wish()
+    if (wish !== null) return wish
+    const want = this.leafkin ? null : quirkLines(mind.quirk).want
+    if (want !== null) return this._line(want, 'talk-gesture', { moment: 'needs.yes' })
+    return this._line(this.leafkin ? this._lk('needsNo') : this._pick('needsNo', ["I'm all right, thank you.", 'Nothing, thank you.', 'I have all I need.', 'Not a thing, but thank you for asking.', 'I manage. Thank you.']), 'talk-nod', { moment: 'needs.no' })
   }
 
   /** Move `move` of manners.js said to them: its warmth applied, and their reply, warm and nodding when it lands. Praise and small talk past MANNERS.fawn in a row reads as buttering up. */

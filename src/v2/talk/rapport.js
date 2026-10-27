@@ -1,4 +1,4 @@
-// How each person stands with the players and what they have come to believe (_notes/conversation-and-quests.md): warmth, debt and suspicion, the claims they have made (so they repeat them), the last wording of each question (`worded`, so no wording comes twice running), and beliefs the players planted. Kept per person id; the room's share of it is to ride the relay as trust.js's entries do.
+// How each person stands with the players and what they have come to believe (_notes/conversation-and-quests.md): warmth, debt and suspicion, the claims they have made (so they repeat them), the last wording of each question (`worded`, so no wording comes twice running), how far into their need's story they are (`quirked`, quirks.js), and beliefs the players planted. Kept per person id; the room's share of it is to ride the relay as trust.js's entries do.
 
 export const RAPPORT = {
   // A leafkin that trusts the players (trust.js) starts this warm.
@@ -17,7 +17,7 @@ export class Rapport {
   get(id) {
     let r = this.of.get(id)
     if (r === undefined) {
-      r = { warmth: 0, debt: 0, suspicion: 0, said: new Map(), beliefs: new Map(), sentBy: null, worded: new Map(), sold: new Set(), words: { epoch: null, gained: 0, used: new Map() } }
+      r = { warmth: 0, debt: 0, suspicion: 0, said: new Map(), beliefs: new Map(), sentBy: null, worded: new Map(), sold: new Set(), quirked: 0, words: { epoch: null, gained: 0, used: new Map() } }
       this.of.set(id, r)
     }
     return r

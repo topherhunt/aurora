@@ -24,6 +24,7 @@ import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
 import * as trade from '../src/v2/talk/trade.js'
 import { jeer, swordWarning } from '../src/v2/talk/armed.js'
+import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -819,11 +820,41 @@ check(LORE.giants.some((x) => /afraid of spiders/i.test(x.truth)) && LORE.giants
 const flareLore = [...LORE.flares, ...LORE.caves, ...LORE.labyrinths].map((x) => x.truth).join(' ')
 check(/ground|wall/i.test(LORE.flares.map((x) => x.truth).join(' ')) && /flare/i.test(LORE.caves.concat(LORE.labyrinths).map((x) => x.truth).join(' ')) && /glow/i.test(flareLore), 'there is lore that a flare shot at the ground or a wall keeps glowing and so marks the way in caves and labyrinths')
 
+// --- quirks (src/v2/talk/quirks.js) ---
+const people = all.filter((m) => m.kind === 'human')
+const kinds = new Set(people.map((m) => m.quirk.kind))
+check(['bitter', 'timid', 'adoring', 'need'].every((k) => kinds.has(k)), 'every townsperson has a quirk, and all four kinds walk the towns', [...kinds].join(', '))
+const meanKind = (k) => { const g = people.filter((m) => m.quirk.kind === k); return g.reduce((s, m) => s + m.traits.kindness, 0) / g.length }
+check(meanKind('bitter') < meanKind('adoring'), 'the bitter run less kind than the adoring', `${meanKind('bitter').toFixed(2)} vs ${meanKind('adoring').toFixed(2)}`)
+const childNeeds = new Set(people.filter((m) => m.cls === 'child' && m.quirk.kind === 'need').map((m) => m.quirk.need)), adultNeeds = new Set(people.filter((m) => m.cls !== 'child' && m.quirk.kind === 'need').map((m) => m.quirk.need))
+check([...childNeeds].every((n) => !adultNeeds.has(n)), 'no child pines for a grown-up\'s need, nor a grown-up for a child\'s', `${[...childNeeds]} / ${[...adultNeeds]}`)
+const topical = allQuirkLines().flatMap((l) => Object.entries(NAMES).filter(([, re]) => re.test(l)).map(([k]) => `${k}: ${l}`))
+check(topical.length === 0, 'no quirk line names a lore topic', topical[0])
+const quirkCtx = (m) => { const ctx = ctxAt(fire(world.townOf(m))); ctx.rapport.warm(m.id, 0.5); return ctx }
+const selves = people.filter((m) => !new Conversation(m, quirkCtx(m)).say('talk:self', true).text.includes(quirkLines(m.quirk).self))
+check(selves.length === 0, 'asked about themself by a friend, everyone owns up to their quirk', selves.map((m) => m.name).join(', '))
+const needy = people.filter((m) => m.quirk.kind === 'need' && new Conversation(m, quirkCtx(m)).wish() === null)
+const wanting = needy.filter((m) => { const l = new Conversation(m, quirkCtx(m)).say('talk:needs', true); return l.quest === undefined && l.text !== quirkLines(m.quirk).want })
+check(needy.length > 0 && wanting.length === 0, 'asked what they need, one with a need and no errand or wish of their own names it', `${needy.length} needy, ${wanting.length} who did not say`)
+const gnomer = people.find((m) => m.quirk.need === 'gnome') ?? people.find((m) => m.quirk.kind === 'need')
+const gconv = new Conversation(gnomer, quirkCtx(gnomer)), gasides = quirkLines(gnomer.quirk).aside
+const told = []
+for (let i = 0; i < 40; i++) { const t = gconv.say('talk:town').text; const a = gasides.find((x) => t.includes(x)); if (a !== undefined) told.push(gasides.indexOf(a)) }
+check(told.length >= 6 && told.length <= 24 && told.every((x, i) => x === i % gasides.length), 'a need keeps filtering into answers now and then, its story told in order', `${gnomer.name} (${gnomer.quirk.need}): ${told.join(' ')}`)
+const moody = people.filter((m) => m.quirk.kind !== 'need').slice(0, 40)
+const greeted = moody.filter((m) => { const l = quirkLines(m.quirk); return [0, 1, 2, 3, 4, 5].some((salt) => l.greet.some((g) => new Conversation(m, quirkCtx(m), salt).opener().text.endsWith(g))) })
+check(greeted.length > moody.length * 0.7, 'greetings often carry the quirk', `${greeted.length} of ${moody.length}`)
+const worriedTalk = new Conversation(parent, quirkCtx(parent)), parentLines = quirkLines(parent.quirk)
+const fretful = Array.from({ length: 12 }, () => worriedTalk.say('talk:town').text).filter((t) => parentLines.aside.some((x) => t.includes(x)))
+check(fretful.length === 0, 'a parent whose child is missing has no room for their quirk', fretful[0])
+const leafQuirk = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }))
+check(leaf.every((m) => m.quirk === undefined) && !allQuirkLines().some((l) => [0, 1, 2, 3].map(() => leafQuirk.say('talk:self').text).join(' ').includes(l)), 'leafkin have no quirk')
+
 if (process.argv.includes('--transcript')) {
   for (const who of [parent, w0, ...q.covers.map((id) => world.person(id)).slice(0, 1), friend]) {
     const c = new Conversation(who, ctxAt(fire(world.townOf(who))))
     const T = Object.entries(who.traits).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(' ')
-    console.log(`\n--- ${who.name} the ${who.body} of ${world.townOf(who).name} (${T})`)
+    console.log(`\n--- ${who.name} the ${who.body} of ${world.townOf(who).name} (${T}; ${who.quirk.need ?? who.quirk.kind})`)
     console.log(`  > ${c.opener().text}`)
     for (const topic of ['talk:self', 'talk:town', 'talk:needs', 'where:title:smith', 'where:title:potionmaster', `ask:person:${q.child}`, 'where:here']) console.log(`  [${topic}] ${c.say(topic).text}`)
     console.log(`  chips: ${c.menu().map((x) => x.label).join(' / ')}`)

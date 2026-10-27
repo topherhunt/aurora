@@ -18,7 +18,7 @@
 // THE SONGS ARE STREAMED, NOT DECODED: a decoded three-minute song is 60 MB of
 // PCM. Each is an HTMLMediaElement made the first time it is drawn, through
 // its own gain (its fade) onto the master bus, so the panel's Sound row takes
-// it. No three, no DOM beyond the elements: the gate hands in a fake engine,
+// it; the Music row is `fader` (MUSIC_VOLUMES). No three, no DOM beyond the elements: the gate hands in a fake engine,
 // a fake element factory and a seeded random.
 // ---------------------------------------------------------------------------
 
@@ -37,7 +37,7 @@ export const songUrl = (pool, song) => `music/${pool}/${POOLS[pool][song]}`
 
 /** The silence before each song, seconds. */
 export const PAUSE_S = [180, 360]
-export const LEVEL = 0.5
+export const LEVEL = 0.25
 export const FADE_OUT_S = 10
 /** A followed song joined more than LATE_S into it fades in over FADE_IN_S; one joined sooner just starts. */
 export const FADE_IN_S = 3
@@ -47,6 +47,8 @@ export const INDOOR_GAIN = 0.7
 export const INDOOR_LP = 2000
 export const OPEN_LP = 20000
 export const INDOOR_TAU = 0.3
+/** The settings panel's Music row, in the order a press steps through: a multiplier on LEVEL. */
+export const MUSIC_VOLUMES = [{ name: 'On', gain: 1 }, { name: '50%', gain: 0.5 }, { name: 'Off', gain: 0 }]
 
 /** The pool for where she is: a cave over everything, then the glade room, a town's ground, above the snowline, else the forest; day by `day` (dayness >= 0.5). */
 export function poolFor({ cave, glade, town, aboveSnow, day }) {
@@ -68,21 +70,25 @@ export class Music {
    * @param engine         a SoundEngine (or the gate's fake): `ctx` and `master`.
    * @param createElement  url -> an HTMLMediaElement (or the gate's fake); `new Audio(url)`.
    * @param random         () -> [0, 1); Math.random.
+   * @param volume         the fader's gain, one of MUSIC_VOLUMES.
    */
-  constructor({ engine, createElement = (url) => new Audio(encodeURI(url)), random = Math.random }) {
+  constructor({ engine, createElement = (url) => new Audio(encodeURI(url)), random = Math.random, volume = 1 }) {
     if (!engine || !engine.ctx || !engine.master) throw new Error('Music: missing engine')
     this.engine = engine
     this.createElement = createElement
     this.random = random
     const ctx = engine.ctx
-    // Each song's gain -> room (indoor gain) -> muffle -> master.
+    // Each song's gain -> room (indoor gain) -> muffle -> fader (the Music row) -> master.
     this.room = ctx.createGain()
     this.room.gain.value = 1
     this.muffle = ctx.createBiquadFilter()
     this.muffle.type = 'lowpass'
     this.muffle.frequency.value = OPEN_LP
+    this.fader = ctx.createGain()
+    this.fader.gain.value = volume
     this.room.connect(this.muffle)
-    this.muffle.connect(engine.master)
+    this.muffle.connect(this.fader)
+    this.fader.connect(engine.master)
     // url -> { el, gain }, made on first draw: an element attaches to a source node once for good.
     this.tracks = new Map()
     this.silence = this._rollPause()
@@ -94,6 +100,10 @@ export class Music {
     this.following = false
     // The followed song's `pool/song@startS` since she came into the owner's pool, so one that has ended here is not started again while the owner still says it plays.
     this.heard = null
+  }
+
+  setVolume(gain) {
+    this.fader.gain.value = gain
   }
 
   _rollPause() {

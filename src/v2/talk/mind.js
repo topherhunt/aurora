@@ -3,6 +3,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TRADES } from '../layers/trades.js'
+import { quirkOf } from './quirks.js'
 
 const SALT = { town: 7101, mind: 7102, ties: 7103, leafkin: 7104, voice: 7105 }
 
@@ -79,7 +80,7 @@ export function townName(seed, index) {
   return head + tail
 }
 
-/** A mind for each of the town's folk (layers/towns.js `town.folk`), in folk order: `{ id, kind, name, body, trade, cls, home, work, household, friends, rival, traits, voice }`, ties as folk indexes. */
+/** A mind for each of the town's folk (layers/towns.js `town.folk`), in folk order: `{ id, kind, name, body, trade, cls, home, work, household, friends, rival, traits, voice, quirk }`, ties as folk indexes. */
 export function castMinds(seed, town, townIndex) {
   const rand = mulberry32(hash32(seed, SALT.mind, townIndex))
   const names = [...NAMES]
@@ -90,6 +91,7 @@ export function castMinds(seed, town, townIndex) {
     const name = names.splice((rand() * names.length) | 0, 1)[0]
     return { id: `${town.id}:${i}`, index: i, kind: 'human', town: townIndex, name, body: f.body, trade: f.trade, cls, home: f.home, work: f.work, household: [], friends: [], rival: null, traits: temperament(rand, [LEAN[cls], LEAN[f.body]]), voice: voiceOf(voices, f.body) }
   })
+  for (const m of minds) m.quirk = quirkOf(seed, m)
   // Lodgers at the inn are not the innkeeper's household.
   const inn = town.buildings.findIndex((b) => b.trade === 'inn')
   for (const m of minds) {

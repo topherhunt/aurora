@@ -1713,11 +1713,8 @@ export const COBBLE_METRES = 3
 export const COBBLE_NEAR = 130
 export const COBBLE_FAR = 150
 const COBBLE_MEAN = [0.293, 0.265, 0.22]
-// The forest floor (FOREST FLOOR block): metres per tile, the eye distance it
-// fades into the stipple over, and the tile's linear mean.
+// The forest floor (FOREST FLOOR block): metres per tile near, and its linear mean.
 export const FOREST_FLOOR_METRES = 2
-export const FOREST_FLOOR_NEAR = 30
-export const FOREST_FLOOR_FAR = 45
 const FOREST_FLOOR_MEAN = [0.14, 0.136, 0.076]
 // The cliff wears the boulders' tile (LAYER.ROCK) at this size, on the face's
 // stipple plane. Both photo tiles take their UV from the CHUNK-LOCAL position,
@@ -1855,8 +1852,9 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // is the mesh normal's slope, ~40-46 deg, inside shade()'s 31-52 deg
         // rock ramp: chunk translations only, so objectNormal is world.
         vCliffW = smoothstep( 0.78, 0.70, objectNormal.y ) * ( 1.0 - auroraVertexSnow );
-        vForestW = smoothstep( 0.45, 0.6, forest ) * auroraGreenBase * ( 1.0 - auroraVertexSnow )
-          * ( 1.0 - smoothstep( ${FOREST_FLOOR_NEAR.toFixed(1)}, ${FOREST_FLOOR_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );` : ''}
+        // NOT auroraGreenBase: the mottle swings forest ground through the
+        // middle of that ramp, which made nearly every wood a two-fetch seam.
+        vForestW = smoothstep( 0.45, 0.6, forest ) * ( 1.0 - auroraVertexSnow );` : ''}
         // After both masks, which a grain-scaled vColor would move.
         vColor.rgb *= 1.0 + grain * uGrain * ( 1.0 - smoothstep( ${GRAIN_NEAR.toFixed(1)}, ${GRAIN_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );
         // THE FOREST TINT LAST, past both exposure stages, so uForestTint IS the
@@ -1930,28 +1928,32 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         // are per vertex, so a face whose corners agree takes ONE of the three
         // fetches and only a face across a seam takes two. Each branch's edge
         // lies where its weight is ~0, so an implicit LOD gone wrong across a
-        // split quad there colours nothing.
+        // split quad there colours nothing. A photo tile takes the stipple's UV
+        // where the face's (flat) stipple tile is the larger, so it grows with
+        // distance in the same rings; nearer, its own size on the world.
+        vec3 auroraStipD = vStipPos - vStipAnchor;
+        vec2 auroraStipP = vStipFrame.w < 0.5 ? auroraStipD.xz : vStipFrame.w < 1.5 ? auroraStipD.zy : auroraStipD.xy;
+        vec2 auroraStipUv = vStipFrame.yz + vStipK * auroraStipP;
+        vec2 auroraPlanePos = vStipFrame.w < 0.5 ? vStipPos.xz : vStipFrame.w < 1.5 ? vStipPos.zy : vStipPos.xy;
         float auroraCliffW = 0.0;
         float auroraForestW = 0.0;
         vec3 auroraTex = vec3( 0.0 );
         if ( vCliffW > 0.002 ) {
-          vec2 auroraCliffUv = ( vStipFrame.w < 0.5 ? vStipPos.xz : vStipFrame.w < 1.5 ? vStipPos.zy : vStipPos.xy ) * ${(1 / CLIFF_METRES).toFixed(6)};
+          vec2 auroraCliffUv = vStipFrame.x < ${(1 / CLIFF_METRES).toFixed(6)} ? auroraStipUv : auroraPlanePos * ${(1 / CLIFF_METRES).toFixed(6)};
           vec3 auroraCliff = texture( uAtlas, vec3( auroraCliffUv, ${LAYER.ROCK}.0 ) ).rgb / vec3( ${ROCK_TILE_MEAN.map((v) => v.toFixed(4)).join(', ')} );
           auroraCliffW = auroraRagged( vCliffW, dot( auroraCliff, vec3( 0.3333 ) ) - 1.0 );
           auroraTex += auroraCliffW * mix( vec3( 1.0 ), auroraCliff, uCliffStone );
         }
         float auroraOpenW = vForestW * uForestOn * ( 1.0 - auroraCliffW );
         if ( auroraOpenW > 0.002 ) {
-          vec3 auroraFloor = texture( uForestMap, vStipPos.xz * ${(1 / FOREST_FLOOR_METRES).toFixed(6)} ).rgb / vec3( ${FOREST_FLOOR_MEAN.map((v) => v.toFixed(3)).join(', ')} );
+          vec2 auroraFloorUv = vStipFrame.x < ${(1 / FOREST_FLOOR_METRES).toFixed(6)} ? auroraStipUv : auroraPlanePos * ${(1 / FOREST_FLOOR_METRES).toFixed(6)};
+          vec3 auroraFloor = texture( uForestMap, auroraFloorUv ).rgb / vec3( ${FOREST_FLOOR_MEAN.map((v) => v.toFixed(3)).join(', ')} );
           auroraForestW = auroraRagged( vForestW * uForestOn, auroraFloor.g - auroraFloor.r ) * ( 1.0 - auroraCliffW );
           auroraTex += auroraForestW * mix( vec3( 1.0 ), auroraFloor, uForestFloor );
         }
         float auroraStipW = 1.0 - auroraCliffW - auroraForestW;
         auroraStippleTilt = vec3( 0.0 );
         if ( auroraStipW > 0.002 ) {
-          vec3 auroraStipD = vStipPos - vStipAnchor;
-          vec2 auroraStipP = vStipFrame.w < 0.5 ? auroraStipD.xz : vStipFrame.w < 1.5 ? auroraStipD.zy : auroraStipD.xy;
-          vec2 auroraStipUv = vStipFrame.yz + vStipK * auroraStipP;
           vec4 auroraStippleG = texture( uStippleMap, auroraStipUv );
           float auroraStipGain = mix( 1.0, uStippleSnow, vStipSnow );
           auroraTex += auroraStipW * ( 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit * auroraStipGain );
