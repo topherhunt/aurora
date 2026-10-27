@@ -36,7 +36,8 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, SIT_S, WALK, LEAP, HOPS_MAX, WET_PAUSE_S, WADE_M, WET_ROUGHNESS, MORPHS, LOD_TIERS, LURES, LURE_M, LURE_FORGET_M, CHASE, ORBIT_M, NOTICE_S, REJOIN_MIN_S, bedKey, keyOf } from '../src/v2/render/frogs.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, SIT_S, WALK, LEAP, HOPS_MAX, WET_PAUSE_S, WADE_M, WET_ROUGHNESS, MORPHS, LOD_TIERS, LURES, LURE_M, LURE_FORGET_M, CHASE, ORBIT_M, NOTICE_S, REJOIN_MIN_S, GROW, bedKey, keyOf } from '../src/v2/render/frogs.js'
+import { taken } from '../src/v2/taken.js'
 import { GRID_S, keyHash } from '../src/sim/score.js'
 import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, TIER_TINTS, critterLodUrl, critterTier, cullRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
@@ -585,16 +586,21 @@ let NOW = T0 + SECONDS + 10
   check(f.lured && f.lure === spider && f.live !== null && f.live.ph.kind === 'sit' && f.live.at + f.live.ph.dur - NOW <= NOTICE_S + 1e-9, `a spider inside ${LURE_M} m has it, and its sit is cut short`, `${(f.live.at + f.live.ph.dur - NOW).toFixed(2)} s left`)
   const owed = setsFor()
   check(owed.length === 1 && owed[0][1] === 'fg' && owed[0][2] === null && owed[0].length === 4 && names(owed[0]) && owed[0][3].every((i) => Number.isInteger(i)), 'the bed\'s lured set goes to the room: the bed, the layer, the frog\'s index, the sender left to the relay', JSON.stringify(owed))
-  const headings = new Set()
-  let hops = 0
+  let arrived = null
+  let bobs = 0, strays = 0, croaks = 0
   let was = f.state
-  for (let i = 0; i < 10 / DT; i++) {
+  for (let i = 0; i < 30 / DT; i++) {
     step(head(), [spider])
-    if (f.state === 'hop' && was !== 'hop') { hops++; headings.add(Math.round(f.yaw * 10)) }
+    if (arrived === null && f.state === 'sit' && gap() < ORBIT_M) arrived = NOW
+    if (arrived !== null && f.state === 'hop' && was !== 'hop') {
+      if (f.ph.from === f.ph.to || Math.hypot(f.ph.to.x - f.ph.from.x, f.ph.to.z - f.ph.from.z) < 1e-9) bobs++
+      else strays++
+    }
+    croaks += frogs.voices([]).filter((v) => v.rule === 'frogCroak' && v.x === f.x && v.z === f.z).length
     was = f.state
   }
-  check(hops >= 8 && gap() < ORBIT_M + CHASE.m[1] * f.size && Math.hypot(f.x - twinOf().x, f.z - twinOf().z) > 1, `in ten seconds it hops up to the spider and about it, off its plan`, `${hops} hops, ${gap().toFixed(2)} m off, ${Math.hypot(f.x - twinOf().x, f.z - twinOf().z).toFixed(2)} m from its plan`)
-  check(headings.size >= 5, 'on headings all over, since it hops across the spider as often as at it', `${headings.size} headings in ${hops} hops`)
+  check(arrived !== null && gap() < ORBIT_M && Math.hypot(f.x - twinOf().x, f.z - twinOf().z) > 1, `it hops up to the spider and stays within ${ORBIT_M} m of it, off its plan`, `${gap().toFixed(2)} m off, ${Math.hypot(f.x - twinOf().x, f.z - twinOf().z).toFixed(2)} m from its plan`)
+  check(bobs >= 2 && strays === 0 && croaks === bobs, 'there it hops only up and down in place, croaking each time', `${bobs} in place, ${strays} away, ${croaks} croaks in ${(NOW - arrived).toFixed(1)} s`)
   check(setsFor().every(names), 'the frog stays in every set its bed sends after')
   // Carried along the bank past the tether: the frog leaves its patch after it.
   spider.z = f.homeZ + TETHER_M + 2.5
@@ -652,6 +658,79 @@ let NOW = T0 + SECONDS + 10
   frogs.place(500, 0)
   const gone = frogs.pendingLured([]).filter((set) => set[0] === bed)
   check(gone.length === 1 && gone[0][3].length === 0, 'a bed leaving with a lured frog empties its set to the room', JSON.stringify(gone))
+}
+
+// --- her hands: a frog taken, let go, and fed, and a peer's client told of each --------
+{
+  const eaten = []
+  const me = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, eat: (l) => { eaten.push(l); return true } })
+  const peer = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset })
+  const mine = () => me.slots.filter((g) => g.tile !== null)
+  const heard = (a) => { const b = a.slice(); b[8] = 7; return b }
+  let head = [HALF + 1, GROUND + 1.6, 0]
+  const step = (lures = [], peers = []) => { NOW += DT; me.update(...head, NOW, lures); peer.update(...head, NOW, [], undefined, peers) }
+  me.place(0, 0); peer.place(0, 0)
+  step()
+  const onBank = (g) => g.state === 'sit' && !g.wet && g.x > HALF + 0.5 && g.x < HALF + 3 && !inRock(g.x, g.z) && Math.abs(g.z) < 12
+  const f = mine().filter(onBank).sort((a, b) => Math.abs(a.z) - Math.abs(b.z))[0]
+  head = [f.x - 0.5, GROUND + 1.6, f.z]
+  step()
+  const home = { x: f.homeX, z: f.homeZ }
+  const hit = me.pickAt(f.x, f.y, f.z, 0.3, 10)
+  check(hit !== null && hit.f === f, 'a hand at a frog finds it')
+  const rec = me.take(hit, 1)
+  check(rec.kind === 'frog' && rec.size === hit.size && rec.stowable && f.tile === null, 'taken, it is a frog record in her hand, out of the bed')
+  me.place(500, 0); me.place(0, 0)
+  check(!mine().some((g) => Math.abs(g.homeX - home.x) < 1e-6 && Math.abs(g.homeZ - home.z) < 1e-6), 'and its bed regrown does not grow it back')
+  check(peer.evict('frog', home.x, home.z) && !peer.slots.some((g) => g.tile !== null && g.homeX === home.x && g.homeZ === home.z), "a peer's client told of the take evicts it from its bed")
+
+  // Let go a metre past her head: it lands, hops on away from her, and the peer watches the same frog.
+  const drop = { x: head[0] + 1, y: GROUND + 1.2, z: head[2] }
+  check(me.release(rec, drop.x, drop.y, drop.z, { x: head[0], y: head[1], z: head[2], yaw: 0 }) && me.loose.length === 1, 'let go, it is loose')
+  const [anchor] = me.pending([])
+  check(anchor.length === 19 && anchor[7] === 'drop' && anchor[8] === null && JSON.stringify(anchor).length <= 256, 'and the room hears one drop anchor within the relay\'s size', JSON.stringify(anchor))
+  peer.apply(heard(anchor), NOW)
+  const L = me.loose[0], P = peer.loose[0]
+  for (let i = 0; i < 6 / DT; i++) step()
+  const off = Math.hypot(L.x - head[0], L.z - head[2])
+  check(L.state === 'sit' && Math.abs(L.y - (GROUND + ground.lift)) < 0.01 && off > 2.5, 'it lands on the ground and hops on away from her', `${off.toFixed(2)} m off, y ${L.y.toFixed(3)}`)
+  check(P !== undefined && P.key === L.key && Math.hypot(P.x - L.x, P.z - L.z) < 1e-6 && P.size === L.size, "the peer's client has the same frog in the same place", P && `${Math.hypot(P.x - L.x, P.z - L.z).toFixed(4)} m apart`)
+  head = [L.x - 0.5, GROUND + 1.6, L.z]
+  step()
+  const again = me.pickAt(L.x, L.y, L.z, 0.3, 10)
+  check(again !== null && again.f === L, 'a loose frog can be picked up again')
+  me.take(again, 1)
+  const [took] = me.pending([])
+  peer.apply(heard(took), NOW)
+  check(me.loose.length === 0 && took[7] === 'took' && peer.loose.length === 0, 'taken again, it is off both clients')
+
+  // A spider held at a bed frog: it is eaten, and the frog grows and follows her.
+  const g = mine().filter((h) => !h.wet && h.x > HALF + 0.5 && !inRock(h.x, h.z)).sort((a, b) => Math.hypot(a.x - head[0], a.z - head[2]) - Math.hypot(b.x - head[0], b.z - head[2]))[0]
+  const size = g.size, gHome = { x: g.homeX, z: g.homeZ }
+  const spider = { kind: 'spider', x: g.x - 0.3, y: GROUND + 0.3, z: g.z, by: null }
+  head = [g.x - 1, GROUND + 1.6, g.z]
+  for (let i = 0; i < 8 / DT && eaten.length === 0; i++) step([spider])
+  check(eaten.length === 1 && eaten[0] === spider, 'a frog eats the spider held at its face')
+  check(Math.abs(g.size - size * GROW) < 1e-9 && g.tile === null && me.loose.includes(g) && g.pet !== null && g.pet.by === null, `and grows ${GROW}x, her pet now`, `${size.toFixed(3)} -> ${g.size.toFixed(3)}`)
+  check(taken.has('frog', gHome.x, gHome.z), 'out of its bed for good')
+  const fed = me.pending([]).find((a) => a[7] === 'fed')
+  check(fed !== undefined && Math.abs(fed[17] - gHome.x) < 0.001 && Math.abs(fed[18] - gHome.z) < 0.001, 'the room hears it fed, from its home', JSON.stringify(fed))
+  const start = { x: g.x, z: g.z }
+  head = [HALF + 2, GROUND + 1.6, g.z + 8]
+  for (let i = 0; i < 15 / DT; i++) step()
+  const gap = Math.hypot(g.x - head[0], g.z - head[2])
+  check(Math.hypot(g.x - start.x, g.z - start.z) > 5 && gap < LURE_M, 'she walks 8 m on and it hops after her', `${gap.toFixed(2)} m off her`)
+  const sits = []
+  for (let i = 0; i < 5 / DT; i++) { step(); if (g.state === 'sit') sits.push(Math.hypot(g.x - head[0], g.z - head[2])) }
+  check(sits.length > 0 && Math.max(...sits) - Math.min(...sits) < 1e-9, 'and sits there while she stands', `${Math.min(...sits).toFixed(2)}-${Math.max(...sits).toFixed(2)} m`)
+
+  // The peer's client hears the feeding: its own bed frog, grown, follows the peer's head.
+  peer.apply(heard(fed), NOW)
+  const pg = peer.loose.find((h) => h.key === g.key)
+  check(pg !== undefined && pg.pet.by === 7 && Math.abs(pg.size - g.size) < 1e-3, "the peer's client turns the same frog loose, grown, the feeder's pet")
+  const feeder = { x: pg.x + 5, y: GROUND + 1.6, z: pg.z, by: 7 }
+  for (let i = 0; i < 10 / DT; i++) step([], [feeder])
+  check(Math.hypot(pg.x - feeder.x, pg.z - feeder.z) < LURE_M, 'and follows the feeder there', `${Math.hypot(pg.x - feeder.x, pg.z - feeder.z).toFixed(2)} m off them`)
 }
 
 // Dry land far from any water: nothing.

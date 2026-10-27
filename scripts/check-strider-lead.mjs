@@ -1,11 +1,12 @@
-// Node-side gates for leading a tamed wild strider by the rein (src/v2/render/wild-striders.js lead).
+// Node-side gates for leading a tamed wild strider by the rein (src/v2/render/wild-striders.js lead), and for her torch held to one.
 //
 //   node scripts/check-strider-lead.mjs
 //
-// What can go wrong without throwing: a peer's tamed strider that shies before her hand can reach its head; a led one that stands off at the wild follow's distances, or never lets go; a rein left in her hand after she mounts it.
+// What can go wrong without throwing: a peer's tamed strider that shies from her; a led one that stands off at the wild follow's distances, or never lets go; a rein left in her hand after she mounts it; a singed one that never tells the room its hurt, or runs on out of sight.
 
 import * as THREE from 'three'
 import { WILD, WildStriders } from '../src/v2/render/wild-striders.js'
+import { SINGE } from '../src/v2/singe.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -16,34 +17,79 @@ const check = (ok, label, detail = '') => {
 /** A layer with only what leading reads, and one strider keyed `key` at the origin heading +x (forward (cos, -sin) of the heading), size 1.5 (the mean); `trusted` hers, else tamed by a peer. */
 function layer(trusted) {
   const S = Object.create(WildStriders.prototype)
-  S.walk = { heightAt: () => 0 }
+  S.walk = { heightAt: () => 0, waterAt: () => null, obstacleAt: () => false }
   S.bond = { trusted: new Set(trusted ? ['k'] : []), grown: new Map() }
   S.tamed = new Set(['k'])
   S.anchors = new Map()
   S.outbox = []
   S.live = new Map()
   S.struck = new Set()
+  S.scars = new Map()
+  S.torches = []
   S.now = 0
   S.ridden = S.led = S.leadBy = null
   S.walkV = 1
   S.runV = 4
   S._say = S._chirp = S._rehome = S._graze = S._lookAt = () => {}
   S._open = () => true
-  // Its jowl a metre ahead of it and 1.5 m up.
-  S.inner = { jowl: (m, out) => out.set(m.pose.x + Math.cos(m.pose.heading), 1.5, m.pose.z - Math.sin(m.pose.heading)) }
-  const m = { key: 'k', by: null, state: 'calm', t: 0, cue: 0, since: 0, aim: 0, shyAt: -Infinity, dist: 1, sendAt: 0, moving: false, want: { yaw: 0, pitch: 0, roll: 0 }, pose: { x: 0, y: 0, z: 0, heading: 0, size: 1.5, speed: 0, clip: 'idle', cue: 0, swim: false } }
+  // Its jowl a metre ahead of it and 1.5 m up, its body 2 m long.
+  S.inner = { asset: { sizeM: 2 / 1.5 }, bites: () => false, jowl: (m, out) => out.set(m.pose.x + Math.cos(m.pose.heading), 1.5, m.pose.z - Math.sin(m.pose.heading)) }
+  const m = { key: 'k', by: null, state: 'calm', t: 0, cue: 0, since: 0, aim: 0, singe: 0, dash: { wob: 0, left: 0 }, dist: 1, sendAt: 0, moving: false, want: { yaw: 0, pitch: 0, roll: 0 }, pose: { x: 0, y: 0, z: 0, heading: 0, size: 1.5, speed: 0, clip: 'idle', cue: 0, swim: false } }
   S.live.set('k', m)
   return { S, m }
 }
-const step = (S, m, x, z) => S._step(m, 1 / 72, { x, y: 1.6, z }, { x, y: 0, z }, [])
+const step = (S, m, x, z, lures = []) => S._step(m, 1 / 72, { x, y: 1.6, z }, { x, y: 0, z }, lures)
 
 console.log('taking the rein')
 {
   const { S, m } = layer(false)
   step(S, m, 2, 0)
-  check(m.state === 'calm', "a peer's tamed one lets her come up to its face without shying", m.state)
+  check(m.state === 'calm', "a peer's tamed one lets her come up to its face", m.state)
   step(S, m, 0, 2)
-  check(m.state === 'shy', 'but shies from her at its side', m.state)
+  check(m.state === 'calm', 'and to its side, trusting her as it does its tamer', m.state)
+}
+
+console.log('a torch held to it')
+{
+  const { S, m } = layer(false)
+  S.torches = [{ x: 0.2, y: 1, z: 0.3 }]
+  for (let t = 0; t < 0.9; t += 1 / 72) step(S, m, 0, 1.5)
+  check(m.state === 'calm' && !S.scars.has('k'), 'held under a second, a tamed one takes no harm', m.state)
+  for (let t = 0; t < 0.2 && m.state === 'calm'; t += 1 / 72) step(S, m, 0, 1.5)
+  const a = S.outbox.at(-1)
+  check(m.state === 'shy' && S.scars.get('k').hp === SINGE.max - SINGE.hp, `a second costs it ${SINGE.hp} hp, and it shies`, `${m.state}, ${S.scars.get('k')?.hp} hp`)
+  check(a[7] === 'shy' && a[15] === SINGE.max - SINGE.hp && a[16] === S.now, 'owing the room its hp and when it was hurt', JSON.stringify(a))
+  S.torches = []
+  for (let t = 0; t < 10 && m.state === 'shy'; t += 1 / 72) step(S, m, 0, 1.5)
+  const d = Math.hypot(m.pose.x, m.pose.z)
+  check(m.state === 'calm' && d >= WILD.shy.run[0] - 0.5 && d <= WILD.shy.run[1] + 0.5, 'stopping a few metres off', `${m.state} at ${d.toFixed(2)} m`)
+}
+{
+  const { S, m } = layer(false)
+  S.tamed.clear()
+  // Wary, it backs off from her: the torch kept to it.
+  for (let t = 0; t < 1.1 && m.state !== 'flee'; t += 1 / 72) {
+    S.torches = [{ x: m.pose.x, y: 1, z: m.pose.z }]
+    step(S, m, 6, 0)
+  }
+  check(m.state === 'flee' && S.scars.get('k').hp === SINGE.max - SINGE.hp, 'a wild one flees', m.state)
+}
+
+console.log('a crab or spider in her hand')
+const held = (kind, by = null) => [{ kind, by, x: 0, y: 1.2, z: 2 }]
+{
+  const { S, m } = layer(false)
+  step(S, m, 0, 2.5, held('fish'))
+  step(S, m, 0, 2.5, held('crab', 'peer'))
+  check(m.state === 'calm', "a fish of hers, or a peer's crab, does not scare it", m.state)
+  step(S, m, 0, 2.5, held('crab'))
+  check(m.state === 'shy', 'her crab within reach makes a tamed one shy', m.state)
+}
+{
+  const { S, m } = layer(false)
+  S.tamed.clear()
+  step(S, m, 0, 2.5, held('spider'))
+  check(m.state === 'flee', 'her spider makes a wild one flee', m.state)
 }
 {
   const { S, m } = layer(false)

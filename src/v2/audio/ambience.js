@@ -222,6 +222,8 @@ export const RULES = {
   frog: { every: 16, gain: [0.4, 1.0] },
   // A frog's hop (frogs.js voices()), heard only within arm's reach or so and quietly: the clip is mastered 8 dB hotter than the chatter.
   frogHop: { reach: 3, near: 1, edge: 1.5, level: 0.15, gain: [0.7, 1.0] },
+  // A frog staying at the bug in her hand croaks as it hops in place (frogs.js STAY), as loud as a croak from the banks.
+  frogCroak: { reach: 15, near: 2, edge: 5, level: 0.8, gain: [0.7, 1.0] },
   // Something landing in the water from the air: a frog hopping in off the bank (frogs.js voices()) or a fish falling back from its leap (fish-leap.js voices()). A drop from her hand is main.js's own, off hands.js splash.
   splash: { reach: 30, near: 3, edge: 8, level: 0.6, gain: [0.7, 1.0] },
   // Each grasshopper the layer shows within `reach` chirps the cricket clip on average once per `every` seconds, day or night: `level` up to `near` metres off, falling as near/distance past it. A dozen sit within reach on a meadow, so one is heard every few seconds over the night bed.

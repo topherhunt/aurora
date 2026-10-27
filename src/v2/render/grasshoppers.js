@@ -232,13 +232,15 @@ export class Grasshoppers {
 
     // Dry chitin: Lambert, no glint. The tint rides three's own instanceColor.
     this.material = new THREE.MeshLambertMaterial({ color: 0xffffff })
-    // The plan table: each shown grasshopper's segment, posed in the vertex shader (gpu-motion.js). The same material on a held copy is not instanced and compiles without it.
+    // The plan table: each shown grasshopper's segment, posed in the vertex shader (gpu-motion.js).
     this.table = new PhraseTable(MAX)
     this.material.onBeforeCompile = (shader) => {
       tierTintSplice(shader, 0)
       motionSplice(shader, this.table, MOTION_GLSL)
     }
     this.material.customProgramCacheKey = () => 'grasshoppers'
+    // A held or packed one: hands.js draws it instanced too, so on the motion material it would pose from a plan-table row that is not its own, and be lost.
+    this.heldMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff })
     this.mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
     this.mesh.name = 'v2-grasshoppers'
     this.mesh.count = 0
@@ -318,6 +320,8 @@ export class Grasshoppers {
   setAsset(asset) {
     const bounds = setCritterAsset(this.mesh, this.material, asset, 'grasshoppers')
     this.length = bounds.halfX * 2
+    this.heldMaterial.map = this.material.map
+    this.heldMaterial.needsUpdate = true
     this.loaded = true
     this.mesh.visible = false
     this.listDirty = true
@@ -454,7 +458,7 @@ export class Grasshoppers {
       name: 'grasshopper',
       size: g.len,
       geometry: this.mesh.geometry,
-      material: this.material,
+      material: this.heldMaterial,
       color: [g.r, g.g, g.b],
       scale: [k, k, k],
       stowable: true,
@@ -482,7 +486,7 @@ export class Grasshoppers {
   dress(slot) {
     if (slot.kind !== 'grasshopper') throw new Error(`Grasshoppers.dress: not a grasshopper, ${slot.kind}`)
     if (!this.loaded) return null
-    return { geometry: this.mesh.geometry, material: this.material }
+    return { geometry: this.mesh.geometry, material: this.heldMaterial }
   }
 
   /**
@@ -911,6 +915,7 @@ export class Grasshoppers {
     this.mesh.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
+    this.heldMaterial.dispose()
     this.table.dispose()
   }
 }

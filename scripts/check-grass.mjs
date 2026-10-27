@@ -52,7 +52,7 @@ import {
   buildGrassStripBank, stripTiles, STRIP_BASE, STRIP_TILE_ASPECT, grassCardAspect,
   GRASS_CLUMP, GRASS_HEIGHT_REF,
 } from '../src/props/grass-bank.js'
-import { Grass, GRASS_TUNING, shoreClumpAt, snowKeepAt } from '../src/v2/render/grass.js'
+import { Grass, GRASS_TUNING, SCORCH, shoreClumpAt, snowKeepAt } from '../src/v2/render/grass.js'
 import { RIM_AT, RIM_HYST, RIM_HYST_FRAC } from '../src/v2/render/rim.js'
 import { snowBandAt } from '../src/v2/terrain/chunk-mesh-v2.js'
 import { TREELINE_HALF, forestKeepAt } from '../src/v2/layers/forest.js'
@@ -2434,6 +2434,39 @@ console.log('\n-- rocks in the bed --')
   check(threw, 'and something passed as `rocks` that cannot answer throws at construction')
 
   g.dispose()
+}
+
+// ---------------------------------------------------------------------------
+
+console.log('\n-- scorch --')
+{
+  const g = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
+  g.place(0, 0)
+  const ids = [...g.tiles.values()].flatMap((t) => [...t.ids.slice(0, t.n)])
+  const charred = (id) => { const c = new THREE.Color(); g.batch.getColorAt(id, c); return Math.abs(c.r - _charR) < 1e-6 }
+  const _charR = new THREE.Color().setRGB(...SCORCH.color, THREE.LinearSRGBColorSpace).r
+  const at = ids.find((i) => Math.abs(g.instX[i]) < 8 && Math.abs(g.instZ[i]) < 8)
+  const [x, z] = [g.instX[at], g.instZ[at]]
+  const near = ids.filter((i) => Math.hypot(g.instX[i] - x, g.instZ[i] - z) < SCORCH.r)
+  const far = ids.filter((i) => Math.hypot(g.instX[i] - x, g.instZ[i] - z) > SCORCH.r)
+
+  check(!g.scorch(x, 60 + SCORCH.h + 0.1, z), 'a torch held above the grass burns nothing')
+  check(g.scorch(x, 60 + SCORCH.h / 2, z) && near.every(charred) && !far.some(charred),
+    'a torch down in the grass blackens the tufts within its disc and no others', `${near.length} in the disc`)
+  check(!g.scorch(x + SCORCH.r * SCORCH.near * 0.5, 60, z) && g.scorches.length === 1,
+    'and held still, it lays no second disc')
+
+  for (let k = 1; k <= SCORCH.max; k++) g.scorch(x + 50 + k, 60, z)
+  check(g.scorches.length === SCORCH.max && !near.some(charred),
+    'and once the oldest disc is retired, its tufts are green again')
+
+  const h = new Grass(new THREE.Scene(), flat, dry, clear, texArray, { layers: noSand, seed: 7, style: 'tufts' })
+  h.scorches.push({ x, z })
+  h.place(0, 0)
+  const back = (id) => { const c = new THREE.Color(); h.batch.getColorAt(id, c); return Math.abs(c.r - _charR) < 1e-6 }
+  check(near.every(back) && !far.some(back), 'a tuft grown inside a standing disc grows black')
+  g.dispose()
+  h.dispose()
 }
 
 // ---------------------------------------------------------------------------

@@ -64,7 +64,8 @@ export class Conversations {
     this.chat = null
     this.coming = null
     this.hailed = false
-    this.salt = 0
+    // Random per session, so a talk's wording is not the same each time the game loads.
+    this.salt = (Math.random() * 2 ** 30) | 0
     // Seconds until which each person leaves her be, and until which each is not asked to come to her again, by mind id.
     this.alone = new Map()
     this.asked = new Map()

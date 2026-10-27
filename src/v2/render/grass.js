@@ -287,6 +287,10 @@ const LOD_HYSTERESIS = 0.12
 // that rather than a finer grid, because halving the tile quadruples the jobs.
 export const TILE = 4
 
+// A torch tip within `h` metres of the ground lays a disc of `r` metres where every tuft is drawn `color` (linear); a tip still inside the last `r * near` of a disc lays none. The oldest of `max` discs grows back green.
+export const SCORCH = { h: 0.5, r: 0.45, near: 0.5, max: 64, color: [0.018, 0.015, 0.012] }
+const _char = new THREE.Color().setRGB(...SCORCH.color, THREE.LinearSRGBColorSpace)
+
 // Milliseconds per frame allowed for growing and regrowing tiles.
 const BUILD_BUDGET_MS = 2.0
 
@@ -870,6 +874,7 @@ export class Grass {
     }
 
     this.field = field
+    this.scorches = []
     this.layers = layers
     this.rocks = rocks
     this.ground = ground
@@ -1118,6 +1123,8 @@ export class Grass {
     this.instX = new Float32Array(this.maxInstances)
     this.instY = new Float32Array(this.maxInstances)
     this.instZ = new Float32Array(this.maxInstances)
+    // Each tuft's own colour, which a scorch draws over and hands back when it grows out.
+    this.green = new Float32Array(this.maxInstances * 3)
     // How far below the ground at (instX, instZ) the instance's origin sits on
     // flat ground; _footDrop sinks it further on a slope. AN OFFSET AND NOT AN
     // ABSOLUTE Y, so _reground can re-seat a tuft on a chunk that has re-split
@@ -1624,6 +1631,44 @@ export class Grass {
    * under them is popping in anyway. Same contract as Trees, Litter and Rocks;
    * TerrainV2.groundAt has the measurement of what standing on the field costs.
    */
+  /**
+   * Burn the grass under a torch tip at (x, y, z): blacken the tufts within SCORCH.r if the tip is down in them. Returns whether it laid a disc.
+   */
+  scorch(x, y, z) {
+    if (y - this._groundFor(x, z) > SCORCH.h) return false
+    const near = SCORCH.r * SCORCH.near
+    for (const d of this.scorches) if (Math.hypot(d.x - x, d.z - z) < near) return false
+    this.scorches.push({ x, z })
+    if (this.scorches.length > SCORCH.max) {
+      const old = this.scorches.shift()
+      this._burn(old.x, old.z, false)
+    }
+    this._burn(x, z, true)
+    return true
+  }
+
+  _scorchedAt(x, z) {
+    for (const d of this.scorches) if (Math.hypot(d.x - x, d.z - z) < SCORCH.r) return true
+    return false
+  }
+
+  // Char the standing tufts within SCORCH.r of (x, z), or hand back their green to the ones no other disc holds.
+  _burn(x, z, char) {
+    const r = SCORCH.r
+    for (let gx = Math.floor((x - r) / TILE); gx <= Math.floor((x + r) / TILE); gx++) {
+      for (let gz = Math.floor((z - r) / TILE); gz <= Math.floor((z + r) / TILE); gz++) {
+        const tile = this.tiles.get(gx * 0x10000 + gz)
+        if (!tile) continue
+        for (let i = 0; i < tile.n; i++) {
+          const id = tile.ids[i]
+          if (Math.hypot(this.instX[id] - x, this.instZ[id] - z) >= r) continue
+          if (char) this.batch.setColorAt(id, _char)
+          else if (!this._scorchedAt(this.instX[id], this.instZ[id])) this.batch.setColorAt(id, this._c.fromArray(this.green, id * 3))
+        }
+      }
+    }
+  }
+
   _groundFor(x, z) {
     if (this.ground) {
       const g = this.ground.groundAt(x, z)
@@ -1953,7 +1998,8 @@ export class Grass {
         // third of the meadow.
         this._tintTo(this._c, tintT * tintT, VALUE[0] + tintV * (VALUE[1] - VALUE[0]))
       }
-      this.batch.setColorAt(id, this._c)
+      this._c.toArray(this.green, id * 3)
+      this.batch.setColorAt(id, this._scorchedAt(x, z) ? _char : this._c)
 
       // Born as a card, and with no bands left that is also where it dies.
       // `update` would promote the near ones on the very next frame if there

@@ -6,6 +6,7 @@ import { TITLES } from './world.js'
 import { MESSAGES } from './quests.js'
 import { LORE, TOPICS, knowOdds, expertise, expertBody, beliefOdds, sawOdds } from './lore.js'
 import { MANNERS, MOVES, reception, isNight } from './manners.js'
+import { lkLine } from './leafkin.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -74,7 +75,6 @@ const FIND = {
   butterflies: 'Over any meadow, on a fair day.',
   'a sharp stick': 'The woods are full of sticks. Find a good straight one.',
 }
-const FIND_LK = { mushrooms: 'Under big trees. Shady-damp. Look-look!' }
 
 /** FNV-1a: a string as a 32-bit int for hash32. */
 export function strHash(s) {
@@ -89,11 +89,12 @@ const pickBy = (r, list) => list[Math.min(list.length - 1, (r * list.length) | 0
 
 /** A conversation between her and one person: `menu()` lists the chips, `say(topic)` and `tell(belief)` return lines. */
 export class Conversation {
-  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, hour, known (Set of what she has heard of, from anyone: lore topics, and `person:<id>`) }`, `from` where the speaker stands, `hour` the clock's 0..24. */
-  constructor(mind, ctx) {
+  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, hour, known (Set of what she has heard of, from anyone: lore topics, and `person:<id>`) }`, `from` where the speaker stands, `hour` the clock's 0..24. `salt` tells this talk from her others with them. */
+  constructor(mind, ctx, salt = 0) {
     if (typeof ctx.hour !== 'number') throw new Error('Conversation: ctx.hour is required')
     this.mind = mind
     this.ctx = ctx
+    this.salt = salt
     this.ask = 0
     // Chips her questions have opened: topic -> label, in the order heard.
     this.mentions = new Map()
@@ -111,6 +112,11 @@ export class Conversation {
 
   get leafkin() {
     return this.mind.kind === 'leafkin'
+  }
+
+  /** A leafkin's wording of line `key` (leafkin.js), picked anew each talk and question. */
+  _lk(key, vars = {}) {
+    return lkLine(key, roll(this.mind.id, this.salt, this.ask, key), { name: this.mind.name, ...vars })
   }
 
   /** How they come across to her now: 'cheery', 'plain' or 'curt', from kindness, chattiness, wariness and standing. */
@@ -299,7 +305,7 @@ export class Conversation {
   /** Their parting line: warm or curt by standing and tone. */
   bye() {
     const warm = this._standing() >= 0 && this.tone !== 'curt'
-    if (this.leafkin) return this._line(warm ? 'Bye-bye, friend!' : 'Go. Bye.', 'wave', { moment: warm ? 'bye.warm' : 'bye.curt' })
+    if (this.leafkin) return this._line(this._lk(warm ? 'byeWarm' : 'byeCurt'), 'wave', { moment: warm ? 'bye.warm' : 'bye.curt' })
     return this._line(warm ? pickBy(roll(this.mind.id, this.ask, 'bye'), ['Safe roads.', 'Take care of yourself.', 'Come back any time.']) : 'Right.', warm ? 'wave' : 'talk-shrug', { moment: warm ? 'bye.warm' : 'bye.curt', mood: warm ? 'warm' : 'cold' })
   }
 
@@ -321,7 +327,7 @@ export class Conversation {
     const m = this._message('giver')
     if (m !== null && this.ctx.log.state(m.id) === 'delivered') return this._errand(m)
     const s = this._standing()
-    if (this.leafkin) return this._line(s > 0.3 ? `Friend! ${this.mind.name} here!` : 'Hm? Big-folk?', s > 0.3 ? 'wave' : 'talk-shrug', { moment: s > 0.3 ? 'greet.friend' : 'greet.cold' })
+    if (this.leafkin) return this._line(this._lk(s > 0.3 ? 'greetFriend' : 'greetCold'), s > 0.3 ? 'wave' : 'talk-shrug', { moment: s > 0.3 ? 'greet.friend' : 'greet.cold' })
     if (s < -0.2) return this._line('You again.', 'talk-shrug', { mood: 'cold', moment: 'greet.cold' })
     if (s > 0.3) return this._line('Good to see you!', 'wave', { mood: 'warm', moment: 'greet.friend' })
     const tone = this.tone
@@ -363,7 +369,7 @@ export class Conversation {
     // A stranger stands at 0: public facts (sens 0.15) pass everyone, kin's whereabouts (0.5) stop the wary half.
     const need = f.sens * T.wariness * 2 - 0.4
     if (this._standing() < need) {
-      if (T.greed > 0.6 && !f.motive) return this._line(this.leafkin ? 'Give shroom, then tell.' : "What's it worth to you?", 'talk-gesture', { mood: 'cold', price: true, moment: 'refuse.price' })
+      if (T.greed > 0.6 && !f.motive) return this._line(this.leafkin ? this._lk('price') : "What's it worth to you?", 'talk-gesture', { mood: 'cold', price: true, moment: 'refuse.price' })
       return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
     }
     const lie = f.alts.length > 0 && lieRoll < (1 - T.honesty) * (f.motive ? 1 : SPEAK.idleLie)
@@ -386,10 +392,10 @@ export class Conversation {
   _claim(f, claim, how) {
     const line = f.render(claim, how)
     let text = line.text
-    if (how.again) text = (this.leafkin ? 'Said already. ' : 'Like I said, ') + lower(text)
-    else if (how.boast) text = pickBy(roll(this.mind.id, this.ask, 'b'), this.leafkin ? ['Leafkin know! ', 'Sure-sure. '] : ['Everyone knows ', 'Oh, easy: ', 'Ha! ']) + lower(text)
-    else if (how.hedge) text = pickBy(roll(this.mind.id, this.ask, 'h'), this.leafkin ? ['Maybe... ', 'Think... '] : ['I think ', 'If I remember right, ', 'Maybe ']) + lower(text)
-    if (how.changed) text = (this.leafkin ? 'No-no. ' : 'Or no, wait. ') + text
+    if (how.again) text = (this.leafkin ? this._lk('again') : 'Like I said, ') + lower(text)
+    else if (how.boast) text = (this.leafkin ? this._lk('boast') : pickBy(roll(this.mind.id, this.ask, 'b'), ['Everyone knows ', 'Oh, easy: ', 'Ha! '])) + lower(text)
+    else if (how.hedge) text = (this.leafkin ? this._lk('hedge') : pickBy(roll(this.mind.id, this.ask, 'h'), ['I think ', 'If I remember right, ', 'Maybe '])) + lower(text)
+    if (how.changed) text = (this.leafkin ? this._lk('changed') : 'Or no, wait. ') + text
     // A poor liar gives themself away in the voice.
     const moment = how.again ? 'answer.again' : how.lie && this.mind.traits.honesty > 0.6 ? 'answer.nervous' : how.boast ? 'answer.boast' : how.hedge ? 'answer.hedge' : 'answer.sure'
     return { ...this._line(text, line.gesture ?? 'talk-gesture', { moment, about: line.about ?? [] }), toward: line.toward ?? null, claim, how }
@@ -410,11 +416,13 @@ export class Conversation {
   }
 
   _dunno() {
-    return pickBy(roll(this.mind.id, this.ask, 'd'), this.leafkin ? ['No know.', 'Leafkin no know that.'] : ["No idea.", "Couldn't tell you.", "Never heard of it."])
+    if (this.leafkin) return this._lk('dunno')
+    return pickBy(roll(this.mind.id, this.ask, 'd'), ["No idea.", "Couldn't tell you.", "Never heard of it."])
   }
 
   _refuse() {
-    return pickBy(roll(this.mind.id, this.ask, 'r'), this.leafkin ? ['No tell big-folk.', 'Hmph. No.'] : ['Why do you want to know?', "That's not your business.", "I don't know you."])
+    if (this.leafkin) return this._lk('refuse')
+    return pickBy(roll(this.mind.id, this.ask, 'r'), ['Why do you want to know?', "That's not your business.", "I don't know you."])
   }
 
   // --- places ------------------------------------------------------------
@@ -422,7 +430,7 @@ export class Conversation {
   /** Which way a place claim `{ x, z }` lies, said while pointing at it: the compass only past a fair walk, where a point is too rough. */
   _there(claim) {
     const w = this.ctx.world.way(this.ctx.from, claim)
-    if (this.leafkin) return `There. ${LEAFKIN_FAR[w.far]}.`
+    if (this.leafkin) return this._lk('there', { far: LEAFKIN_FAR[w.far] })
     if (w.d < 6) return 'Just here.'
     if (w.d < 25) return 'Just over there.'
     if (w.d < 400) return `That way, ${w.far}.`
@@ -443,7 +451,7 @@ export class Conversation {
   _personAt(p, claim) {
     const { hour } = this.ctx
     const self = p.id === this.mind.id
-    if (this.leafkin) return self ? `Me at ${claim.label}.` : `${p.name} at ${claim.label}.`
+    if (this.leafkin) return self ? this._lk('atSelf', { place: claim.label }) : this._lk('atOther', { who: p.name, place: claim.label })
     const pr = self ? null : this._pr(p)
     const late = hour >= 18 || hour < 6
     const home = claim.building !== null && claim.building === p.home
@@ -547,7 +555,7 @@ export class Conversation {
       // A lie about a town points at one of the four nearest others.
       alts: world.towns.filter((o) => o.index !== index).sort((p, q) => Math.hypot(p.town.x - t.town.x, p.town.z - t.town.z) - Math.hypot(q.town.x - t.town.x, q.town.z - t.town.z)).slice(0, 4).map((o) => ({ x: o.town.x, z: o.town.z, label: t.name })),
       muddle: this._swing,
-      render: (claim) => this._pointing(this.leafkin ? 'Big-folk nest.' : prefix ? `${prefix} ${t.name}.` : `${t.name}?`, claim),
+      render: (claim) => this._pointing(this.leafkin ? this._lk('bigFolkNest') : prefix ? `${prefix} ${t.name}.` : `${t.name}?`, claim),
     })
   }
 
@@ -577,7 +585,7 @@ export class Conversation {
     const T = mind.traits
     const r = roll(mind.id, this.ask, 'talk')
     if (arg === 'self') {
-      if (this.leafkin) return this._line(`${mind.name}. ${mind.name} find shroom. ${mind.name} good.`, 'talk-nod', { moment: 'talk.self', unlocks: this._unlock(['mushrooms']), about: this._named(['mushrooms']) })
+      if (this.leafkin) return this._line(this._lk('self'), 'talk-nod', { moment: 'talk.self', unlocks: this._unlock(['mushrooms']), about: this._named(['mushrooms']) })
       if (this._standing() < T.wariness - 0.85) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
       let text = `I'm ${mind.name}. I ${this._work(mind)}.`
       ctx.known.add(`person:${mind.id}`)
@@ -645,7 +653,7 @@ export class Conversation {
     if (q !== null && q.parent === mind.id && ctx.log.state(q.id) !== 'done') return ctx.log.state(q.id) === null ? this._plea(q) : this._lastSeen(q)
     const m = this._message('giver')
     if (m !== null && [null, 'accepted', 'delivered'].includes(ctx.log.state(m.id))) return this._errand(m)
-    return this.wish() ?? this._line(this.leafkin ? 'Need nothing. Happy.' : "I'm all right, thank you.", 'talk-nod', { moment: 'needs.no' })
+    return this.wish() ?? this._line(this.leafkin ? this._lk('needsNo') : "I'm all right, thank you.", 'talk-nod', { moment: 'needs.no' })
   }
 
   /** Move `move` of manners.js said to them: its warmth applied, and their reply, warm and nodding when it lands. Praise and small talk past MANNERS.fawn in a row reads as buttering up. */
@@ -707,7 +715,7 @@ export class Conversation {
     const want = WANTS[mind.body]
     if (want === undefined || mind.traits.kindness > 0.75) return null
     const topics = /mushroom/.test(want) ? ['mushrooms'] : []
-    return this._line(this.leafkin ? `Want ${want}! ${mind.name} love ${want}.` : `I could use some ${want}, if you come by any.`, 'talk-gesture', { want, moment: 'needs.yes', unlocks: this._unlock(topics), about: [{ kind: 'want', item: want }, ...this._named(topics)] })
+    return this._line(this.leafkin ? this._lk('want', { want }) : `I could use some ${want}, if you come by any.`, 'talk-gesture', { want, moment: 'needs.yes', unlocks: this._unlock(topics), about: [{ kind: 'want', item: want }, ...this._named(topics)] })
   }
 
   /** The town's bad news, told plainly to her unasked, or null: a missing child not their own. */
@@ -835,7 +843,7 @@ export class Conversation {
 
   /** Where `item` (a WANTS item) is had. */
   _find(item) {
-    const text = this.leafkin ? FIND_LK[item] : FIND[item]
+    const text = this.leafkin ? this._lk(`find ${item}`) : FIND[item]
     if (text === undefined) throw new Error(`Conversation: no find ${item}`)
     const topics = /mushroom/.test(item) ? ['mushrooms'] : []
     return this._line(text, 'talk-gesture', { unlocks: this._unlock(topics), about: this._named(topics) })
@@ -896,7 +904,7 @@ export class Conversation {
     const odds = knowOdds(mind, topic, fact)
     const line = this._answer({
       key: `lore:${topic}:${fact.id}`, conf: known ? 0.35 + 0.6 * odds : 0, sens: fact.sens, motive: false,
-      truth: this.leafkin ? fact.lk : fact.doubt.length > 0 ? this._stance(topic, fact) : fact.truth, alts: this.leafkin ? [] : fact.lies, tales: this.leafkin ? [] : fact.tales, muddle: null,
+      truth: this.leafkin ? pickBy(roll(mind.id, this.salt, this.ask, fact.id), fact.lk) : fact.doubt.length > 0 ? this._stance(topic, fact) : fact.truth, alts: this.leafkin ? [] : fact.lies, tales: this.leafkin ? [] : fact.tales, muddle: null,
       // A curt speaker gives the first sentence only; a cheery one is glad to help.
       render: (claim) => ({ text: this.tone === 'curt' ? claim.replace(/^([^.!?]*[.!?]).*$/, '$1') : this.tone === 'cheery' && !this.leafkin ? `${claim} Glad to help.` : claim, gesture: 'talk-gesture', about: [{ kind: 'lore', topic }, ...this._named(fact.unlocks)] }),
     })
@@ -910,7 +918,7 @@ export class Conversation {
   /** They know more of `topic` than they will tell her yet (lore.js `trust`), and say so, so she knows to win them over. */
   _holdsBack(topic) {
     const tone = this.tone
-    const text = this.leafkin ? 'Leafkin tell more when friend.' : tone === 'curt' ? 'Not for strangers.' : tone === 'cheery' ? "There's more I could tell you. Another time, when I know you better." : "There's more to it. But I don't know you well enough."
+    const text = this.leafkin ? this._lk('holdBack') : tone === 'curt' ? 'Not for strangers.' : tone === 'cheery' ? "There's more I could tell you. Another time, when I know you better." : "There's more to it. But I don't know you well enough."
     return this._line(text, 'talk-shrug', { moment: 'refuse.wary', about: [{ kind: 'lore', topic }] })
   }
 
@@ -1021,21 +1029,21 @@ export class Conversation {
     } else throw new Error(`Conversation: no belief ${b.kind}`)
     if (!isTrue && (knows || roll(ctx.world.seed, mind.id, key, ctx.epoch, 'detect') < mind.traits.wariness * SPEAK.detect)) {
       ctx.rapport.catchLie(mind.id)
-      return this._line(this.leafkin ? 'Liar! Big-folk lie!' : knows ? "That's a lie, and you know it." : "I don't believe you.", 'talk-shrug', { mood: 'angry', caught: true, moment: 'tell.caught' })
+      return this._line(this.leafkin ? this._lk('caught') : knows ? "That's a lie, and you know it." : "I don't believe you.", 'talk-shrug', { mood: 'angry', caught: true, moment: 'tell.caught' })
     }
     if (b.kind === 'sent') r.sentBy = b.by
     else r.beliefs.set(key, { x: b.x, z: b.z, label: b.label })
-    return this._line(this.leafkin ? 'Oh! Leafkin see.' : 'Is that so.', 'talk-nod', { caught: false, moment: 'tell.believe' })
+    return this._line(this.leafkin ? this._lk('believe') : 'Is that so.', 'talk-nod', { caught: false, moment: 'tell.believe' })
   }
 
   /** Her gift of `item`: a want met warms them and puts them in her debt. */
   give(item) {
     this.ask++
     const want = WANTS[this.mind.body]
-    if (want !== item) return this._line(this.leafkin ? 'Hm. Thank.' : "That's kind of you.", 'talk-nod', { moment: 'give.polite' })
+    if (want !== item) return this._line(this.leafkin ? this._lk('polite') : "That's kind of you.", 'talk-nod', { moment: 'give.polite' })
     this.ctx.rapport.owe(this.mind.id, 0.3)
     this.ctx.rapport.warm(this.mind.id, 0.2)
-    return this._line(this.leafkin ? `${item}! Friend! Friend!` : `Oh, ${item}! I won't forget this.`, 'talk-nod', { mood: 'warm', moment: 'give.thanks' })
+    return this._line(this.leafkin ? this._lk('thanks', { item }) : `Oh, ${item}! I won't forget this.`, 'talk-nod', { mood: 'warm', moment: 'give.thanks' })
   }
 }
 

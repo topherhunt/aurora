@@ -80,7 +80,7 @@ console.log("a peer's ride")
   /** A layer with only what an anchor reads, her feet at the origin, flat dry ground everywhere. */
   const room = () => {
     const S = Object.create(WildStriders.prototype)
-    Object.assign(S, { walk: { heightAt: () => 0, slopeAt: () => 0 }, avoid: null, bond: { trusted: new Set(), grown: new Map() }, tamed: new Set(), anchors: new Map(), live: new Map(), away: new Set(), homes: new Map(), struck: new Set() })
+    Object.assign(S, { walk: { heightAt: () => 0, slopeAt: () => 0 }, avoid: null, bond: { trusted: new Set(), grown: new Map() }, tamed: new Set(), scars: new Map(), anchors: new Map(), live: new Map(), away: new Set(), homes: new Map(), struck: new Set() })
     Object.assign(S, { now: 100, feet: { x: 0, z: 0 }, booted: true, loaded: true, ridden: null, ids: 0, runV: 4 })
     S._dry = () => true
     S._set = S._say = () => {}
@@ -90,7 +90,7 @@ console.log("a peer's ride")
   let ix = 20
   while (!S0._home(ix, 0)) ix++
   const key = `${ix},0`
-  const ridden = (x, z) => [`ws:${key}`, 100, x, 0, z, 0, -1, 'ridden', 'peer', 1.5, 3, 1, 0, 90, 0]
+  const ridden = (x, z) => [`ws:${key}`, 100, x, 0, z, 0, -1, 'ridden', 'peer', 1.5, 3, 1, 0, 90, 0, null, null]
   const S = room()
   S.apply(ridden(10, 5), 100)
   const m = S.live.get(key)
@@ -102,6 +102,9 @@ console.log("a peer's ride")
   const U = room()
   U.apply(ridden(WILD.spawn + 10, 0), 100)
   check(!U.live.has(key), 'but not while their anchor has it out of her range')
+  const V = room()
+  V.apply([`ws:${key}`, 100, 300, 0, 0, 0, -1, 'shy', 'peer', 1.5, 0, 1, 0, 90, 0, 80, 99.5], 100)
+  check(V.scars.get(key)?.hp === 80 && V.scars.get(key).at === 99.5, "a peer's singeing is kept, though the body is out of her range", JSON.stringify(V.scars.get(key)))
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

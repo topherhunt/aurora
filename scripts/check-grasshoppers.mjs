@@ -468,13 +468,13 @@ const drive = (of, { from = 0, secs, dt = 1 / 72, x = 0, y = 11, z = 0, dayness 
   const home = { x: g.homeX, z: g.homeZ }
   const tile = g.tile
   const rec = f.take(hit)
-  check(rec.kind === 'grasshopper' && rec.name === 'grasshopper' && rec.size === g.len && rec.geometry === f.mesh.geometry && rec.material === f.material && rec.stowable === true, 'take: a stowable grasshopper on the shared geometry and material')
+  check(rec.kind === 'grasshopper' && rec.name === 'grasshopper' && rec.size === g.len && rec.geometry === f.mesh.geometry && rec.material === f.heldMaterial && rec.material.onBeforeCompile === THREE.Material.prototype.onBeforeCompile && rec.material.map === f.material.map && rec.stowable === true, 'take: a stowable grasshopper on the shared geometry, on a material with no motion splice (hands.js draws it instanced, which would pose it from another\'s plan-table row)')
   check(Math.abs(rec.scale[0] - g.len / f.length) < 1e-9 && rec.scale[1] === rec.scale[0] && rec.scale[2] === rec.scale[0] && rec.color.length === 3, 'scaled by its length over the asset, tinted', JSON.stringify(rec.scale))
   check(g.tile === null && !tile.flock.includes(g) && f.free.includes(g) && !f.shown.includes(g) && alive(f).length === were - 1, 'its slot is back in the pool, out of its flock and off the shown list')
   check(taken.has('grasshopper', home.x, home.z), 'its home is recorded taken')
   check(f.pickAt(g.x, g.y + g.len * 0.5, g.z, 0.3)?.g !== g, 'and it cannot be taken twice')
   const d = f.dress({ kind: 'grasshopper' })
-  check(d.geometry === f.mesh.geometry && d.material === f.material, 'dress: the shared geometry and material')
+  check(d.geometry === f.mesh.geometry && d.material === f.heldMaterial, 'dress: the shared geometry, on the held material')
   let threw = false
   try { f.dress({ kind: 'crab' }) } catch { threw = true }
   check(threw, 'dress throws on another kind')

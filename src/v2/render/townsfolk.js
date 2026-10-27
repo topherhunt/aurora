@@ -154,8 +154,8 @@ export const TOWNSFOLK = {
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
-  // A tied strider that does not trust her startles as a tame wild one does (WILD.shy, not from its face), and then stands `wait` s and walks back to its rail the way it ran, by the points it dropped every `crumb` m.
-  shy: { ...WILD.shy, wait: [3, 6], crumb: 0.5 },
+  // A tied strider no one has tamed, her head within `m` m from its side or behind and no fish of hers within twice that, shrieks and runs off `run` m at `pace` of its run, stands `wait` s and walks back to its rail the way it ran by the points it dropped every `crumb` m, and will not again for `cool` s.
+  shy: { m: 3, run: [3, 10], pace: 0.7, cool: 5, wait: [3, 6], crumb: 0.5 },
   // Metres a peer's startled copy is put straight to its owner's anchor rather than eased there.
   shySnap: 2,
   // A townsperson is `girth` m round to a running strider (folkAt), and eases off a strider's body it stands in over `shove` s.
@@ -1248,12 +1248,16 @@ export class Townsfolk {
    * @param opts.seed      the world's seed
    * @param opts.journeys  journeys.js Journeys over the roads, if any: the striders at the rails and the travellers
    * @param opts.bond      wild-striders.js's { trusted, grown }: a tied strider fed a fish trusts her, as a wild one does
+   * @param opts.tamed     (key) => whether any player in the room has tamed the strider (WildStriders.isTamed): one tamed trusts every player
+   * @param opts.tell      (key, pose) => her taming of one told the room (WildStriders.tellTamed)
    * @param opts.eat       (lure) => true once her hand holding it has lost it
    * @param opts.harm      (n, why) => her hurt by a maddened tied strider (_fury)
    * @param opts.hourAt    (seconds) => the hour of day at a room time (clock.js WorldClock.hourAt), for the evening's fire and the night's homes
    */
-  constructor(scene, { towns, walk, field, bank, textures, cards, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, eat = () => false, harm = () => {}, hourAt } = {}) {
+  constructor(scene, { towns, walk, field, bank, textures, cards, patch, seed = 1, journeys = null, bond = { trusted: new Set(), grown: new Map() }, tamed = (key) => bond.trusted.has(key), tell = () => {}, eat = () => false, harm = () => {}, hourAt } = {}) {
     if (!Array.isArray(towns)) throw new Error('Townsfolk: needs the towns')
+    this.tamed = tamed
+    this.tell = tell
     if (typeof hourAt !== 'function') throw new Error('Townsfolk: needs hourAt')
     this.hourAt = hourAt
     if (!walk || typeof walk.heightAt !== 'function') throw new Error('Townsfolk: needs the WalkSurface')
@@ -1626,7 +1630,7 @@ export class Townsfolk {
       m.shy = null
     }
     if (!m.shy) {
-      if (m.state !== 'tied' || m.gone || m.treat || m.fury || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.bond.trusted.has(m.key)) return
+      if (m.state !== 'tied' || m.gone || m.treat || m.fury || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.tamed(m.key)) return
       if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || atFace(p, head) || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
       this._startle(m, { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), since: seconds, by: null, aim: Math.atan2(-(p.z - head.z), p.x - head.x) })
       this._oweShy(m, 'run')
@@ -1835,7 +1839,7 @@ export class Townsfolk {
     if (f.t >= clip.duration) m.fury = null
   }
 
-  /** A tied strider eating the fish she holds to its beak, over the sim's clip: it trusts her after, or if it did, grows. */
+  /** A tied strider eating the fish she holds to its beak, over the sim's clip: tamed after, or if it was already, grown. */
   _feed(m, dt, lures) {
     const S = this.striders, F = WILD.fish
     if (m.treat && m.state !== 'tied') m.treat = null
@@ -1848,8 +1852,9 @@ export class Townsfolk {
         S.say('striderChirp1', m.pose, 1.15, 1)
       }
       if (t.t >= S.asset.clips.find((c) => c.name === 'peck').duration) {
-        if (this.bond.trusted.has(m.key)) this.bond.grown.set(m.key, (this.bond.grown.get(m.key) ?? 1) * STRIDER.size.fed)
-        else this.bond.trusted.add(m.key)
+        if (this.tamed(m.key)) this.bond.grown.set(m.key, (this.bond.grown.get(m.key) ?? 1) * STRIDER.size.fed)
+        else this.tell(m.key, m.pose)
+        this.bond.trusted.add(m.key)
         S.say('striderChirp2', m.pose, 1.25, 1)
         m.treat = null
       }
@@ -2111,7 +2116,7 @@ export class Townsfolk {
   // -- her ride on a tied strider that trusts her (WildStriders.borrow) --------
 
   _mountable(m, head) {
-    return m.active && m.state === 'tied' && m.puppet !== null && !m.gone && !m.treat && !m.shy && this.bond.trusted.has(m.key) && fromSide(m.pose, head)
+    return m.active && m.state === 'tied' && m.puppet !== null && !m.gone && !m.treat && !m.shy && this.tamed(m.key) && fromSide(m.pose, head)
   }
 
   /** The tied strider trusting her whose back `hand` touches from the side, or null. */

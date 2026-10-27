@@ -46,6 +46,7 @@ import { webpSize } from '../tools/tripo-pack.mjs'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
 import { LitterCards, cardPicture } from '../src/v2/render/litter-cards.js'
 import { PROP_FADE_SECONDS, getPropClock } from '../src/material.js'
+import { SINGE } from '../src/v2/singe.js'
 
 // These gates read the skinned Puppet's own parts (its bones, its IK, its tier meshes); check-baked-puppet.mjs covers the baked body.
 setPuppetMode('skinned')
@@ -274,10 +275,10 @@ const alive = (of) => of.species.flatMap((sp) => sp.slots.filter((c) => c.spawn 
 // Each instance is fed the room clock by hand: an update carries the world second, never a dt.
 const clocks = new WeakMap()
 const timeOf = (of) => clocks.get(of) ?? 0
-const step = (of, hx, hy, hz, dt = 0, lures) => {
+const step = (of, hx, hy, hz, dt = 0, lures, torches) => {
   const t = timeOf(of) + dt
   clocks.set(of, t)
-  of.update(hx, hy, hz, t, lures)
+  of.update(hx, hy, hz, t, lures, torches)
   return t
 }
 const jump = (of, t) => clocks.set(of, t)
@@ -387,7 +388,7 @@ const onTicks = (s) => Math.abs(s * TICK_HZ - Math.round(s * TICK_HZ)) < 1e-6
   const herd = alive(w)
   const acts = Object.fromEntries(SPECIES.map((sp) => [sp.key, new Set()]))
   const gaits = Object.fromEntries(SPECIES.map((sp) => [sp.key, new Set()]))
-  let sums = 0, chained = 0, ends = 0, grid = 0, walks = 0, walkShape = 0, walkGround = 0, grazes = 0, grazeShape = 0, rests = 0, restShape = 0, clips = 0, phrases = 0, chapters = 0
+  let sums = 0, chained = 0, ends = 0, grid = 0, walks = 0, walkShape = 0, walkGround = 0, grazes = 0, grazeShape = 0, rests = 0, restShape = 0, clips = 0, phrases = 0, chapters = 0, chases = 0, fled = 0, unfled = ''
   const chews = new Set()
   for (const c of herd) {
     // Thirty chapters an animal: enough to see every act of every species rolled.
@@ -400,19 +401,28 @@ const onTicks = (s) => Math.abs(s * TICK_HZ - Math.round(s * TICK_HZ)) < 1e-6
       const last = ps[ps.length - 1]
       if (ps[0].from === c.home && last.kind === 'stand' && last.to.x === c.home.x && last.to.z === c.home.z && last.to.heading === c.home.heading) ends++
       if (ps.every((p) => onTicks(p.dur) && p.steps.every((st) => onTicks(st[1])))) grid++
-      for (const p of ps) {
+      for (const [i, p] of ps.entries()) {
         phrases++
         acts[c.sp.key].add(p.kind)
         if (p.steps.every((st) => CLIPS.includes(st[0]))) clips++
+        if (p.prey) {
+          chases++
+          const at = w.score.at(p.prey.key, p.prey.at)
+          const run = at.phrases[at.index + 1]
+          if (at.phrase.kind === 'startle' && Math.abs(at.start - p.prey.at) < 1e-9 && run.kind === 'flee' && run.to.x === p.prey.phrases[1].to.x && (ps[i + 1].kind === 'chase' || ps[i + 1].kind === 'stalk')) fled++
+          else unfled = `${c.key} on ${p.prey.key} at ${p.prey.at}: ${at.phrase.kind} from ${at.start}, then ${run?.kind}`
+        }
+        // The phrase a chase cuts short ends where the hunter saw it, so it is not its own whole shape.
+        if (ps[i + 1]?.kind === 'startle') continue
         if (p.mps !== undefined) {
           walks++
-          gaits[c.sp.key].add(p.gait)
+          if (p.kind !== 'chase' && p.kind !== 'flee') gaits[c.sp.key].add(p.gait)
           const dist = Math.hypot(p.to.x - p.from.x, p.to.z - p.from.z)
           const ticks = Math.round(p.dur * TICK_HZ) - p.turn
           const straight = ticks * p.mps * TICK_S
           // The end is where the ticks put it, or, for the walk home, the home it was sent to, which the ticks reach and the snap finishes.
-          const shaped = p.turn === turnTicks(swing(p.from.heading, p.aim)) && Math.abs(p.to.heading - p.aim) < 1e-9 && p.mps === c.sp.asset.gait[p.gait] * c.k && (Math.abs(dist - straight) < 1e-6 || (dist < straight + 1e-6 && dist > straight - p.mps * TICK_S - 1e-6)) && p.steps.length === 1 && p.steps[0][0] === p.gait && p.steps[0][1] === p.dur
-          if (shaped && c.sp.gaits.some(([g]) => g === p.gait)) walkShape++
+          const shaped = p.turn === turnTicks(swing(p.from.heading, p.aim)) && Math.abs(p.to.heading - p.aim) < 1e-9 && p.mps === c.sp.asset.gait[p.gait] * c.sp.paces[p.gait] * c.k && (Math.abs(dist - straight) < 1e-6 || (dist < straight + 1e-6 && dist > straight - p.mps * TICK_S - 1e-6)) && p.steps.length === 1 && p.steps[0][0] === p.gait && p.steps[0][1] === p.dur
+          if (shaped && (c.sp.gaits.some(([g]) => g === p.gait) || ((p.kind === 'chase' || p.kind === 'flee') && p.gait === c.sp.flee))) walkShape++
           // The plan's own sample points, in the plan's own arithmetic: a roam is sampled along its aim, the walk home along the chord to home.
           const home = p.to.x === c.home.x && p.to.z === c.home.z
           let ground = true
@@ -450,6 +460,10 @@ const onTicks = (s) => Math.abs(s * TICK_HZ - Math.round(s * TICK_HZ)) < 1e-6
   check(grazes > 0 && grazeShape === grazes && chews.size > 2, 'a graze is eat-down, whole chews (two or more), eat-up', `${grazes} grazes, chews of ${[...chews].sort((a, b) => a - b).join('/')}`)
   check(rests > 0 && restShape === rests, 'a rest is one sit or one lie, timed by its own length', `${rests} rests`)
   check(SPECIES.every((sp) => sp.acts.every(([a]) => acts[sp.key].has(a) || (a === 'roam' && acts[sp.key].has('stand')))), 'every act of every species is rolled', SPECIES.map((sp) => `${sp.key} ${[...acts[sp.key]].join('/')}`).join(', '))
+  const nominal = (sp, g) => sp.asset.gait[g] * sp.paces[g] * sp.asset.sizeM * sp.scale / sp.asset.span
+  const [fox, hare] = ['fox', 'hare'].map((k) => w.species.find((sp) => sp.key === k))
+  check(hare.paces.hop === 2 && hare.paces.bound === 2 && Math.abs(nominal(fox, fox.flee) - 0.9 * nominal(hare, hare.flee)) < 1e-9, 'a hare hops and bounds at twice its shipped stride, and a fox runs at nine tenths of a bounding hare', `hare ${nominal(hare, hare.flee).toFixed(2)} m/s, fox ${nominal(fox, fox.flee).toFixed(2)} m/s`)
+  check(chases > 0 && fled === chases, 'a fox that sights a hare runs it down (or stands, with no room to run), and the hare\'s own score startles at that moment and flees where the fox\'s has it', `${fled} of ${chases} chases${unfled ? `; ${unfled}` : ''}`)
   check(SPECIES.every((sp) => sp.gaits.every(([g]) => gaits[sp.key].has(g)) && [...gaits[sp.key]].every((g) => sp.gaits.some(([h]) => h === g))), 'and every gait of each, and no other: a hare hops and bounds and never walks', SPECIES.map((sp) => `${sp.key} ${[...gaits[sp.key]].join('/')}`).join(', '))
   // Determinism: a second instance plans the same chapter, and planning a later chapter first changes nothing about an earlier one.
   const shape = (ch) => ch.phrases.map((p) => `${p.kind}/${p.dur}/${p.to.x}/${p.to.z}/${p.to.heading}/${p.steps.map((s) => s.join(':')).join(',')}`).join('|')
@@ -537,7 +551,8 @@ const seatNear = (of, x, z, r = SAMPLE_M / 2 + 0.01) => {
     const seen = new Map()
     for (const a of alive(w)) {
       const prev = was.get(a)
-      if (prev && prev.spawn === a.spawn) { snapped = Math.max(snapped, Math.abs(swing(prev.heading, a.heading)) / (a.lod === LOD_RUNGS || prev.lod === LOD_RUNGS ? CARD_EVERY : 1)); watched++ }
+      // One not drawn last frame (past its card) turned where no one saw it.
+      if (prev && prev.spawn === a.spawn && prev.lod !== CARD_RUNGS) { snapped = Math.max(snapped, Math.abs(swing(prev.heading, a.heading)) / (a.lod === LOD_RUNGS || prev.lod === LOD_RUNGS ? CARD_EVERY : 1)); watched++ }
       seen.set(a, { spawn: a.spawn, heading: a.heading, lod: a.lod })
       const drift = Math.abs(a.y - fieldAt(a.x, a.z))
       floated = Math.max(floated, drift)
@@ -569,9 +584,11 @@ const seatNear = (of, x, z, r = SAMPLE_M / 2 + 0.01) => {
 // card range is not drawn and not stepped (its slot waits to see whether she
 // comes back), so it is nothing to compare.
 const settle = (of, t) => { jump(of, t); for (let i = 0; i < CARD_EVERY; i++) step(of, 0, GROUND + 1.6, 0, 0) }
-const snapshot = (of) => new Map(alive(of).filter((c) => c.lod !== CARD_RUNGS).map((c) => [c.key, [c.x, c.z, c.heading, c.sx, c.sz, c.sh, c.rec.tick, c.phraseIndex, c.chapter, c.act, c.clip, c.stepStart, c.rejoin ? 'rejoin' : 'plan', c.live ? 'live' : ''].join('/')]))
+// One within the hysteresis band of its card edge is drawn or not by its history (walked out, or woken there), so it is left out.
+const offEdge = (c) => Math.abs(Math.hypot(c.x, c.y - GROUND - 1.6, c.z) - c.spawn.card) > c.spawn.card * LOD_HYSTERESIS
+const snapshot = (of) => new Map(alive(of).filter((c) => c.lod !== CARD_RUNGS && offEdge(c)).map((c) => [c.key, [c.x, c.z, c.heading, c.sx, c.sz, c.sh, c.rec.tick, c.phraseIndex, c.chapter, c.act, c.clip, c.stepStart, c.rejoin ? 'rejoin' : 'plan', c.live ? 'live' : ''].join('/')]))
 const differ = (p, q) => {
-  if (p.size !== q.size) return `${p.size} vs ${q.size} animals`
+  if (p.size !== q.size) return `${p.size} vs ${q.size} animals: ${[...p.keys()].filter((k) => !q.has(k)).concat([...q.keys()].filter((k) => !p.has(k)).map((k) => `+${k}`)).join(', ')}`
   for (const [k, v] of p) if (q.get(k) !== v) return `${k}: ${v} vs ${q.get(k)}`
   return null
 }
@@ -618,12 +635,14 @@ const differ = (p, q) => {
   step(a, 0, GROUND + 1.6, 0, 0)
   const replayedA = a.stats.replayed
   settle(a, T + 10)
-  check(replayedA >= 10 * TICK_HZ && a.stats.behind === 0 && differ(fresh(T + 10), snapshot(a)) === null, 'a client that froze for ten seconds replays them and agrees with a fresh one', `${replayedA} ticks replayed on the first frame`)
+  d = differ(fresh(T + 10), snapshot(a))
+  check(replayedA >= 10 * TICK_HZ && a.stats.behind === 0 && d === null, 'a client that froze for ten seconds replays them and agrees with a fresh one', `${replayedA} ticks replayed on the first frame${d ? `; ${d}` : ''}`)
   jump(b, T + 30)
   step(b, 0, GROUND + 1.6, 0, 0)
   const replayedB = b.stats.replayed
   settle(b, T + 30)
-  check(replayedB === 0 && b.stats.behind === 0 && differ(fresh(T + 30), snapshot(b)) === null, `one that froze for thirty (past the ${CATCH_UP_TICKS / TICK_HZ} s replay budget) is placed afresh, and agrees too`, `${replayedB} ticks replayed`)
+  d = differ(fresh(T + 30), snapshot(b))
+  check(replayedB === 0 && b.stats.behind === 0 && d === null, `one that froze for thirty (past the ${CATCH_UP_TICKS / TICK_HZ} s replay budget) is placed afresh, and agrees too`, `${replayedB} ticks replayed${d ? `; ${d}` : ''}`)
   a.dispose(); b.dispose(); c.dispose()
 }
 
@@ -872,7 +891,7 @@ const differ = (p, q) => {
     const owed = k.pending()
     const ticks = owed.map((a) => tickOf(a[1]))
     const every = Math.round(ANCHOR_S * TICK_HZ)
-    check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9 && owed.every((a) => a.length === 9 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && onTicks(a[1])), `${key}: owing the room [key, T, x, y, z, heading, -1, "lure", null] every ${ANCHOR_S} s on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
+    check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9 && owed.every((a) => a.length === 11 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && onTicks(a[1])), `${key}: owing the room [key, T, x, y, z, heading, -1, "lure", null, hp, hurtAt] every ${ANCHOR_S} s on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
     check(k.anchored.get(c.key) === owed[owed.length - 1], `${key}: and keeping its latest as the room's`)
     hold(carrot.x + 4, z0)
     seen = run(4, [carrot])
@@ -957,7 +976,7 @@ const differ = (p, q) => {
   const carrot = { kind: 'carrot', x: ca.x + FLEE_M - 1, y: ca.y + 1, z: ca.z, by: null }
   const aHead = { x: carrot.x, z: carrot.z }
   const bHead = { x: ca.home.x - 20, z: ca.home.z }
-  const relay = (to, from, by = 7) => { let n = 0; for (const anchor of from.pending()) { to.apply([...anchor.slice(0, 8), by], timeOf(to)); n++ } return n }
+  const relay = (to, from, by = 7) => { let n = 0; for (const anchor of from.pending()) { to.apply([...anchor.slice(0, 8), by, ...anchor.slice(9)], timeOf(to)); n++ } return n }
   // Both step together; every anchor a owes is applied to b the frame it is owed.
   const together = (s, lures, onFrame) => {
     for (let f = 0; f < s * 60; f++) {
@@ -998,7 +1017,7 @@ const differ = (p, q) => {
   let last = []
   for (let f = 0; f < 5 && last.length === 0; f++) { together(1 / 60, []); last = a.pending() }
   check(last.length === 1 && last[0][7] === 'rejoin', 'a\'s stag owes one rejoin anchor when she leaves it')
-  b.apply([...last[0].slice(0, 8), 7], timeOf(b))
+  b.apply([...last[0].slice(0, 8), 7, ...last[0].slice(9)], timeOf(b))
   check(cb.rejoin !== null && cb.rejoin.start === ca.rejoin.start && cb.rejoin.end === ca.rejoin.end && cb.rejoin.phrases.length === ca.rejoin.phrases.length && cb.rejoin.phrases.every((p, i) => p.dur === ca.rejoin.phrases[i].dur && p.to.x === ca.rejoin.phrases[i].to.x), 'applied on b, the anchor derives the same rejoin: the same walk, the same wait, the same phrase to join', `${cb.rejoin?.phrases.map((p) => `${p.kind} ${p.dur.toFixed(2)} s`).join(', ')}`)
   // Both heads in one place, so both are stepped alike from here.
   aHead.x = bHead.x
@@ -1024,7 +1043,7 @@ const differ = (p, q) => {
   const asleep = (of) => { for (let f = 0; f < 900 && of.byKey.size > 0; f++) step(of, ca.home.x, 1e4, ca.home.z, dt); return of.byKey.size === 0 }
   check(asleep(b) && cb.spawn === null, 'her head ten kilometres up, b\'s stag is put back to sleep')
   const T0 = timeOf(b)
-  const lureAnchor = [ca.key, T0, ca.home.x + 5, ca.y, ca.home.z + 5, 1.2, -1, 'lure', 7]
+  const lureAnchor = [ca.key, T0, ca.home.x + 5, ca.y, ca.home.z + 5, 1.2, -1, 'lure', 7, null, null]
   b.apply(lureAnchor, timeOf(b))
   check(b.anchored.get(ca.key) === lureAnchor, 'an anchor for a sleeping animal is kept')
   step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
@@ -1036,7 +1055,7 @@ const differ = (p, q) => {
   const stale = b.byKey.get(ca.key)
   check(stale !== undefined && stale.live === null && stale.rejoin !== null && stale.rejoin.start === T0 + ANCHOR_STALE_S, `woken after one has gone stale, it is on the rejoin from ${ANCHOR_STALE_S} s past the anchor -- when every client gave the lure up`, `rejoin from ${stale?.rejoin?.start} of anchor ${T0}`)
   asleep(b)
-  const old = [ca.key, chapterOf(timeOf(b), ca.key).start - 1, 0, 0, 0, 0, -1, 'rejoin', 7]
+  const old = [ca.key, chapterOf(timeOf(b), ca.key).start - 1, 0, 0, 0, 0, -1, 'rejoin', 7, null, null]
   b.apply(old, timeOf(b))
   step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
   const planned = b.byKey.get(ca.key)
@@ -1047,6 +1066,41 @@ const differ = (p, q) => {
   check(b.anchored.size === size && b.anchored.get(ca.key) === old && planned.live === null, 'its own anchors echoed back (by null) are ignored')
   const refused = (anchor) => { try { b.apply(anchor, timeOf(b)); return '' } catch (e) { return e.message } }
   check(/mode/.test(refused([ca.key, timeOf(b), 0, 0, 0, 0, -1, 'bolt', 7])) && /time/.test(refused([ca.key, NaN, 0, 0, 0, 0, -1, 'lure', 7])), 'a mode it does not know, or an anchor with no time, is refused out loud')
+  a.dispose()
+  b.dispose()
+}
+
+// --- a torch held to it ---------------------------------------------------------------
+// a holds a lit torch in a stag, her head high over it so nothing else startles it; b hears a's anchors as client 7's.
+{
+  const dt = 1 / 60
+  const a = make(7, { walk: plain, water: noWater })
+  const b = make(7, { walk: plain, water: noWater })
+  a.place(0, 0)
+  b.place(0, 0)
+  const ca = beside(a, 'stag')
+  const cb = beside(b, 'stag')
+  const relay = () => { for (const anchor of a.pending()) b.apply([...anchor.slice(0, 8), 7, ...anchor.slice(9)], timeOf(b)) }
+  const hold = (s, inIt = true) => {
+    for (let f = 0; f < s * 60; f++) {
+      const tip = { x: ca.sx + (inIt ? 0 : 5), y: ca.y + ca.size * 0.4, z: ca.sz }
+      step(a, ca.sx, ca.y + FLEE_M + 1, ca.sz, dt, [], [tip])
+      step(b, cb.home.x - 40, cb.y + 1.6, cb.home.z, dt)
+      relay()
+    }
+  }
+  a.voices([])
+  hold(SINGE.s * 0.6)
+  hold(0.1, false)
+  hold(SINGE.s * 0.6)
+  check(ca.live === null && !a.scars.has(ca.key), `a torch held in it ${SINGE.s * 0.6} s twice, with a break between, does it no harm`, `${ca.live?.mode} ${a.scars.get(ca.key)?.hp}`)
+  b.voices([])
+  hold(SINGE.s * 0.5)
+  const cried = a.voices([])
+  check(ca.live?.mode === 'flee' && a.scars.get(ca.key)?.hp === SINGE.max - SINGE.hp && cried.some((v) => v.sound === ca.sp.hurt.sound), `held ${SINGE.s} s without a break, it costs the stag ${SINGE.hp} HP, and it cries out and runs`, `${ca.live?.mode}, ${a.scars.get(ca.key)?.hp} HP, ${cried.map((v) => v.sound).join(' ')}`)
+  check(cb.live?.mode === 'flee' && cb.live.by === 7 && b.scars.get(cb.key)?.hp === SINGE.max - SINGE.hp && b.voices([]).some((v) => v.sound === cb.sp.hurt.sound), 'and b\'s copy runs too, as hurt, crying out', `${cb.live?.mode} by ${cb.live?.by}, ${b.scars.get(cb.key)?.hp} HP`)
+  hold(SINGE.s + 0.1)
+  check(a.scars.get(ca.key).hp === SINGE.max - 2 * SINGE.hp && b.scars.get(cb.key).hp === a.scars.get(ca.key).hp, 'held in it as it runs, another second costs it another ten, on both', `${a.scars.get(ca.key).hp} / ${b.scars.get(cb.key).hp}`)
   a.dispose()
   b.dispose()
 }
@@ -1404,10 +1458,9 @@ const differ = (p, q) => {
   check(c.spawn === spawn && c.lod === CARD_RUNGS && !c.puppet && !c.cardWant && c.cardP === 1, `${spawn.card.toFixed(0)} m off, past the card as well, the hare is not drawn at all but the slot is still hers`)
   check(c.x === at.x && c.z === at.z && c.y === at.y && c.heading === at.heading && c.rec.tick === at.tick && c.clip === at.clip, 'and in four seconds of it nothing walked, turned, read the ground or picked an activity -- it stands exactly where it stood')
   // Back in sight, the ticks it was not stepped through are replayed in the one frame, so it is where the score has it now: it lived while she was away, it just was not looked at.
-  const r0 = k.replayed
   step(k, at.x, at.y + 1.6, at.z, 0)
   const owed = tickOf(timeOf(k)) - at.tick
-  check(c.spawn === spawn && owed > 100 && c.rec.tick === at.tick + owed && k.replayed - r0 >= owed, 'she comes back and it is where the score has it, the ticks she was away for replayed in that frame', `${owed} ticks, ${k.replayed - r0} replayed across the herd`)
+  check(c.spawn === spawn && owed > 100 && c.rec.tick === at.tick + owed && k.replayed >= owed, 'she comes back and it is where the score has it, the ticks she was away for replayed in that frame', `${owed} ticks, ${k.replayed} replayed across the herd this frame`)
 
   // And out past where it is worth keeping.
   for (let f = 0; f < 240; f++) step(k, at.x + spawn.forget * 1.2, at.y + 1.6, at.z, dt)

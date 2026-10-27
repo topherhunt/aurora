@@ -2314,6 +2314,8 @@ function lampNight() {
 }
 
 const litTipList = []
+// Her own lit tips, last updateFire's: what the animals take for her torch (singe.js).
+const herTorches = []
 const torchSorted = []
 window.v2hearthLight = HEARTH_LIGHT // console: `v2hearthLight.on = 0` puts the hearths' live light out, for an A/B
 window.v2windowGlow = WINDOW_GLOW // console: `v2windowGlow.night = 5`, read every frame
@@ -2336,6 +2338,9 @@ function updateFire(dt) {
   hands.litTips(STICK_TIP, litTipList)
   const tips = litTipList.map((t, i) => ({ x: t.x, y: t.y, z: t.z, phase: i * 2.1 }))
   wildfire.update(dt, now, tips.slice(0, TORCH_CAP), headTmp)
+  if (grass) for (const t of tips) grass.scorch(t.x, t.y, t.z)
+  herTorches.length = 0
+  for (const t of litTipList) if (t.hand !== null) herTorches.push({ x: t.x, y: t.y, z: t.z })
   player.headPosition(headTmp)
   torchSorted.length = 0
   for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), reach: TORCH_REACH, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
@@ -4868,7 +4873,7 @@ async function buildRoom(room, at) {
   if (towns) {
     walk.addStone(towns)
     const journeys = roadPlan ? new Journeys(townPlan.towns, roadPlan, { seed, bodies: TOWNSFOLK.bodies }) : null
-    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, cards: litterCards, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, eat: (lure) => hands.eatLure(lure, 'strider'), harm, hourAt: (s) => clock.hourAt(s) })
+    townsfolk = new Townsfolk(scene, { towns: townPlan.towns, walk, field: height, bank: rocks.bank, textures: propTextures, cards: litterCards, seed, journeys, patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), bond: striderBond, tamed: (k) => (wildStriders ? wildStriders.isTamed(k) : striderBond.trusted.has(k)), tell: (k, pose) => { if (wildStriders) wildStriders.tellTamed(k, pose) }, eat: (lure) => hands.eatLure(lure, 'strider'), harm, hourAt: (s) => clock.hourAt(s) })
     for (const m of townsfolk.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-townsfolk' })
     if (townsfolk.striders) for (const m of townsfolk.striders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addStone(townsfolk)
@@ -5106,14 +5111,14 @@ async function buildRoom(room, at) {
   // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
   await bootStep('frogs')
-  frogs = new Frogs(scene, height, waterSurfaces, { seed, rocks, ground: terrain })
+  frogs = new Frogs(scene, height, waterSurfaces, { seed, rocks, ground: terrain, eat: (lure) => hands.eatLure(lure, 'frog') })
   lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
   frogs.place(spawn.x, spawn.z)
   console.log(`[v2] frogs ${frogs.stats.alive} on ${frogs.stats.tiles} tiles at boot`)
   window.v2frogs = frogs
   await bootStep('crabs')
   // The crab's cross card is photographed off its GLB, so the bake waits on the load.
-  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks, cards: litterCards, harm })
+  crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks, cards: litterCards, harm, eat: (lure) => hands.eatLure(lure, 'crab') })
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
   crabs.place(spawn.x, spawn.z, clock.seconds)
   crabs.ready.then(() => { if (build === roomBuild) crabs.bakeCard(renderer) })
@@ -5135,6 +5140,7 @@ async function buildRoom(room, at) {
   await bootStep('grasshoppers')
   grasshoppers = new Grasshoppers(scene, height, waterSurfaces, { seed, walk, clock })
   lighting.patch(grasshoppers.material, { mode: 'vertex', cacheKey: 'v2-grasshoppers' })
+  lighting.patch(grasshoppers.heldMaterial, { mode: 'vertex', cacheKey: 'v2-grasshoppers-held' })
   grasshoppers.place(spawn.x, spawn.z)
   console.log(`[v2] grasshoppers ${grasshoppers.stats.alive} on ${grasshoppers.stats.tiles} tiles at boot`)
   window.v2grasshoppers = grasshoppers
@@ -5253,8 +5259,10 @@ async function buildRoom(room, at) {
   hands.addSource(butterflies, 'butterfly')
   hands.addSource(fish, 'fish')
   hands.addSource(crabs, 'crab')
+  hands.addSource(frogs, 'frog')
   hands.addSource(ferns, 'fern')
-  hands.addSource(litter, 'pebble')
+  // Pebbles are not picked up; the source still dresses one already in a backpack.
+  hands.addSource({ pickAt: () => null, take: () => { throw new Error('a pebble is not picked up') }, dress: (slot) => litter.dress(slot) }, 'pebble')
   hands.addSource(grasshoppers, 'grasshopper')
   hands.addSource(bones, bones.kinds)
   hands.addSource(rocks, 'rock')
@@ -5942,7 +5950,7 @@ const HOTKEYS = [
       { keys: 'shift', what: 'fly down while flying' },
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
-      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, pebble, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
+      { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
       { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'hold click', what: `with a carrot, fish or mushroom in the hand, hold for ${EAT.holdS} s to eat it; in the headset, hold it to your mouth` },
       { keys: 'drag', what: `with chalk in the hand in a cave, draw on the rock under the cursor within ${DESK_CLICK_M} m; in the headset, hold the chalk to the rock` },
@@ -8227,9 +8235,9 @@ function stepOverworld(dt, now) {
     frogLures.length = 0
     frogLures.push(...lures)
     if (hobs) hobs.lures(frogLures)
-    frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, frogLures, villagers ? villagers.claims : undefined)
+    frogs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, frogLures, villagers ? villagers.claims : undefined, peerHeadsNow())
   })
-  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged))
+  stepAnimal('crabs', () => crabs.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, submerged, lures, peerHeadsNow()))
   // The butterflies run on the room's clock too, and the chain they fly reads the night off it at the second each rest ends, not off this frame.
   stepAnimal('butterflies', () => butterflies.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds))
   // The grasshoppers run on the room's clock too, and read the night off it themselves at a segment's turn; the scalar is only for a world with no clock.
@@ -8239,8 +8247,8 @@ function stepOverworld(dt, now) {
   // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go. Laid in a bed in the headset the rig is turned about her head, its origin beside or above it, so her body is her head alone.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, peerHeadsNow()))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
-  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures))
-  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow()))
+  stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, herTorches))
+  if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow(), herTorches))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   if (giants) {

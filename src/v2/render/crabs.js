@@ -50,6 +50,11 @@
 // the body along Z and below its middle -- lift and fall in the vertex shader
 // while it moves.
 //
+// A crab that EATS the bug in her hand (held within EAT of it) leaves its rock
+// as her PET, GROW the size, and scuttles after her (or the peer who fed it)
+// to PET.m off, integrated like a hunt; the room hears FED and, when a hand
+// takes it, TOOK, each one anchor keyed by where it ate.
+//
 // Past CARD_M from her head a crab is its top card (critters.js CRAB_VIEWS), one
 // quad lying flat at the body's middle, an instance of the shared litter-card
 // pool under the same matrix and hue the body would have had, legs still; once
@@ -118,6 +123,13 @@ const LOOSE_LEGS = 32
 const LOOSE_WOBBLE = 1.2
 // At `fits` of her full size or under (sized), a rock's crab with her within `m` m comes for her at `speed` body lengths a second, bites for `harm` every `biteS` from its own length off her, and walks back to its spell past twice `m`. Hers alone: the room does not hear it.
 export const HUNT = { fits: 0.125, m: 3, speed: 3, harm: 10, biteS: 1 }
+// Her bug is eaten by a crab whose body it is within `m` of across the ground and `dy` above or below; the crab grows GROW and follows at PET.speed body lengths a second to PET.m off.
+export const EAT = { m: 0.5, dy: 0.5 }
+const BUGS = ['spider', 'butterfly', 'grasshopper']
+export const GROW = 1.1
+export const PET = { m: 1.2, speed: 6 }
+export const FED = 'fed'
+export const TOOK = 'took'
 
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 const UP = new THREE.Vector3(0, 1, 0)
@@ -157,8 +169,9 @@ export class Crabs {
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
    * @param opts.cards   the shared LitterCards: the far crabs are its instances, one per slot
    * @param opts.harm    (n, why) => her hurt by a crab's bite (HUNT)
+   * @param opts.eat     (lure) => whether her hand gives up the bug a crab is eating (hands.js eatLure)
    */
-  constructor(scene, height, water, { seed = 1, rocks, assets = null, cards = null, harm = null } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, assets = null, cards = null, harm = null, eat = () => false } = {}) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Crabs needs the LitterCards its far card is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function') {
       throw new Error('Crabs needs a height field with heightAt and heightAndSlopeAt')
@@ -171,6 +184,7 @@ export class Crabs {
     }
     if (harm !== null && typeof harm !== 'function') throw new Error('Crabs: harm must be a function of (n, why)')
     this.harm = harm
+    this.eat = eat
     // Her size, a multiple of her full height (sized).
     this.size = 1
     this.height = height
@@ -240,10 +254,14 @@ export class Crabs {
         member: 0, loose: false, drop: null,
         // Off its spell after her (HUNT): { back, bitT } -- `back` once it is walking home -- or null.
         hunt: null,
+        // A pet: { by }, its feeder's client id (null hers), and the spot and heading it ate at, which key it.
+        pet: null, fedAt: null,
       })
     }
     this.free = this.slots.slice()
     this.loose = []
+    this.pets = []
+    this.bait = []
     // The releases owed to the room (pending), and the drop key of every release made here, hers or a peer's, so one heard twice lets one crab go.
     this.outbox = []
     this.drops = new Set()
@@ -445,6 +463,8 @@ export class Crabs {
     this.tiles.clear()
     for (const c of this.loose) { c.loose = false; c.drop = null; this.free.push(c) }
     this.loose.length = 0
+    for (const c of this.pets) { c.pet = null; this.free.push(c) }
+    this.pets.length = 0
     // The rescan queue holds tile objects; the ones just left must not be scanned, or their crabs would be seated in a tile nothing draws and never freed.
     this.rescan = []
     this.overflow = 0
@@ -474,6 +494,7 @@ export class Crabs {
       }
     }
     for (const c of this.loose) into.push(c)
+    for (const c of this.pets) into.push(c)
     return into
   }
 
@@ -502,6 +523,7 @@ export class Crabs {
       }
     }
     for (const c of this.loose) consider(c)
+    for (const c of this.pets) consider(c)
     return best
   }
 
@@ -520,15 +542,11 @@ export class Crabs {
       this.loose.splice(i, 1)
       c.loose = false
       c.drop = null
+    } else if (c.pet !== null) {
+      this._tellPet(c, TOOK, this.now, null)
+      this._unpet(c)
     } else {
-      const perch = c.perch
-      if (!perch) throw new Error(`Crabs.take: slot ${c.id} has no perch`)
-      const i = perch.crabs.indexOf(c)
-      if (i < 0) throw new Error(`Crabs.take: slot ${c.id} is not on its perch`)
-      taken.add(`crab${c.member}`, perch.x, perch.z)
-      perch.crabs.splice(i, 1)
-      c.perch = null
-      for (const t of this.tiles.values()) if (t.perches.get(perchKey(perch.x, perch.z)) === perch) { t.live--; break }
+      this._unperch(c)
     }
     this.free.push(c)
     const k = c.size / this.span
@@ -543,6 +561,77 @@ export class Crabs {
       scale: [k, k * STRETCH_Y, k],
       stowable: c.size < stowMax,
     }
+  }
+
+  /** Crab `c` off its perch, for good: the perch's place recorded so it never regrows it. */
+  _unperch(c) {
+    const perch = c.perch
+    if (!perch) throw new Error(`Crabs: slot ${c.id} has no perch`)
+    const i = perch.crabs.indexOf(c)
+    if (i < 0) throw new Error(`Crabs: slot ${c.id} is not on its perch`)
+    if (!taken.has(`crab${c.member}`, perch.x, perch.z)) taken.add(`crab${c.member}`, perch.x, perch.z)
+    perch.crabs.splice(i, 1)
+    c.perch = null
+    for (const t of this.tiles.values()) if (t.perches.get(perchKey(perch.x, perch.z)) === perch) { t.live--; break }
+  }
+
+  /** Pet `c` off the pets list, its slot the caller's to free or reuse. */
+  _unpet(c) {
+    const i = this.pets.indexOf(c)
+    if (i < 0) throw new Error(`Crabs: pet slot ${c.id} is not in the pets list`)
+    this.pets.splice(i, 1)
+    c.pet = null
+    c.fedAt = null
+  }
+
+  /**
+   * Crab `c` ate the bug in the hand of `by` (null hers) on second `now`, at
+   * `at` facing `at.yaw` (by default where it is): off its rock or its run,
+   * grown by GROW, that one's pet. A loose one's run, told to the room, ends
+   * on every client.
+   */
+  _feed(c, by, now, at = { x: snap(c.x), z: snap(c.z), yaw: snap(c.yaw) }) {
+    const drop = c.drop
+    if (c.loose) {
+      this.loose.splice(this.loose.indexOf(c), 1)
+      c.loose = false
+      c.drop = null
+    } else if (c.perch !== null) this._unperch(c)
+    c.size *= GROW
+    c.pet = { by }
+    c.fedAt = at
+    c.hunt = null
+    c.spell = null
+    c.key = dropKey(at.x, at.z, at.yaw)
+    c.stale = true
+    this.drops.add(c.key)
+    this.pets.push(c)
+    if (by === null) this._tellPet(c, FED, now, drop)
+  }
+
+  /** Her bug in `bait` at a drawn crab's body (EAT): eaten, if her hand gives it up, and the crab fed. */
+  _bite(bait, now) {
+    for (const l of bait) {
+      let best = null
+      let bestD = EAT.m
+      const consider = (c) => {
+        const d = Math.hypot(c.x - l.x, c.z - l.z) - c.size * 0.5
+        if (d < bestD && Math.abs(c.y - l.y) <= EAT.dy) { bestD = d; best = c }
+      }
+      for (const t of this.tiles.values()) {
+        if (t.live === 0) continue
+        for (const p of t.perches.values()) for (const c of p.crabs) if (this.under || c.y >= p.level) consider(c)
+      }
+      for (const c of this.loose) consider(c)
+      if (best !== null && this.eat(l)) this._feed(best, null, now)
+    }
+  }
+
+  /** Pet `c` to the room as one anchor in `mode`: `[wire, T, x, y, z, yaw, 0, mode, by, size, hue, dropX, dropZ, dropYaw]`, keyed by the spot it ate at, with the run of a loose one it was. */
+  _tellPet(c, mode, T, drop) {
+    if (this.applying) return
+    const a = c.fedAt
+    this.outbox.push([dropWire(PREFIX, c.key), snap(T), a.x, snap(c.y), a.z, a.yaw, 0, mode, null, snap(c.size), snap(c.hue), drop ? drop.x : null, drop ? drop.z : null, drop ? drop.yaw : null])
   }
 
   /**
@@ -636,8 +725,10 @@ export class Crabs {
    * never sees that crab. For creature-net.js.
    */
   apply(anchor, now) {
-    const [, T, x, y, z, yaw, , mode, by, hx, hz, size, hue] = anchor
+    const [, T, x, y, z, yaw, , mode, by] = anchor
     if (by === null) return
+    if (mode === FED || mode === TOOK) return this._applyPet(anchor, now)
+    const [, , , , , , , , , hx, hz, size, hue] = anchor
     if (mode !== DROP) throw new Error(`Crabs: no anchor mode ${mode}`)
     if (![T, x, y, z, yaw, hx, hz, size, hue].every(Number.isFinite)) throw new Error(`Crabs: a drop short of its numbers: ${JSON.stringify(anchor)}`)
     if (this.drops.has(dropKey(x, z, yaw))) return
@@ -647,6 +738,35 @@ export class Crabs {
     } finally {
       this.applying = false
     }
+  }
+
+  /** A peer's pet: fed (FED) where it ate, its loose run if it had one ended here too, and following them; or taken (TOOK). Its perch hears of it through the taken registry. */
+  _applyPet(anchor, now) {
+    if (anchor.length !== 14) throw new Error(`Crabs: a pet anchor of ${anchor.length} fields, not 14: ${JSON.stringify(anchor)}`)
+    const [, T, x, y, z, yaw, , mode, by, size, hue, dx, dz, dyaw] = anchor
+    if (![T, x, y, z, yaw, size, hue].every(Number.isFinite)) throw new Error(`Crabs: a pet anchor short of its numbers: ${JSON.stringify(anchor)}`)
+    const key = dropKey(x, z, yaw)
+    const pet = this.pets.find((c) => c.key === key)
+    if (mode === TOOK) {
+      if (pet !== undefined) { this._unpet(pet); this.free.push(pet) }
+      return
+    }
+    if (this.drops.has(key)) return
+    let c = dx === null ? undefined : this.loose.find((l) => l.key === dropKey(dx, dz, dyaw))
+    if (c === undefined) {
+      c = this.free.pop()
+      if (!c) { this.overflow++; return }
+      Object.assign(c, { perch: null, loose: false, drop: null, member: -1, side: 1, depth: 0, phrase: null, hunt: null, size: size / GROW, hue })
+      const s = this._looseSpot(c, x, z, yaw)
+      this._seat(c, s.x, s.y, s.z, yaw, s.stone)
+    }
+    this.applying = true
+    try {
+      this._feed(c, by, T, { x, z, yaw })
+    } finally {
+      this.applying = false
+    }
+    c.size = size
   }
 
   /** A spot on the ground at (x, z): stone where a rock stands proud, else the field, with the surface's normal there. */
@@ -869,8 +989,11 @@ export class Crabs {
    * nothing -- and it picks its spell back up where it stands when she goes
    * under. A crab up on the dry top of a half-sunk boulder is drawn either
    * way.
+   *
+   * `lures` are hands.js lures(), her bugs among them fed to a crab they are
+   * held at; `peers` the peers' heads `{ x, y, z, by }`, which their pets follow.
    */
-  update(hx, hy, hz, now, under = true) {
+  update(hx, hy, hz, now, under = true, lures = [], peers = []) {
     if (!Number.isFinite(now)) throw new Error(`Crabs.update: bad world time ${now}`)
     const dt = Math.min(0.1, Math.max(0, now - this.now))
     this.now = now
@@ -887,6 +1010,9 @@ export class Crabs {
       if (t && this.tiles.has(tileKey(t.tx, t.tz))) this._scan(t)
     }
     this.frame++
+    this.bait.length = 0
+    for (const l of lures) if (l.by === null && BUGS.includes(l.kind)) this.bait.push(l)
+    if (this.bait.length > 0) this._bite(this.bait, now)
 
     const mat = this.mesh.instanceMatrix.array
     const legs = this.legs.array
@@ -934,6 +1060,15 @@ export class Crabs {
       }
     }
     this.loose.length = kept
+    // The pets, after whoever fed them; one she has left RADIUS behind is forgotten.
+    for (let i = this.pets.length - 1; i >= 0; i--) {
+      const c = this.pets[i]
+      if (Math.hypot(c.x - hx, c.z - hz) > RADIUS) { this._unpet(c); this.free.push(c); continue }
+      const m = c.pet.by === null ? this.head : peers.find((p) => p.by === c.pet.by)
+      if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, PET.speed)) { c.state = 'pause'; c.speed = 0; c.amp = 0 }
+      const level = this.water.lakeLevelAt(c.x, c.z)
+      if (under || level === null || c.y >= level) write(c)
+    }
     for (const t of this.tiles.values()) {
       if (t.live === 0) continue
       for (const p of t.perches.values()) {
@@ -1016,8 +1151,8 @@ export class Crabs {
     return true
   }
 
-  /** A frame's scuttle of `c` toward (tx, tz), stopping `stop` m short over whatever ground is there; false, and still, once it is there. */
-  _scuttle(c, tx, tz, stop, dt) {
+  /** A frame's scuttle of `c` toward (tx, tz) at `speed` body lengths a second, stopping `stop` m short over whatever ground is there; false, and still, once it is there. */
+  _scuttle(c, tx, tz, stop, dt, speed = HUNT.speed) {
     const dx = tx - c.x, dz = tz - c.z
     const d = Math.hypot(dx, dz)
     const yaw = d > 1e-9 ? Math.atan2(dx, dz) : c.yaw
@@ -1026,9 +1161,9 @@ export class Crabs {
       if (c.yaw !== yaw) this._seat(c, c.x, c.y, c.z, yaw, this.stoneAt(c.x, c.z) > -Infinity)
       return false
     }
-    const step = Math.min(d - stop, HUNT.speed * c.size * dt)
+    const step = Math.min(d - stop, speed * c.size * dt)
     const s = this._looseSpot(c, c.x + (dx / d) * step, c.z + (dz / d) * step, yaw)
-    c.state = 'go'; c.speed = HUNT.speed; c.amp = LEG_AMP
+    c.state = 'go'; c.speed = speed; c.amp = LEG_AMP
     c.phase += (Math.PI * 2 * LEG_CYCLES * step) / c.size
     this._seat(c, s.x, s.y, s.z, yaw, s.stone)
     return true

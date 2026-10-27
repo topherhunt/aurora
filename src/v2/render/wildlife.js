@@ -143,6 +143,7 @@ import {
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { EAT, atMost } from '../eating.js'
+import { SINGE, redAt, reddened, touches } from '../singe.js'
 import { setPropSolidAt } from '../../material.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
@@ -259,6 +260,8 @@ export const MAD = { m: EAT.chanterelle.m, reach: 0.7, harm: 5, strikeS: 0.8, id
 // Her size (sized) against an animal with a `flee` gait, within FLEE_M: above `look` of her full size it runs; at `look` or under it stops and looks at her for `lookS`, not again for `againS`.
 // A species that `hunts` comes for her from `hunt.m` at `hunt.fits` or under and strikes as MAD does, `harm` a strike (`small` at `smallFits` or under), until she is past LURE_FORGET_M or grows.
 export const FEAR = { look: 0.5, lookS: 2.5, againS: 30, hunt: { fits: 0.25, m: 12, harm: 10, smallFits: 0.125, small: 20 } }
+// A species that `preys` looks at each phrase of its plan for prey whose free plan has it within `m` and `cone` radians of its nose (_sight). Both startle for STARTLE_S, turned to each other; then the prey runs from it on its flee gait, and it runs after on its own at `ofPrey` of the prey's pace (the two species at their nominal sizes), stopping `reach` body lengths short of where the prey ends up. Not again for `againS`; a prey has one chaser a chapter (_chaserOf). It is in both scores (the prey's plan cut at it, _chasedIn), so every client sees the one chase.
+export const CHASE = { m: 14, cone: 1.9, reach: 0.5, againS: 30, ofPrey: 0.9 }
 
 // Every clip the shipped file must carry. One-shots play once and hold their last frame; the rest cycle.
 export const CLIPS = ['idle', 'alert', 'walk', 'trot', 'run', 'hop', 'bound', 'sit', 'lie', 'dig', 'eat-down', 'eat-loop', 'eat-up', 'dead']
@@ -291,8 +294,10 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * half (FEAR). A `wary` one holds still at a lure, eats a
  * carrot of hers and is then tame, following her to its `heel` and voicing
  * its `call` (an ambience SOUNDS key, at a rate rolled in `rate`) as it eats;
- * one with a `cry` voices it, under that ambience rule, as it starts to run.
- * `prefix` is the first word of its creatures' keys.
+ * one with a `cry` voices it, under that ambience rule, as it starts to run, and its `hurt` when a torch singes it.
+ * `prefix` is the first word of its creatures' keys. `pace` plays a gait's
+ * clip and ground speed together faster than the shipped stride, so the feet
+ * still do not skate. A fox `preys` on the kinds it names (CHASE).
  */
 export const SPECIES = [
   {
@@ -300,7 +305,7 @@ export const SPECIES = [
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
     lures: ['carrot'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
-    wary: true, flee: 'run', heel: 2.5, call: { sound: 'deerGrunt', rate: [1.1, 1.3] }, cry: { sound: 'deerGrunt', rule: 'alarm', rate: [1, 1] },
+    wary: true, flee: 'run', heel: 2.5, call: { sound: 'deerGrunt', rate: [1.1, 1.3] }, cry: { sound: 'deerGrunt', rule: 'alarm', rate: [1, 1] }, hurt: { sound: 'deerGrunt', rule: 'alarm', rate: [1.4, 1.6] },
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.15, 0.9, 0.8]]), // greyer, brown, redder
   },
   {
@@ -308,16 +313,16 @@ export const SPECIES = [
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
     lures: ['fish', 'crab'], standoff: 1.2, follow: [['trot', 8], ['run', Infinity]], court: 'gaze',
-    flee: 'run', hunts: true,
+    flee: 'run', hunts: true, preys: ['hare'], hurt: { sound: 'foxYip', rule: 'alarm', rate: [1.3, 1.5] },
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.12, 0.85, 0.8]]),
   },
   {
     key: 'hare', prefix: 'hr', glb: CRITTER_GLB.hare, vary: 0.25, scale: 1, rate: 1,
     acts: [['graze', 5], ['stand', 4], ['roam', 4], ['dig', 1], ['rest', 1]],
-    gaits: [['hop', 6], ['bound', 4]],
+    gaits: [['hop', 6], ['bound', 4]], pace: { hop: 2, bound: 2 },
     lures: ['carrot'], standoff: 0.6, follow: [['hop', 3], ['bound', Infinity]], court: 'gaze',
     // The grunt pitched up near two octaves: there is no hare clip.
-    wary: true, flee: 'bound', heel: 1.2, call: { sound: 'deerGrunt', rate: [1.9, 2.3] },
+    wary: true, flee: 'bound', heel: 1.2, call: { sound: 'deerGrunt', rate: [1.9, 2.3] }, hurt: { sound: 'deerGrunt', rule: 'alarm', rate: [2.8, 3.2] },
     tint: tintRange([[1.05, 1.05, 1.06], [0.62, 0.62, 0.63], [0.78, 0.58, 0.4]]), // white, grey, brown
   },
 ]
@@ -348,6 +353,7 @@ const _hang = new THREE.Matrix4()
 const _dim = new THREE.Color()
 const _norm = { x: 0, y: 1, z: 0 }
 const _tickPose = { x: 0, z: 0, heading: 0 }
+const _farPose = { x: 0, z: 0, heading: 0 }
 
 /** Where the phrase `ph` has the body after its tick `n` (0 the first; below 0, its start pose): the pivot at TURN_RATE toward the aim, then the straight walk at its pace, closed form. */
 function poseIn(ph, n, out) {
@@ -415,7 +421,8 @@ export class Wildlife {
     this.walk = walk
     this.seed = seed
     this.dayness = dayness ?? (() => 1)
-    this.score = new Score((key, chapter, rand) => this._plan(key, chapter, rand))
+    // Two chapters a key: a hare's plan reads the chapters of the foxes about it (_chasedIn), which are not always the one the fox is playing.
+    this.score = new Score((key, chapter, rand) => this._plan(key, chapter, rand), { keep: 2 })
     // The plans before the dragons' cut, for the dragons: a chapter or two a stag, for as many stags as they consider.
     this.freeScore = new Score((key, chapter, rand) => this._planFree(key, chapter, rand), { keep: 2, cap: FREE_PLANS })
     // (key, t0, t1) -> the world time a dragon's stoop on that animal ends within [t0, t1), or null. Set by the dragons; none, and nothing is ever struck.
@@ -453,9 +460,11 @@ export class Wildlife {
           // The phrase playing: the score's or the rejoin's, its bounds, the tick it was entered on, its dice.
           phrase: null, phraseStart: 0, phraseEnd: 0, phraseTick0: 0, phraseEndTick: 0, phraseIndex: 0, chapter: 0, rand: null, rejoin: null,
           // The activity, the steps it has left, the clip playing, when that step began and the tick it ends on; `dur` is that step's whole length, so a puppet taken mid-step joins the clip where it already is, and `cycle` the clip's own length, for the ear's footfall clock. `cue` counts steps, and is how a puppet tells a fresh step from the one it is playing.
-          act: 'stand', queue: [], clip: 'idle', stepStart: 0, stepEndTick: 0, dur: 0, cycle: 0, cue: 0, speed: 0,
+          act: 'stand', queue: [], clip: 'idle', stepStart: 0, stepEndTick: 0, dur: 0, cycle: 0, cue: 0, speed: 0, pace: 1,
           // Live: `{ mode, by, anchor, sendTick, rand }` while after a lure (hands.js lures: kind, x, y, z, by), the lure itself, and the ticks of detour left before it is re-aimed at it.
           live: null, lure: null, detour: 0, lookedT: -Infinity,
+          // Seconds her torch has been held in it without a break (SINGE); whether its puppet wears the hurt red.
+          singe: 0, red: false,
           // What a live body faces and follows -- the lure, her head, or a peer's anchor (`mark`) -- and how near it stops.
           goal: null, near: 0, mark: { x: 0, z: 0 },
           // The ladder rung it is on, CARD_RUNGS being past the last rung and so neither drawn nor simulated.
@@ -481,6 +490,8 @@ export class Wildlife {
     // Every woken animal by its key, and the room's latest anchor by key (apply), kept through sleep so a waking animal is born where the room has it.
     this.byKey = new Map()
     this.anchored = new Map()
+    // key -> { hp, at }: what torches have cost each animal, and when last (SINGE), hers and the room's, kept through sleep.
+    this.scars = new Map()
     // The anchors this client owes the room (pending).
     this.outbox = []
     // Where her head was when the tiles were last walked.
@@ -511,6 +522,8 @@ export class Wildlife {
     // Her chanterelle's dark (madden), which the pooled cards take as a colour.
     this.dark = 0
     this.lures = NO_LURES
+    // Her lit torch tips this frame (SINGE).
+    this.torches = NO_LURES
     // Her head this frame, what a wary animal flees and a tame one follows.
     this.head = { x: Infinity, y: Infinity, z: Infinity }
     // One-shots since the ear last drained them (voices).
@@ -542,6 +555,7 @@ export class Wildlife {
       // The ladder's rungs are a ratio of the body's LARGEST extent (critters.js), and `size` is its length: for a four-legged animal those are the same thing, and `bulk` says so rather than assuming it.
       sp.bulk = Math.max(asset.span, asset.width, asset.height) / asset.span
       sp.durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
+      sp.paces = Object.fromEntries(Object.keys(asset.gait).map((g) => [g, sp.pace?.[g] ?? 1]))
       sp.plain.map = asset.map
       sp.plain.needsUpdate = true
       for (const mats of sp.materials) {
@@ -552,7 +566,12 @@ export class Wildlife {
         sp.puppets.push(makePuppet(asset, mats, { clipFade: FADE_S, oneShot: ONE_SHOT }))
       }
       sp.freePuppets = sp.puppets.slice()
-
+    }
+    // A hunter's flat-out run is set off its prey's, at the two species' nominal sizes, where this room holds both.
+    const nominal = (sp, gait) => sp.asset.gait[gait] * sp.paces[gait] * sp.asset.sizeM * sp.scale / sp.asset.span
+    for (const sp of this.species) {
+      const prey = sp.preys && this.species.find((p) => p.key === sp.preys[0])
+      if (prey) sp.paces[sp.flee] = (CHASE.ofPrey * nominal(prey, prey.flee)) / (sp.asset.gait[sp.flee] * sp.asset.sizeM * sp.scale / sp.asset.span)
     }
     this.loaded = true
   }
@@ -668,7 +687,7 @@ export class Wildlife {
     const c = this.byKey.get(key)
     if (c) return c
     const s = this._spawnOf(key)
-    return { home: s.home, sp: s.sp, k: s.size / s.sp.asset.span }
+    return { key, home: s.home, sp: s.sp, size: s.size, k: s.size / s.sp.asset.span }
   }
 
   /** A spawn woken into a live animal at world time `now`, placed where the room's anchor or its score has it, or null when the pool is out of slots. */
@@ -876,6 +895,7 @@ export class Wildlife {
     c.stepStart = NaN
     c.cycle = c.dur
     c.speed = 0
+    c.pace = 1
     return c
   }
 
@@ -916,6 +936,7 @@ export class Wildlife {
     puppet.play(c.clip, c.cue)
     // Carried, there is no ground under its feet.
     puppet.unplant()
+    puppet.mixer.timeScale = 1
     puppet.step(dt)
     // Body-local offsets, so the matrix's own scale and yaw carry them.
     const body = lain
@@ -1037,7 +1058,7 @@ export class Wildlife {
     const far = Math.hypot(from.x - home.x, from.z - home.z) > HOMING * TETHER_M
     const aim = far ? bearing(from, home) + (rand() - 0.5) * (Math.PI / 2) : from.heading + (rand() - 0.5) * TURN
     const gait = weighted(rand, c.sp.gaits)
-    const mps = c.sp.asset.gait[gait] * c.k
+    const mps = this._mps(c, gait)
     const dur = onGrid(between(rand, ROAM_S))
     const turn = turnTicks(swing(from.heading, aim))
     const want = ticksOf(dur) - turn
@@ -1051,27 +1072,33 @@ export class Wildlife {
     const dist = Math.hypot(to.x - from.x, to.z - from.z)
     if (dist < 1e-3) return null
     const gait = c.sp.gaits[0][0]
-    const mps = c.sp.asset.gait[gait] * c.k
+    const mps = this._mps(c, gait)
     const ph = this._walkPhrase('roam', from, bearing(from, to), gait, mps, Math.ceil(dist / (mps * TICK_S) - 1e-9))
     ph.to.x = to.x
     ph.to.z = to.z
     return ph
   }
 
+  /** Metres a second on `gait` for an animal of scale `c.k`. */
+  _mps(c, gait) { return c.sp.asset.gait[gait] * c.sp.paces[gait] * c.k }
+
   /** Seconds from `from` to `to` at the species' pace: the pivot and the straight. */
   _travel(c, from, to) {
     const dist = Math.hypot(to.x - from.x, to.z - from.z)
     if (dist < 1e-3) return 0
-    const mps = c.sp.asset.gait[c.sp.gaits[0][0]] * c.k
+    const mps = this._mps(c, c.sp.gaits[0][0])
     return turnTicks(swing(from.heading, bearing(from, to))) * TICK_S + dist / mps
   }
 
   /** The chapter `chapter` of animal `key`: its free plan, cut at the dragons' strike if one falls in it. */
   _plan(key, chapter, rand) {
-    const phrases = this._planFree(key, chapter, rand)
-    if (!this.hunter) return phrases
     const chapterS = this.score.chapterS
     const start = chapter * chapterS + (keyHash(key) % chapterS)
+    let phrases = this._planFree(key, chapter, rand)
+    const c = this._whoOf(key)
+    const run = this.species.some((sp) => sp.preys?.includes(c.sp.key)) ? this._chasedIn(this._spawnOf(key), chapter, start) : null
+    if (run !== null) phrases = this._fled(c, phrases, start, run, rand)
+    if (!this.hunter) return phrases
     const strike = this.hunter(key, start, start + chapterS)
     if (strike === null) return phrases
     if (!(strike >= start && strike < start + chapterS)) throw new Error(`Wildlife: a strike on ${key} at ${strike} is outside its chapter from ${start}`)
@@ -1106,16 +1133,32 @@ export class Wildlife {
     return out
   }
 
-  /** The chapter `chapter` of animal `key` with no dragon in it: phrases by the species' weights, the night's thumb on the resting one, from home and while the way home still fits, then the walk home and a stand at the home pose to the chapter's end. */
+  /** The chapter `chapter` of animal `key` with no dragon in it and its prey not yet fled: _fill from home. */
   _planFree(key, chapter, rand) {
     const c = this._whoOf(key)
     const chapterS = this.score.chapterS
-    const start = chapter * chapterS + (keyHash(key) % chapterS)
+    return this._fill(c, chapter * chapterS + (keyHash(key) % chapterS), [], 0, c.home, rand)
+  }
+
+  /** `phrases` (`t` seconds of the chapter from `start`, ending at `pose`) filled to the chapter's end: phrases by the species' weights, the night's thumb on the resting one, a hunter's chases where it sights prey, while the way home still fits; then the walk home and a stand at the home pose to the chapter's end. */
+  _fill(c, start, phrases, t, pose, rand) {
+    const chapterS = this.score.chapterS
     const home = c.home
-    const phrases = []
-    let t = 0
-    let pose = home
+    let chasedT = -Infinity
+    const chased = c.sp.preys ? new Set() : null
     for (;;) {
+      if (chased !== null && t - chasedT >= CHASE.againS) {
+        const run = this._sight(c, start, pose, start + t, chased)
+        const dur = run === null ? 0 : run[0].dur + run[1].dur
+        if (run !== null && t + dur + this._travel(c, run[1].to, home) + HOME_PAD_S <= chapterS) {
+          phrases.push(run[0], run[1])
+          chased.add(run[0].prey.key)
+          t += dur
+          pose = run[1].to
+          chasedT = t
+          continue
+        }
+      }
       const rest = 1 + (NIGHT_REST - 1) * (1 - this.dayness(start + t))
       const act = weighted(rand, c.sp.acts.map(([n, w]) => [n, n === 'rest' ? w * rest : w]))
       const ph = act === 'roam' ? this._roam(c, pose, rand) : this._still(act, pose, this._steps(c.sp, act, rand))
@@ -1132,6 +1175,113 @@ export class Wildlife {
     }
     phrases.push(this._still('stand', pose, [['idle', chapterS - t]], home.heading))
     return phrases
+  }
+
+  /** Where the free plan has the animal `key` on the tick before world time `T`: the pose a plan cut at `T` ends on (_cut, _fled). */
+  _freePose(key, T) {
+    const at = this.freeScore.at(key, T)
+    return poseIn(at.phrase, tickAfter(T) - 1 - tickAfter(at.start), { x: 0, z: 0, heading: 0 })
+  }
+
+  /** The chase hunter `c` at `pose` begins at world time `T` on the nearest prey in sight (CHASE) and not in `chased`: its two phrases, the first carrying the prey's two as `prey`; or null for none in sight, or none with room to run in its own chapter. */
+  _sight(c, start, pose, T, chased) {
+    const R = TETHER_M + CHASE.m
+    let best = null
+    let bestD = CHASE.m
+    let bestPose = null
+    for (let tx = Math.floor((pose.x - R) / TILE); tx <= Math.floor((pose.x + R) / TILE); tx++) {
+      for (let tz = Math.floor((pose.z - R) / TILE); tz <= Math.floor((pose.z + R) / TILE); tz++) {
+        for (const s of this._tileOf(tx, tz).spawns) {
+          if (!c.sp.preys.includes(s.sp.key) || chased.has(s.key) || Math.hypot(s.x - pose.x, s.z - pose.z) > R) continue
+          const ch = chapterOf(T, s.key, this.score.chapterS)
+          if (ch.start < start || ch.start >= start + this.score.chapterS || this._chaserOf(s, ch.index) !== c.key) continue
+          const hp = this._freePose(s.key, T)
+          const d = Math.hypot(hp.x - pose.x, hp.z - pose.z)
+          if (d < bestD && Math.abs(swing(pose.heading, bearing(pose, hp))) <= CHASE.cone) { best = s; bestD = d; bestPose = hp }
+        }
+      }
+    }
+    return best === null ? null : this._chase(c, pose, T, best.key, bestPose)
+  }
+
+  /** Hunter `c` at `pose` after the prey `key` at `hp` from world time `T`: see _sight. */
+  _chase(c, pose, T, key, hp) {
+    const p = this._whoOf(key)
+    const startle = [['alert', onGrid(STARTLE_S)]]
+    const h1 = this._still('startle', hp, startle, bearing(hp, pose))
+    const mps = this._mps(p, p.sp.flee)
+    const away = bearing(pose, hp)
+    let aim = away
+    let ticks = 0
+    // Straight away if the ground allows, else the widest swerve that does.
+    for (const off of [0, 0.5, -0.5, 1, -1]) {
+      const n = this._clipWalk(h1.to, away + off, mps, ticksOf(FLEE_S), p.home)
+      if (n > ticks) { ticks = n; aim = away + off }
+    }
+    if (ticks < MIN_WALK_TICKS) return null
+    const h2 = this._walkPhrase('flee', h1.to, aim, p.sp.flee, mps, ticks)
+    const into = T - chapterOf(T, key, this.score.chapterS).start
+    if (into < TICK_S || into + h1.dur + h2.dur + this._travel(p, h2.to, p.home) + HOME_PAD_S > this.score.chapterS) return null
+    const f1 = this._still('stalk', pose, startle, bearing(pose, hp))
+    f1.prey = { key, at: T, phrases: [h1, h2] }
+    const fmps = this._mps(c, c.sp.flee)
+    const faim = bearing(f1.to, h2.to)
+    const gap = Math.hypot(h2.to.x - f1.to.x, h2.to.z - f1.to.z) - CHASE.reach * c.size
+    const want = Math.min(ticksOf(h2.dur) - turnTicks(swing(f1.to.heading, faim)), Math.floor(gap / (fmps * TICK_S)))
+    const n = want > 0 ? this._clipWalk(f1.to, faim, fmps, want, c.home) : 0
+    return [f1, n > 0 ? this._walkPhrase('chase', f1.to, faim, c.sp.flee, fmps, n) : this._still('stalk', f1.to, [['alert', h2.dur]])]
+  }
+
+  /** The one hunter (its key) that may chase the prey spawn `s` in its chapter `index`, drawn from those about it; or null. One a chapter, and only in the hunter's chapter that the prey's starts in (_sight), so a prey is never chased twice in a chapter and its score can hold every chase. */
+  _chaserOf(s, index) {
+    const R = 2 * TETHER_M + CHASE.m
+    let best = null
+    let bestH = Infinity
+    for (let tx = Math.floor((s.x - R) / TILE); tx <= Math.floor((s.x + R) / TILE); tx++) {
+      for (let tz = Math.floor((s.z - R) / TILE); tz <= Math.floor((s.z + R) / TILE); tz++) {
+        for (const f of this._tileOf(tx, tz).spawns) {
+          if (!f.sp.preys?.includes(s.sp.key) || Math.hypot(f.x - s.x, f.z - s.z) > R) continue
+          const h = hash32(keyHash(f.key), keyHash(s.key), index)
+          if (h < bestH) { bestH = h; best = f.key }
+        }
+      }
+    }
+    return best
+  }
+
+  /** The chase on the prey spawn `s` in its chapter `index` from `start`, read off its chaser's chapter that `start` falls in (which plans against this one's free plan, so nothing recurses): `{ key, at, phrases }`, or null. */
+  _chasedIn(s, index, start) {
+    const by = this._chaserOf(s, index)
+    if (by === null) return null
+    for (const ph of this.score.chapter(by, start).phrases) {
+      if (ph.prey?.key === s.key && ph.prey.at >= start && ph.prey.at < start + this.score.chapterS) return ph.prey
+    }
+    return null
+  }
+
+  /** `phrases` from the chapter starting at world time `start`, cut at the chase `run`: whole up to it, the phrase it falls in ended where the hunter saw the body, then the startle and the flight, then filled afresh from where it ran to. */
+  _fled(c, phrases, start, run, rand) {
+    const out = []
+    let t = 0
+    const [h1, h2] = run.phrases
+    for (const ph of phrases) {
+      if (t + ph.dur <= run.at - start + 1e-9) {
+        out.push(ph)
+        t += ph.dur
+        continue
+      }
+      const dur = Math.max(0, run.at - start - t)
+      const steps = []
+      for (let left = dur, i = 0; left > 1e-9 && i < ph.steps.length; i++) {
+        steps.push([ph.steps[i][0], Math.min(ph.steps[i][1], left)])
+        left -= ph.steps[i][1]
+      }
+      out.push({ ...ph, dur, to: h1.from, steps })
+      t += dur
+      break
+    }
+    out.push(h1, h2)
+    return this._fill(c, start, out, t + h1.dur + h2.dur, h2.to, rand)
   }
 
   /** The phrase playing at world time `t`: the rejoin's while one runs, else the score's. `{ phrase, start, end, index, chapter, rejoin }`. */
@@ -1237,10 +1387,11 @@ export class Wildlife {
     c.dur = step[1]
     c.stepStart = now
     c.stepEndTick = tickAfter(now + step[1])
-    c.cycle = c.sp.durations[c.clip]
+    const gait = c.sp.asset.gait[c.clip] !== undefined
+    c.pace = gait ? c.sp.paces[c.clip] : 1
+    c.cycle = c.sp.durations[c.clip] / c.pace
     c.cue++
-    const speed = c.sp.asset.gait[c.clip]
-    c.speed = speed === undefined ? 0 : speed * c.k
+    c.speed = gait ? this._mps(c, c.clip) : 0
     if (c.act === 'eat' && c.clip === 'eat-up') this._say(c)
   }
 
@@ -1550,7 +1701,8 @@ export class Wildlife {
   /** This animal's anchor at `now`, owed to the room, and kept as the room's latest for it, so that put to sleep and woken again it resumes as its peers have it. */
   _owe(c, now, mode) {
     // A runner's heading is where it is running to, its body not turned there yet when the run begins.
-    const anchor = [c.key, now, c.sx, c.y, c.sz, mode === 'flee' ? c.aim : c.sh, -1, mode, null]
+    const scar = this.scars.get(c.key)
+    const anchor = [c.key, now, c.sx, c.y, c.sz, mode === 'flee' ? c.aim : c.sh, -1, mode, null, scar ? scar.hp : null, scar ? scar.at : null]
     this.outbox.push(anchor)
     this.anchored.set(c.key, anchor)
   }
@@ -1612,8 +1764,8 @@ export class Wildlife {
 
   /**
    * An anchor heard from the room, `[key, T, x, y, z, heading, phraseIndex,
-   * mode, by]`, `by` the client it came from (null for this client's own,
-   * which is ignored). Kept for an animal not yet woken; on one that is, a
+   * mode, by, hp, hurtAt]`, `by` the client it came from (null for this client's own,
+   * which is ignored), the last two its scar (SINGE) or null. Kept for an animal not yet woken; on one that is, a
    * live anchor puts it live or nudges it, a rejoin anchor puts it on that
    * rejoin from the anchor's time.
    */
@@ -1622,7 +1774,11 @@ export class Wildlife {
     if (!Number.isFinite(T)) throw new Error(`Wildlife: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (by === null) return
     if (!LIVE_MODES.has(mode) && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
+    if (anchor.length !== 11) throw new Error(`Wildlife: an anchor of ${anchor.length} fields, not 11: ${JSON.stringify(anchor)}`)
     this.anchored.set(key, anchor)
+    const at = anchor[10], was = this.scars.get(key)
+    const hurt = at !== null && !(was && was.at >= at)
+    if (hurt) this.scars.set(key, { hp: anchor[9], at })
     const c = this.byKey.get(key)
     if (!c) return
     if (LIVE_MODES.has(mode)) {
@@ -1630,6 +1786,7 @@ export class Wildlife {
       if (c.live?.mode !== mode) this._golive(c, mode, null, by, now)
       c.live.anchor = anchor
       c.live.by = by
+      if (hurt && now - at < SINGE.pulse) this._say(c, c.sp.hurt)
     } else {
       c.live = c.lure = null
       this._fromAnchor(c, anchor, now)
@@ -1649,6 +1806,22 @@ export class Wildlife {
     this.size = size
   }
 
+  /** Whether this tick her torch has been held in it SINGE.s without a break. */
+  _singed(c) {
+    if (!touches(this.torches, c.sx, c.y, c.sz, c.size)) { c.singe = 0; return false }
+    return (c.singe += TICK_S) >= SINGE.s
+  }
+
+  /** Singed at `now`: SINGE.hp the worse, crying out, and running from her as from a fright, this client its authority. */
+  _burn(c, now) {
+    c.singe = 0
+    const was = this.scars.get(c.key)
+    this.scars.set(c.key, { hp: Math.max(0, (was ? was.hp : SINGE.max) - SINGE.hp), at: now })
+    if (c.live?.mode !== 'flee') this._golive(c, 'flee', null, null, now)
+    c.live.sendTick = tickOf(now)
+    this._say(c, c.sp.hurt)
+  }
+
   /** The anchors this client owes the room since the last call, moved into `into`. */
   pending(into = []) {
     for (const a of this.outbox) into.push(a)
@@ -1660,6 +1833,7 @@ export class Wildlife {
   _step(c, k) {
     const now = k * TICK_S
     c.lx = c.sx; c.lz = c.sz; c.lh = c.sh
+    if (c.act !== 'dead' && (!c.live || c.live.by === null) && this._singed(c)) this._burn(c, now)
     if (c.live) {
       if (c.live.mode !== 'mad' && c.live.by === null && this._maddens(c)) this._golive(c, 'mad', null, null, now)
       this._stepLive(c, k, now)
@@ -1710,7 +1884,7 @@ export class Wildlife {
       tintFor(p, c.key, sp.tint)
       this.batch.add(p.group)
       // Joined where the step already is, so an animal that walks into range is not caught halfway through bowing into a graze it began a minute ago; a one-shot holds its last frame rather than wrapping.
-      p.play(c.clip, c.cue, ONE_SHOT.has(c.clip) ? Math.min(offset, c.cycle - 1e-3) : offset)
+      p.play(c.clip, c.cue, ONE_SHOT.has(c.clip) ? Math.min(offset, c.cycle - 1e-3) : offset * c.pace)
     }
     return c.puppet
   }
@@ -1804,12 +1978,13 @@ export class Wildlife {
    * puppet. `lures` is what the hands hold (hands.js lures, hers and her
    * peers'), the kinds the species want being what they take an interest in.
    */
-  update(hx, hy, hz, now, lures = NO_LURES) {
+  update(hx, hy, hz, now, lures = NO_LURES, torches = NO_LURES) {
     if (!this.loaded) return this.lazy.want()
     if (!Number.isFinite(now)) throw new Error(`Wildlife.update: world time ${now}`)
     const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.1)
     this.last = now
     this.lures = lures
+    this.torches = torches
     this.head.x = hx
     this.head.y = hy
     this.head.z = hz
@@ -1838,11 +2013,19 @@ export class Wildlife {
     for (const t of this.tiles.values()) {
       for (const s of t.spawns) {
         if (now < s.deadUntil) continue
-        // Asleep, it is measured from home; awake, from wherever the score has walked it.
+        // Asleep, it is measured from home; awake, from wherever the score has walked it -- and past its card, not stepped, from where the score has it now, as a joiner waking it would.
         const live = s.slot
-        const dx = (live ? live.x : s.x) - hx
+        let ax = live ? live.x : s.x
+        let az = live ? live.z : s.z
+        if (live && live.lod === CARD_RUNGS && !live.live && !live.rejoin) {
+          const at = this.score.at(s.key, now)
+          poseIn(at.phrase, want - tickAfter(at.start), _farPose)
+          ax = _farPose.x
+          az = _farPose.z
+        }
+        const dx = ax - hx
         const dy = (live ? live.y : s.y) - hy
-        const dz = (live ? live.z : s.z) - hz
+        const dz = az - hz
         const d2 = dx * dx + dy * dy + dz * dz
         // Asleep and past its card range, it stays asleep: the ladder is not asked.
         if (!live && d2 > s.card * s.card) continue
@@ -1876,6 +2059,8 @@ export class Wildlife {
         }
         const c = live ?? this._wake(s, now)
         if (!c) continue
+        // Woken where its score has it, which can be past the card though home is not: it waits there as if it had walked off, or a joiner draws what the others do not.
+        if (!live && critterTier(s.lodSize, Math.hypot(c.x - hx, c.y - hy, c.z - hz), CARD_RUNGS, CARD_RUNGS) === CARD_RUNGS) { c.lod = CARD_RUNGS; continue }
         c.lod = tier
         // A card animal with no puppet left dissolving against it is stepped every CARD_EVERY frames (see the constant); with one, every frame, for the fade; and on its first frame after a placement, for the ground.
         if (tier === LOD_RUNGS && !c.puppet && !Number.isNaN(c.px) && (this.frame + c.id) % CARD_EVERY !== 0) {
@@ -1922,6 +2107,9 @@ export class Wildlife {
         const puppet = this._takePuppet(c, Math.max(0, now - c.stepStart))
         if (!puppet) continue
         puppet.show(tier)
+        const scar = this.scars.get(c.key), red = scar ? redAt(scar.at, now) : 0
+        if (puppet.baked && (red > 0 || c.red)) { tintFor(puppet, c.key, c.sp.tint); reddened(puppet.tint, red) }
+        c.red = red > 0
         _pos.set(c.x, c.y, c.z)
         // The body faces +X, yawed about the world up to its heading. It stands
         // on that up, never on the ground's normal, which is only the plane its
@@ -1932,6 +2120,7 @@ export class Wildlife {
 
         puppet.play(c.clip, c.cue)
         groundFeet(puppet, c, this.walk, PLANTED, probing)
+        puppet.mixer.timeScale = c.pace
         puppet.step(dt)
         // Every frame, whether or not it re-posed: a held puppet slides on in the pose its bone texture holds (puppet.js POSE_EVERY).
         puppet.group.matrix.copy(_mat)

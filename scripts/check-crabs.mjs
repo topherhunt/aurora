@@ -33,7 +33,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS, HUNT } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS, HUNT, GROW, PET } from '../src/v2/render/crabs.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT, hueTurnTint, setTierTint } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
@@ -588,6 +588,55 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   k._play(c, T)
   check(c.hunt === null && Math.hypot(c.x - home.x, c.z - home.z) < 1e-6, 'grown, it walks back onto its spell', `${c.hunt && 'still out'}`)
   k.dispose()
+}
+
+// --- her bug held at a crab: eaten, the crab grown and at her heels, and a peer's client told ---
+{
+  const eaten = []
+  const make = (eat) => new Crabs(scene, height, water, { seed: 11, rocks, cards: new LitterCards(4096), assets: asset, eat })
+  const k = make((l) => { eaten.push(l); return true })
+  const peer = make(() => true)
+  const head = { x: 15, y: HEAD_Y(), z: 0 }
+  k.update(head.x, head.y, head.z, (T += DT))
+  peer.update(head.x, head.y, head.z, T)
+  const c = alive(k).find((g) => g.y >= LEVEL) ?? alive(k)[0]
+  const size0 = c.size
+  const perch = c.perch
+  const member = c.member
+  const fly = { kind: 'butterfly', x: c.x + 3, y: c.y + 0.2, z: c.z, by: null }
+  k.update(head.x, head.y, head.z, (T += DT), true, [fly])
+  check(eaten.length === 0 && k.pets.length === 0, 'a bug held 3 m off is not eaten')
+  const spider = { kind: 'spider', x: c.x, y: c.y + 0.2, z: c.z, by: null }
+  k.update(head.x, head.y, head.z, (T += DT), true, [spider])
+  check(eaten.length === 1 && eaten[0] === spider, 'a spider held at a crab is eaten')
+  check(k.pets.length === 1 && k.pets[0] === c && c.pet.by === null && Math.abs(c.size - size0 * GROW) < 1e-9, `and the crab grows ${GROW}x and is her pet`, `${size0.toFixed(3)} -> ${c.size.toFixed(3)}`)
+  check(c.perch === null && taken.has(`crab${member}`, perch.x, perch.z), 'off its stone, the place in the taken registry')
+  const owed = k.pending()
+  const fed = owed[0]
+  check(owed.length === 1 && fed[7] === 'fed' && fed.length === 14 && fed[8] === null && /^[a-z0-9:,-]{1,32}$/.test(fed[0]) && JSON.stringify(fed).length <= 256, 'and the room is owed one 14-field fed anchor', JSON.stringify(fed))
+  k.update(head.x, head.y, head.z, (T += DT), true, [spider])
+  check(eaten.length === 1, 'a fed pet does not eat again')
+  const walk = (of, to, s) => { for (let i = 0; i < s / DT; i++) of.update(to.x, to.y, to.z, (T += DT), true, [], [{ by: 7, x: to.x, y: to.y, z: to.z }]) }
+  const there = { x: c.x + 6, y: head.y, z: c.z + 2 }
+  walk(k, there, 6)
+  const off = Math.hypot(c.x - there.x, c.z - there.z)
+  check(off < PET.m + 0.3 && off > PET.m - 0.3, `it scuttles after her and stops about ${PET.m} m off`, `${off.toFixed(2)} m`)
+  fed[8] = 7
+  peer.apply(fed, T)
+  const theirs = peer.pets[0]
+  check(peer.pets.length === 1 && theirs.pet.by === 7 && Math.abs(theirs.size - c.size) < 1e-3 && peer.pending().length === 0, 'the peer told of it has the same pet, by the feeder, and owes nobody')
+  peer.apply(fed, T)
+  check(peer.pets.length === 1, 'and a second telling makes no second pet')
+  walk(peer, there, 6)
+  const peerOff = Math.hypot(theirs.x - there.x, theirs.z - there.z)
+  check(peerOff < PET.m + 0.3, 'and it follows the feeder there', `${peerOff.toFixed(2)} m`)
+  const rec = k.take({ dist: 0, c, size: c.size }, Infinity)
+  const took = k.pending()
+  check(rec.kind === 'crab' && k.pets.length === 0 && took.length === 1 && took[0][7] === 'took' && took[0][0] === fed[0], 'taken in hand it is no pet, and the room is told on the same wire')
+  took[0][8] = 7
+  peer.apply(took[0], T)
+  check(peer.pets.length === 0, 'and the peer lets it go too')
+  k.dispose(); peer.dispose()
 }
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

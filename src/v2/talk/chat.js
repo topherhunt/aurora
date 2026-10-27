@@ -33,7 +33,7 @@ export class Chat {
   /** `ctx` as speak.js Conversation's; `trusted` whether a leafkin trusts her (trust.js), `busy` whether they are about something, `approached` whether they came to her. */
   constructor(mind, ctx, { trusted = true, busy = false, approached = false, salt = 0 } = {}) {
     this.mind = mind
-    this.conv = new Conversation(mind, ctx)
+    this.conv = new Conversation(mind, ctx, salt)
     this.trusted = trusted
     this.busy = busy
     this.approached = approached
@@ -57,12 +57,12 @@ export class Chat {
   open() {
     const { mind, conv } = this
     const T = mind.traits
-    if (mind.kind === 'leafkin' && !this.trusted) return this._end(conv._line('Kee? Hmm-hm.', 'talk-shrug', { moment: 'refuse.wary', mood: 'cold' }), 'declined')
-    if (conv._standing() < CHAT.shun) return this._end(conv._line(mind.kind === 'leafkin' ? 'No. Go.' : "I've nothing to say to you.", 'talk-shrug', { moment: 'refuse.wary', mood: 'cold' }), 'declined')
+    if (mind.kind === 'leafkin' && !this.trusted) return this._end(conv._line(conv._lk('wary'), 'talk-shrug', { moment: 'refuse.wary', mood: 'cold' }), 'declined')
+    if (conv._standing() < CHAT.shun) return this._end(conv._line(mind.kind === 'leafkin' ? conv._lk('shun') : "I've nothing to say to you.", 'talk-shrug', { moment: 'refuse.wary', mood: 'cold' }), 'declined')
     const opener = conv.opener()
     // A plea, an errand or a missing child is why they want her; busy or not, they will say it.
     if (opener.quest === undefined && this.busy && this._roll('busy') < CHAT.busy * (1 - T.chattiness)) {
-      return this._end(conv._line(mind.kind === 'leafkin' ? 'Busy-busy! Later.' : pick(this._roll('busy-line'), ["Not now, I've work to do.", 'Sorry, I am in a hurry.', 'Another time.']), 'talk-shrug', { moment: 'mood.busy' }), 'declined')
+      return this._end(conv._line(mind.kind === 'leafkin' ? conv._lk('busy') : pick(this._roll('busy-line'), ["Not now, I've work to do.", 'Sorry, I am in a hurry.', 'Another time.']), 'talk-shrug', { moment: 'mood.busy' }), 'declined')
     }
     if (opener.quest !== undefined) return opener
     // Having come to her, they say plainly what brought them; a chatty one hailed may bring up a rumour unasked.
@@ -78,7 +78,7 @@ export class Chat {
     const topics = [...OPEN_TOPICS, ...Object.keys(TOPICS).filter((t) => TOPICS[t].gated)]
     const rumour = this.conv.say(`lore:${pick(this._roll('rumour'), topics)}`)
     if (rumour.claim === null) return null
-    return { ...rumour, text: `${this.mind.kind === 'leafkin' ? 'Listen!' : 'Have you heard?'} ${rumour.text.replace(/ Glad to help\.$/, '')}` }
+    return { ...rumour, text: `${this.mind.kind === 'leafkin' ? this.conv._lk('rumour') : 'Have you heard?'} ${rumour.text.replace(/ Glad to help\.$/, '')}` }
   }
 
   /** Her sentence `topic` (grid.js) answered. */
@@ -95,7 +95,7 @@ export class Chat {
     }
     const line = this.conv.say(topic)
     if (this.turns < this.patience && this._roll('dismiss') >= CHAT.dismiss[this.conv.tone]) return line
-    const off = this.mind.kind === 'leafkin' ? 'Leafkin go now.' : pick(this._roll('off'), ["That's enough questions.", 'I must get on.', 'Well. I have things to do.'])
+    const off = this.mind.kind === 'leafkin' ? this.conv._lk('off') : pick(this._roll('off'), ["That's enough questions.", 'I must get on.', 'Well. I have things to do.'])
     return this._end({ ...line, text: `${line.text} ${off}` }, 'dismissed')
   }
 }

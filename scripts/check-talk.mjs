@@ -21,6 +21,7 @@ import { Rapport } from '../src/v2/talk/rapport.js'
 import { QuestLog, questsFor, missingChild, MESSAGES } from '../src/v2/talk/quests.js'
 import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
+import { LK } from '../src/v2/talk/leafkin.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -259,6 +260,10 @@ const lc = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }))
 const lself = lc.say('talk:self').text
 check(lself.includes(leaf[0].name) && !/\b(I|I'm|the|a)\b/.test(lself), 'a leafkin speaks pidgin: its own name, no "I", no articles', lself)
 check(!lc.menu().some((c) => c.topic.startsWith('where:title')), 'a leafkin is not asked for the smith')
+const retold = (topic) => new Set(Array.from({ length: 16 }, (_, salt) => new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }), salt).say(topic).text))
+check(retold('talk:self').size >= 3 && retold('lore:striders').size >= 3, 'a leafkin asked the same thing in sixteen talks words it at least three ways', [...retold('talk:self'), ...retold('lore:striders')].join(' / '))
+const pidgin = [...Object.values(LK).flat(), ...Object.values(LORE).flatMap((fs) => fs.flatMap((x) => x.lk ?? []))].filter((l) => /\b(I|I'm|the|a)\b/.test(l))
+check(pidgin.length === 0, 'every leafkin wording keeps to pidgin: no "I", no articles', pidgin.join(' / '))
 
 // --- lore ---
 const folk = all.filter((m) => m.cls === 'folk')

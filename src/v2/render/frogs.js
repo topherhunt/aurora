@@ -40,8 +40,9 @@
 // A LURE HAS IT. A spider, a butterfly or a grasshopper in a hand (hands.js
 // lures, hers and the peers') within LURE_M of a frog takes it off its plan:
 // it CHASEs, one hop at a time, each aimed at the lure and swung by up to
-// CHASE.turn either way so the track is a scribble, and within ORBIT_M of it
-// aimed across instead, so it dances about her feet; afloat, it hops for the
+// CHASE.turn either way so the track is a scribble. Within ORBIT_M of a lure
+// in a hand it STAYs, facing it, now and then hopping in place with a croak;
+// within ORBIT_M of a hob it hops across it instead. Afloat, it hops for the
 // lure off the water. It forgets the lure once the hand is empty or the lure
 // is LURE_FORGET_M off, and REJOINS: a bout laid from where it is to the post
 // of the next segment turn at least REJOIN_MIN_S off, and the plan has it
@@ -59,6 +60,14 @@
 // the release second ('thrown'), then floats WET_PAUSE_S and rejoins; let go
 // unthrown, it drops and rejoins. Either way it ignores hobs CALM_S after.
 //
+// SHE TAKES ONE (hands.js source 'frog'): a bed frog taken is in the taken
+// registry and never regrows. Let go, it is LOOSE: off any bed, it lands, hops
+// off from her and sits there, chasing lures like any frog, until she is
+// RADIUS off. One that EATS the bug in her hand (held within EAT of it) grows
+// GROW and turns loose as her PET, following her (or the peer who fed it) to
+// FOLLOW_M and no nearer. The room hears a release as DROP, a feeding as FED
+// and a loose frog taken as TOOK, each one anchor keyed by the loose frog.
+//
 // A HOP IS HEARD. The frame a frog starts a hop, and the frame one lands in
 // the water off dry ground, it says so to the ear (voices(), ambience.js
 // frogHop and splash); the queue is this frame's only, so nothing said while
@@ -73,6 +82,8 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { GRID_S, hash32, keyHash, phraseRand } from '../../sim/score.js'
+import { DROP, dropWire, snap } from '../creature-net.js'
+import { taken, TOLERANCE_M } from '../taken.js'
 import {
   CRITTER_GLB, LOD_RUNGS, TIER_TINTS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
 } from './critters.js'
@@ -124,6 +135,19 @@ export const LURE_M = 3
 export const LURE_FORGET_M = 8
 export const CHASE = { hops: [1, 1], m: [1.5, 3], dur: [0.22, 0.34], pause: [0.1, 0.45], turn: 1.6 }
 export const ORBIT_M = 0.7
+// Staying at a lure in a hand: each sit `sit` s, then `bob` of the time a hop in place `rise` body lengths high, croaking.
+export const STAY = { sit: [0.5, 1.6], bob: 0.35, dur: 0.3, rise: 0.8 }
+// Her bug is eaten by a frog it is within `m` of across the ground and `dy` above or below; the frog grows by GROW. A pet keeps FOLLOW_M off her, leaping (LEAP's reach) while she is past LURE_M.
+export const EAT = { m: ORBIT_M, dy: 0.5 }
+const BUGS = ['spider', 'butterfly', 'grasshopper']
+export const GROW = 1.1
+export const FOLLOW_M = 1.2
+// A frog let go hops this far on from her before it sits.
+const AWAY_M = [1.5, 3]
+export const FED = 'fed'
+export const TOOK = 'took'
+/** A loose frog's key: where it was let go, to the centimetre, and the way from her it faced. */
+export const dropKey = (x, z, yaw) => `fg@${x.toFixed(2)},${z.toFixed(2)},${Math.round(yaw * 1000)}`
 export const NOTICE_S = 0.3
 export const REJOIN_MIN_S = 2
 const NO_LURES = []
@@ -166,8 +190,9 @@ export class Frogs {
    * @param opts.rocks   Rocks, for blockTopAt; a frog never sits on stone
    * @param opts.ground  TerrainV2 or null: the drawn surface to seat on, falling back to the field
    * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
+   * @param opts.eat     (lure) => true once her hand holding it has lost it (hands.js eatLure)
    */
-  constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null, eat = () => false } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Frogs needs a height field with heightAt, heightAndSlopeAt and snowLineAt')
     }
@@ -184,6 +209,7 @@ export class Frogs {
     this.ground = ground
     this.gver = ground ? ground.groundVersion : 0
     this.seed = seed
+    this.eat = eat
 
     // Wet skin glints: critters.js's glint. One material for every tier; the tiers share the pick's colour map.
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
@@ -225,6 +251,8 @@ export class Frogs {
         rand: null, lured: false, lure: null,
         // A villager's hold on it (villagers.js claims) as last applied: null, 'wait', 'held' or 'thrown'; and the second it heeds hobs again.
         caught: null, calm: -Infinity,
+        // A loose frog's pet bond: null, or `{ by }`, null for her, else the peer who fed it.
+        pet: null,
       })
     }
     this.free = this.slots.slice()
@@ -244,6 +272,13 @@ export class Frogs {
     // Lured sets owed to the room (pendingLured), and the peers' by bed key (applyLured): { by, has }.
     this.owed = []
     this.luredIn = new Map()
+    // The loose frogs (on no bed); the anchors owed the room (pending); the loose keys made or heard here, so a release is not made twice; and whether a peer's anchor is being applied, when nothing is owed back.
+    this.loose = []
+    this.outbox = []
+    this.drops = new Set()
+    this.applying = false
+    // Her, as a pet follows her: her head across the ground.
+    this.me = { kind: 'mate', x: 0, y: 0, z: 0, by: null }
     this.stats = { alive: 0, tiles: 0, overflow: 0, segments: 0 }
     // This frame's one-shots for the ear, drained by voices(): { sound, rule, x, y, z }.
     this.calls = []
@@ -311,8 +346,9 @@ export class Frogs {
    * Returns the field's sample there -- height `h` and the gradient `gx`, `gz`
    * the frog sits across -- with `wet`, on the water the surface `level`, and
    * `shore`, how far from the waterline it is, negative on the water; or null.
+   * A loose frog (`banks` false) may sit anywhere else as well, its `shore` NaN.
    */
-  seat(x, z) {
+  seat(x, z, banks = true) {
     const s = this.height.heightAndSlopeAt(x, z)
     const { h, tan } = s
     if (h > this.height.snowLineAt(x, z) - SNOW_MARGIN) return null
@@ -321,6 +357,7 @@ export class Frogs {
     s.wet = level !== null && h < level
     s.level = s.wet ? level : null
     if (!s.wet && tan > MAX_TAN) return null
+    if (!banks) { s.shore = NaN; return s }
     const shore = this.water.shoreDistAt(x, z, SHORE_M, h, tan)
     if (!(shore < SHORE_M && shore > -SHORE_M)) return null
     s.shore = shore
@@ -356,7 +393,7 @@ export class Frogs {
       const breath = rand() * Math.PI * 2
       // Placed on dry ground only; the water is reached by hopping in.
       const s = this.seat(x, z)
-      if (s === null || s.wet) continue
+      if (s === null || s.wet || taken.has('frog', x, z)) continue
       const f = this.free.pop()
       if (!f) { this.overflow++; continue }
       f.tile = t
@@ -384,6 +421,7 @@ export class Frogs {
       f.lure = null
       f.caught = null
       f.calm = -Infinity
+      f.pet = null
       t.frogs.push(f)
     }
     return t
@@ -411,6 +449,8 @@ export class Frogs {
   place(cx, cz) {
     for (const t of this.tiles.values()) this._leave(t)
     this.tiles.clear()
+    for (const f of this.loose) this.free.push(f)
+    this.loose.length = 0
     this.overflow = 0
     this.head.x = cx
     this.head.z = cz
@@ -472,7 +512,7 @@ export class Frogs {
           const side = Math.sin((rand() * 2 - 1) * bout.turn) * reach
           const x = a.x + ax * reach * k - az * side
           const z = a.z + az * reach * k + ax * side
-          const s = this.seat(x, z)
+          const s = this.seat(x, z, f.tile !== null)
           if (s === null) { laid = false; break }
           spot = this._spot(f, x, z, s)
           spot.yaw = bearing(prev, spot)
@@ -566,10 +606,11 @@ export class Frogs {
    * The lure this frog is on this frame: the nearest of `lures` (hands.js
    * lures) it wants, noticed within LURE_M across the ground and kept to
    * LURE_FORGET_M -- or, for a peer's lure whose bed's lured set names this
-   * frog, kept from LURE_M on. Noticing one takes the frog off its plan;
-   * losing one starts its rejoin.
+   * frog, kept from LURE_M on. A pet with none is on the one it follows
+   * (`mates`: her, then the peers' heads). Noticing one takes the frog off its
+   * plan; losing one starts its rejoin.
    */
-  _notice(f, lures, now) {
+  _notice(f, lures, now, mates) {
     let lure = null
     let best = Infinity
     for (const l of lures) {
@@ -578,13 +619,15 @@ export class Frogs {
       if (d < best) { best = d; lure = l }
     }
     if (lure !== null) {
-      const set = lure.by !== null ? this.luredIn.get(f.tile.key) : undefined
-      const kept = f.lured || (set !== undefined && set.by === lure.by && set.has.has(f.index))
-      if (best <= (kept ? LURE_FORGET_M : LURE_M)) {
-        f.lure = lure
-        if (!f.lured) { f.lured = true; this._startChase(f, now) }
-        return
-      }
+      const set = lure.by !== null && f.tile !== null ? this.luredIn.get(f.tile.key) : undefined
+      const kept = (f.lured && f.lure.kind !== 'mate') || (set !== undefined && set.by === lure.by && set.has.has(f.index))
+      if (best > (kept ? LURE_FORGET_M : LURE_M)) lure = null
+    }
+    if (lure === null && f.pet !== null) lure = mates.find((m) => m.by === f.pet.by) ?? null
+    if (lure !== null) {
+      f.lure = lure
+      if (!f.lured) { f.lured = true; this._startChase(f, now) }
+      return
     }
     if (!f.lured) return
     f.lured = false
@@ -594,26 +637,40 @@ export class Frogs {
 
   /** Off the plan: the phrase playing goes on as the first live one, a sit cut to NOTICE_S at most, and the chase follows it. */
   _startChase(f, now) {
-    if (f.live !== null) { f.live.queue = null; f.live.until = Infinity; return }
+    if (f.live !== null) {
+      const L = f.live
+      if (L.ph.kind === 'sit') L.ph = { kind: 'sit', dur: Math.min(L.ph.dur, now - L.at + NOTICE_S), at: L.ph.at }
+      L.queue = null
+      L.until = Infinity
+      return
+    }
     const ph = f.ph
     const at = now - f.t
     const live = ph.kind === 'sit' ? { kind: 'sit', dur: Math.min(ph.dur, f.t + NOTICE_S), at: ph.at } : ph
     f.live = { ph: live, at, queue: null, until: Infinity }
   }
 
-  /** The chase's next phrase after `prev`: after a hop the beat, after a sit a hop at the lure -- or across it, a quarter turn off either way, within ORBIT_M of it -- swung by up to CHASE.turn and landing on a seat, dry or wet; none of three found, the beat again. */
+  /** The chase's next phrase after `prev`: after a hop the beat, after a sit a hop at the lure -- swung by up to CHASE.turn and landing on a seat, dry or wet; none of three found, the beat again. Within ORBIT_M of a hand's lure it stays (STAY), within ORBIT_M of a hob it hops a quarter turn across it. */
   _chaseNext(f, prev) {
     const spot = prev.kind === 'sit' ? prev.at : prev.to
-    if (prev.kind === 'hop') return { kind: 'sit', dur: between(f.rand, CHASE.pause), at: spot }
     const l = f.lure
+    const gap = Math.hypot(l.x - spot.x, l.z - spot.z)
+    if (l.kind === 'mate' && gap < FOLLOW_M) return { kind: 'sit', dur: between(f.rand, STAY.sit), at: spot }
+    const near = gap < ORBIT_M
+    if (near && l.kind !== 'hob') {
+      if (prev.kind === 'hop' || spot.wet || f.rand() >= STAY.bob) return { kind: 'sit', dur: between(f.rand, STAY.sit), at: spot }
+      const to = { ...spot, yaw: bearing(spot, l) }
+      return { kind: 'hop', dur: STAY.dur, from: spot, to, rise: STAY.rise * f.size, bout: CHASE, croak: true }
+    }
+    if (prev.kind === 'hop') return { kind: 'sit', dur: between(f.rand, CHASE.pause), at: spot }
     let heading = bearing(spot, l)
-    if (Math.hypot(l.x - spot.x, l.z - spot.z) < ORBIT_M) heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 2)
-    const reach = between(f.rand, CHASE.m) * f.size
+    if (near) heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 2)
+    const reach = between(f.rand, l.kind === 'mate' && gap > LURE_M ? LEAP.m : CHASE.m) * f.size
     for (let attempt = 0; attempt < 3; attempt++) {
       const a = heading + (f.rand() - 0.5) * CHASE.turn
       const x = spot.x + Math.cos(a) * reach
       const z = spot.z - Math.sin(a) * reach
-      const s = this.seat(x, z)
+      const s = this.seat(x, z, f.tile !== null)
       if (s === null) {
         // Blocked that way: swing a quarter to three-quarters of a turn and try again.
         heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + f.rand() * Math.PI / 2)
@@ -630,11 +687,14 @@ export class Frogs {
    * where it ends a bout is laid to the post of the first segment turn at
    * least REJOIN_MIN_S past that, the frog sitting there until the turn puts
    * it on its plan. No bout to be laid, it sits where it is until the turn.
+   * A loose frog has no plan, and sits where it is from then on.
    */
   _startRejoin(f, now) {
     const L = f.live
     if (L.ph.kind === 'sit') L.ph = { kind: 'sit', dur: now - L.at, at: L.ph.at }
-    Object.assign(L, this._rejoin(f, L.ph.kind === 'sit' ? L.ph.at : L.ph.to, L.at + L.ph.dur))
+    const end = L.ph.kind === 'sit' ? L.ph.at : L.ph.to
+    if (f.tile === null) Object.assign(L, { queue: [{ kind: 'sit', dur: Infinity, at: end }], until: Infinity })
+    else Object.assign(L, this._rejoin(f, end, L.at + L.ph.dur))
   }
 
   /** The rejoin from spot `from` at second `end`: `{ queue, until }`, the bout to the post of the first turn REJOIN_MIN_S past it and the sit there to the turn. */
@@ -736,7 +796,189 @@ export class Frogs {
     this._live(f, now)
   }
 
+  // --- her hands --------------------------------------------------------------
+
+  /** The drawn frog nearest a hand at (x, y, z) whose body, a ball of its size, is within `reach`, and smaller than `maxSize`: `{ dist, f, size }` for take(), or null. Not one a villager has. For hands.js. */
+  pickAt(x, y, z, reach, maxSize) {
+    if (!this.batch.visible) return null
+    let best = null
+    let bestD = reach
+    const consider = (f) => {
+      if (f.size >= maxSize || f.lod === LOD_TIERS || f.caught !== null) return
+      const d = Math.hypot(f.x - x, f.y - y, f.z - z) - f.size * 0.5
+      if (d < bestD) { bestD = d; best = { dist: Math.max(0, d), f, size: f.size } }
+    }
+    for (const t of this.tiles.values()) for (const f of t.frogs) consider(f)
+    for (const f of this.loose) consider(f)
+    return best
+  }
+
+  /** The frog of a pickAt() hit into her hand: a bed's put in the taken registry, a loose one's going told to the room. The record for hands.js; only one under `stowMax` m stows. */
+  take(hit, stowMax) {
+    const f = hit.f
+    const k = f.size / this.span
+    const rec = { kind: 'frog', name: 'frog', size: f.size, geometry: this.mesh.geometry, material: this.material, attrs: { aHue: [f.hue] }, color: [f.r, f.g, f.b], scale: [k, k, k], stowable: f.size < stowMax }
+    if (f.tile !== null) {
+      taken.add('frog', f.homeX, f.homeZ)
+      this._drop(f)
+    } else {
+      this._tell(f, TOOK, this.now, null)
+      this._unloose(f)
+    }
+    return rec
+  }
+
+  /** A peer took the bed frog whose home is (x, z): taken here too, drawn or not. True when a resident bed has it. For hands-net.js. */
+  evict(key, x, z) {
+    if (key !== 'frog') return false
+    const f = this._bedFrog(x, z)
+    if (f === null) return false
+    this.take({ dist: 0, f, size: f.size }, Infinity)
+    return true
+  }
+
+  /** The geometry and material a packed frog is drawn with, or null until the asset lands. For hands.js. */
+  dress(slot) {
+    if (slot.kind !== 'frog') throw new Error(`Frogs.dress: not a frog, ${slot.kind}`)
+    if (!this.loaded) return null
+    return { geometry: this.mesh.geometry, material: this.material }
+  }
+
+  /**
+   * Let a taken frog go at (x, y, z), `head` her head: it drops to the ground
+   * under it and hops on AWAY_M from her, loose. Its key is the drop to the
+   * centimetre and the way from her, its noise rolled from that, so every
+   * client told of the release watches the one frog. False only when the pool
+   * is empty, and hands.js drops it as a thing.
+   */
+  release(rec, x, y, z, head, now = this.now) {
+    if (rec.kind !== 'frog') throw new Error(`Frogs.release: not a frog, ${rec.kind}`)
+    x = snap(x); y = snap(y); z = snap(z); now = snap(now)
+    const yaw = snap(bearing({ x: snap(head.x), z: snap(head.z) }, { x, z }))
+    // Dressed as the anchor will carry it, so the frog a peer lets go is this one to the bit.
+    const f = this._loosen({ x, z, yaw }, { size: snap(rec.size), hue: snap(rec.attrs.aHue[0]), color: rec.color.map(snap) }, { x, y, z, yaw }, now, true)
+    if (f === null) return false
+    this._tell(f, DROP, now, null, { x, y, z, yaw })
+    return true
+  }
+
+  /** The bed frog whose home is (x, z), or null. */
+  _bedFrog(x, z) {
+    for (const t of this.tiles.values()) {
+      for (const f of t.frogs) if (Math.abs(f.homeX - x) < TOLERANCE_M && Math.abs(f.homeZ - z) < TOLERANCE_M) return f
+    }
+    return null
+  }
+
+  /**
+   * A loose frog keyed by `drop`, dressed as `look`, let go at `from` on second
+   * `now`: it falls to the ground under it, and, `away`, hops on AWAY_M from
+   * where it faced before it sits for good. Null when the pool is empty.
+   */
+  _loosen(drop, look, from, now, away) {
+    const f = this.free.pop()
+    if (!f) { this.overflow++; return null }
+    const key = dropKey(drop.x, drop.z, drop.yaw)
+    Object.assign(f, { tile: null, key, index: -1, offset: 0, homeX: from.x, homeZ: from.z, size: look.size, hue: look.hue, r: look.color[0], g: look.color[1], b: look.color[2] })
+    Object.assign(f, { breath: (keyHash(key) % 628) / 100, lod: LOD_TIERS, seg: null, lured: false, lure: null, caught: null, calm: -Infinity, pet: null, drop })
+    f.rand = mulberry32(hash32(keyHash(key), 0x1e))
+    this.drops.add(key)
+    const s = this.seat(from.x, from.z, false)
+    const to = s === null ? this._groundSpot(f, from.x, from.z, from.yaw) : this._spot(f, from.x, from.z, s, from.yaw)
+    let hops = null
+    let end = to
+    if (away) {
+      const r = between(f.rand, AWAY_M)
+      const ax = from.x + Math.cos(from.yaw) * r, az = from.z - Math.sin(from.yaw) * r
+      const as = this.seat(ax, az, false)
+      if (as !== null) hops = this._lay(f, f.rand, to, this._spot(f, ax, az, as, from.yaw), Infinity)
+      if (hops !== null && hops.length > 0) end = hops[hops.length - 1].to
+    }
+    const fall = Math.max(FREEZE_HOP_S, Math.sqrt((2 * Math.max(0, from.y - to.y)) / 9.8))
+    const start = { x: from.x, y: from.y, z: from.z, h: from.y, wet: false, level: null, nx: 0, ny: 1, nz: 0, yaw: from.yaw }
+    f.live = { ph: { kind: 'hop', dur: fall, from: start, to, rise: 0, bout: LEAP }, at: now, queue: [{ kind: 'sit', dur: NOTICE_S, at: to }, ...(hops ?? []), { kind: 'sit', dur: Infinity, at: end }], until: Infinity }
+    this._pose(f, f.live.ph, 0)
+    this.loose.push(f)
+    return f
+  }
+
+  _unloose(f) {
+    const i = this.loose.indexOf(f)
+    if (i < 0) throw new Error(`Frogs: loose frog ${f.key} is not in the loose list`)
+    this.loose.splice(i, 1)
+    f.pet = null
+    this.free.push(f)
+  }
+
+  /** Frog `f` ate the bug in the hand of `by` (null hers) on second `now`: grown by GROW, loose under `drop` (by default where it is), that one's pet. */
+  _feed(f, by, now, drop = null) {
+    const home = f.tile !== null ? { x: f.homeX, z: f.homeZ } : null
+    if (f.tile !== null) {
+      if (!taken.has('frog', f.homeX, f.homeZ)) taken.add('frog', f.homeX, f.homeZ)
+      const list = f.tile.frogs
+      list.splice(list.indexOf(f), 1)
+      f.tile = null
+      this.loose.push(f)
+      f.drop = drop ?? { x: snap(f.x), z: snap(f.z), yaw: snap(f.yaw) }
+      f.key = dropKey(f.drop.x, f.drop.z, f.drop.yaw)
+      f.rand = mulberry32(hash32(keyHash(f.key), 0x1e))
+      this.drops.add(f.key)
+    }
+    f.size *= GROW
+    f.pet = { by }
+    if (f.live === null) this._startChase(f, now)
+    f.lured = false
+    f.lure = null
+    this._startRejoin(f, now)
+    if (by === null) this._tell(f, FED, now, home)
+  }
+
   // --- the room ---------------------------------------------------------------
+
+  /**
+   * Loose frog `f` to the room as one anchor in `mode`: `[wire, T, x, y, z,
+   * yaw, 0, mode, by, size, hue, r, g, b, dropX, dropZ, dropYaw, homeX,
+   * homeZ]`, where it is (a DROP: where the hand let it go), its look, the
+   * drop that keys it, and for a bed frog fed the home it is evicted from.
+   * Nothing while a peer's anchor is being applied.
+   */
+  _tell(f, mode, T, home, at = f) {
+    if (this.applying) return
+    const d = f.drop
+    this.outbox.push([dropWire('fg', f.key), snap(T), snap(at.x), snap(at.y), snap(at.z), snap(at.yaw), 0, mode, null, snap(f.size), snap(f.hue), snap(f.r), snap(f.g), snap(f.b), d.x, d.z, d.yaw, home ? snap(home.x) : null, home ? snap(home.z) : null])
+  }
+
+  /** The anchors owed since the last call, moved into `into`. For creature-net.js. */
+  pending(into = []) {
+    for (const a of this.outbox) into.push(a)
+    this.outbox.length = 0
+    return into
+  }
+
+  /** A peer's loose frog: let go (DROP) where their hand did, fed (FED) and following them, or taken (TOOK). For creature-net.js. */
+  apply(anchor, now) {
+    if (anchor.length !== 19) throw new Error(`Frogs: an anchor of ${anchor.length} fields, not 19: ${JSON.stringify(anchor)}`)
+    const [, T, x, y, z, yaw, , mode, by, size, hue, r, g, b, dx, dz, dyaw, hx, hz] = anchor
+    if (by === null) return
+    if (![T, x, y, z, yaw, size, hue, r, g, b, dx, dz, dyaw].every(Number.isFinite)) throw new Error(`Frogs: an anchor short of its numbers: ${JSON.stringify(anchor)}`)
+    const key = dropKey(dx, dz, dyaw)
+    const f = this.loose.find((l) => l.key === key) ?? null
+    const look = { size, hue, color: [r, g, b] }
+    this.applying = true
+    try {
+      if (mode === DROP) {
+        if (!this.drops.has(key)) this._loosen({ x: dx, z: dz, yaw: dyaw }, look, { x, y, z, yaw }, T, true)
+      } else if (mode === FED) {
+        if (f !== null && f.pet !== null) return
+        const fed = f ?? (hx !== null ? this._bedFrog(hx, hz) : null) ?? this._loosen({ x: dx, z: dz, yaw: dyaw }, { ...look, size: size / GROW }, { x, y, z, yaw }, T, false)
+        if (fed !== null) this._feed(fed, by, now, { x: dx, z: dz, yaw: dyaw })
+      } else if (mode === TOOK) {
+        if (f !== null) this._unloose(f)
+      } else throw new Error(`Frogs: no anchor mode ${mode}`)
+    } finally {
+      this.applying = false
+    }
+  }
 
   /** The lured sets owed since the last call, pushed onto `into` (creature-net.js): `[bedKey, 'fg', null, indices]`, one a bed. */
   pendingLured(into = []) {
@@ -774,15 +1016,68 @@ export class Frogs {
   _heard(f, prev, hx, hy, hz) {
     if (prev === null || f.ph === prev || Math.hypot(f.x - hx, f.y - hy, f.z - hz) > HEAR_M) return
     if (prev.kind === 'hop' && prev.to.wet && !prev.from.wet) this.calls.push({ sound: 'splash', rule: 'splash', x: prev.to.x, y: prev.to.level, z: prev.to.z })
-    if (f.ph.kind === 'hop') this.calls.push({ sound: 'frogBoing', rule: 'frogHop', x: f.x, y: f.y, z: f.z })
+    if (f.ph.kind === 'hop') this.calls.push(f.ph.croak ? { sound: Math.random() < 0.5 ? 'croak1' : 'croak2', rule: 'frogCroak', x: f.x, y: f.y, z: f.z } : { sound: 'frogBoing', rule: 'frogHop', x: f.x, y: f.y, z: f.z })
   }
 
-  /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame and the hobs', the spiders, butterflies, grasshoppers and hobs among them chased; `claims` the villagers' holds on frogs by key. */
-  update(hx, hy, hz, now, lures = NO_LURES, claims = NO_CLAIMS) {
+  /** Whether frog `f` eats the bug in her hand it is on: at its face (EAT), and hands.js gives it up. */
+  _eats(f, now) {
+    const l = f.lure
+    if (!f.lured || l.by !== null || !BUGS.includes(l.kind)) return false
+    if (Math.hypot(l.x - f.x, l.z - f.z) > EAT.m || Math.abs(l.y - f.y) > EAT.dy || !this.eat(l)) return false
+    this._feed(f, null, now)
+    return true
+  }
+
+  /** Frog `f` into its tier's next instance, `counts` the instances written per tier, unless too small to be drawn from (hx, hy, hz). */
+  _draw(f, counts, breath, bob, hx, hy, hz) {
+    let sy = 1
+    let sx = 1
+    let sz = 1
+    // The surface's bob, ridden while afloat.
+    let lift = 0
+    if (f.state === 'sit') {
+      if (f.wet) {
+        lift = BOB_AMP * Math.sin(bob + f.breath)
+      } else {
+        // The breath: a swell that is mostly height, a little girth.
+        const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
+        sy = 1 + s
+        sx = sz = 1 + s * 0.4
+      }
+    } else {
+      // Stretched along the leap in the air, flattened a little on landing.
+      const s = Math.sin(Math.PI * f.u)
+      sx = 1 + 0.25 * s
+      sy = 1 - 0.15 * s
+    }
+    // The tier its apparent size calls for; past the ladder's foot it is not drawn.
+    f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
+    if (f.lod === LOD_TIERS) return
+    const k = f.size / this.span
+    _pos.set(f.x, f.y + lift, f.z)
+    // Yaw about the world up, then that up tilted onto the ground's normal.
+    _quat.setFromAxisAngle(UP, f.yaw)
+    _tilt.setFromUnitVectors(UP, _nrm.set(f.nx, f.ny, f.nz))
+    _quat.premultiply(_tilt)
+    _scl.set(k * sx, k * sy, k * sz)
+    _mat.compose(_pos, _quat, _scl)
+    const tier = this.tiers[f.lod]
+    const w = counts[f.lod]++
+    _mat.toArray(tier.instanceMatrix.array, w * 16)
+    const c = tier.instanceColor.array
+    c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
+    this.hues[f.lod].array[w] = f.hue
+  }
+
+  /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame and the hobs', the spiders, butterflies, grasshoppers and hobs among them chased; `claims` the villagers' holds on frogs by key; `peers` the peers' heads `{ x, y, z, by }`, which their pets follow. */
+  update(hx, hy, hz, now, lures = NO_LURES, claims = NO_CLAIMS, peers = NO_LURES) {
     if (!Number.isFinite(now)) throw new Error(`Frogs.update: bad time ${now}`)
     this.head.x = hx
     this.head.z = hz
     this.now = now
+    this.me.x = hx; this.me.y = hy; this.me.z = hz
+    const mates = [this.me]
+    for (const p of peers) mates.push({ kind: 'mate', x: p.x, y: p.y, z: p.z, by: p.by })
     this.calls.length = 0
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
@@ -821,46 +1116,24 @@ export class Frogs {
         const claim = claims.get(f.key)
         if (claim !== undefined || f.caught !== null) this._caught(f, claim, now)
         this._heard(f, prev, hx, hy, hz)
-        if (f.caught === null) this._notice(f, lures, now)
-        let sy = 1
-        let sx = 1
-        let sz = 1
-        // The surface's bob, ridden while afloat.
-        let lift = 0
-        if (f.state === 'sit') {
-          if (f.wet) {
-            lift = BOB_AMP * Math.sin(bob + f.breath)
-          } else {
-            // The breath: a swell that is mostly height, a little girth.
-            const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath + f.breath))
-            sy = 1 + s
-            sx = sz = 1 + s * 0.4
-          }
-        } else {
-          // Stretched along the leap in the air, flattened a little on landing.
-          const s = Math.sin(Math.PI * f.u)
-          sx = 1 + 0.25 * s
-          sy = 1 - 0.15 * s
+        if (f.caught === null) {
+          this._notice(f, lures, now, mates)
+          // Fed, it is loose now, and drawn with them.
+          if (this._eats(f, now)) continue
         }
-        // The tier its apparent size calls for; past the ladder's foot it is not drawn.
-        f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
-        if (f.lod === LOD_TIERS) continue
-        const k = f.size / this.span
-        _pos.set(f.x, f.y + lift, f.z)
-        // Yaw about the world up, then that up tilted onto the ground's normal.
-        _quat.setFromAxisAngle(UP, f.yaw)
-        _tilt.setFromUnitVectors(UP, _nrm.set(f.nx, f.ny, f.nz))
-        _quat.premultiply(_tilt)
-        _scl.set(k * sx, k * sy, k * sz)
-        _mat.compose(_pos, _quat, _scl)
-        const tier = this.tiers[f.lod]
-        const w = counts[f.lod]++
-        _mat.toArray(tier.instanceMatrix.array, w * 16)
-        const c = tier.instanceColor.array
-        c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
-        this.hues[f.lod].array[w] = f.hue
+        this._draw(f, counts, breath, bob, hx, hy, hz)
       }
       this._owe(t, now)
+    }
+    for (let i = this.loose.length - 1; i >= 0; i--) {
+      const f = this.loose[i]
+      if (Math.hypot(f.x - hx, f.z - hz) > RADIUS) { this._unloose(f); continue }
+      const prev = f.ph
+      this._live(f, now)
+      this._heard(f, prev, hx, hy, hz)
+      this._notice(f, lures, now, mates)
+      if (f.pet === null) this._eats(f, now)
+      this._draw(f, counts, breath, bob, hx, hy, hz)
     }
     // A tier that held nothing and holds nothing is not re-uploaded.
     this.tiers.forEach((tier, k) => {

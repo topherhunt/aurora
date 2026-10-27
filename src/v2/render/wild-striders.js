@@ -3,11 +3,12 @@ import { lazyLoad } from '../lazy-load.js'
 import { CHAPTER_S, hash32, keyHash, swing } from '../../sim/score.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S } from './snowmen.js'
-import { atFace, clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
+import { clearAhead, dashAim, fromSide, Striders, loadStriderGlb, mountFields, poseMatrix, saddleOf, STRIDER, striderSize } from './striders.js'
 import { FALL, fallDamage } from '../vitals.js'
 import { MAX_TRAVEL_S } from './avatar-rig.js'
-import { solverStub } from './baked-puppet.js'
+import { solverStub, tintFor } from './baked-puppet.js'
 import { EAT } from '../eating.js'
+import { SINGE, redAt, reddened, touches } from '../singe.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -18,8 +19,8 @@ export const WILD = {
   home: 12, amble: 0.9, posts: 5, grid: 16, walking: 0.7, snap: 30,
   // Wary within `see` m of her head, charges within `strike`, calm again past `calm`; backs off at `back` m/s once it faces her within `facing` rad.
   see: 10, strike: 4, calm: 12, back: 0.8, facing: 0.5,
-  // One tamed by anyone never charges: one that does not trust her, her head within `m` m from its side or behind (from its front she may take its rein) and no fish of hers in reach, shrieks and runs off `run` m at `pace` of its run, calms there, and will not again for `cool` s.
-  shy: { m: 3, run: [3, 10], pace: 0.7, cool: 5 },
+  // One tamed by anyone never charges and trusts every player. Singed (SINGE), or a crab or spider in her hand within `scare` m, a tamed one shies: runs off `run` m at `pace` of its run and calms there; a wild one flees.
+  shy: { run: [3, 5], pace: 0.7, scare: 4, kinds: new Set(['crab', 'spider']) },
   // It charges at `pace` of its run until `close` m off (times its size) or `s` s on, then strikes: her hurt `harm` at the clip's `lunge` s if within `reach` m more. Then it flees `s` seconds or `m` metres.
   charge: { pace: 0.6, close: 1.2, s: 2.5, reach: 1.2 }, harm: 10, lunge: 0.66, flee: { s: 6, m: 40 },
   // A fish of hers within `see` makes it meek, at its mouth (STRIDER.bite) it eats; past `lose` it gets up again. The sit clip holds between `hold`.
@@ -66,8 +67,10 @@ const MORE_CLIPS = ['peck', 'sit', 'attack']
 const WIRE = 'ws:'
 // The live states a client anchors to the room; `rejoin` is one gone calm there.
 const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'led', 'ridden', 'panic', 'shy', 'swim']
-// The states her chanterelle turns to a charge: not one led, ridden, eating, fleeing after a strike, panicked or afloat.
-const MADDENS = new Set(['calm', 'wary', 'follow', 'meek', 'shy'])
+// The states her chanterelle turns to a charge: not one led, ridden, eating, fleeing, shying, panicked or afloat.
+const MADDENS = new Set(['calm', 'wary', 'follow', 'meek'])
+// The states a crab or spider in her hand scares it out of (WILD.shy).
+const SCARES = new Set(['calm', 'wary', 'follow', 'meek', 'led', 'charge'])
 // What a calm one does at its spot, weighted, each played one to three times and then stood idle.
 const ACTS = [['peck', 0.45], ['idle', 0.5], ['fidget', 0.05]]
 const _calm = { x: 0, z: 0, heading: 0, speed: 0, act: 'idle', seg: 0 }
@@ -172,6 +175,9 @@ export class WildStriders {
     this.outbox = []
     // Keys tamed by any player in the room, as its anchors say (_owe); hers are bond.trusted besides.
     this.tamed = new Set()
+    // Each singed one's { hp, at }, as hurt here or as the room's anchors say, kept past its leaving the sim; and her lit torch tips (update).
+    this.scars = new Map()
+    this.torches = []
     this.warned = false
     // Whether every one of hers within EAT.chanterelle.m charges her, tamed or not (madden).
     this.maddened = false
@@ -281,7 +287,7 @@ export class WildStriders {
     const h = keyHash(key)
     const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1), key), {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
-      state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, shyAt: -Infinity, aim: 0,
+      state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, singe: 0, red: false, aim: 0,
       // Room time this client took it live from calm (apply's tie-break), and (a peer's ridden copy) until its relayed shake ends.
       since: 0, shake: 0, trip: null,
       look: { yaw: 0, pitch: 0, roll: 0 }, want: { yaw: 0, pitch: 0, roll: 0 },
@@ -349,11 +355,13 @@ export class WildStriders {
    * head, `feet` her rig's origin, `lures` hands.js lures this frame,
    * `seconds` the room's clock and `peers` the peers' heads (main.js
    * peerHeadsNow): one live on a peer is stepped against that peer's head.
+   * `torches` are her lit torch tips (SINGE).
    */
-  update(dt, head, feet, lures, seconds, peers) {
+  update(dt, head, feet, lures, seconds, peers, torches) {
     if (!this.loaded) return this.lazy.want()
     this.now = seconds
     this.peers = peers
+    this.torches = torches
     this.feet.x = feet.x
     this.feet.z = feet.z
     this._scan(feet.x, feet.z)
@@ -387,6 +395,9 @@ export class WildStriders {
         p.tack = m.tack
       }
       Object.assign(p.solver.look, m.look)
+      const scar = this.scars.get(m.key), red = scar ? redAt(scar.at, this.now) : 0
+      if (p.baked && (red > 0 || m.red)) { tintFor(p, m.hue, STRIDER.tint); reddened(p.tint, red) }
+      m.red = red > 0
       if (m.pose.clip === 'sit') {
         const a = p.actions.get('sit'), [lo, hi] = WILD.fish.hold
         if (m.state === 'meek' && a.time > hi) a.time = lo
@@ -441,8 +452,6 @@ export class WildStriders {
       // A peer's copy runs on till the owner's rejoin stops it, rather than stopping short on its own roll.
       m.run = m.by === null ? between(WILD.shy.run) : Infinity
       this._set(m, 'run', WILD.shy.pace * this.runV * p.size)
-      this._say(m, 'striderChirp1', 1.6, 1)
-      this._say(m, 'striderWhine', 1.3, 0.8)
     }
     if (m.by !== null) return
     if (state !== 'calm') this._owe(m, state)
@@ -467,6 +476,34 @@ export class WildStriders {
   _saddle(m) { return m.tack ? this.saddles.full : this.saddles.bare }
 
   _chirp(m, rate, gain) { this._say(m, Math.random() < 0.5 ? 'striderChirp1' : 'striderChirp2', rate, gain) }
+
+  /** Its cry, singed. */
+  _cry(m) {
+    this._say(m, 'striderChirp2', between([1.6, 1.8]), 1)
+    this._say(m, 'striderWhine', 1.4, 0.9)
+  }
+
+  /** Whether her torch has been held to it SINGE.s: a frame touching adds `dt`, one not starts it over. */
+  _singed(m, dt) {
+    const p = m.pose
+    m.singe = touches(this.torches, p.x, p.y, p.z, this.inner.asset.sizeM * p.size) ? m.singe + dt : 0
+    return m.singe >= SINGE.s
+  }
+
+  /** Singed: SINGE.hp the less, a cry, and off, a few metres if `tamed`, else fled. */
+  _burn(m, tamed) {
+    m.singe = 0
+    const was = this.scars.get(m.key)
+    this.scars.set(m.key, { hp: Math.max(0, (was ? was.hp : SINGE.max) - SINGE.hp), at: this.now })
+    this._cry(m)
+    this._enter(m, tamed ? 'shy' : 'flee')
+  }
+
+  /** Whether a crab or spider in her hand is within WILD.shy.scare of it. */
+  _scared(m, lures) {
+    const p = m.pose, S = WILD.shy
+    return lures.some((l) => l.by === null && S.kinds.has(l.kind) && Math.hypot(l.x - p.x, l.z - p.z) < S.scare)
+  }
 
   /** Its own lure of hers nearest it within `reach`: a fish in her hand. */
   _fish(m, lures, reach) {
@@ -534,7 +571,13 @@ export class WildStriders {
     // A sphere, its feet to hers (at her head across the ground), so one ignores her flying overhead.
     const near = Math.hypot(p.x - head.x, p.y - feet.y, p.z - head.z)
     const face = Math.atan2(-(head.z - p.z), head.x - p.x)
-    const trusted = mine && this.bond.trusted.has(m.key), tamed = mine && this.isTamed(m.key)
+    const trusted = mine && this.isTamed(m.key)
+    if (mine && m.state !== 'swim' && this._singed(m, dt)) { this._burn(m, trusted); return }
+    if (mine && SCARES.has(m.state) && this._scared(m, lures)) {
+      this._say(m, 'striderChirp1', 1.6, 1)
+      this._enter(m, trusted ? 'shy' : 'flee')
+      return
+    }
     if (mine && this.maddened && near < EAT.chanterelle.m && MADDENS.has(m.state)) { this._enter(m, 'charge'); return }
     switch (m.state) {
       case 'panic': {
@@ -548,8 +591,7 @@ export class WildStriders {
           if (trusted && this._offered(m, lures)) { this._enter(m, 'eat'); return }
           const fish = trusted ? null : this._fish(m, lures, W.fish.see)
           if (fish) { m.lure = fish; this._enter(m, 'meek'); return }
-          if (tamed) {
-            if (!trusted && near < W.shy.m && !atFace(p, head) && this.now >= m.shyAt) { this._enter(m, 'shy'); return }
+          if (trusted) {
             if (m.state === 'wary') { this._enter(m, 'calm'); return }
           } else {
             if (near < W.strike) { this._enter(m, this.struck.has(m.key) ? 'flee' : 'charge'); return }
@@ -598,10 +640,10 @@ export class WildStriders {
       }
       case 'shy': {
         // Away from her until it has run its way or the way is shut, then calm where it stopped.
-        const v = WILD.shy.pace * this.runV * p.size
+        const v = W.shy.pace * this.runV * p.size
         const moved = (m.run -= v * dt) > 0 && this._dash(m, face + Math.PI, v, dt, W.turn * 2)
         this._set(m, moved ? 'run' : 'idle', moved ? v : 0)
-        if (mine && !moved) { m.shyAt = this.now + W.shy.cool; this._enter(m, 'calm') }
+        if (mine && !moved) this._enter(m, 'calm')
         return
       }
       case 'meek': {
@@ -624,7 +666,7 @@ export class WildStriders {
         }
         if (m.t >= this.dur.peck) {
           if (trusted) this._grow(m)
-          else this.bond.trusted.add(m.key)
+          this.bond.trusted.add(m.key)
           this._chirp(m, 1.25, 1)
           this._enter(m, m.tack ? 'calm' : 'follow')
         }
@@ -896,6 +938,11 @@ export class WildStriders {
   /** Whether any player in the room has tamed the strider keyed `key`. */
   isTamed(key) { return this.bond.trusted.has(key) || this.tamed.has(key) }
 
+  /** Her taming of the tied town strider keyed `key` standing at `pose`, told the room as a rejoin: live on no client, apply only marks it tamed. */
+  tellTamed(key, pose) {
+    this.outbox.push([WIRE + key, snap(this.now), snap(pose.x), snap(pose.y), snap(pose.z), snap(pose.heading), -1, 'rejoin', null, snap(pose.size), 0, 1, 0, 0, 0, null, null])
+  }
+
   /** Her chanterelle (eating.js): `on`, those near her charge her; `dark` 0..1, every body drawn that much toward black. */
   madden(on, dark) {
     this.maddened = on
@@ -905,8 +952,8 @@ export class WildStriders {
   /** Its anchor owed the room now, in `mode`, and kept as the room's latest for it. */
   _owe(m, mode) {
     const p = m.pose
-    const shake = m === this.ridden ? Math.max(0, m.ride.fid) : 0
-    const a = [WIRE + m.key, snap(this.now), snap(p.x), snap(p.y), snap(p.z), snap(p.heading), -1, mode, null, snap(p.size), snap(m.t), this.isTamed(m.key) ? 1 : 0, snap(m.aim), snap(m.since), snap(shake)]
+    const shake = m === this.ridden ? Math.max(0, m.ride.fid) : 0, scar = this.scars.get(m.key)
+    const a = [WIRE + m.key, snap(this.now), snap(p.x), snap(p.y), snap(p.z), snap(p.heading), -1, mode, null, snap(p.size), snap(m.t), this.isTamed(m.key) ? 1 : 0, snap(m.aim), snap(m.since), snap(shake), scar ? scar.hp : null, scar ? scar.at : null]
     this.outbox.push(a)
     // Alone in the room nothing drains it: only the latest few could matter.
     if (this.outbox.length > 64) this.outbox.shift()
@@ -916,7 +963,8 @@ export class WildStriders {
 
   /**
    * An anchor heard from the room, `[key, T, x, y, z, heading, -1, mode, by,
-   * size, t, tamed, aim, since, shake]`. A live one puts the body live on that
+   * size, t, tamed, aim, since, shake, hp, hurtAt]` (hp and hurtAt null for one
+   * never singed). A live one puts the body live on that
    * peer's player where the anchor has it (a town's strider a peer rides lent
    * here first); a rejoin calms it where the anchor had it. One ridden by her
    * keeps its own; so does one live on this client, unless the peer took it
@@ -927,14 +975,16 @@ export class WildStriders {
     if (by === null) return
     if (!Number.isFinite(T)) throw new Error(`WildStriders: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (mode !== 'rejoin' && !LIVE.includes(mode)) throw new Error(`WildStriders: no anchor mode ${mode}`)
-    if (!(Number.isFinite(anchor[12]) && Number.isFinite(anchor[13]) && Number.isFinite(anchor[14]))) {
-      // From a build before aim, since and shake: the relay keeps those a chapter past a deploy, and a throw here would repeat every frame.
+    if (anchor.length !== 17) {
+      // From a build before hp and hurtAt: the relay keeps those a chapter past a deploy, and a throw here would repeat every frame.
       if (!this.warned) { this.warned = true; console.warn(`[net] a strider anchor from an older build, dropped: ${JSON.stringify(anchor)}`) }
       return
     }
     const key = wire.slice(WIRE.length)
     this.anchors.set(key, anchor)
     if (anchor[11] === 1) this.tamed.add(key)
+    const at = anchor[16], was = this.scars.get(key)
+    if (at !== null && !(was && was.at >= at)) this.scars.set(key, { hp: anchor[15], at })
     if (now - T > CHAPTER_S) return
     let m = this.live.get(key)
     if (!m && mode !== 'rejoin' && key.startsWith('town:') && this.loaded) {
@@ -956,7 +1006,10 @@ export class WildStriders {
     if (!m || m === this.ridden) return
     if (m.by === null && m.state !== 'calm' && (mode === 'rejoin' || (mode !== 'ridden' && !(anchor[13] < m.since)))) return
     if (mode === 'rejoin') this._calmFrom(m, anchor)
-    else this._fromAnchor(m, anchor)
+    else {
+      this._fromAnchor(m, anchor)
+      if (at !== null && !(was && was.at >= at) && now - at < SINGE.pulse) this._cry(m)
+    }
   }
 
   /** The anchors this client owes the room since the last call, moved into `into`. */
@@ -1015,7 +1068,7 @@ export class WildStriders {
   _seat(m, out) { return out.copy(this._saddle(m).rest).applyMatrix4(poseMatrix(m.pose, this.k * m.pose.size, _m)) }
 
   _mountable(m, head) {
-    return m !== this.ridden && m.by === null && this.bond.trusted.has(m.key) && ['calm', 'follow', 'led', 'swim'].includes(m.state) && fromSide(m.pose, head)
+    return m !== this.ridden && m.by === null && this.isTamed(m.key) && ['calm', 'follow', 'led', 'swim'].includes(m.state) && fromSide(m.pose, head)
   }
 
   /** Whether her hand may take `m`'s rein, or let go of it: tamed by anyone, and standing or after her. */
