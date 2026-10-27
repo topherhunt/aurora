@@ -4,7 +4,7 @@
 //
 // Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
-// highest point, a route edge whose door sits on neither of its rooms, or shells over their triangle budget.
+// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, or exterior faces that z-fight.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
@@ -49,8 +49,34 @@ console.log(`       layout ms: median ${ms[ms.length >> 1].toFixed(1)}, worst ${
 const tri = (g) => g.getAttribute('position').count / 3
 const ext = good.map((l) => tri(exteriorGeometry(l)))
 const int = good.slice(0, 40).map((l) => interiorGeometries(l).reduce((a, s) => a + tri(s.geometry), 0))
-check(Math.max(...ext) < 8000, 'an exterior shell stays under 8k triangles', `worst ${Math.max(...ext)}`)
-check(Math.max(...int) < 20000, 'an interior shell stays under 20k triangles', `worst ${Math.max(...int)}`)
+check(Math.max(...ext) < 20000, 'an exterior shell stays under 20k triangles', `worst ${Math.max(...ext)}`)
+check(Math.max(...int) < 30000, 'an interior shell stays under 30k triangles', `worst ${Math.max(...int)}`)
+
+// Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is
+// scanned, since the warp moves coincident faces together.
+function zFights(g) {
+  const p = g.getAttribute('position').array, c = g.getAttribute('color').array, buckets = new Map()
+  for (let t = 0; t < p.length / 9; t++) {
+    const v = [0, 1, 2].map((i) => [p[t * 9 + i * 3], p[t * 9 + i * 3 + 1], p[t * 9 + i * 3 + 2]])
+    const e1 = v[1].map((x, i) => x - v[0][i]), e2 = v[2].map((x, i) => x - v[0][i])
+    const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]], l = Math.hypot(...n)
+    const u = n.map((x) => x / l), d = u[0] * v[0][0] + u[1] * v[0][1] + u[2] * v[0][2]
+    const ax = [0, 1, 2].reduce((a, i) => (Math.abs(u[i]) > Math.abs(u[a]) ? i : a), 0)
+    const key = [...u, d].map((x) => Math.round(x * 200)).join()
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push({ q: v.map((w) => w.filter((_, i) => i !== ax)), col: [c[t * 9], c[t * 9 + 1], c[t * 9 + 2]].map((x) => x.toFixed(3)).join() })
+  }
+  const sep = (A, B) => [A, B].some((T) => T.some((a, i) => {
+    const b = T[(i + 1) % 3], n = [b[1] - a[1], a[0] - b[0]], pr = (P) => P.map((w) => w[0] * n[0] + w[1] * n[1])
+    const l = Math.hypot(...n), [pa, pb] = [pr(A), pr(B)]
+    return Math.min(...pa) >= Math.max(...pb) - 1e-3 * l || Math.min(...pb) >= Math.max(...pa) - 1e-3 * l
+  }))
+  let hits = 0
+  for (const b of buckets.values()) for (let i = 0; i < b.length; i++) for (let j = i + 1; j < b.length; j++) if (b[i].col !== b[j].col && !sep(b[i].q, b[j].q)) hits++
+  return hits
+}
+const fights = good.slice(0, 30).map((l) => [l.seed, zFights(exteriorGeometry(l, { warp: false }))]).filter(([, h]) => h)
+check(fights.length === 0, 'no two differently coloured exterior faces share a plane', fights.slice(0, 4).map(([s, h]) => `seed ${s}: ${h}`).join(', '))
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)

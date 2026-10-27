@@ -32,7 +32,7 @@ export function castleLayout(seed) {
   const rng = mulberry32(Math.imul(seed, 2654435761) ^ 0x5bd1e995)
   const int = (a, b) => a + Math.floor(rng() * (b - a + 1))
   const secs = []
-  const add = (id, kind, x0, z0, w, d, floors) => { const s = { id, kind, x0, z0, w, d, floors }; secs.push(s); return s }
+  const add = (id, kind, x0, z0, w, d, floors) => { const s = { id, kind, x0, z0, w, d, floors, round: false }; secs.push(s); return s }
 
   // The ring: court cells [0,cw) x [0,cd), corner towers, the keep on the back row (-z) pushed outward, the gate on the front (+z).
   const cw = int(3, 5), cd = int(3, 5)
@@ -52,6 +52,9 @@ export function castleLayout(seed) {
     : add('L', 'lookout', kx0 + int(0, kw - 1), -kd - (mode < 0.7 ? 1 : 2), 1, 1, lf)
   let tn = 0
   for (const s of secs) if (s.id === 'T') s.id = `T${++tn}`
+  // Half the one-cell towers are round, from a stream of their own so the choice reshuffles nothing else.
+  const roundRng = mulberry32(seed * 7919 + 17)
+  for (const s of secs) s.round = (s.kind === 'tower' || s.kind === 'lookout') && s.w === 1 && s.d === 1 && roundRng() < 0.5
 
   const occ = new Map()
   for (const s of secs) for (let x = s.x0; x < s.x0 + s.w; x++) for (let z = s.z0; z < s.z0 + s.d; z++) {
@@ -168,7 +171,8 @@ export function castleLayout(seed) {
   const corner = (s, k, cx, cz) => {
     let c = int(0, 3)
     if (arrived.get(`${s.id}|${k}|${cx},${cz}`) === c) c ^= 3
-    return [c, X(cx) + (c & 1 ? C - 1.2 : 1.2), Z(cz) + (c & 2 ? C - 1.2 : 1.2)]
+    const inset = s.round ? 1.45 : 1.2
+    return [c, X(cx) + (c & 1 ? C - inset : inset), Z(cz) + (c & 2 ? C - inset : inset)]
   }
   for (const s of solid) for (let k = 0; k < s.floors; k++) for (const r of s.rooms[k]) {
     const cx = int(r.x0, r.x0 + r.w - 1), cz = int(r.z0, r.z0 + r.d - 1)
@@ -209,6 +213,15 @@ export function castleLayout(seed) {
     }
   }
   const flightPt = (axis, a, c, y) => (axis === 'x' ? [a, y, c] : [c, y, a])
+  // Two flights may not share court: each claims its plan rect, and one that would overlap a claim is not offered.
+  const claimed = []
+  const claim = (f) => {
+    const [u0, u1, v0, v1] = [Math.min(f.a0, f.a1), Math.max(f.a0, f.a1), Math.min(f.c0, f.c1), Math.max(f.c0, f.c1)]
+    const r = f.axis === 'x' ? [u0, v0, u1, v1] : [v0, u0, v1, u1]
+    if (claimed.some((q) => r[0] < q[2] + 0.2 && q[0] < r[2] + 0.2 && r[1] < q[3] + 0.2 && q[1] < r[3] + 0.2)) return false
+    claimed.push(r)
+    return true
+  }
   for (const w of secs) if (w.kind === 'wall') {
     const inn = w.inner[0] || w.inner[1]
     const starts = range(0, w.cells.length - 1).filter((i) => [i, i + 1].every((j) => isCourt(w.cells[j][0] + w.inner[0], w.cells[j][1] + w.inner[1])))
@@ -217,8 +230,10 @@ export function castleLayout(seed) {
     const A = w.axis === 'x' ? X : Z, B = w.axis === 'x' ? Z : X
     const g = w.cells[i][w.axis === 'x' ? 0 : 1], across = B(w.axis === 'x' ? w.z0 : w.x0) + C / 2 + inn * CASTLE.wallT / 2
     const a0 = A(dir > 0 ? g : g + 2), a1 = A(dir > 0 ? g + 2 : g), mid = across + inn * 0.7
+    const flight = { axis: w.axis, a0, a1, c0: across, c1: across + inn * 1.4, rise: 2 * H, landing: 0 }
+    if (!claim(flight)) continue
     cand(courtNode, w.walk, 'outstair', {
-      flight: { axis: w.axis, a0, a1, c0: across, c1: across + inn * 1.4, rise: 2 * H, landing: 0 },
+      flight,
       pts: [courtNode.pos, flightPt(w.axis, a0, mid, 0.4), flightPt(w.axis, a1, mid, 2 * H + 0.4), w.walk.pos],
     })
   }
@@ -231,8 +246,10 @@ export function castleLayout(seed) {
     const a0 = A(dir > 0 ? t : t + 1), a1 = A(dir > 0 ? t + 1 : t), at = a1 - dir * 0.8
     const [x, z] = f.axis === 'x' ? [across, at] : [at, across]
     const d = { x, y: H, z, axis: f.axis, w: 1.2, h: 2.4, look: 'door', side }
+    const flight = { axis: along, a0, a1, c0: across, c1: across + side * 1.4, rise: H, landing: 1.6 }
+    if (!claim(flight)) continue
     cand(courtNode, r, 'outstair', {
-      doors: [d], flight: { axis: along, a0, a1, c0: across, c1: across + side * 1.4, rise: H, landing: 1.6 },
+      doors: [d], flight,
       pts: [courtNode.pos, flightPt(along, a0, mid, 0.4), flightPt(along, at, mid, H + 0.4), r.pos],
     })
   }
