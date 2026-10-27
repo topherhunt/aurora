@@ -17,11 +17,15 @@ export function touches(tips, x, y, z, size) {
   return false
 }
 
+// How many cuts her sword has landed, every creature's together: main.js rings the blade on each.
+export const landed = { n: 0 }
+
 /** Whether the creature `key`, last cut at the time `cuts` keeps for it, may be cut again at `now`: if so the cut is kept. */
 export function recut(cuts, key, now) {
   const at = cuts.get(key)
   if (at !== undefined && now - at < SWORD.every) return false
   cuts.set(key, now)
+  landed.n++
   return true
 }
 

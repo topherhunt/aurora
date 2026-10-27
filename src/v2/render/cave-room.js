@@ -3,7 +3,6 @@
 // The group stands at the cave's world height `oy`; every plan position inside it is cave-local.
 import THREE from '../../three-instance.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
-import { TORCH_REACH } from '../../lighting.js'
 import { ROCK_TILE_MEAN, LAYER } from '../../textures.js'
 import { buildMushroom } from '../../props/mushroom.js'
 import { mushroomVariants, mushroomParams } from '../../props/mushroom-bank.js'
@@ -54,7 +53,8 @@ const STONE_M = 2.2
 
 const COMMON = /* glsl */ `
 uniform vec4 uTorch[4];
-uniform vec3 uTorchColor;
+uniform float uTorchInvReach[4];
+uniform vec4 uTorchTint[4];
 uniform float uFogDensity;
 uniform vec3 uFogColor;
 uniform float uLitFloor;
@@ -79,8 +79,8 @@ vec3 caveTorch(vec3 p, vec3 n) {
     if (s <= 0.0) continue;
     vec3 l = uTorch[i].xyz - p;
     float d = length(l);
-    float k = clamp(1.0 - d / ${TORCH_REACH.toFixed(1)}, 0.0, 1.0);
-    sum += uTorchColor * (s * k * k * (0.3 + 0.7 * max(dot(n, l / max(d, 0.001)), 0.0)));
+    float k = clamp(1.0 - d * uTorchInvReach[i], 0.0, 1.0);
+    sum += uTorchTint[i].rgb * (s * k * k * (0.3 + 0.7 * max(dot(n, l / max(d, 0.001)), 0.0)));
   }
   return sum * ${TORCH_GAIN.toFixed(2)};
 }
@@ -258,7 +258,7 @@ void main() {
     float s = uTorch[i].w;
     if (s <= 0.0) continue;
     vec3 l = uTorch[i].xyz - vPos;
-    refl += uTorchColor * s * pow(max(dot(r, normalize(l)), 0.0), 120.0) * 3.0 / (1.0 + 0.05 * dot(l, l));
+    refl += uTorchTint[i].rgb * s * pow(max(dot(r, normalize(l)), 0.0), 120.0) * 3.0 / (1.0 + 0.05 * dot(l, l));
   }
   float f = pow(1.0 - clamp(dot(-v, n), 0.0, 1.0), 5.0);
   vec3 c = caveFog(mix(body, refl, mix(uMirrorDown, 1.0, f)), vPos);
@@ -322,7 +322,8 @@ function caveUniforms(lighting, stone, grain) {
     uStone: { value: stone },
     uGrain: { value: grain },
     uTorch: lighting.uniforms.uTorch,
-    uTorchColor: lighting.uniforms.uTorchColor,
+    uTorchInvReach: lighting.uniforms.uTorchInvReach,
+    uTorchTint: lighting.uniforms.uTorchTint,
     uFogDensity: { value: CAVE_AIR.density },
     uFogColor: { value: new THREE.Color(...CAVE_AIR.color) },
     uLitFloor: { value: 0 },

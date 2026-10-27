@@ -101,7 +101,7 @@ function buildWall() {
     }
     return { xz, closed: false }
   })
-  lab.mazeOf = () => ({ lines, towers: [], _posts: null })
+  lab.mazeOf = () => ({ lines, towers: [], scaffold: null, scaffoldFrom: -1, _posts: null })
   const placed = lab.postsOf({ rx: seed, rz: 0 })
   wallPosts = placed.length / POST_STRIDE
   const byVariant = variants.map(() => [])

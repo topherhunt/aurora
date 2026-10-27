@@ -55,10 +55,12 @@ void main() {
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`
 
-// Filled clockwise from the top by the health left, red through to green.
+// Filled clockwise from the top by the health left, red through to green; inside it, orange, the time left on a labyrinth's clock.
 const donutFrag = /* glsl */ `
 uniform float uFrac;
 uniform float uOpacity;
+uniform float uClock;
+uniform float uClockOpacity;
 varying vec2 vUv;
 void main() {
   vec2 p = vUv * 2.0 - 1.0;
@@ -69,7 +71,11 @@ void main() {
   float filled = step(t, uFrac);
   vec3 full = mix(vec3(0.9, 0.15, 0.1), vec3(0.35, 0.85, 0.4), smoothstep(0.25, 0.75, uFrac));
   vec3 col = mix(vec3(0.12), full, filled);
-  gl_FragColor = vec4(col, ring * mix(0.45, 0.9, filled) * uOpacity);
+  float ha = ring * mix(0.45, 0.9, filled) * uOpacity;
+  float inner = smoothstep(0.38, 0.42, r) * (1.0 - smoothstep(0.5, 0.54, r));
+  float left = step(t, uClock);
+  float ia = inner * mix(0.3, 0.95, left) * uClockOpacity;
+  gl_FragColor = vec4(ha > 0.0 ? col : mix(vec3(0.12), vec3(1.0, 0.5, 0.08), left), max(ha, ia));
 }`
 
 function overlay(mesh, order) {
@@ -128,7 +134,7 @@ export class VitalsHud {
     this.donut = overlay(new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
       new THREE.ShaderMaterial({
-        uniforms: { uFrac: { value: 1 }, uOpacity: { value: 0 } },
+        uniforms: { uFrac: { value: 1 }, uOpacity: { value: 0 }, uClock: { value: 1 }, uClockOpacity: { value: 0 } },
         vertexShader: donutVert, fragmentShader: donutFrag,
         transparent: true, depthTest: false, depthWrite: false,
       }),
@@ -239,9 +245,10 @@ export class VitalsHud {
    * (Sleep), `dead`, and whether the death `card` may show once the view has
    * gone wholly black (then `deathShown`), with its `buttons` (the headset's)
    * and the one the pointer is on, `hot`. `tint` is the mushrooms' wash,
-   * [r, g, b, a] (eating.js Effects.tint). True on the frame a heartbeat is due.
+   * [r, g, b, a] (eating.js Effects.tint). `clock` is the share of a labyrinth's
+   * time left, 0..1, or null out of one. True on the frame a heartbeat is due.
    */
-  update(dt, { hp, max, hurt, lid, dead, card, buttons, hot, tint }) {
+  update(dt, { hp, max, hurt, lid, dead, card, buttons, hot, tint, clock }) {
     this.black = Math.max(0, Math.min(1, this.black + (dead ? dt / DIE_S : -dt / REVIVE_S)))
     this.deathShown = dead && this.black === 1
     let beat = false
@@ -267,7 +274,9 @@ export class VitalsHud {
     const d = this.donut.material.uniforms
     d.uFrac.value = hp / max
     d.uOpacity.value = Math.max(0, Math.min(1, d.uOpacity.value + (hp < max && !dead && lid === 0 ? dt : -dt) / 0.4))
-    this.donut.visible = d.uOpacity.value > 0
+    if (clock !== null) d.uClock.value = clock
+    d.uClockOpacity.value = Math.max(0, Math.min(1, d.uClockOpacity.value + (clock !== null && !dead && lid === 0 ? dt : -dt) / 0.4))
+    this.donut.visible = d.uOpacity.value > 0 || d.uClockOpacity.value > 0
 
     if (this.savedT >= 0) {
       this.savedT += dt

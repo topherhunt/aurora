@@ -18,9 +18,9 @@ export const TINT = [0.42, 0.8, 0.32]
 // Giants are laid for the labyrinths within this of her; a region holds one, so few are ever laid.
 export const LAY_M = 160
 export const MAX = 4
-// Ground speeds: on its round, and after her or back to its round -- under her 1.45 walk (player.js LOCOMOTION.maxSpeed).
-export const ROUND_SPEED = 0.6
-export const CHASE_SPEED = 1.0
+// Ground speeds: on its round, and after her, back to its round or fleeing -- the chase past her 1.45 walk (player.js LOCOMOTION.maxSpeed).
+export const ROUND_SPEED = 1.2
+export const CHASE_SPEED = 2.0
 // It notices her within NOTICE_M inside the quarter circle it faces (NOTICE_HALF either side), and forgets her past FORGET_M.
 export const NOTICE_M = 5
 export const NOTICE_HALF = Math.PI / 4
@@ -35,13 +35,15 @@ const BLOW_AT = 0.5
 export const SCARE_M = 10
 export const COWER_S = 15
 // The threaten clip's rate, as a swing.
-const SWING_RATE = 0.6
+const SWING_RATE = 1.2
+// Her holding a spider (`dread`), one that notices her, or is after her and within NOTICE_M, bellows and flees FLEE_S to the cell of its maze farthest from her.
+export const FLEE_S = 12
 // The leafkin's scream slowed to a giant's.
 const SCREAM_RATE = 0.4
 // Seconds it stands in each dead end of its round, and in the middle at the round's turn.
 const PAUSE_S = [2, 5]
 const MIDDLE_S = 8
-export const TURN_RATE = 1.0
+export const TURN_RATE = 2.0
 // Within this of a waypoint it is through it.
 const ARRIVE_M = 0.4
 export const ANCHOR_S = 1
@@ -51,7 +53,7 @@ const REPLANT_EVERY = 6
 const FADE_S = 0.25
 export const CLIPS = ['idle', 'walk', 'threaten', 'cower']
 const PLANTED = new Set(['idle', 'cower'])
-const MODES = new Set(['chase', 'swing', 'cower', 'rejoin'])
+const MODES = new Set(['chase', 'swing', 'cower', 'flee', 'rejoin'])
 
 const ticksOf = (s) => Math.max(1, Math.round(s * TICK_HZ))
 const UP = new THREE.Vector3(0, 1, 0)
@@ -155,10 +157,10 @@ export class Giants {
         id: i, key: '', hash: 0, site: null, m: null, round: null, laid: false,
         x: 0, y: 0, z: 0, heading: 0, sx: 0, sy: 0, sz: 0, sh: 0, lx: 0, ly: 0, lz: 0, lh: 0, aim: 0,
         size: HEIGHT_M, k: 1,
-        // round, back, chase, swing or cower; the tick record (sim/score.js stepTo) and the tick this chapter turns on.
+        // round, back, chase, swing, cower or flee; the tick record (sim/score.js stepTo) and the tick this chapter turns on.
         state: 'round', rec: { tick: 0, alpha: 1, at: 0 }, turnTick: 0,
-        // Cowering: the tick it ends on, and whether it then goes after her (else back to its round).
-        cowerEnd: 0, cowerChase: false,
+        // Cowering or fleeing: the tick it ends on, and whether it then goes after her (else back to its round); fleeing, the [x, z] it runs to.
+        cowerEnd: 0, cowerChase: false, fleeTo: null,
         // Live on a player: { by, anchor, sendTick, ex, ez, eh }.
         live: null, blowTick: -1,
         // The clip, the ticks it runs between, its rate, `cycle` its length at that rate (the ear's footfall clock), `cue` counting plays, and the ground speed.
@@ -175,6 +177,8 @@ export class Giants {
     this.frame = 0
     this.hx = 0; this.hy = 0; this.hz = 0
     this.peers = []
+    // Whether she holds a spider this frame (main.js).
+    this.dread = false
     this.anchored = new Map()
     this.outbox = []
     // HP of the blows landed on her since the last drain.
@@ -249,7 +253,7 @@ export class Giants {
   }
 
   get stats() {
-    const states = { round: 0, back: 0, chase: 0, swing: 0, cower: 0 }
+    const states = { round: 0, back: 0, chase: 0, swing: 0, cower: 0, flee: 0 }
     for (const c of this.slots) if (c.laid) states[c.state]++
     return { laid: this.slots.filter((c) => c.laid).length, states }
   }
@@ -277,6 +281,7 @@ export class Giants {
     c.live.anchor = anchor
     c.live.by = by
     if (mode === 'cower' && c.state !== 'cower') this._cower(c, tickOf(T), tickOf(anchor[9]), anchor[10] === 1)
+    if (mode === 'flee' && c.state !== 'flee') this._flee(c, tickOf(T), tickOf(anchor[9]))
     c.live.ex = anchor[2] - c.sx
     c.live.ez = anchor[4] - c.sz
     c.live.eh = swing(c.sh, anchor[5])
@@ -289,7 +294,7 @@ export class Giants {
   }
 
   _owe(c, k, mode) {
-    const anchor = mode === 'cower' ? [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, c.cowerEnd * TICK_S, c.cowerChase ? 1 : 0] : [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, 0]
+    const anchor = mode === 'cower' || mode === 'flee' ? [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, c.cowerEnd * TICK_S, c.cowerChase ? 1 : 0] : [c.key, k * TICK_S, c.sx, c.sy, c.sz, c.sh, -1, mode, null, 0]
     this.outbox.push(anchor)
     this.anchored.set(c.key, anchor)
   }
@@ -367,6 +372,7 @@ export class Giants {
       this._golive(c, by, c.rec.tick)
       c.live.anchor = anchor
       if (mode === 'cower') this._cower(c, c.rec.tick, tickOf(anchor[9]), anchor[10] === 1)
+      if (mode === 'flee') this._flee(c, c.rec.tick, tickOf(anchor[9]))
       return
     }
     const from = mode === 'rejoin' ? tickOf(T) : tickOf(T + ANCHOR_STALE_S)
@@ -409,6 +415,27 @@ export class Giants {
     c.cowerChase = chase
     this._play(c, 'cower', k, 0)
     this.said.push({ sound: 'leafkinScream', rule: 'giantScream', rate: SCREAM_RATE, x: c.sx, y: c.sy + HEIGHT_M * 0.8, z: c.sz })
+  }
+
+  /** Fleeing from tick `k` to `end` the player it is live on, bellowing as it starts. */
+  _flee(c, k, end) {
+    const p = this._player(c.live.by)
+    let best = -1
+    for (const cell of c.m.cells) {
+      const d = p === null ? 0 : Math.hypot(cell[0] - p.x, cell[1] - p.z)
+      if (d > best) { best = d; c.fleeTo = cell }
+    }
+    c.state = 'flee'
+    c.cowerEnd = end
+    c.cowerChase = false
+    this._play(c, 'walk', k, CHASE_SPEED)
+    this.said.push({ sound: 'leafkinScream', rule: 'giantScream', rate: SCREAM_RATE * 0.75, x: c.sx, y: c.sy + HEIGHT_M * 0.8, z: c.sz })
+  }
+
+  /** Put to flight by her spider at tick `k`, this client its authority. */
+  _dread(c, k) {
+    this._flee(c, k, k + ticksOf(FLEE_S))
+    this._owe(c, k, 'flee')
   }
 
   _unlive(c, k) {
@@ -481,12 +508,17 @@ export class Giants {
     const p = this._player(live.by)
     const fresh = live.by === null || (live.anchor !== null && k * TICK_S - live.anchor[1] < ANCHOR_STALE_S)
     const d = p === null ? Infinity : Math.hypot(p.x - c.sx, p.z - c.sz)
-    if (c.state === 'cower') {
+    if (c.state === 'flee') {
+      if (!fresh || k >= c.cowerEnd) { this._unlive(c, k); return }
+      this._go(c, c.fleeTo[0], c.fleeTo[1], CHASE_SPEED, k)
+    } else if (live.by === null && this.dread && c.state !== 'cower' && d <= NOTICE_M) {
+      this._dread(c, k)
+    } else if (c.state === 'cower') {
       if (!fresh || (k >= c.cowerEnd && !(c.cowerChase && d <= FORGET_M && p.y - c.sy <= ABOVE_M))) { this._unlive(c, k); return }
       if (k >= c.cowerEnd) { c.state = 'chase'; this._play(c, 'walk', k, CHASE_SPEED) }
     } else if (!fresh || d > FORGET_M || p.y - c.sy > ABOVE_M) { this._unlive(c, k); return }
-    if (c.state === 'cower') {
-      // Held where it crouches.
+    if (c.state === 'cower' || c.state === 'flee') {
+      // Held where it crouches, or already moved.
     } else if (c.state === 'swing') {
       c.aim = Math.atan2(-(p.z - c.sz), p.x - c.sx)
       this._turn(c)
@@ -534,7 +566,10 @@ export class Giants {
       if (c.clip !== clip) this._play(c, clip, k, ROUND_SPEED)
     }
     const dx = this.hx - c.sx, dz = this.hz - c.sz
-    if (dx * dx + dz * dz < NOTICE_M * NOTICE_M && this.hy - c.sy <= ABOVE_M && Math.abs(swing(c.sh, Math.atan2(-dz, dx))) < NOTICE_HALF) this._golive(c, null, k)
+    if (dx * dx + dz * dz < NOTICE_M * NOTICE_M && this.hy - c.sy <= ABOVE_M && Math.abs(swing(c.sh, Math.atan2(-dz, dx))) < NOTICE_HALF) {
+      this._golive(c, null, k)
+      if (this.dread) this._dread(c, k)
+    }
   }
 
   _pose(c) {

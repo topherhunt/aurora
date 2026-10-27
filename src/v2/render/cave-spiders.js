@@ -228,7 +228,7 @@ void main() {
     vec3 l = uTorch[i].xyz - vPos;
     float d = length(l);
     float k = clamp(1.0 - d / 8.0, 0.0, 1.0);
-    sheen += uTorchColor * (s * k * k * pow(max(dot(n, normalize(l / max(d, 0.001) + v)), 0.0), 18.0) * 0.5);
+    sheen += uTorchTint[i].rgb * (s * k * k * pow(max(dot(n, normalize(l / max(d, 0.001) + v)), 0.0), 18.0) * 0.5);
   }
   vec3 c = albedo * max(lit, vec3(uLitFloor)) + sheen * 0.25;
   gl_FragColor = vec4(caveFog(c, vPos), 1.0);

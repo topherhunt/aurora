@@ -73,6 +73,14 @@ function wallSpot(field, x, y, z, ang, lift, reach) {
 }
 
 /** A point at fraction (u, angle a) of node `n`'s ellipse, in the field's own rotation (field.js). */
+// Rimesilver stays within this many of the great cavern's radii: a ray from inside can run on into a lobe's tunnel.
+const RIME_RHO = 1.3
+
+function rhoOf(n, p) {
+  const dx = p.x - n.x, dz = p.z - n.z, c = Math.cos(n.rot), s = Math.sin(n.rot)
+  return Math.hypot((dx * c + dz * s) / n.rx, (dz * c - dx * s) / n.rz)
+}
+
 function inNode(n, u, a) {
   const lx = Math.cos(a) * u * n.rx, lz = Math.sin(a) * u * n.rz, c = Math.cos(n.rot), s = Math.sin(n.rot)
   return [n.x + lx * c - lz * s, n.z + lx * s + lz * c]
@@ -156,7 +164,7 @@ export function placeVeins(plan) {
       const a = rand() * Math.PI * 2, u = Math.sqrt(rand()) * 0.85
       const [x, z] = inNode(great, u, a)
       const spot = wallSpot(field, x, great.y + 1, z, rand() * Math.PI * 2, rr(...VEINS.height), Math.max(20, great.rx))
-      if (spot === null) continue
+      if (spot === null || rhoOf(great, spot) > RIME_RHO) continue
       if (keep('rimesilver', spot, lbNode(great, spot.x, spot.z))) placed++
     }
   }

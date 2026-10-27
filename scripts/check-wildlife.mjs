@@ -35,7 +35,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
-  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR, MAD, BUTT, FOX_IDLE, CAVE_LEAD,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR, MAD, BUTT, LOST, WAIT, FOX_IDLE, CAVE_LEAD,
 } from '../src/v2/render/wildlife.js'
 import { MEAL } from '../src/v2/eating.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
@@ -1202,12 +1202,16 @@ const differ = (p, q) => {
   a.meals.set(c.key, Math.round((BUTT.grown - 1) / MEAL.grow) - 1)
   a._grown(c, c.spawn.size)
   a._golive(c, 'tame', null, null, timeOf(a))
-  const dragon = { key: 'dr:test', x: c.sx + 12, z: c.sz, size: 4 }
+  const dragon = { key: 'dr:test', x: c.sx + 12, y: c.y, z: c.sz, size: 4 }
   a.foes = [dragon]
   run(2)
   check(c.live?.mode === 'tame' && butts.length === 0, `a pet stag short of ${BUTT.grown}x its size stays at her heel, a dragon on the ground ${12} m off`, `${c.live?.mode}`)
   a.meals.set(c.key, a.meals.get(c.key) + 1)
   a._grown(c, c.spawn.size)
+  a.foes = [{ key: 'dr:far', x: c.sx + BUTT.m + 5, y: c.y, z: c.sz, size: 4 }, { key: 'dr:high', x: c.sx + 12, y: c.y + BUTT.m, z: c.sz, size: 4 }]
+  run(0.5)
+  check(c.live?.mode === 'tame', `grown, it leaves a grounded dragon past ${BUTT.m} m alone, or one on a ledge ${BUTT.m} m above`, `${c.live?.mode}`)
+  a.foes = [dragon]
   run(0.5)
   check(c.live?.mode === 'butt' && c.live.foe === dragon.key && a.pending().some((an) => an[7] === 'butt'), `grown to ${BUTT.grown}x, it charges the dragon, and the room hears it`, `${c.live?.mode}`)
   for (let f = 0; f < 15 * 60 && butts.length === 0; f++) run(dt)
@@ -1364,6 +1368,67 @@ const differ = (p, q) => {
   h.update(40, 0, 1, 0, 3 + 1 / 60)
   const back = h.behind(() => true)
   check(Math.abs(fast - 3) < 0.05 && h.speed === fast && h.trail.length === 1 && back !== null && !h.sees(back.x, back.z) && Math.hypot(back.x - 40, back.z) >= KEEP_UP.backM[0] - 1e-9, 'her pace is read off her walk, a teleport neither counts toward it nor leaves its old trail to be warped onto, and the ground behind her is out of her sight', `${fast.toFixed(2)} m/s, then ${h.speed.toFixed(2)}; behind at ${back && `${back.x.toFixed(1)}, ${back.z.toFixed(1)}`}`)
+}
+
+// --- a pet lost to her waits where it was (LOST) ------------------------------------------
+{
+  const dt = 1 / 30
+  const a = make(7, { walk: plain, water: noWater })
+  a.place(0, 0)
+  const c = beside(a, 'fox')
+  const key = c.key
+  a.her = new Her()
+  const go = (w, x, z, s) => { for (let f = 0; f < s / dt; f++) { w.her.update(x, z, 1, 0, timeOf(w) + dt); step(w, x, GROUND + 1.6, z, dt) } }
+  a._golive(c, 'tame', null, null, timeOf(a))
+  a.meals.set(key, 2)
+  go(a, c.sx + 2, c.sz, 1)
+  const spot = { x: c.sx, z: c.sz }
+  a.pending()
+  a.place(400, 0)
+  const sent = a.pending().find((an) => an[0] === key)
+  check(a.lost.get(key)?.mine === true && sent?.[7] === WAIT && Math.hypot(sent[2] - spot.x, sent[4] - spot.z) < 0.5 && sent[11] === 2, 'her pet fox lost to a placement waits where it stood, and the room hears where', `${sent?.[7]} at ${sent?.[2].toFixed(1)}, ${sent?.[4].toFixed(1)}`)
+  go(a, 400, 0, 2)
+  check(!a.byKey.has(key), 'with her far off it is not awake, on its own tile or anywhere')
+  go(a, spot.x + LOST.m + 15, spot.z, 4)
+  const w = a.byKey.get(key)
+  check(w !== undefined && w.live === null && Math.hypot(w.sx - spot.x, w.sz - spot.z) <= TETHER_M, `back in sight of the spot, it is there, wandering within ${TETHER_M} m of it and not hers yet`, w && `${Math.hypot(w.sx - spot.x, w.sz - spot.z).toFixed(1)} m from the spot`)
+  a.voices([])
+  a.pending()
+  for (let f = 0; f < 20 / dt && w.live === null; f++) { a.her.update(w.sx + LOST.m - 1, w.sz, 1, 0, timeOf(a) + dt); step(a, w.sx + LOST.m - 1, GROUND + 1.6, w.sz, dt) }
+  check(w.live?.mode === 'tame' && w.live.by === null && !a.lost.has(key) && a.voices([]).length === 1 && a.pending().some((an) => an[0] === key && an[7] === 'tame'), `within ${LOST.m} m of her, it calls out, is hers again, and the room hears it`, `${w.live?.mode}`)
+  const far = { x: w.sx + 15, z: w.sz }
+  go(a, far.x, far.z, 8)
+  check(w.live?.mode === 'tame' && Math.hypot(w.sx - far.x, w.sz - far.z) <= w.sp.heel + RESUME_M && a.byKey.get(key) === w, 'and it keeps following her as before', `${Math.hypot(w.sx - far.x, w.sz - far.z).toFixed(1)} m off her`)
+  const pets = a.pets()
+  check(pets.length === 1 && pets[0].key === key && pets[0].meals === 2, 'a save keeps her pet and its meals', JSON.stringify(pets.map((p) => p.key)))
+
+  // The save loaded elsewhere: it waits at the saved spot, and a load that does not name a pet sends a pet of hers wild.
+  const b = make(7, { walk: plain, water: noWater })
+  b.her = new Her()
+  b.place(400, 0)
+  b.restorePets(pets, timeOf(b))
+  check(b.lost.get(key)?.mine === true && b.meals.get(key) === 2, 'restored, it waits at the saved spot with its meals')
+  go(b, pets[0].x + LOST.m + 15, pets[0].z, 4)
+  const bw = b.byKey.get(key)
+  for (let f = 0; f < 20 / dt && bw && bw.live === null; f++) { b.her.update(bw.sx + 3, bw.sz, 1, 0, timeOf(b) + dt); step(b, bw.sx + 3, GROUND + 1.6, bw.sz, dt) }
+  check(bw?.live?.mode === 'tame' && bw.live.by === null && Math.abs(bw.size - a.byKey.get(key).size) < 1e-9, 'and found there, it is hers, as grown as it was')
+  b.restorePets([], timeOf(b))
+  check(bw.live?.mode !== 'tame' && b.pets().length === 0, 'a load with no pets sends hers wild', `${bw.live?.mode}`)
+
+  // A peer's pet lost: it waits here too, but is not hers to find; the peer's next anchor of it ends the wait.
+  const p = make(7, { walk: plain, water: noWater })
+  p.her = new Her()
+  p.place(400, 0)
+  go(p, 400, 0, 0.1)
+  p.apply([sent[0], timeOf(p), sent[2], sent[3], sent[4], sent[5], -1, WAIT, 9, null, null, 2], timeOf(p))
+  check(p.lost.get(key)?.mine === false && p.pets().length === 0, 'a peer\'s lost pet waits here too, and is not hers to save')
+  go(p, spot.x + LOST.m + 15, spot.z, 4)
+  const pw = p.byKey.get(key)
+  for (let f = 0; f < 3 / dt && pw; f++) { p.her.update(pw.sx + 3, pw.sz, 1, 0, timeOf(p) + dt); step(p, pw.sx + 3, GROUND + 1.6, pw.sz, dt) }
+  check(pw !== undefined && !(pw.live?.mode === 'tame' && pw.live.by === null) && p.lost.has(key), 'she walks up to it and it does not know her', `${pw?.live?.mode}`)
+  p.apply([key, timeOf(p), pw.sx, pw.y, pw.sz, 0, -1, 'tame', 9, null, null, 2], timeOf(p))
+  check(!p.lost.has(key) && pw.live?.mode === 'tame' && pw.live.by === 9, 'the peer finds it: it waits no more, and is the peer\'s pet here')
+  for (const x of [a, b, p]) x.dispose()
 }
 
 // --- a standing body puts its feet on the ground -----------------------------------

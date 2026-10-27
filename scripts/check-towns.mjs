@@ -399,10 +399,13 @@ check(offWay === 0, 'a walker keeps to its lane on the town\'s ways', `${offWay}
   L.advance(T0)
   let was = L.all.map((c) => c.state === 'inside'), ins = 0, outs = 0, offIn = 0, calls = 0, offCall = 0
   for (let s = 1; s < 590; s++) {
+    const turn = L.turnTick
     L.advance(T0 + s)
     for (const v of L.calls) { calls++; if (offSill(v.x, v.z) > 0.05) offCall++ }
     L.all.forEach((c, i) => {
       const now = c.state === 'inside'
+      // A chapter's turn puts everyone indoors unseen (TownLife _placeAll), through no door.
+      if (L.turnTick !== turn) { was[i] = now; return }
       if (now && !was[i]) { ins++; if (offSill(c.x, c.z) > 0.05) offIn++ }
       if (!now && was[i]) outs++
       was[i] = now
@@ -436,6 +439,19 @@ const atHour = (h) => {
 const noon = atHour(12), dusk = atHour(20), small = atHour(1)
 check(dusk.fire > 1.5 * noon.fire, 'come nightfall more of the town gathers at the fire than at noon', `fire ${dusk.fire} at 20:00, ${noon.fire} at noon`)
 check(small.inside > 1.5 * noon.inside, 'deep in the night more of the town is indoors than at noon', `inside ${small.inside} at 01:00, ${noon.inside} at noon`)
+// The alchemist by day: on his shop's doorstep, where talk can reach him (conversations.js _inShop), a good share of the time.
+{
+  const shop = t.buildings.find((bd) => bd.trade === 'potions')
+  const L = new TownLife(t, { index: 0, seed: SEED, bodies, seats, heightAt, hourAt: () => 11 })
+  const c = L.all.find((f) => f.trade === 'potions')
+  let n = 0, mind = 0
+  for (let s = 0; s < 3000; s += 2) {
+    L.advance(T0 + s)
+    n++
+    if (c.state === 'stand' && Math.hypot(c.x - shop.x, c.z - shop.z) < 8) mind++
+  }
+  check(mind / n > 0.3, 'by day the alchemist minds his shop from its doorstep a good share of the time', `${((100 * mind) / n).toFixed(0)}% of the morning`)
+}
 check(small.about > 0 && dusk.inside > 0, 'and neither is a curfew: someone is still about at 01:00, someone indoors at 20:00', `about ${small.about} at 01:00, inside ${dusk.inside} at 20:00`)
 
 // --- the striders at the rails, and the travellers leaving and arriving ---

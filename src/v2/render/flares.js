@@ -2,8 +2,8 @@
 // Flares: what the flare gun (flaregun.js) shoots, hers and every peer's. A
 // flare flies FLIGHT_S from the muzzle to its target on a bowed corkscrew
 // whose phase is its seed, so every client flies the same one; it
-// is FLY_M across on the way and grows to REST_M once there, and hangs there
-// for good. Each is a sprite laid in view space -- a white-hot ball in its
+// is FLY_M across on the way and grows to its rest size once there (REST_M in
+// the sky, GROUND_M where it struck ground or rock), and hangs there for good. Each is a sprite laid in view space -- a white-hot ball in its
 // colour, a halo, and within NEAR_M a fountain of sparks it never stops
 // throwing, each flying out and drooping as it cools -- premultiplied, unlit
 // and unfogged, so it burns as bright at midnight as at noon. Past NEAR_M it
@@ -20,6 +20,9 @@ export const FLIGHT_S = 0.8
 // Metres across in flight and at rest, the size it leaves the muzzle at, the seconds it takes to reach FLY_M, and to grow to REST_M on arrival.
 export const FLY_M = 1
 export const REST_M = 3
+// A flare that strikes ground, wall or ceiling rests this far across, LIFT_M off it.
+export const GROUND_M = 0.3
+export const LIFT_M = 0.5
 export const MUZZLE_M = 0.25
 export const RAMP_S = 0.12
 export const GROW_S = 0.5
@@ -61,17 +64,17 @@ export const walkOf = (p) => Math.min(p.sparks, 2 * spanOf(p) + 1)
 const ID_RE = /^[0-9a-z]{1,16}$/
 const ROOM_RE = /^[a-z0-9:.-]{1,40}$/
 
-/** A flare off the wire or out of a save: `[id, room, ox, oy, oz, tx, ty, tz, color, seed]`. Throws on anything else. */
+/** A flare off the wire or out of a save: `[id, room, ox, oy, oz, tx, ty, tz, color, seed, rest]`, `rest` its metres across once arrived. Throws on anything else. */
 export function fromWire(a) {
-  if (!Array.isArray(a) || a.length !== 10) throw new Error(`flares: not a flare: ${JSON.stringify(a)}`)
-  const [id, room, ox, oy, oz, tx, ty, tz, color, seed] = a
+  if (!Array.isArray(a) || a.length !== 11) throw new Error(`flares: not a flare: ${JSON.stringify(a)}`)
+  const [id, room, ox, oy, oz, tx, ty, tz, color, seed, rest] = a
   if (typeof id !== 'string' || !ID_RE.test(id) || typeof room !== 'string' || !ROOM_RE.test(room)) throw new Error(`flares: bad id or room: ${JSON.stringify(a)}`)
-  if (![ox, oy, oz, tx, ty, tz, seed].every(Number.isFinite) || !Number.isInteger(color) || color < 0 || color > 0xffffff) throw new Error(`flares: bad numbers: ${JSON.stringify(a)}`)
-  return { id, room, ox, oy, oz, tx, ty, tz, color, seed }
+  if (![ox, oy, oz, tx, ty, tz, seed].every(Number.isFinite) || !Number.isInteger(color) || color < 0 || color > 0xffffff || !(rest > 0 && rest <= REST_M)) throw new Error(`flares: bad numbers: ${JSON.stringify(a)}`)
+  return { id, room, ox, oy, oz, tx, ty, tz, color, seed, rest }
 }
 
 const r2 = (v) => Math.round(v * 100) / 100
-export const toWire = (f) => [f.id, f.room, r2(f.ox), r2(f.oy), r2(f.oz), r2(f.tx), r2(f.ty), r2(f.tz), f.color, Math.round(f.seed * 1e4) / 1e4]
+export const toWire = (f) => [f.id, f.room, r2(f.ox), r2(f.oy), r2(f.oz), r2(f.tx), r2(f.ty), r2(f.tz), f.color, Math.round(f.seed * 1e4) / 1e4, f.rest]
 
 /** A recall off the wire: `[id, mx, my, mz]`, the flare and the muzzle it flies back into. Throws on anything else. */
 export function recallFromWire(a) {
@@ -103,11 +106,12 @@ export function flightAt(f, u, out) {
   return out
 }
 
-/** Metres across `age` seconds after the shot. */
-export function sizeAt(age) {
-  if (age < FLIGHT_S) return MUZZLE_M + (FLY_M - MUZZLE_M) * Math.min(1, age / RAMP_S)
+/** Metres across `age` seconds after the shot, for one that rests `rest` across; it flies no bigger than that. */
+export function sizeAt(age, rest) {
+  const fly = Math.min(FLY_M, rest)
+  if (age < FLIGHT_S) return MUZZLE_M + (fly - MUZZLE_M) * Math.min(1, age / RAMP_S)
   const g = Math.min(1, (age - FLIGHT_S) / GROW_S)
-  return FLY_M + (REST_M - FLY_M) * g * g * (3 - 2 * g)
+  return fly + (rest - fly) * g * g * (3 - 2 * g)
 }
 
 const VERT = /* glsl */ `
@@ -335,7 +339,7 @@ export class Flares {
     if (!f || f.recalled !== undefined) return false
     // It flies back from wherever it is now, so one still in flight here turns round mid-air.
     const was = this.now - f.born
-    f.size = sizeAt(was)
+    f.size = sizeAt(was, f.rest)
     if (was < FLIGHT_S) {
       flightAt(f, was / FLIGHT_S, _v)
       f.tx = _v.x; f.ty = _v.y; f.tz = _v.z
@@ -343,6 +347,13 @@ export class Flares {
     f.ox = mx; f.oy = my; f.oz = mz
     f.recalled = this.now - age
     return true
+  }
+
+  /** Each arrived, unrecalled flare in this room that struck ground or rock, into `out` (cleared), for lighting. */
+  grounded(out) {
+    out.length = 0
+    for (const f of this.list) if (f.room === this.room && f.rest < REST_M && f.recalled === undefined && this.now - f.born >= FLIGHT_S) out.push(f)
+    return out
   }
 
   /** Every flare not on its way back, as a save writes them. */
@@ -388,7 +399,7 @@ export class Flares {
       } else {
         if (age < FLIGHT_S) flightAt(f, age / FLIGHT_S, _v)
         else _v.set(f.tx, f.ty, f.tz)
-        size = sizeAt(age)
+        size = sizeAt(age, f.rest)
         this.aSize.array[n * 3 + 2] = 1
       }
       _v.toArray(this.aPos.array, n * 3)

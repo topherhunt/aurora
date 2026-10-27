@@ -6,7 +6,7 @@ import { PALETTES } from './regions.js'
 
 export const CHUNK = 16
 // Each LOD's cluster size and the chunk gap CaveRoom draws it out to; all tile the same chunks. Past the last nothing is drawn, and only her region and those it touches ever are. The 2 m and 4 m tiers can drop a thin wall or close a narrow passage, which the black fog past 25 m hides.
-export const LODS = [{ voxel: 0.5, to: 10 }, { voxel: 1, to: 25 }, { voxel: 2, to: 50 }, { voxel: 4, to: 85 }]
+export const LODS = [{ voxel: 0.5, to: 10 }, { voxel: 1, to: 25 }, { voxel: 2, to: 50 }, { voxel: 4, to: 80 }]
 export const CULL_M = LODS[LODS.length - 1].to
 
 /** The tier of `lods` (one per LODS tier, null where missing) drawn at chunk gap `d`: the one wanted there, else the nearest present, since a tier may still be meshing or too coarse to catch a small surface. -1 past CULL_M or with none. */

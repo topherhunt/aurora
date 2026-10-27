@@ -137,9 +137,9 @@ export const TOWNSFOLK = {
     child: [['visit', 0.4], ['home', 0.1], ['sit', 0.1], ['wander', 0.4]],
   },
   childPace: 1.2,
-  // An errand's chance of being its trade's round instead; a shopkeeper's (potions, inn) times indoors are `keep` times as long. The smith's round is `rounds` heats, each held at the forge, struck on an anvil, quenched at the tub and struck again; a farmer tends `spots` places along the carrot rows; the woodcutter splits at the stump and stacks, `rounds` times. Each mark is held for its seconds.
+  // An errand's chance of being its trade's round instead; the innkeeper's times indoors are `keep` times as long, and the alchemist minds his shop from its doorstep (talk runs only outdoors) for `mind` s on that share of errands by day. The smith's round is `rounds` heats, each held at the forge, struck on an anvil, quenched at the tub and struck again; a farmer tends `spots` places along the carrot rows; the woodcutter splits at the stump and stacks, `rounds` times. Each mark is held for its seconds.
   trade: {
-    work: 0.65, keep: 3,
+    work: 0.65, keep: 3, mind: [90, 240],
     smith: { rounds: [2, 4], forge: [4, 7], strike: [4, 7], quench: [1.5, 2.5], again: [3, 5] },
     farm: { spots: [3, 6], tend: [6, 12] },
     chop: { rounds: [2, 3], strike: [8, 15], stack: [2, 3] },
@@ -681,6 +681,7 @@ export class TownLife {
     const kind = pick(c.rand, pairs)
     if (kind === 'lead' && this._lead(c)) return
     if (c.work !== null && c.rand() < TOWNSFOLK.trade.work * (1 - home * NIGHT.work)) { this._trade(c); return }
+    if (c.trade === 'potions' && c.rand() < TOWNSFOLK.trade.work * (1 - home * NIGHT.work)) { this._go(c, c.home, 'mind'); return }
     const { doors, targets } = this.graph
     if (kind === 'visit') {
       let door = doors[(c.rand() * doors.length) | 0]
@@ -742,6 +743,7 @@ export class TownLife {
   _arrive(c) {
     switch (c.then) {
       case 'stand': c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.stand); this._play(c, 'idle', STEP_S); break
+      case 'mind': { const s = this.graph.nodes[c.dest].sill; c.state = 'stand'; c.hold = between(c.rand, TOWNSFOLK.trade.mind); c.aim = Math.atan2(-s.nz, s.nx); this._play(c, 'idle', STEP_S); break }
       case 'gather': c.state = 'stand'; c.hold = between(c.rand, NIGHT.gather); c.aim = this._toward(c, this.town.x, this.town.z); this._play(c, 'idle', STEP_S); break
       case 'sit': c.state = 'sit'; this._phase(c, 'turn'); break
       case 'enter': this._door(c); this._inside(c, this._indoors(c)); break
@@ -753,7 +755,7 @@ export class TownLife {
 
   /** Seconds for a time indoors: a shopkeeper's `keep` times as long, and longer by the night's pull home. */
   _indoors(c) {
-    return between(c.rand, TOWNSFOLK.inside) * (c.trade === 'potions' || c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1) * (1 + this.pull.home * NIGHT.longer)
+    return between(c.rand, TOWNSFOLK.inside) * (c.trade === 'inn' ? TOWNSFOLK.trade.keep : 1) * (1 + this.pull.home * NIGHT.longer)
   }
 
   _talk(a, b) {

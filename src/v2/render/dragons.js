@@ -1660,13 +1660,13 @@ export class Dragons {
     }
   }
 
-  /** The standing dragons on the ground, `{ key, x, z, size }` each, into `into` (emptied first): what a grown pet stag charges (wildlife.js BUTT). */
+  /** The standing dragons on the ground, `{ key, x, y, z, size }` each, into `into` (emptied first): what a grown pet stag charges (wildlife.js BUTT). */
   grounded(into = []) {
     into.length = 0
     for (const d of this.byKey.values()) {
       if (d.fell !== null) continue
       const air = d.live ? d.live.mode === 'aggro' && (d.live.phase === 'swoop' || d.live.phase === 'land') : d.phrase.kind !== 'rest'
-      if (!air) into.push({ key: d.key, x: d.x, z: d.z, size: d.size })
+      if (!air) into.push({ key: d.key, x: d.x, y: d.y, z: d.z, size: d.size })
     }
     return into
   }

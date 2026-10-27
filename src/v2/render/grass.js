@@ -801,7 +801,7 @@ export class Grass {
    * @param scene         THREE.Scene to add the single BatchedMesh to.
    * @param field         V2Height. Needs heightAt, heightAndSlopeAt and snowLineAt.
    * @param water         WaterSurfaces. Needs isSubmerged and shoreDistAt.
-   * @param paths         PathSet. Needs nearest.
+   * @param paths         PathSet. Needs nearest and nearBox.
    * @param textureArray  The shared prop atlas from buildTextureArray().
    * @param layers        Layers. Needs shoreAt: the sandy stretches of bank the
    *                      mesher paints, which grass keeps off.
@@ -866,8 +866,8 @@ export class Grass {
     if (!water || typeof water.isSubmerged !== 'function' || typeof water.shoreDistAt !== 'function') {
       throw new Error('Grass: needs WaterSurfaces with isSubmerged and shoreDistAt')
     }
-    if (!paths || typeof paths.nearest !== 'function') {
-      throw new Error('Grass: needs a PathSet with nearest')
+    if (!paths || typeof paths.nearest !== 'function' || typeof paths.nearBox !== 'function') {
+      throw new Error('Grass: needs a PathSet with nearest and nearBox')
     }
     if (!layers || typeof layers.shoreAt !== 'function' || !layers.fields || typeof layers.snow?.band !== 'number') {
       throw new Error('Grass: needs a Layers with shoreAt, fields and snow.band, to keep off the sand and the farm fields and thin into the snow')
@@ -1783,6 +1783,11 @@ export class Grass {
     const r2x = this.strips ? rand() : 0
     const r2z = this.strips ? rand() : 0
     const maxSlopeTan = Math.tan((PLACEMENT.maxSlopeDeg * Math.PI) / 180)
+    // A tile no path reaches skips the per-candidate path pair, which is most tiles.
+    const x0 = tx * TILE
+    const z0 = tz * TILE
+    const roadNear = this.paths.nearBox('road', x0, z0, x0 + TILE, z0 + TILE, Math.max(PLACEMENT.pathClearance, VERGE.reach))
+    const riverNear = this.paths.nearBox('river', x0, z0, x0 + TILE, z0 + TILE, PLACEMENT.pathClearance)
     const ids = tile ? tile.ids : new Int32Array(this.perTile)
     const rank = tile ? tile.rank : new Float32Array(this.perTile)
     const rej = this.rejected
@@ -1825,9 +1830,13 @@ export class Grass {
 
       this.samples++
       // Cheapest test first, because the whole point of an early `continue` at
-      // 192 candidates a tile is not paying for the tests behind it. Elevation
-      // and slope come out of one height query, water is a grid lookup, and the
-      // two path queries are the expensive pair and go last.
+      // 192 candidates a tile is not paying for the tests behind it. A candidate
+      // past plainCount stands only in a lush cell (one integer hash), so half of
+      // them go before any height query. Elevation and slope come out of one
+      // height query, water is a grid lookup, and the two path queries are the
+      // expensive pair and go last.
+      const shoreOnly = k >= this.plainCount
+      if (shoreOnly && !shoreClumpAt(x, z, this.seed)) { rej.sparse++; continue }
       const { h, tan, gx, gz } = this.field.heightAndSlopeAt(x, z)
       if (h < PLACEMENT.minElev) { rej.elev++; continue }
       if (tan > maxSlopeTan) { rej.slope++; continue }
@@ -1844,20 +1853,18 @@ export class Grass {
       // only asked once a band is found.
       if (this.layers.shoreAt(x, z, h) >= PLACEMENT.sandMax) { rej.sand++; continue }
       if (this.layers.fields.occupiesAt(x, z, 0)) { rej.field++; continue }
-      // THE SHORE CUT, before the path pair: a candidate past plainCount stands
-      // only in a lush cell within SHORE.reach of water, and on plain ground that
-      // is every one of them. Cell hash first, because it is cheaper than the
-      // shore query and halves the candidates that pay for one. Strict `<`,
-      // because `reach` is shoreDistAt's nothing-near answer.
+      // THE SHORE CUT, before the path pair: a shore-only candidate in a lush
+      // cell stands only within SHORE.reach of water, and on plain ground that
+      // is every one of them. Strict `<`, because `reach` is shoreDistAt's
+      // nothing-near answer.
       let onShore = false
-      if (k >= this.plainCount) {
-        onShore = shoreClumpAt(x, z, this.seed)
-          && this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
+      if (shoreOnly) {
+        onShore = this.water.shoreDistAt(x, z, SHORE.reach, h, tan) < SHORE.reach
         if (!onShore) { rej.sparse++; continue }
       }
-      const road = this.paths.nearest(x, z, 'road')
+      const road = roadNear ? this.paths.nearest(x, z, 'road') : null
       if (road && road.dist < road.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
-      const river = this.paths.nearest(x, z, 'river')
+      const river = riverNear ? this.paths.nearest(x, z, 'river') : null
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       // DROPPED OUTRIGHT INSIDE A ROCK, where a tree would be lifted onto it: a
       // blade of grass growing out of the middle of a boulder is the single most

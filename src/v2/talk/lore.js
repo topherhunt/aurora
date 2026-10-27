@@ -21,6 +21,12 @@ export const TOPICS = {
   flares: { label: 'flare guns', gated: true },
   eating: { label: 'eating wild things', gated: true },
   ores: { label: 'flint and ores', gated: true },
+  weapons: { label: 'swords and shields', gated: true },
+  mining: { label: 'pickaxes and veins', gated: true },
+  spiders: { label: 'cave spiders', gated: true },
+  giants: { label: 'green giants', gated: true },
+  pets: { label: 'pets', gated: false },
+  roads: { label: 'the roads', gated: false },
 }
 
 /** The topics she may ask about before anyone has mentioned any. */
@@ -29,19 +35,26 @@ export const OPEN_TOPICS = Object.keys(TOPICS).filter((k) => !TOPICS[k].gated)
 // How likely a class is to know a fact at all, and what a body knows better (added).
 const KNOW = { folk: 0.55, travel: 0.75, guard: 0.5, child: 0.35, leafkin: 0.6 }
 const EXPERT = {
-  alchemist: { mushrooms: 0.45, eating: 0.3, alchemist: 0.45, ores: 0.2, curses: 0.3 },
+  alchemist: { mushrooms: 0.45, eating: 0.3, alchemist: 0.45, ores: 0.2, curses: 0.3, flares: 0.4, spiders: 0.4, mining: 0.2, pets: 0.15, giants: 0.15 },
   herbalist: { mushrooms: 0.4, eating: 0.4, leafkin: 0.2, curses: 0.3 },
-  healer: { mushrooms: 0.3, eating: 0.35, curses: 0.4 },
-  blacksmith: { ores: 0.45, blacksmith: 0.45, coins: 0.2 },
-  miner: { ores: 0.4, caves: 0.4, gems: 0.3 },
-  hunter: { striders: 0.35, dragons: 0.25, snowlands: 0.2, yetis: 0.2, flares: 0.2 },
-  trapper: { snowlands: 0.35, labyrinths: 0.3, striders: 0.2, yetis: 0.3, flares: 0.35 },
-  shepherd: { striders: 0.3 },
-  farmer: { striders: 0.25, eating: 0.2 },
-  thief: { gems: 0.35, coins: 0.35, labyrinths: 0.25, flares: 0.2 },
-  skald: { dragons: 0.3, snowlands: 0.2, labyrinths: 0.2, yetis: 0.25 },
-  innkeeper: { coins: 0.3 },
-  jarlsthane: { dragons: 0.2, coins: 0.2 },
+  healer: { mushrooms: 0.3, eating: 0.35, curses: 0.4, roads: 0.2, yetis: 0.1, labyrinths: 0.1 },
+  blacksmith: { ores: 0.45, blacksmith: 0.45, coins: 0.2, weapons: 0.45, mining: 0.3 },
+  miner: { ores: 0.4, caves: 0.4, gems: 0.3, mining: 0.5, spiders: 0.3, flares: 0.2 },
+  hunter: { striders: 0.35, dragons: 0.25, snowlands: 0.2, yetis: 0.2, flares: 0.2, pets: 0.35, spiders: 0.2, weapons: 0.2 },
+  trapper: { snowlands: 0.35, labyrinths: 0.3, striders: 0.2, yetis: 0.3, flares: 0.35, spiders: 0.3, giants: 0.3, roads: 0.3, pets: 0.2, weapons: 0.2, mining: 0.15 },
+  shepherd: { striders: 0.3, pets: 0.3 },
+  farmer: { striders: 0.25, eating: 0.2, pets: 0.25 },
+  woodcutter: { giants: 0.3, labyrinths: 0.2 },
+  fisherman: { pets: 0.2 },
+  thief: { gems: 0.35, coins: 0.35, labyrinths: 0.25, yetis: 0.1, flares: 0.2, roads: 0.3, mining: 0.2, spiders: 0.15 },
+  skald: { dragons: 0.3, snowlands: 0.2, labyrinths: 0.2, yetis: 0.25, giants: 0.45, spiders: 0.3, weapons: 0.2 },
+  // The innkeeper hears the road's talk: a little of everything but the sights only travellers see (yetis, mazes), and the roads best, so every town has someone to ask.
+  innkeeper: { coins: 0.3, roads: 0.4, striders: 0.2, dragons: 0.2, snowlands: 0.2, leafkin: 0.2, caves: 0.2, gems: 0.2, blacksmith: 0.2, weapons: 0.2, pets: 0.2, giants: 0.2, mining: 0.15, flares: 0.2 },
+  jarlsthane: { dragons: 0.2, coins: 0.2, weapons: 0.3, roads: 0.2 },
+  guard: { weapons: 0.4, roads: 0.3, dragons: 0.15 },
+  shieldmaiden: { weapons: 0.45, dragons: 0.2 },
+  battlemage: { weapons: 0.35, dragons: 0.2, giants: 0.25, spiders: 0.2 },
+  'child-villager-2': { pets: 0.35, giants: 0.35, spiders: 0.25 },
 }
 
 // A `common` fact is everyday knowledge: anyone but a child knows it at these odds, whatever their class. A `rare` one,
@@ -106,17 +119,18 @@ export const LORE = {
     f('return', 'The old folk say the dragons are coming back. More of them every year.', { lies: ['There are no dragons. That is a story for children.'], tales: ['A dragon egg is worth more than this whole town.', 'Dragons are afraid of yetis. True as I stand here.'], lk: ['Old leafkin say: big-wing come back. More, more.', 'Every year, more big-wing. Leafkin worry.', 'Big-wing coming home. Sky get busy. Keesh.'] }),
     f('deer', 'Somebody in {town} fought off a dragon, and nobody knows how. Folk there will gladly point you to {town}.', { common: true, at: 'away', lies: ['Nobody fought off any dragon. The folk of {town} only say so.'], tales: ['A man in {town} wrestled a dragon with his bare hands. I know the man.'] }),
     f('deer-truth', '{owner} never fought off a dragon, only took the credit. It was {owner}\'s enormous pet deer, and deer turn feisty if you feed them enough.', { common: true, at: 'home', lies: ['{owner} fought that dragon alone, and the deer only watched.'] }),
-    f('pair', 'Dragons keep in pairs. One hunts while the other guards the nest.', { rumour: true, lies: ['Dragons only fly at midsummer.'], tales: ['A dragon once carried off a whole cow. And the farmer.'], lk: ['Big-wing go two-two. One hunt, one sit nest.', 'Two big-wing always. One fly, one watch.', 'Big-wing never alone. Watch for other one!'] }),
+    f('pair', 'Dragons keep in pairs. One hunts while the other guards the nest.', { rumour: true, lies: ['Dragons only fly at midsummer.'], unlocks: ['weapons'], tales: ['A dragon once carried off a whole cow. And the farmer.'], lk: ['Big-wing go two-two. One hunt, one sit nest.', 'Two big-wing always. One fly, one watch.', 'Big-wing never alone. Watch for other one!'] }),
   ],
   alchemist: [
     f('brews', 'The potion master brews from mushrooms and stranger things. Ask before you eat anything wild.', { common: true, lies: ['The alchemist turns lead into gold. Mostly.'], tales: ['The alchemist once brewed a potion that made a man fly. Briefly.'], unlocks: ['mushrooms', 'eating'] }),
     f('wants', 'The alchemist always wants red mushrooms. Bring some and you will have a friend.', { lies: ['The alchemist hates mushrooms. Never bring one.'], unlocks: ['mushrooms'] }),
     f('firestone', 'Alchemists burn firestone in their brews. Rare stuff, and dear.', { rumour: true, lies: ['Firestone is just coal with airs.'], unlocks: ['ores'] }),
+    f('shop', 'The potion master keeps his shop about half the day. Find him there, not out in the street and not in bed, and he will deal with you.', { lies: ['The alchemist never leaves his shop, not even to sleep.'], unlocks: ['flares'] }),
     f('flare', 'Do the alchemist a good turn and you may get a flare gun out of it.', { rumour: true, lies: ['The alchemist sells flare guns for a copper each.'], tales: ['I once shot a flare so high it became a star.'], unlocks: ['flares'] }),
   ],
   blacksmith: [
     f('forge', 'The smith works iron at the forge, morning to night.', { common: true, lies: ['The smith only works by moonlight.'], unlocks: ['ores'] }),
-    f('sword', 'Bring the smith good metal, or do a favour, and you might walk off with a sword.', { rumour: true, lies: ['The smith will forge you anything for a smile.'], tales: ['The smith made a blade that cuts stone. I saw it split a boulder.'], unlocks: ['ores'] }),
+    f('sword', 'Bring the smith good metal, or do a favour, and you might walk off with a sword.', { rumour: true, lies: ['The smith will forge you anything for a smile.'], tales: ['The smith made a blade that cuts stone. I saw it split a boulder.'], unlocks: ['ores', 'weapons'] }),
     f('flint', 'Strike flint near something dry and you will have a fire. The smith swears by it.', { lies: ['Flint only sparks if you spit on it first.'], unlocks: ['ores'] }),
   ],
   coins: [
@@ -140,13 +154,17 @@ export const LORE = {
     f('falls', 'Deep down, the roof comes down when you least expect it. Listen for the rumble.', { lies: ['Cave roofs never fall. Mountains do not move.'], lk: ['Cave roof fall! Hear rumble, run.', 'Deep down, rock drop from top. Listen-listen!', 'Rumble-rumble in cave? Run! Rock come down.'] }),
     f('rabbit', 'Adventurers tell of being hopelessly lost in a cave near here as a child, until a pet rabbit led them out.', { rare: true, lies: ['Rabbits never go underground. Whoever told you that was dreaming.'], tales: ['I was lost in a cave as a child myself, until my pet rabbit led me out.'], lk: ['Hop-friend lead lost leafkin out of cave. Follow hop-friend, find sky!', 'Lost in cave? Little hop-friend know way out. Walk behind.', 'Long ago, hop-friend save lost child in cave. True-true!'] }),
     f('fox', 'Foxes are said to sniff out the treasure in a cave. Take one in with you and follow its nose.', { rare: true, lies: ['Foxes hate caves. They will not go in.'], tales: ['A fox once led me straight to a chest of gold. I let it keep a share.'], lk: ['Fox smell shiny in cave. Follow fox nose, find!', 'Fox-friend sniff out shiny-stone. Walk after fox.', 'Take fox in cave. Fox know where shiny hide.'] }),
+    f('flares', 'Take a flare gun into a cave and fire it at the wall where the way forks. The flare stays lit there, and you know which way you came.', { lies: ['A flare fired in a cave blinds you for an hour. Never.'], unlocks: ['flares', 'spiders'], lk: ['Fire-sky on cave wall, stay bright. Follow bright, find home.', 'Shoot fire-sky at cave wall. Leave bright mark!', 'Cave dark-dark, but fire-sky stay. Follow fire-sky out.'] }),
     f('gems', 'Gems glitter in the deep caves, for those who dare.', { rumour: true, lies: ['There is nothing in caves but bats.'], unlocks: ['gems'], lk: ['Shiny-stone deep in cave. Pretty-pretty.', 'Sparkle-rock hide in deep cave.', 'Glitter in deep dark. Big-folk love glitter.'] }),
   ],
   labyrinths: [
     f('stakes', 'Deep in the forest are mazes walled with sharpened stakes. Easy to get in, hard to get out.', { lies: ['The mazes in the woods move at night.'], lk: ['Stick-twisty in deep wood. Leafkin get lost. Hee.', 'Sharp-stick walls in wood. Go in easy, out hard.', 'Deep wood have stick-twisty. Leafkin no like.'] }),
     f('wall', 'In a maze, keep one hand on the wall and you will come out in the end.', { lies: ['In a maze, always turn left. Always.'], lk: ['Stick-twisty trick: hand on wall, walk-walk, come out.', 'Touch wall, never let go. Then find way out.', 'Lost in stick-twisty? One hand on wall. Walk, walk, out!'] }),
     f('heart', 'Somebody built mazes of stakes out in the wild. There is always something at the heart.', { rumour: true, tales: ['At the heart of a maze I found a chest of gold. Gave it all away.'], unlocks: ['gems'] }),
-    f('giants', 'Green giants guard the mazes in the woods. Whatever lies at the heart, they keep it.', { rumour: true, lies: ['The giants in the mazes are friendly. They show you the way out.'], tales: ['I wrestled a green giant for its treasure once. We called it a draw.'], doubt: ['Green giants? A fireside tale for children.', 'Giants in the woods! Next you will tell me the trees talk.'], of: 'giants', seen: 'I saw one once, through the stakes. Green as moss and twice my height. I did not go in.', lk: ['Big-green in stick-twisty. Keesh! Leafkin no go.', 'Big-green guard stick-twisty middle. Stomp-stomp!', 'Green giant in stick-twisty. Leafkin hide.'] }),
+    f('flare', 'Fire a flare at the ground at each turning in a maze and it stays lit there. Then you know where you have been, and where you have not.', { lies: ['A flare in a maze only brings the giants.'], unlocks: ['flares'], lk: ['Stick-twisty lost? Shoot fire-sky on ground. Fire stay, you know.', 'Fire-sky at each turn in stick-twisty. See fire, know been-there.', 'Fire-sky mark path in stick-twisty. Not lost twice.'] }),
+    f('tower', 'Some mazes have a tower of scaffolding at their heart, climbed by ladders. The prize waits at the top.', { rumour: true, lies: ['The towers in the mazes are only for the giants to sleep in.'], tales: ['I climbed a maze tower so high I could see the sea.'], lk: ['Some stick-twisty have up-up tower. Ladder climb.', 'Tower in stick-twisty middle. Climb-climb, shiny at top.', 'Stick-twisty tower tall. Ladder, ladder, ladder.'] }),
+    f('clock', 'Dally in a maze too long and you are put out at the gate again, with all your walking to do over.', { rumour: true, lies: ['A maze lets you out the moment you are lost. That is its mercy.'], tales: ['I was in a maze so long they put out my fire. Forty days.'] }),
+    f('giants', 'Green giants guard the mazes in the woods. Whatever lies at the heart, they keep it.', { rumour: true, lies: ['The giants in the mazes are friendly. They show you the way out.'], tales: ['I wrestled a green giant for its treasure once. We called it a draw.'], doubt: ['Green giants? A fireside tale for children.', 'Giants in the woods! Next you will tell me the trees talk.'], of: 'giants', seen: 'I saw one once, through the stakes. Green as moss and twice my height. I did not go in.', lk: ['Big-green in stick-twisty. Keesh! Leafkin no go.', 'Big-green guard stick-twisty middle. Stomp-stomp!', 'Green giant in stick-twisty. Leafkin hide.'], unlocks: ['giants'] }),
   ],
   yetis: [
     f('wastes', 'Yetis live out in the snowy wastes. Great white brutes, taller than a man.', { rumour: true, lies: ['Yetis live in the deep woods, under the roots.'], tales: ['They say yetis love flowers. Bring one a posy and it weeps.'], doubt: ['Yetis? A story to keep children out of the snow.', 'There are no yetis. Snow-blind trappers seeing bears.'], seen: 'I saw one myself, up in the snow. White as the drifts, and it watched me the whole way down.', lk: ['Big-white up in cold. Brrm! Leafkin hide.', 'Big-white walk in snow. Tall-tall, hairy-hairy.', 'Up in white-cold, big-white live. Keesh.'], unlocks: ['snowlands'] }),
@@ -156,7 +174,7 @@ export const LORE = {
   gems: [
     f('diamond', 'Diamonds are the prize. A trader will give a hundred gold for one.', { rumour: true, lies: ['Jade is worth more than diamonds, everyone knows.'], tales: ['I held a diamond the size of an egg once.'] }),
     f('prices', 'A ruby fetches sixty gold, a piece of jade forty.', { rumour: true, lies: ['Gems are pretty rocks. Worthless.', 'A ruby is worth five gold, no more.'] }),
-    f('find', 'You will never buy a gem. You find them, deep in caves or at the heart of a maze.', { rumour: true, lies: ['Gems grow on bushes in the snowlands.'], unlocks: ['caves', 'labyrinths'], lk: ['Shiny-stone hide deep. In cave, in stick-twisty.', 'No buy shiny-stone. Find in dark places.', 'Shiny-stone in cave and stick-twisty middle. Never in market.'] }),
+    f('find', 'You will never buy a gem. You find them, deep in caves or at the heart of a maze.', { rumour: true, lies: ['Gems grow on bushes in the snowlands.'], unlocks: ['caves', 'labyrinths', 'mining'], lk: ['Shiny-stone hide deep. In cave, in stick-twisty.', 'No buy shiny-stone. Find in dark places.', 'Shiny-stone in cave and stick-twisty middle. Never in market.'] }),
   ],
   mushrooms: [
     f('wary', 'Never eat a mushroom you do not know. Every one stings, and some do very odd things.', { common: true, lies: ['Mushrooms are good for you. Eat all you find.'], lk: ['Momo good for leafkin! Big-folk belly no like.', 'Big-folk no eat strange momo. Belly hurt!', 'Momo for leafkin. Big-folk, careful-careful.'], unlocks: ['eating', 'leafkin'] }),
@@ -167,8 +185,48 @@ export const LORE = {
   ],
   flares: [
     f('mark', 'Fire a flare and it hangs where it lands, burning day and night. Leave one where you have been and you can always find your way back.', { lies: ['A flare burns out in a minute. No use for marking anything.'], tales: ['I fired a flare over the sea once. Sailors still steer by it.'], lk: ['Fire-sky stay up-up. Leafkin see, find way home.', 'Shoot fire-sky, it burn and burn. Follow back.', 'Fire-sky never sleep. Good for lost big-folk.'] }),
+    f('ground', 'A flare shot at the ground, or at a cave wall or roof, stays where it strikes and glows, lighting the rock about it. In a cave or a maze, leave one at every fork and you can trace your way home.', { lies: ['A flare that strikes rock goes out at once. Only the sky keeps them.'], tales: ['I lit a whole cave with flares once. The bats thanked me.'], unlocks: ['caves', 'labyrinths'], lk: ['Fire-sky on ground stay bright. Light cave, light stick-twisty!', 'Shoot fire-sky at wall, it glow and glow. Mark path.', 'Fire-sky at fork, fire stay. Walk back by fire.'] }),
+    f('refill', 'When the gun runs dry the potion master sells a jar of flare charges for forty coins and a firestone. He deals only in his shop.', { lies: ['A flare gun cannot be refilled. Buy another.', 'The potion master gives refills away to anyone who asks nicely.'], unlocks: ['alchemist', 'ores', 'coins'] }),
     f('recall', 'Low on flares? Put the gun on safe, aim at one of your own, near enough, and pull the trigger. It flies home into the gun, and you have the charge back.', { lies: ['A flare spent is gone for good. Count every shot.', 'Shoot a second flare at the first and you get both back.'] }),
     f('charges', 'A flare gun holds ten flares. The light in the little window at the back shrinks as they run down.', { lies: ['A flare gun never runs out, if you keep it dry.'] }),
+  ],
+  weapons: [
+    f('sword', 'A sword bites only when the blade is swung hard. Swing it fast through a beast and it takes ten hurt, but never more than one cut a second from the same blade.', { lies: ['A sword cuts a beast just by touching it. Hold it out and walk.'], tales: ['I felled a bear with one stroke of my sword. Then I felled the oak behind it.'], unlocks: ['blacksmith'] }),
+    f('shield', 'Hold the shield up between you and the blow and it turns nine parts in ten of the hurt. It guards only the front of you.', { lies: ['A shield stops every blow, from any side.', 'Shields are for show. A blow goes straight through.'], unlocks: ['blacksmith'] }),
+    f('price', 'The smith makes a sword or a shield for a hundred coins and three bog iron, and a pickaxe for fifty coins. He sells only in his workshop.', { lies: ['The smith gives swords to anyone brave. Ask him nicely.'], unlocks: ['blacksmith', 'ores', 'mining'] }),
+    f('dragon', 'A dragon takes fifteen good sword strokes to bring down. Where it falls it leaves gems.', { rumour: true, lies: ['A dragon cannot be hurt by iron. Only gold.'], tales: ['I brought down a dragon with one thrown stone, and kept the stone.'], unlocks: ['dragons', 'gems'] }),
+    f('town', 'Never walk into a town with a sword in your hand. The people jeer, the guards warn you off, and nobody will so much as talk to you.', { common: true, lies: ['A sword is welcome in town. The guards salute it.'] }),
+  ],
+  mining: [
+    f('pickaxe', 'A pickaxe pries ore from a cave wall. Three hard strikes on the one vein and it comes loose in your hand.', { lies: ['You can pull ore from the wall with your bare hands. Just tug.'], tales: ['I mined a vein of gold as thick as my arm. It was a root.'], unlocks: ['blacksmith', 'caves', 'ores'] }),
+    f('depth', 'Nothing worth digging lies near a cave mouth. You must go a hundred strides in by the passage, and the further down you go, the more veins there are.', { lies: ['The best veins are right by the mouth. Any fool can reach them.'], unlocks: ['caves'] }),
+    f('height', 'Veins sit low in the wall, from about your knee to a little over your head. Look along the rock, not up at the roof.', { lies: ['The ore is all in the roof. Bring a ladder.'] }),
+    f('kinds', 'Bog iron comes first. Lodestone lies much deeper. Rimesilver is only in the great cavern, glowing faintly in the cold.', { lies: ['Rimesilver is in every cave. They just do not look.'], unlocks: ['ores'] }),
+    f('glint', 'Gems lie in nooks of the wall and show only when your light falls on them. Carry a light and sweep it over the rock.', { lies: ['Gems glow on their own in the dark. You will see them from far off.'], unlocks: ['gems', 'flares'] }),
+  ],
+  spiders: [
+    f('giant', 'Spiders as long as a man crawl the walls and roofs of the deep caves, dark as soot. They will not attack you.', { lies: ['Cave spiders bite, and the bite is death. Run when you see one.'], tales: ['A cave spider once carried off a goat. Whole. I saw it go.'], unlocks: ['caves'], lk: ['Big-black spider on cave wall. No bite, only look.', 'Cave spider big-big, black-black. Leafkin step wide.', 'Big spider walk on cave roof. No hurt, no hurt.'] }),
+    f('light', 'Carry a light and the big spiders shrink from it. They rear, hiss, and back away facing you, until you are far off.', { lies: ['Cave spiders love a torch and swarm to it.'], unlocks: ['flares'] }),
+    f('small', 'The little spiders of the wood are harmless and you can pick one up. Keep one in your hand and see what bigger things think of it.', { lies: ['A spider in your hand will bite you. Drop it at once.'], tales: ['I once had a spider on my hat for a week. Never lost my temper.'], unlocks: ['giants'] }),
+    f('frogs', 'A frog will leap for a spider held out in your hand, and swallow it whole. A pet frog grows on them.', { rare: true, lies: ['Frogs will not touch a spider. They are afraid of them.'] }),
+  ],
+  giants: [
+    f('fear', 'Every old tale agrees on one thing: green giants are afraid of spiders. Big as a house, and they flee from a thing in your hand no bigger than a coin.', { rumour: true, lies: ['Giants eat spiders like sweets. They would follow you for one.'], tales: ['I once frightened a giant with a spider. He wept like a calf.'], unlocks: ['spiders', 'labyrinths'] }),
+    f('tailor', 'In the old story a little tailor cornered a giant with nothing but a spider in his fist. The giant howled and fled over the hills, and never came back to the village.', { rumour: true, lies: ['In the old story a tailor beat a giant with his thimble.'], tales: ['My grandmother knew that tailor. He was no braver than a hen. He only had a spider.'], unlocks: ['spiders'] }),
+    f('fast', 'A green giant in a maze moves twice as fast as one outside. Do not trust your legs; trust what you hold in your hand.', { rumour: true, lies: ['Giants in a maze are slow. Walk past.'], tales: ['A giant once chased me clean out of a maze and halfway home.'], unlocks: ['labyrinths', 'spiders'] }),
+    f('song', 'The children sing of the giant who feared the smallest thing: eight little legs, and off he ran.', { rare: true, lies: ['The giant in the children\'s song feared a mouse.'], unlocks: ['spiders'] }),
+  ],
+  pets: [
+    f('tame', 'Feed a wild beast what it likes and it will follow you after. Each meal grows it a little, and mends it.', { lies: ['A pet shrinks if you feed it too much.'], tales: ['My fox grew as big as a pony and ate my roof.'], lk: ['Feed fox, fox tikka. More feed, fox big.', 'Feed hop-friend, hop-friend follow-follow.', 'Beast like food, beast stay. Grow-grow.'] }),
+    f('keeps', 'A pet will not be left behind. Turn your back, and it hurries to catch up.', { lies: ['A pet wanders off the moment you look away.'] }),
+    f('cave', 'Foxes, rabbits and frogs follow you into a cave. Deer and striders wait at the mouth. The fox goes ahead and sniffs out treasure, the rabbit stays behind and knows the way out.', { lies: ['No pet will go underground. They are not fools.'], unlocks: ['caves'] }),
+    f('lost', 'A pet you leave behind waits where you left it. Come back to the spot and it will know you again, and run to you.', { rumour: true, lies: ['A pet you leave behind is gone for good. It will not know you.'] }),
+    f('fox', 'A fed fox that has nothing to follow will stare at the nearest cave mouth, maze, roost or town and yip. Go and look.', { rare: true, lies: ['A fox yips only when it smells a storm.'], unlocks: ['caves', 'labyrinths'] }),
+    f('deer', 'Feed a deer until it is twice its size and it will charge a dragon that has landed near it.', { lies: ['A deer will run from a dragon, however big it grows.'], unlocks: ['dragons'] }),
+  ],
+  roads: [
+    f('cobbled', 'The roads between the towns are cobbled. Follow one and it brings you to the next town.', { common: true, lies: ['The roads all run to the sea and no further.'], lk: ['Big-folk path of stone. Follow, find big-folk home.', 'Stone road, hard under foot. Go to town.'] }),
+    f('inn', 'Every town has an inn by its fire, and the innkeeper hears all the news that comes down the road.', { lies: ['Inns on the road charge a coin for a drink of water.'], unlocks: ['coins'] }),
   ],
   curses: [
     f('dark', 'My cousin ate a chanterelle on a dare, and swore it cursed him. The world went black at the edges and every beast near him came for blood. Five long minutes of it.', { lies: ['A mushroom curse lasts seven years. My cousin is under one still.'], tales: ['I ate a black toadstool once and lived a week as a frog.'], lk: ['Big-folk eat gold-shroom. Dark-dark come, beasts bite-bite. Momo-curse!', 'Gold-shroom curse: world go dark, beasts hunt. Brrm!', 'Gold-shroom eaten? Edges go black, beasts come. Five long minutes!'], unlocks: ['mushrooms', 'eating'], trust: TRUST.close, rare: true }),
@@ -183,7 +241,7 @@ export const LORE = {
     f('flint', 'Flint is common enough, two gold a stone. Strike it to make fire.', { common: true, lies: ['Flint is the rarest stone there is.'], lk: ['Flint-stone go click-click, make fire. Hot!', 'Hit flint, spark jump. Fire!', 'Flint everywhere. Strike-strike, fire come.'] }),
     f('iron', 'Iron is common too, five gold. Copper is dearer, twenty-five, and flare guns need it.', { rumour: true, lies: ['Copper is worthless. Only fools carry it.'], unlocks: ['flares'] }),
     f('titanium', 'Titanium is the metal for real weapons. Rare as hen\'s teeth.', { rumour: true, tales: ['I once saw a titanium sword. It sang when it moved.'] }),
-    f('miners', 'Miners dig the hills for ore. The deep caves hold the best of it.', { lies: ['Ore is only found in riverbeds.'], unlocks: ['caves'], lk: ['Big-folk dig hill for rock. Deep cave, best rock.', 'Diggers chop-chop in hill. Noisy-noisy.', 'Big-folk dig deep for shiny rock. Cave rock best.'] }),
+    f('miners', 'Miners dig the hills for ore. The deep caves hold the best of it.', { lies: ['Ore is only found in riverbeds.'], unlocks: ['caves', 'mining'], lk: ['Big-folk dig hill for rock. Deep cave, best rock.', 'Diggers chop-chop in hill. Noisy-noisy.', 'Big-folk dig deep for shiny rock. Cave rock best.'] }),
   ],
 }
 

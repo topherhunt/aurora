@@ -228,6 +228,8 @@ export class PathSet {
     this.paths = new Map()
     this.lakes = lakes
     this.grid = new UniformGrid(SEG_CELL)
+    // The same segments, binned the same way, one grid per kind: a kind's query reads only its own, in the same order.
+    this._byKind = { road: new UniformGrid(SEG_CELL), river: new UniformGrid(SEG_CELL) }
     this._seg = new Float64Array(0)
     this._segPath = new Int32Array(0)
     // Each segment's start as horizontal metres along its path from the first sample.
@@ -450,6 +452,8 @@ export class PathSet {
     this._indexDirty = false
     this._roadX = NaN
     this.grid.clear()
+    this._byKind.road.clear()
+    this._byKind.river.clear()
     this._pathList = []
     let total = 0
     for (const rec of this.paths.values()) {
@@ -495,13 +499,12 @@ export class PathSet {
         // Swept box: the segment's own extent padded by the widest half-width it carries plus that path's reach. Every query the carve functions can answer non-trivially is inside this box, so a miss in the index is the same answer as a miss in the profile.
         const hw = Math.max(s[a + 3], s[b + 3])
         const pad = hw + reachOf(rec, hw)
-        this.grid.insert(
-          n,
-          Math.min(s[a], s[b]) - pad,
-          Math.min(s[a + 2], s[b + 2]) - pad,
-          Math.max(s[a], s[b]) + pad,
-          Math.max(s[a + 2], s[b + 2]) + pad
-        )
+        const minX = Math.min(s[a], s[b]) - pad
+        const minZ = Math.min(s[a + 2], s[b + 2]) - pad
+        const maxX = Math.max(s[a], s[b]) + pad
+        const maxZ = Math.max(s[a + 2], s[b + 2]) + pad
+        this.grid.insert(n, minX, minZ, maxX, maxZ)
+        this._byKind[rec.kind].insert(n, minX, minZ, maxX, maxZ)
         n++
       }
     }
@@ -769,18 +772,20 @@ export class PathSet {
   // Fills `out` and returns true, or returns false if nothing reaches (x, z). Only sees segments whose SWEPT box covers the point, which is deliberate: the caller wants "does a path affect this vertex", not "how far is the nearest road in the county". `exclude` skips one record, which is how a river's endpoint finds the water it joins rather than itself.
   _nearestInto(x, z, kind, out, exclude = null, paintedOnly = false) {
     this._ensureIndex()
-    const bucket = this.grid.cellAt(x, z)
+    const bucket = (kind === null ? this.grid : this._byKind[kind]).cellAt(x, z)
     if (bucket === undefined) return false
     const seg = this._seg
     let best = -1
     let bestD2 = Infinity
     let bestT = 0
+    const filter = exclude !== null || paintedOnly
     for (let n = 0; n < bucket.length; n++) {
       const si = bucket[n]
-      const rec = this._pathList[this._segPath[si]]
-      if (kind !== null && rec.kind !== kind) continue
-      if (rec === exclude) continue
-      if (paintedOnly && !rec.dirt) continue
+      if (filter) {
+        const rec = this._pathList[this._segPath[si]]
+        if (rec === exclude) continue
+        if (paintedOnly && !rec.dirt) continue
+      }
       const o = si * STRIDE
       const ax = seg[o]
       const az = seg[o + 2]
@@ -854,11 +859,10 @@ export class PathSet {
   // The nearest river into HIT_A and, when a second river reaches the same cell, the nearest segment of that one into HIT_B. Returns how many were filled. Two is what a junction's water level and flatten weight need; a third river through one 32 m cell is not something they resolve.
   _rivers(x, z) {
     if (!this._nearestInto(x, z, 'river', HIT_A)) return 0
-    const bucket = this.grid.cellAt(x, z)
+    const bucket = this._byKind.river.cellAt(x, z)
     let other = false
     for (let n = 0; n < bucket.length; n++) {
-      const rec = this._pathList[this._segPath[bucket[n]]]
-      if (rec.kind === 'river' && rec !== HIT_A.rec) {
+      if (this._pathList[this._segPath[bucket[n]]] !== HIT_A.rec) {
         other = true
         break
       }
@@ -881,7 +885,7 @@ export class PathSet {
   // `cell` is the caller's sampling spacing, passed on to the detail read so the bed's relief is band-limited exactly as the ground around it is and a chunk split does not step the bed.
   carveRivers(x, z, h, cell = 0) {
     this._ensureIndex()
-    const bucket = this.grid.cellAt(x, z)
+    const bucket = this._byKind.river.cellAt(x, z)
     if (bucket === undefined) return h
     const seg = this._seg
     claimWet = Infinity
@@ -895,8 +899,6 @@ export class PathSet {
     let nearestT = 0
     for (let n = 0; n < bucket.length; n++) {
       const si = bucket[n]
-      const rec = this._pathList[this._segPath[si]]
-      if (rec.kind !== 'river') continue
       const o = si * STRIDE
       const ax = seg[o]
       const az = seg[o + 2]
@@ -1012,6 +1014,30 @@ export class PathSet {
   overlaps(minX, minZ, maxX, maxZ) {
     this._ensureIndex()
     return this.grid.overlaps(minX, minZ, maxX, maxZ)
+  }
+
+  // Whether any `kind` segment binned under the box comes within `margin` past its own half-width of it: a scatter's per-tile early-out. False means every nearest(x, z, kind) inside the box answers null or a path further than `margin` past its kerb, because each point reads one of these buckets.
+  nearBox(kind, minX, minZ, maxX, maxZ, margin) {
+    this._ensureIndex()
+    const grid = this._byKind[kind]
+    const seg = this._seg
+    const x0 = grid.cellIndex(minX)
+    const x1 = grid.cellIndex(maxX)
+    const z0 = grid.cellIndex(minZ)
+    const z1 = grid.cellIndex(maxZ)
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const bucket = grid.cells.get(grid.key(cx, cz))
+        if (bucket === undefined) continue
+        for (let n = 0; n < bucket.length; n++) {
+          const o = bucket[n] * STRIDE
+          const dx = Math.max(0, Math.min(seg[o], seg[o + 4]) - maxX, minX - Math.max(seg[o], seg[o + 4]))
+          const dz = Math.max(0, Math.min(seg[o + 2], seg[o + 6]) - maxZ, minZ - Math.max(seg[o + 2], seg[o + 6]))
+          if (Math.hypot(dx, dz) - Math.max(seg[o + 3], seg[o + 7]) < margin) return true
+        }
+      }
+    }
+    return false
   }
 
   // --- mutation -------------------------------------------------------------

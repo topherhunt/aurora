@@ -263,8 +263,11 @@ const NO_LURES = []
 const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt', 'butt'])
 // Under her chanterelle (eating.js), an animal within `m` m of her comes for her and strikes from `reach` body lengths: `harm` every strike, a strike `strikeS` then `idleS` before the next.
 export const MAD = { m: EAT.chanterelle.m, reach: 0.7, harm: 5, strikeS: 0.8, idleS: 1.2 }
-// A pet stag grown to `grown` times its wild size charges a grounded dragon within `m` m (foes) and butts it once from MAD.reach body lengths for `hp`; a dragon that snaps back costs it `snap`. Not again for `againS`.
-export const BUTT = { grown: 2, m: 30, hp: 10, snap: 30, againS: 60 }
+// A pet stag grown to `grown` times its wild size charges a grounded dragon within `m` m of it, up and down too (foes) and butts it once from MAD.reach body lengths for `hp`; a dragon that snaps back costs it `snap`. Not again for `againS`.
+export const BUTT = { grown: 2, m: 20, hp: 10, snap: 30, againS: 60 }
+// A pet lost to her (place, a load, another room) waits where it was, wandering its score from there; her within `m` m, it calls and is hers again.
+export const LOST = { m: 10 }
+export const WAIT = 'wait'
 // Her size (sized) against an animal with a `flee` gait, within FLEE_M: above `look` of her full size it runs; at `look` or under it stops and looks at her for `lookS`, not again for `againS`.
 // A species that `hunts` comes for her from `hunt.m` at `hunt.fits` or under and strikes as MAD does, `harm` a strike (`small` at `smallFits` or under), until she is past LURE_FORGET_M or grows.
 export const FEAR = { look: 0.5, lookS: 2.5, againS: 30, hunt: { fits: 0.25, m: 12, harm: 10, smallFits: 0.125, small: 20 } }
@@ -433,7 +436,7 @@ export class Wildlife {
     this.eat = eat
     this.harm = harm
     this.butt = butt
-    // The grounded dragons this frame, { key, x, z, size } each (dragons.js grounded), and key -> when a pet stag last butted one.
+    // The grounded dragons this frame, { key, x, y, z, size } each (dragons.js grounded), and key -> when a pet stag last butted one.
     this.foes = NO_LURES
     this.butts = new Map()
     // Her, as a tame one keeps up with her (keep-up.js); null and a tame one forgets her past LURE_FORGET_M.
@@ -442,6 +445,9 @@ export class Wildlife {
     this.marks = null
     // Her pets stepped though their home tile has left (_leave): a tile of its own.
     this.kept = { spawns: [] }
+    // Lost pets (LOST): key -> where it was lost { x, y, z, heading, mine }, `mine` false for a peer's, and each one's spawn moved home to there, a tile of its own while loaded; its rolled spawn on its own tile never wakes meanwhile.
+    this.lost = new Map()
+    this.waits = { spawns: [] }
     // The cave she is in ({ walk, apron }, goUnder), or null; and the ways from her feet a pet under it leads along ({ treasure, exit }, world polylines or null each), or null.
     this.cave = null
     this.leads = null
@@ -743,7 +749,7 @@ export class Wildlife {
   /** The spawn keyed `key`, woken or not, resident or not; a key no tile rolled throws. */
   _spawnOf(key) {
     const m = /^[a-z]+:(-?\d+),(-?\d+):\d+$/.exec(key)
-    const s = this.kept.spawns.find((c) => c.key === key) ?? (m && this._tileOf(Number(m[1]), Number(m[2])).spawns.find((c) => c.key === key))
+    const s = this.waits.spawns.find((c) => c.key === key) ?? this.kept.spawns.find((c) => c.key === key) ?? (m &&this._tileOf(Number(m[1]), Number(m[2])).spawns.find((c) => c.key === key))
     if (!s) throw new Error(`Wildlife: no animal keyed ${key}`)
     return s
   }
@@ -864,8 +870,10 @@ export class Wildlife {
 
   /** Rebuild every tile around (cx, cz). Boot, and whenever the ground moves under her. Nothing fades: the ground a body was standing on is not there to fade on. The room's anchors are kept. */
   place(cx, cz) {
+    for (const c of [...this.byKey.values()]) if (this._hers(c)) this._lose(c, this.last)
     for (const t of this.tiles.values()) this._leave(t, false)
     this._leave(this.kept, false)
+    for (const s of this.waits.spawns) this._sleep(s, false)
     for (const f of this.fading) this._park(f.puppet, f.sp)
     this.fading.length = 0
     for (const f of this.fadingCards) this._freeCard(f.id)
@@ -877,6 +885,86 @@ export class Wildlife {
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._grow(tx, tz), (t) => this._leave(t))
     this.walkedX = cx
     this.walkedZ = cz
+    this._rewait()
+  }
+
+  /** Her pet lost to her at `now` where it stands: waiting there, and the room told (WAIT). */
+  _lose(c, now) {
+    const at = { x: c.sx, y: c.y, z: c.sz, heading: c.sh }
+    const meals = this.meals.has(c.key) ? this.meals.get(c.key) : null
+    this.outbox.push([c.key, now, at.x, at.y, at.z, at.heading, -1, WAIT, null, null, null, meals])
+    this._wait(c.key, { ...at, mine: true })
+  }
+
+  /** The animal `key` waiting at `at` ({ x, y, z, heading, mine }) for whoever lost it (LOST): whatever of it is awake put to sleep, its plans forgotten, and its spawn moved home to there. */
+  _wait(key, at) {
+    const c = this.byKey.get(key)
+    if (c) this._sleep(c.spawn, false)
+    this.score.forget(key)
+    this.freeScore.forget(key)
+    this.anchored.delete(key)
+    this.lost.set(key, at)
+    const i = this.waits.spawns.findIndex((s) => s.key === key)
+    if (i >= 0) this.waits.spawns.splice(i, 1)
+    if (this.loaded) this.waits.spawns.push(this._waiting(key, at))
+  }
+
+  /** The rolled spawn `key`, moved home to `at`. */
+  _waiting(key, at) {
+    const m = /^[a-z]+:(-?\d+),(-?\d+):\d+$/.exec(key)
+    const s = m && this._tileOf(Number(m[1]), Number(m[2])).spawns.find((r) => r.key === key)
+    if (!s) throw new Error(`Wildlife: no animal keyed ${key} to wait`)
+    return { ...s, x: at.x, y: at.y, z: at.z, heading: at.heading, home: { x: at.x, z: at.z, heading: at.heading }, slot: null, deadUntil: 0 }
+  }
+
+  /** A waiting spawn for every lost pet that has none: those lost before the species had loaded. */
+  _rewait() {
+    if (!this.loaded) return
+    for (const [key, at] of this.lost) if (!this.waits.spawns.some((s) => s.key === key)) this.waits.spawns.push(this._waiting(key, at))
+  }
+
+  /** The lost pet `key` waiting no more: its spawn, awake or not, back on its own tile where that is resident, else kept with her pets. */
+  _unwait(key) {
+    this.lost.delete(key)
+    const i = this.waits.spawns.findIndex((s) => s.key === key)
+    if (i < 0) return
+    const [s] = this.waits.spawns.splice(i, 1)
+    const m = /^[a-z]+:(-?\d+),(-?\d+):\d+$/.exec(key)
+    const t = this.tiles.get(tileKey(Number(m[1]), Number(m[2])))
+    const j = t ? t.spawns.findIndex((r) => r.key === key) : -1
+    if (j >= 0) t.spawns[j] = s
+    else this.kept.spawns.push(s)
+  }
+
+  /** A pet of hers waiting, awake within LOST.m of her on the overworld: it knows her, calls, and is hers again. */
+  _found(s, now) {
+    const c = s.slot
+    if (!this.lost.get(s.key).mine || c === null || c.live !== null || this.her === null || this.cave !== null) return false
+    const h = this._head
+    if (Math.hypot(h.x - c.sx, h.z - c.sz) > LOST.m || Math.abs(h.y - c.y) > LOST.m) return false
+    this._golive(c, 'tame', null, null, now)
+    this._say(c)
+    this._owe(c, now, 'tame')
+    return true
+  }
+
+  /** Her pets, following her or lost and waiting, `{ key, x, y, z, heading, meals }` each: what a save or a room change keeps of them. */
+  pets() {
+    const out = []
+    const meals = (key) => (this.meals.has(key) ? this.meals.get(key) : 0)
+    for (const c of this.byKey.values()) if (this._hers(c)) out.push({ key: c.key, x: c.sx, y: c.y, z: c.sz, heading: c.sh, meals: meals(c.key) })
+    for (const [key, { x, y, z, heading, mine }] of this.lost) if (mine) out.push({ key, x, y, z, heading, meals: meals(key) })
+    return out
+  }
+
+  /** Her pets as `pets()` had them, each waiting where it was (a load, or back in this room); any following her now goes wild. */
+  restorePets(pets, now) {
+    for (const c of [...this.byKey.values()]) if (this._hers(c)) this._unlive(c, now)
+    for (const [key, at] of [...this.lost]) if (at.mine) this._unwait(key)
+    for (const p of pets) {
+      if (p.meals > 0) this.meals.set(p.key, p.meals)
+      this._wait(p.key, { x: p.x, y: p.y, z: p.z, heading: p.heading, mine: true })
+    }
   }
 
   get stats() {
@@ -1873,7 +1961,7 @@ export class Wildlife {
     let foe = null
     let best = BUTT.m
     for (const f of this.foes) {
-      const d = Math.hypot(f.x - c.sx, f.z - c.sz)
+      const d = Math.hypot(f.x - c.sx, f.y - c.y, f.z - c.sz)
       if (d <= best) { best = d; foe = f }
     }
     return foe
@@ -1998,14 +2086,21 @@ export class Wildlife {
    * mode, by, hp, hurtAt, meals]`, `by` the client it came from (null for this client's own,
    * which is ignored), hp and hurtAt its scar (SINGE) or null, meals what it has eaten (MEAL) or null. Kept for an animal not yet woken; on one that is, a
    * live anchor puts it live or nudges it, a rejoin anchor puts it on that
-   * rejoin from the anchor's time.
+   * rejoin from the anchor's time. A WAIT anchor is a peer's pet lost (LOST):
+   * it waits there here too, until any other anchor of it.
    */
   apply(anchor, now) {
     const [key, T, , , , , , mode, by] = anchor
     if (!Number.isFinite(T)) throw new Error(`Wildlife: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (by === null) return
-    if (!LIVE_MODES.has(mode) && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
+    if (!LIVE_MODES.has(mode) && mode !== 'rejoin' && mode !== WAIT) throw new Error(`Wildlife: no anchor mode ${mode}`)
     if (anchor.length !== 12) throw new Error(`Wildlife: an anchor of ${anchor.length} fields, not 12: ${JSON.stringify(anchor)}`)
+    if (mode === WAIT) {
+      if (anchor[11] !== null) this.meals.set(key, anchor[11])
+      this._wait(key, { x: anchor[2], y: anchor[3], z: anchor[4], heading: anchor[5], mine: false })
+      return
+    }
+    if (this.lost.has(key)) this._unwait(key)
     this.anchored.set(key, anchor)
     // A scar at the time already kept is a meal's healing, no new hurt.
     const at = anchor[10], was = this.scars.get(key)
@@ -2238,6 +2333,7 @@ export class Wildlife {
   * _stepped() {
     yield* this.tiles.values()
     yield this.kept
+    yield this.waits
   }
 
   /** Draw the whole layer or none of it; the cards are shared instances, so the batch's `visible` alone would leave them. */
@@ -2268,6 +2364,8 @@ export class Wildlife {
       this._sleep(kept[i])
       kept.splice(i, 1)
     }
+    this._rewait()
+    for (let i = this.waits.spawns.length - 1; i >= 0; i--) if (this._found(this.waits.spawns[i], now)) this._unwait(this.waits.spawns[i].key)
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._grow(tx, tz), (t) => this._leave(t))
       this.walkedX = hx
@@ -2293,6 +2391,7 @@ export class Wildlife {
     for (const t of this._stepped()) {
       for (const s of t.spawns) {
         if (now < s.deadUntil) continue
+        if (t !== this.waits && this.lost.has(s.key)) continue
         const under = s.slot !== null && s.slot.under
         this._in = under ? this.cave.walk : null
         this.head = this.cave === null || under ? this._head : this.cave.apron

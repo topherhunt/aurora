@@ -17,14 +17,17 @@ import { unpackKey } from '../terrain/quadtree-v2.js'
  * WHAT THIS DOES NOT INHERIT FROM v1: the rivers. §11 records rivers as built, measured and removed, and the measurement is not about ribbons -- 47.4% of v1's river segments run uphill on the rendered surface because Phase A routes flow over a carved field the mesher never sees. v2 has no such split: a river here is an XZ spline whose water level PathSet solves from the ground it runs through, never rising in the flow direction; the carve cuts the channel down from that level and the ribbon is drawn at it. The surface cannot climb because the solver does not let it.
  */
 
-// Bucket edge for the river lookup index, in metres. Query cost is a 3x3 block of buckets, so this is also the largest half-width levelAt can answer for -- a river wider than this would have samples outside the block and go silently missing. Asserted, not assumed.
-const BUCKET = 64
+// Bucket edge for the river lookup index, in metres. A query reads every bucket within its own reach of the point (the widest half-width, plus the shore reach), so a smaller bucket scans fewer far segments at the price of more entries for a long one.
+const BUCKET = 32
 
 // Slope floor for shoreDistAt's waterline term: at 1:100 a point 0.3 m over a lake plane is 30 m from its shore.
 const MIN_TAN = 0.01
 
 // Bucket key. A 32-bit hash of the cell pair rather than a template string: levelAt is on the prop scatter's inner loop and a string key per query allocates one string per bucket per candidate.
 const bucketKey = (i, j) => i * 100003 + j
+
+// The buckets one query reads, filled by _cells. Module-level for the same reason as the key.
+const cellScratch = []
 
 // levelAt's per-river scratch: the nearest segment's squared distance, level, index and foot for each river reaching the point, indexed by slot. Module-level for the same reason the key is a hash -- the scatter calls levelAt per candidate -- and the slot count is a throw rather than a growth path, because more rivers than this through one point is not a world anyone has authored.
 const LEVEL_RUNS = 8
@@ -63,8 +66,9 @@ export class WaterSurfaces {
 
     this.buckets = new Map()
     this.lakeBoxes = []
-    // The widest authored river half-width in the index, which bounds how far out shoreDistAt can answer honestly -- see the throw there.
+    // The widest authored river half-width in the index, and the widest drawn one: how far from a point a segment can still answer for it.
     this.maxHalfWidth = 0
+    this.maxDrawnHalfWidth = 0
 
     // The editor's per-object hide, as a predicate. Default: everything is
     // drawn, so nothing outside the editor has to know this exists.
@@ -440,9 +444,7 @@ export class WaterSurfaces {
   }
 
   /**
-   * Rebuild the river lookup index: every flattened segment binned by the buckets its endpoints fall in.
-   *
-   * Binning the segment's own cells rather than its cells dilated by the half-width is enough because the query reads a 3x3 block: any segment within BUCKET metres of the query point lands somewhere in that block whatever cell it was binned into. That is also exactly why a half-width past BUCKET is a throw rather than a slow path -- it would not be slower, it would be wrong, and wrong by omission, which looks like a river that simply is not wet.
+   * Rebuild the river lookup index: every flattened segment binned by the buckets its own box covers. Binning undilated is enough because a query reads every bucket within its reach of the point (_cells): a segment within that reach passes through one of them.
    */
   reindex() {
     this.buckets.clear()
@@ -477,7 +479,6 @@ export class WaterSurfaces {
         this.idxPts[d + 1] = s[o + 1]
         this.idxPts[d + 2] = s[o + 2]
         this.idxPts[d + 3] = s[o + 3]
-        if (s[o + 3] > BUCKET) throw new Error(`WaterSurfaces: a river sample is ${s[o + 3].toFixed(1)} m half-width, past the ${BUCKET} m lookup bucket; levelAt would miss it`)
         if (s[o + 3] > this.maxHalfWidth) this.maxHalfWidth = s[o + 3]
       }
       // The last sample of a run starts no segment, or the index would join the end of one river to the start of the next with a segment straight across the map.
@@ -490,6 +491,7 @@ export class WaterSurfaces {
       g += n
       run++
     }
+    this.maxDrawnHalfWidth = drawnHalfWidth(this.maxHalfWidth)
 
     for (let i = 0; i < total; i++) {
       if (this.idxTail[i]) continue
@@ -572,53 +574,64 @@ export class WaterSurfaces {
     return Math.min(fromSource, fromMouth)
   }
 
+  /** The buckets holding every segment that passes within `r` of (x, z), into cellScratch. Returns the count. A long segment sits in several, so a scan can meet it twice; every scan here keeps a minimum, which a repeat leaves alone. */
+  _cells(x, z, r) {
+    const i0 = Math.floor((x - r) / BUCKET)
+    const i1 = Math.floor((x + r) / BUCKET)
+    const j0 = Math.floor((z - r) / BUCKET)
+    const j1 = Math.floor((z + r) / BUCKET)
+    let n = 0
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const b = this.buckets.get(bucketKey(i, j))
+        if (b) cellScratch[n++] = b
+      }
+    }
+    return n
+  }
+
   /** The bucket scan under levelAt and flowAt: for each river reaching (x, z), its nearest segment into the run scratch (runY the level there, runSeg the segment's first sample, runT the foot along it). Returns the count. */
   _nearestRuns(x, z, drawn) {
     let runs = 0
-    const bi = Math.floor(x / BUCKET)
-    const bj = Math.floor(z / BUCKET)
-    for (let dj = -1; dj <= 1; dj++) {
-      for (let di = -1; di <= 1; di++) {
-        const b = this.buckets.get(bucketKey(bi + di, bj + dj))
-        if (!b) continue
-        for (const i of b) {
-          const o = i * 4
-          const run = this.idxRun[i]
-          const x0 = this.idxPts[o]
-          const y0 = this.idxPts[o + 1]
-          const z0 = this.idxPts[o + 2]
-          const h0 = this.idxPts[o + 3]
-          const x1 = this.idxPts[o + 4]
-          const y1 = this.idxPts[o + 5]
-          const z1 = this.idxPts[o + 6]
-          const h1 = this.idxPts[o + 7]
-          const ex = x1 - x0
-          const ez = z1 - z0
-          const len2 = ex * ex + ez * ez
-          let t = ((x - x0) * ex + (z - z0) * ez) / len2
-          t = t < 0 ? 0 : t > 1 ? 1 : t
-          const cx = x0 + t * ex
-          const cz = z0 + t * ez
-          const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz)
-          let hw = h0 + t * (h1 - h0)
-          if (drawn) hw = drawnHalfWidth(hw)
-          if (d2 > hw * hw) continue
-          const y = y0 + t * (y1 - y0)
-          // One answer per river: its nearest segment, which is the quad the ribbon draws over the point.
-          let k = 0
-          while (k < runs && runId[k] !== run) k++
-          if (k === runs) {
-            if (runs === LEVEL_RUNS) throw new Error(`WaterSurfaces.levelAt: more than ${LEVEL_RUNS} rivers reach (${x.toFixed(1)}, ${z.toFixed(1)})`)
-            runId[k] = run
-            runD2[k] = Infinity
-            runs++
-          }
-          if (d2 < runD2[k]) {
-            runD2[k] = d2
-            runY[k] = y
-            runSeg[k] = i
-            runT[k] = t
-          }
+    const cells = this._cells(x, z, drawn ? this.maxDrawnHalfWidth : this.maxHalfWidth)
+    for (let c = 0; c < cells; c++) {
+      for (const i of cellScratch[c]) {
+        const o = i * 4
+        const run = this.idxRun[i]
+        const x0 = this.idxPts[o]
+        const y0 = this.idxPts[o + 1]
+        const z0 = this.idxPts[o + 2]
+        const h0 = this.idxPts[o + 3]
+        const x1 = this.idxPts[o + 4]
+        const y1 = this.idxPts[o + 5]
+        const z1 = this.idxPts[o + 6]
+        const h1 = this.idxPts[o + 7]
+        const ex = x1 - x0
+        const ez = z1 - z0
+        const len2 = ex * ex + ez * ez
+        let t = ((x - x0) * ex + (z - z0) * ez) / len2
+        t = t < 0 ? 0 : t > 1 ? 1 : t
+        const cx = x0 + t * ex
+        const cz = z0 + t * ez
+        const d2 = (x - cx) * (x - cx) + (z - cz) * (z - cz)
+        let hw = h0 + t * (h1 - h0)
+        if (drawn) hw = drawnHalfWidth(hw)
+        if (d2 > hw * hw) continue
+        const y = y0 + t * (y1 - y0)
+        // One answer per river: its nearest segment, which is the quad the ribbon draws over the point.
+        let k = 0
+        while (k < runs && runId[k] !== run) k++
+        if (k === runs) {
+          if (runs === LEVEL_RUNS) throw new Error(`WaterSurfaces.levelAt: more than ${LEVEL_RUNS} rivers reach (${x.toFixed(1)}, ${z.toFixed(1)})`)
+          runId[k] = run
+          runD2[k] = Infinity
+          runs++
+        }
+        if (d2 < runD2[k]) {
+          runD2[k] = d2
+          runY[k] = y
+          runSeg[k] = i
+          runT[k] = t
         }
       }
     }
@@ -651,8 +664,6 @@ export class WaterSurfaces {
    *
    * The ellipse rim distance is measured along the ray from the centre, which is exact for a circle and over-reads by the eccentricity on a stretched lake -- a fringe a metre wider on the long sides of a 2:1 lake, against a fringe five to ten metres deep. The rectangle is exact.
    *
-   * Same 3x3 bucket block as levelAt, which is why `reach` is bounded: a segment is binned by its own cells, so a query can only be sure of seeing every segment within BUCKET metres of the point, and a river answers to `hw + reach` from its centreline.
-   *
    * @param groundY  the terrain height at (x, z), which the scatter has already looked up.
    * @param tan      the terrain slope there, as a tangent.
    */
@@ -665,35 +676,27 @@ export class WaterSurfaces {
   /** The river half of shoreDistAt, on the same terms and with the same clamp, lakes left out. The brook's shore: a lake's is not one. */
   riverShoreDistAt(x, z, reach) {
     if (!(reach > 0)) throw new Error(`WaterSurfaces.riverShoreDistAt: reach must be positive, got ${reach}`)
-    if (reach + this.maxHalfWidth > BUCKET) {
-      throw new Error(`WaterSurfaces.riverShoreDistAt: a ${reach} m reach past a ${this.maxHalfWidth.toFixed(1)} m half-width river overruns the ${BUCKET} m lookup bucket; the fringe would have holes`)
-    }
     let best = reach
 
-    const bi = Math.floor(x / BUCKET)
-    const bj = Math.floor(z / BUCKET)
-    for (let dj = -1; dj <= 1; dj++) {
-      for (let di = -1; di <= 1; di++) {
-        const b = this.buckets.get(bucketKey(bi + di, bj + dj))
-        if (!b) continue
-        for (const i of b) {
-          const o = i * 4
-          const x0 = this.idxPts[o]
-          const z0 = this.idxPts[o + 2]
-          const h0 = this.idxPts[o + 3]
-          const x1 = this.idxPts[o + 4]
-          const z1 = this.idxPts[o + 6]
-          const h1 = this.idxPts[o + 7]
-          const ex = x1 - x0
-          const ez = z1 - z0
-          const len2 = ex * ex + ez * ez
-          let t = ((x - x0) * ex + (z - z0) * ez) / len2
-          t = t < 0 ? 0 : t > 1 ? 1 : t
-          const cx = x0 + t * ex
-          const cz = z0 + t * ez
-          const d = Math.hypot(x - cx, z - cz) - (h0 + t * (h1 - h0))
-          if (d < best) best = d
-        }
+    const cells = this._cells(x, z, this.maxHalfWidth + reach)
+    for (let c = 0; c < cells; c++) {
+      for (const i of cellScratch[c]) {
+        const o = i * 4
+        const x0 = this.idxPts[o]
+        const z0 = this.idxPts[o + 2]
+        const h0 = this.idxPts[o + 3]
+        const x1 = this.idxPts[o + 4]
+        const z1 = this.idxPts[o + 6]
+        const h1 = this.idxPts[o + 7]
+        const ex = x1 - x0
+        const ez = z1 - z0
+        const len2 = ex * ex + ez * ez
+        let t = ((x - x0) * ex + (z - z0) * ez) / len2
+        t = t < 0 ? 0 : t > 1 ? 1 : t
+        const cx = x0 + t * ex
+        const cz = z0 + t * ez
+        const d = Math.hypot(x - cx, z - cz) - (h0 + t * (h1 - h0))
+        if (d < best) best = d
       }
     }
 

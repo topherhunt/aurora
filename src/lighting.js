@@ -500,6 +500,8 @@ const TORCH_GLSL = /* glsl */ `
   uniform vec4 uTorch[${TORCHES}];
   // 1 / each slot's reach, metres.
   uniform float uTorchInvReach[${TORCHES}];
+  // Each slot's colour, linear, in rgb.
+  uniform vec4 uTorchTint[${TORCHES}];
   uniform vec3 uTorchColor;
 
   vec3 wlTorch( vec3 p ) {
@@ -508,7 +510,7 @@ const TORCH_GLSL = /* glsl */ `
       float s = uTorch[ i ].w;
       if ( s <= 0.0 ) continue;
       float k = clamp( 1.0 - length( p - uTorch[ i ].xyz ) * uTorchInvReach[ i ], 0.0, 1.0 );
-      sum += uTorchColor * ( s * k * k );
+      sum += uTorchTint[ i ].rgb * ( s * k * k );
     }
     return sum;
   }
@@ -577,9 +579,10 @@ export class WorldLighting {
       uLampY: { value: new THREE.Vector2(0, 1) },
       uLampColor: { value: new THREE.Color(0, 0, 0) },
       uLampGlow: { value: new THREE.Vector3(0, 0, 0) },
-      // The torches (TORCH_GLSL): each a point, a strength and a reach, and the warm colour they share, linear.
+      // The torches (TORCH_GLSL): each a point, a strength, a reach and a colour; uTorchColor, linear, is a flame's, and the baked hearth glow's.
       uTorch: { value: Array.from({ length: TORCHES }, () => new THREE.Vector4(0, 0, 0, 0)) },
       uTorchInvReach: { value: new Float32Array(TORCHES).fill(1 / TORCH_REACH) },
+      uTorchTint: { value: Array.from({ length: TORCHES }, () => new THREE.Vector4(1.0, 0.42, 0.12, 0)) },
       uTorchColor: { value: new THREE.Color(1.0, 0.42, 0.12) },
       // Each town hearth's baked glow strength (hearth-light.js), read only by a patch with `hearths`.
       uHearthFar: { value: new Float32Array(HEARTHS) },
@@ -606,7 +609,7 @@ export class WorldLighting {
       f('uAirNear', 'vec3'), f('uAirFar', 'vec3'), f('uLampColor', 'vec3'), f('uLampGlow', 'vec3'), f('uTorchColor', 'vec3'),
       f('uFarLight', 'vec2'), f('uLampY', 'vec2'),
       f('uCaustic', 'vec4'), f('uLampRect', 'vec4'),
-      f('uTorch', 'vec4', TORCHES), f('uTorchInvReach', 'float', TORCHES), f('uHearthFar', 'vec4', HEARTHS / 4),
+      f('uTorch', 'vec4', TORCHES), f('uTorchInvReach', 'float', TORCHES), f('uTorchTint', 'vec4', TORCHES), f('uHearthFar', 'vec4', HEARTHS / 4),
       f('uLabyrinthLive', 'vec4', LABYRINTHS_LIVE), f('uLabyrinthGlow', 'float'),
     ])
     this.block.attach(renderer)
@@ -678,13 +681,15 @@ export class WorldLighting {
 
   /** The torches' light this frame: up to TORCHES of `{ x, y, z, strength, reach }`, the rest put out. Not a recompile. */
   setTorches(list) {
-    const slots = this.uniforms.uTorch.value, inv = this.uniforms.uTorchInvReach.value
+    const slots = this.uniforms.uTorch.value, inv = this.uniforms.uTorchInvReach.value, tints = this.uniforms.uTorchTint.value
     for (let i = 0; i < TORCHES; i++) {
       const t = list[i]
       if (!t) { slots[i].w = 0; continue }
       if (!(t.reach > 0)) throw new Error(`setTorches: slot ${i} needs a reach, got ${t.reach}`)
       slots[i].set(t.x, t.y, t.z, t.strength)
       inv[i] = 1 / t.reach
+      const c = t.tint === undefined ? this.uniforms.uTorchColor.value : t.tint
+      tints[i].set(c.r, c.g, c.b, 0)
     }
   }
 

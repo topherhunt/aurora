@@ -15,8 +15,8 @@
 // pick worn with the old one's muzzle and window.
 
 import * as THREE from 'three'
-import { Flares, FLARE, MAX_SPARKS, spanOf, walkOf, fromWire, toWire, recallFromWire, recallToWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
-import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, RECALL_M, RECALL_DEG, aimTarget, pressSafety, roomKey } from '../src/v2/flaregun.js'
+import { Flares, FLARE, MAX_SPARKS, spanOf, walkOf, fromWire, toWire, recallFromWire, recallToWire, flightAt, sizeAt, FLIGHT_S, FLY_M, REST_M, GROUND_M, LIFT_M, MUZZLE_M, GROW_S, CAP, SPIRAL, BOW } from '../src/v2/render/flares.js'
+import { FlareGuns, GunWindows, ShotFlash, FLASH_PEAK, FLASH_S, KIND, CHARGES, PALETTE, AIM_M, CLEAR_M, SIZE_M, MUZZLE, WINDOW, WINDOW_N, WINDOW_R, FLAREGUN_GLB, RECALL_M, RECALL_DEG, aimTarget, strikeAt, pressSafety, roomKey } from '../src/v2/flaregun.js'
 import { readGlbChunks } from '../tools/tripo-pack.mjs'
 
 let failures = 0
@@ -27,18 +27,20 @@ const check = (ok, label, detail = '') => {
 const throws = (fn) => { try { fn(); return false } catch { return true } }
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps
 
-const flare = (over = {}) => ({ id: 'abc123', room: 'overworld', ox: 1, oy: 2, oz: 3, tx: 40, ty: 90, tz: -60, color: PALETTE[1], seed: 0.37, ...over })
+const flare = (over = {}) => ({ id: 'abc123', room: 'overworld', ox: 1, oy: 2, oz: 3, tx: 40, ty: 90, tz: -60, color: PALETTE[1], seed: 0.37, rest: REST_M, ...over })
 
 console.log('wire')
 {
   const f = flare()
   const back = fromWire(toWire(f))
   check(JSON.stringify(back) === JSON.stringify(f), 'a flare survives the wire', JSON.stringify(back))
-  check(throws(() => fromWire(toWire(f).slice(0, 9))), 'a short array is refused')
+  check(throws(() => fromWire(toWire(f).slice(0, 10))), 'a short array is refused')
   check(throws(() => fromWire(toWire(flare({ id: 'Has Space' })))), 'a bad id is refused')
   check(throws(() => fromWire(toWire(flare({ room: 'x'.repeat(41) })))), 'a room past 40 characters is refused')
   check(throws(() => fromWire(toWire(flare({ tx: NaN })))), 'a non-finite coordinate is refused')
   check(throws(() => fromWire(toWire(flare({ color: 0x1000000 })))), 'a colour past 24 bits is refused')
+  check(throws(() => fromWire(toWire(flare({ rest: 0 })))) && throws(() => fromWire(toWire(flare({ rest: REST_M + 1 })))), 'a rest size of nothing or past the sky\'s is refused')
+  check(fromWire(toWire(flare({ rest: GROUND_M }))).rest === GROUND_M, 'a grounded flare keeps its rest size over the wire')
 }
 
 console.log('flight')
@@ -77,12 +79,13 @@ console.log('flight')
 
 console.log('size')
 {
-  check(near(sizeAt(0), MUZZLE_M), `it leaves the muzzle ${MUZZLE_M} m across`)
-  check(near(sizeAt(0.5 * FLIGHT_S), FLY_M), `it flies ${FLY_M} m across`)
-  check(near(sizeAt(FLIGHT_S), FLY_M), 'it arrives at its flight size')
-  check(near(sizeAt(FLIGHT_S + GROW_S), REST_M) && near(sizeAt(Infinity), REST_M), `it rests ${REST_M} m across, a loaded one too`)
-  const mid = sizeAt(FLIGHT_S + GROW_S / 2)
+  check(near(sizeAt(0, REST_M), MUZZLE_M), `it leaves the muzzle ${MUZZLE_M} m across`)
+  check(near(sizeAt(0.5 * FLIGHT_S, REST_M), FLY_M), `it flies ${FLY_M} m across`)
+  check(near(sizeAt(FLIGHT_S, REST_M), FLY_M), 'it arrives at its flight size')
+  check(near(sizeAt(FLIGHT_S + GROW_S, REST_M), REST_M) && near(sizeAt(Infinity, REST_M), REST_M), `it rests ${REST_M} m across, a loaded one too`)
+  const mid = sizeAt(FLIGHT_S + GROW_S / 2, REST_M)
   check(mid > FLY_M && mid < REST_M, 'it grows between the two', mid.toFixed(2))
+  check(near(sizeAt(0.5 * FLIGHT_S, GROUND_M), GROUND_M) && near(sizeAt(Infinity, GROUND_M), GROUND_M), `one that struck ground flies and rests ${GROUND_M} m across`)
 }
 
 console.log('aim')
@@ -99,6 +102,16 @@ console.log('aim')
   const high = new THREE.Vector3(0, 1, -1).normalize()
   aimTarget(muzzle, high, () => 0, () => null, out)
   check(near(out.y, 1.5 + AIM_M * Math.SQRT1_2) && near(out.distanceTo(muzzle), AIM_M), 'aimed up it is left where it is aimed', out.y.toFixed(2))
+
+  const down = new THREE.Vector3(0, -1, -1).normalize()
+  const ground = (x, y) => -y
+  check(strikeAt(muzzle, down, ground, LIFT_M, out) && near(out.y, LIFT_M, 0.01) && near(out.z, -1.5, 0.01), `shot at flat ground it rests ${LIFT_M} m over where it struck`, out.toArray().map((v) => v.toFixed(2)).join(', '))
+  check(!strikeAt(muzzle, high, ground, LIFT_M, out), 'aimed up over flat ground it strikes nothing')
+  check(!strikeAt(muzzle, flat, ground, LIFT_M, out), 'level over flat ground it strikes nothing')
+  const roof = (x, y) => y - 10
+  check(strikeAt(muzzle, new THREE.Vector3(0, 1, 0), roof, LIFT_M, out) && near(out.y, 10 - LIFT_M, 0.01), `shot at a cave roof it hangs ${LIFT_M} m under it`, out.y.toFixed(2))
+  const wall = (x, y, z) => -z - 6
+  check(strikeAt(muzzle, flat, wall, LIFT_M, out) && near(out.z, -6 + LIFT_M, 0.01) && near(out.y, 1.5, 0.01), `shot at a wall it rests ${LIFT_M} m out from it`, out.toArray().map((v) => v.toFixed(2)).join(', '))
 }
 
 console.log('the layer')
@@ -136,6 +149,16 @@ console.log('the layer')
   loaded.update(0.016, 1000)
   check(loaded.list.length === 0 && !loaded.mesh.visible, 'clear forgets them all')
   check(throws(() => loaded.load([['bad']])), 'a corrupt save throws')
+
+  const lit = new Flares(new THREE.Scene())
+  lit.setRoom('overworld')
+  lit.add(flare({ id: 'sky1' }), 5)
+  lit.add(flare({ id: 'gnd1', rest: GROUND_M }), 5)
+  lit.add(flare({ id: 'gnd2', rest: GROUND_M }), 0)
+  lit.add(flare({ id: 'gnd3', rest: GROUND_M, room: 'elsewhere' }), 5)
+  lit.update(0.016, 1000)
+  check(lit.grounded([]).map((f) => f.id).join() === 'gnd1', 'only an arrived flare at rest on the ground in this room lights its surroundings', lit.grounded([]).map((f) => f.id).join())
+  check(near(lit.aSize.array[3], GROUND_M), `a grounded flare is drawn ${GROUND_M} m across`, `${lit.aSize.array[3]}`)
 }
 
 console.log('the recall')

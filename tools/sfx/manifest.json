@@ -1,0 +1,8 @@
+[
+  {"id": "combat-sword-slash-1", "prompt": "steel sword slashing through the air and striking flesh, ending in a bright metallic ring", "seconds": 1.5},
+  {"id": "combat-sword-slash-2", "prompt": "quick sword swing whoosh with a sharp ringing steel shing as the blade hits", "seconds": 1.5},
+  {"id": "combat-sword-slash-3", "prompt": "heavy iron blade cutting hard, a slicing hit followed by a singing metallic ring", "seconds": 1.5},
+  {"id": "combat-shield-clang-1", "prompt": "heavy blow landing on an iron-rimmed wooden shield, loud clang with a short metallic ring", "seconds": 1.5},
+  {"id": "combat-shield-clang-2", "prompt": "loud metallic clang of a weapon smashing into a steel shield, sharp impact then a ringing metal reverberation", "seconds": 1.5},
+  {"id": "combat-shield-clang-3", "prompt": "powerful strike on a steel-faced shield, a loud bright clang that rings and decays", "seconds": 1.5}
+]

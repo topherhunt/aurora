@@ -164,7 +164,7 @@ void main() {
     vec3 h = normalize(l / max(d, 0.001) + v);
     float sp = pow(max(dot(n, h), 0.0), vShine > 0.9 ? 40.0 : 12.0);
     float tw = vShine > 0.9 ? 0.35 + 0.65 * pow(0.5 + 0.5 * sin(uTime * 3.0 + vFacet * 40.0), 3.0) : 1.0;
-    glint += uTorchColor * (s * k * sp * tw * vShine * 6.0);
+    glint += uTorchTint[i].rgb * (s * k * sp * tw * vShine * 6.0);
   }
   vec3 c;
   if (vShine > 0.9) c = vCol * (0.04 + lit * 0.25) + glint * (0.4 + vCol);

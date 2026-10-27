@@ -76,7 +76,7 @@ function hang() {
   flares.add(flare(SPOT, SPOT), 1e6)
 }
 function flare(from, to) {
-  return { id: (nextId++).toString(36), room: 'bench', ox: from.x, oy: from.y, oz: from.z, tx: to.x, ty: to.y, tz: to.z, color: PALETTE[hue], seed: Math.random() }
+  return { id: (nextId++).toString(36), room: 'bench', ox: from.x, oy: from.y, oz: from.z, tx: to.x, ty: to.y, tz: to.z, color: PALETTE[hue], seed: Math.random(), rest: REST_M }
 }
 function fire() {
   const from = new THREE.Vector3().subVectors(SPOT, camera.position).normalize().multiplyScalar(2).add(camera.position)

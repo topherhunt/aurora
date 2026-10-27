@@ -9,18 +9,20 @@
 
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
+import { PLANK, SCAFFOLD, bayPoint, ladderSpots, levelY, placeOf, postsAt, routeOf, scaffoldOf } from './scaffold.js'
 
 export const LABYRINTH = {
   // Metres per region cell; a cell holds one labyrinth at odds `chance`.
   region: 620,
   chance: 0.9,
   // The outer wall's radius before the warp, rolled per labyrinth, and the metres between ring walls.
-  radius: [12, 19],
-  pitch: 1.65,
-  // The open middle's radius.
+  radius: [16.2, 25.5],
+  pitch: 2.325,
+  // The open middle's radius (a tower labyrinth's is SCAFFOLD.centre), and the odds a labyrinth has the tower.
   centre: 2.25,
+  tower: 0.5,
   // A ring's cells split in two where they would be wider than this along their inner wall.
-  split: 1.8,
+  split: 2.54,
   // Interior walls knocked out after the carve, per cell: a few loops, so a wrong turn is not always a dead end.
   loops: 0.04,
   // The warp: radians the rings twist through, and the outline's three- and five-lobed swell as shares of the radius.
@@ -37,7 +39,7 @@ export const LABYRINTH = {
   keep: 1.5,
   mouth: 3,
   // Metres between the posts either side of the one way in, which the torches flank.
-  gate: 1.5,
+  gate: 2.1,
 }
 
 // The post: render/palisades.js asserts POST_R against props/palisade.js POST.radius, and POST_FACE is its mean silhouette radius as a share of that (POST.rough jitters inward up to 7%).
@@ -46,13 +48,19 @@ export const POST_FACE = 0.965
 // Each post a different tree: its girth (radius scale) rolled off POST_GIRTH, then the line's girths scaled together so its posts end on its ends. Neighbours stand their two radii apart plus a crack: open (daylight) at odds `open`, else snug.
 export const POST_GIRTH = [0.7, 1.45]
 export const CRACK = { open: 0.4, width: [0.008, 0.04], snug: 0.015 }
-// Floats per post in postsOf: x, z, the wall's unit tangent there, yaw, roll, girth, height (a share of POST.height; a tower's posts stand straight).
+// Floats per post in postsOf: x, z, the wall's unit tangent there, yaw, roll, girth, height. Height is 1 for a wall post (exactly POST.height, so the maze reads from a lookout and a post's top is the collision's), else a plumb post's share of POST.height.
 export const POST_STRIDE = 8
 // The watchtowers (DESIGN.md §41), one per `perCells` cells and at least `least`, each in a dead end: four posts `height` tall at the corners of a square `half` from its middle, a plank deck `deckHalf` square with its top at `deck`, and the ladder on the face toward the way in, its rails `ladderHalf` either side and `ladderOut` from the middle. A climber's origin stands `foot` out.
 export const TOWER = { perCells: 40, least: 2, half: 0.42, girth: 0.85, height: 8, deck: 7.1, deckHalf: 0.75, ladderOut: 0.62, ladderHalf: 0.25, foot: 0.95 }
 // The middle: a stone plinth `half` square and `height` tall carrying the egg, and the beacon (a torch post `height` tall) `behind` it from the door.
 export const ALTAR = { half: 0.32, height: 1 }
 export const BEACON = { height: 4, behind: 0.9 }
+
+/** The height the maze's altar stands on: the ground there, or a tower labyrinth's plank. */
+export const altarY = (m, ground) => (m.scaffold === null ? ground(m.altar.x, m.altar.z) : levelY(m.scaffold, ground, PLANK))
+
+// The labyrinth clock (timeLimit): metres a second she is allowed to walk (75% of player.js LOCOMOTION.maxSpeed) and climb (climb.js CLIMB.speed); check-labyrinth-clock asserts both.
+export const CLOCK = { walk: 0.75 * 1.45, climb: 0.9 }
 // Metres a radial wall stops short of a ring wall it meets, so its last post stands against the ring's posts, not in them.
 const JOIN = 0.28
 // Metres between a wall's samples before the warp; chord against arc on the smallest ring is under a centimetre.
@@ -75,8 +83,11 @@ const FOOT_CLEAR = 0.2
 const towerCorners = [[1, 1], [1, -1], [-1, -1], [-1, 1]]
 // The torches stand this far outside the outer wall, one at each side of the entrance.
 const TORCH_OUT = 0.55
-// The middle's node in the walkable graph (mazeOf `ways`), toward the door this share of the middle's radius: clear of the altar.
+// The middle's node in the walkable graph (mazeOf `ways`), toward the door this share of the middle's radius: clear of the altar, and of a tower's square.
 const MIDDLE_NODE = 0.6
+const SCAFFOLD_NODE = 0.8
+// entranceOf: metres past the torches' line along the way out.
+const ENTRANCE_OUT = 1
 
 function regionHash(rx, rz, seed) {
   let h = Math.imul(rx | 0, 0x2c1b3c6d) ^ Math.imul(rz | 0, 0x297a2d39) ^ Math.imul(seed | 0, 0x68e31da4) ^ 0x50414c49
@@ -105,8 +116,8 @@ function hashedWallAt(h, seg, x, z, r) {
 }
 
 /** Each ring's cell count: at least 6 in ring 0, doubling where a cell would be wider than `split` along its inner wall. */
-function sectorsOf(rings) {
-  const P = LABYRINTH.pitch, C = LABYRINTH.centre
+function sectorsOf(rings, C) {
+  const P = LABYRINTH.pitch
   const sectors = [Math.max(6, Math.round((TAU * (C + P / 2)) / (1.6 * P)))]
   for (let k = 1; k < rings; k++) {
     const prev = sectors[k - 1]
@@ -117,7 +128,7 @@ function sectorsOf(rings) {
 
 // Carrots at every dead end (carrotsOf): 1 to CARROTS.most a dead end, `back` metres from the cell's middle away from its way out and `spread` either side; under a tower, `under` either side of its posts' middle, since the rings' twist shears its square. DEAD_ENDS_MAX is the share of the largest labyrinth's cells render/carrots.js budgets dead ends for; check-labyrinths holds every one under it.
 export const CARROTS = { most: 3, back: 0.4, spread: 0.15, under: 0.1 }
-export const DEAD_ENDS_MAX = Math.ceil(0.2 * sectorsOf(Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)).reduce((a, b) => a + b, 0))
+export const DEAD_ENDS_MAX = Math.ceil(0.2 * sectorsOf(Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch), LABYRINTH.centre).reduce((a, b) => a + b, 0))
 
 /** Polar (r, a) before the warp to world xz into `out`. Bijective: the twist turns each radius rigidly and the swell scales each bearing's ray, so walls never cross. */
 export function warp(s, r, a, out) {
@@ -130,12 +141,25 @@ export function warp(s, r, a, out) {
 
 const TYPICAL = 0x7fff
 
-/** A labyrinth's rings, outer wall radius and reach (to its torches and past) off its rolled radius `R`. */
-function ringsOf(R) {
-  const rings = Math.max(3, Math.round((R - LABYRINTH.centre) / LABYRINTH.pitch))
-  const rOuter = LABYRINTH.centre + rings * LABYRINTH.pitch
-  return { rings, rOuter, reach: rOuter * (1 + SWELL_MAX) + TORCH_OUT + 0.5 }
+/** A labyrinth's middle radius, rings, outer wall radius and reach (to its torches and past) off its rolled radius `R`; `tower` is whether SCAFFOLD stands in its middle. */
+function ringsOf(R, tower) {
+  const centre = tower ? SCAFFOLD.centre : LABYRINTH.centre
+  const rings = Math.max(3, Math.round((R - centre) / LABYRINTH.pitch))
+  const rOuter = centre + rings * LABYRINTH.pitch
+  return { tower, centre, rings, rOuter, reach: rOuter * (1 + SWELL_MAX) + TORCH_OUT + 0.5 }
 }
+
+let live = null
+const need = () => {
+  if (live === null) throw new Error('labyrinths: no Labyrinths has been built')
+  return live
+}
+/** The footprint of the labyrinth she stands in (inside its outer wall's line), or null; read off the most recently built Labyrinths. */
+export const labyrinthAt = (x, z) => need().labyrinthAt(x, z)
+/** `{ x, y, z, heading }` just outside `site`'s gate and facing in; heading is the creatures' convention (forward (cos, -sin)). */
+export const entranceOf = (site) => need().entranceOf(site)
+/** Seconds she has to walk `site`'s solved route to the prize: the route's walking at CLOCK.walk plus the ladders she climbs up at CLOCK.climb. */
+export const timeLimit = (site) => need().timeLimit(site)
 
 export class Labyrinths {
   /** `ground` is the world's V2Height; its `scatterAt` and `layers` are read. */
@@ -148,10 +172,11 @@ export class Labyrinths {
     this._sites = new Map()
     this._baked = null
     this._mazes = new Map()
+    live = this
   }
 
   /**
-   * Region (rx, rz)'s labyrinth footprint, or null: `{ rx, rz, cx, cz, rings, rOuter, reach, p3, p5, phase, a0 }`. The
+   * Region (rx, rz)'s labyrinth footprint, or null: `{ rx, rz, cx, cz, tower, centre, rings, rOuter, reach, p3, p5, phase, a0 }`. The
    * first of `tries` centres whose disc is in the world and on gentle, dry, road-free ground. No maze is built, so the
    * biome can ask it per vertex. Read off `layers.labyrinthSites` where the world plan has set them (sited before their
    * trails, which would move them), else sited here.
@@ -171,14 +196,15 @@ export class Labyrinths {
     const rand = mulberry32(regionHash(rx, rz, this.seed))
     s = null
     if (rand() < LABYRINTH.chance) {
-      const { rings, rOuter, reach } = ringsOf(LABYRINTH.radius[0] + rand() * (LABYRINTH.radius[1] - LABYRINTH.radius[0]))
+      const tower = (regionHash(rx, rz, this.seed ^ 0x7e0a11e5) >>> 8) / 0x1000000 < LABYRINTH.tower
+      const { centre, rings, rOuter, reach } = ringsOf(LABYRINTH.radius[0] + rand() * (LABYRINTH.radius[1] - LABYRINTH.radius[0]), tower)
       const shape = { p3: rand() * TAU, p5: rand() * TAU, phase: rand() * TAU, a0: rand() * TAU }
       const margin = reach + LABYRINTH.wood + LABYRINTH.fray
       const room = LABYRINTH.region - 2 * margin
       for (let t = 0; t < LABYRINTH.tries && s === null; t++) {
         const cx = rx * LABYRINTH.region + margin + rand() * room
         const cz = rz * LABYRINTH.region + margin + rand() * room
-        if (this._fits(cx, cz, reach)) s = { rx, rz, cx, cz, rings, rOuter, reach, ...shape }
+        if (this._fits(cx, cz, reach)) s = { rx, rz, cx, cz, tower, centre, rings, rOuter, reach, ...shape }
       }
     }
     this._sites.set(key, s)
@@ -187,7 +213,7 @@ export class Labyrinths {
 
   /** A labyrinth of the middle radius at the origin, under a region key no world reaches: the model render/palisades.js photographs for every labyrinth's far card. */
   typicalSite() {
-    return { rx: TYPICAL, rz: TYPICAL, cx: 0, cz: 0, ...ringsOf((LABYRINTH.radius[0] + LABYRINTH.radius[1]) / 2), p3: 1, p5: 2, phase: 0.5, a0: 0 }
+    return { rx: TYPICAL, rz: TYPICAL, cx: 0, cz: 0, ...ringsOf((LABYRINTH.radius[0] + LABYRINTH.radius[1]) / 2, false), p3: 1, p5: 2, phase: 0.5, a0: 0 }
   }
 
   /** Whether a disc `reach` across at (cx, cz) is inside the world with its wood, and every sample of it gentle, a shore rise over any water and clear of roads. */
@@ -259,7 +285,7 @@ export class Labyrinths {
     if (s === null) return false
     const d = Math.hypot(x - s.cx, z - s.cz)
     const k = 1 + swell(s, Math.atan2(z - s.cz, x - s.cx))
-    const far = s.rOuter * k + reach, mid = LABYRINTH.centre * k
+    const far = s.rOuter * k + reach, mid = s.centre * k
     if (d >= far) return false
     out.s = s
     out.near = Math.min(1, (far - d) / (far - mid))
@@ -272,8 +298,8 @@ export class Labyrinths {
     const m = this.mazeOf(s)
     const aw = Math.atan2(z - s.cz, x - s.cx)
     const r = Math.hypot(x - s.cx, z - s.cz) / (1 + swell(s, aw))
-    if (r < LABYRINTH.centre) return m.cells.length
-    const k = Math.floor((r - LABYRINTH.centre) / LABYRINTH.pitch)
+    if (r < s.centre) return m.cells.length
+    const k = Math.floor((r - s.centre) / LABYRINTH.pitch)
     if (k >= s.rings) return -1
     const a = aw - LABYRINTH.twist * Math.sin((1.4 * Math.PI * r) / s.rOuter + s.phase)
     const n = m.sectors[k], t = (((a - s.a0) / TAU) * n) % n
@@ -328,7 +354,7 @@ export class Labyrinths {
    *   `entrance` (the last ring's opened cell), `door` (ring 0's cell opened to the middle);
    *   `lines` [{ xz: Float32Array, closed }], `segments` (their pieces, x0 z0 x1 z1), `hash`;
    *   `cells` [x, z] per cell ring by ring, `centre`, `mouth` [x, z] a pace outside the entrance, `torches` [[x, z], [x, z]];
-   *   `towers` [{ x, z, ux, uz, corners, cell }] (u the unit out of its ladder's face, `corners` its posts' [x, z]), `altar` { x, z, ux, uz } (u toward the door), `beacon` [x, z];
+   *   `towers` [{ x, z, ux, uz, corners, cell }] (u the unit out of its ladder's face, `corners` its posts' [x, z]), `altar` { x, z, ux, uz } (u toward the door; a tower labyrinth's on its plank), `beacon` [x, z], `scaffold` (layers/scaffold.js, null in a plain labyrinth), `scaffoldFrom` (the index of postsOf's first scaffold post);
    *   `ways[id]` [{ to, x, z }] each opening out of node id (a cell, or `cells.length` the middle, at [x, z] `middle`) and the point in it, the entrance not among them.
    * Carved as a depth-first backtracker over the cells (long winding corridors), opened in `loops` places, then given one
    * door to the middle and one entrance, the outer cell farthest from that door along the carve.
@@ -339,9 +365,9 @@ export class Labyrinths {
     if (m !== undefined) return m
     const rand = mulberry32(regionHash(s.rx, s.rz, this.seed ^ 0x5bd1e995))
     const { rings } = s
-    const P = LABYRINTH.pitch, C = LABYRINTH.centre
+    const P = LABYRINTH.pitch, C = s.centre
     const bound = (k) => C + k * P
-    const sectors = sectorsOf(rings)
+    const sectors = sectorsOf(rings, C)
     const offs = [0]
     for (let k = 0; k < rings; k++) offs.push(offs[k] + sectors[k])
     const total = offs[rings]
@@ -555,10 +581,13 @@ export class Labyrinths {
       towers.push(best)
     }
     const [ax, az] = unit(cells[door][0] - s.cx, cells[door][1] - s.cz)
-    const altar = { x: s.cx, z: s.cz, ux: ax, uz: az }
-    const beacon = [s.cx - ax * BEACON.behind, s.cz - az * BEACON.behind]
+    const scaffold = s.tower ? scaffoldOf({ cx: s.cx, cz: s.cz, ux: ax, uz: az }, regionHash(s.rx, s.rz, this.seed ^ 0x5ca4401d)) : null
+    const [altarX, altarZ] = scaffold ? bayPoint(scaffold, scaffold.altar.i, scaffold.altar.j, 0, 0, [0, 0]) : [s.cx, s.cz]
+    const altar = { x: altarX, z: altarZ, ux: ax, uz: az }
+    const behind = scaffold ? (SCAFFOLD.bay * SCAFFOLD.bays) / 2 + 0.6 : BEACON.behind
+    const beacon = [s.cx - ax * behind, s.cz - az * behind]
     // The walkable graph: node `total` is the middle, every opening a way both sides hold, the entrance none.
-    const middle = at(C * MIDDLE_NODE, bearing(door + 0.5, sectors[0])).slice()
+    const middle = at(C * (scaffold ? SCAFFOLD_NODE : MIDDLE_NODE), bearing(door + 0.5, sectors[0])).slice()
     const ways = Array.from({ length: total + 1 }, () => [])
     const join = (a, b, r, t, n) => {
       const [x, z] = at(r, bearing(t, n))
@@ -573,7 +602,7 @@ export class Labyrinths {
         if (k > 0 && !wallIn[k][j]) join(offs[k] + j, offs[k - 1] + Math.floor((j * sectors[k - 1]) / n), bound(k), j + 0.5, n)
       }
     }
-    m = { site: s, sectors, offs, wallCw, wallIn, wallOut, entrance, door, lines, segments, hash, cells, centre: [s.cx, s.cz], middle, ways, mouth, torches, towers, altar, beacon, _posts: null, _carrots: null }
+    m = { site: s, sectors, offs, wallCw, wallIn, wallOut, entrance, door, lines, segments, hash, cells, centre: [s.cx, s.cz], middle, ways, mouth, torches, towers, altar, beacon, scaffold, scaffoldFrom: -1, _posts: null, _carrots: null, _route: null }
     this._mazes.set(key, m)
     return m
   }
@@ -662,9 +691,106 @@ export class Labyrinths {
       }
     }
     for (const t of m.towers) for (const [x, z] of t.corners) out.push(x, z, t.ux, t.uz, rand() * TAU, rand(), TOWER.girth, TOWER.height / POST_HEIGHT)
+    if (m.scaffold !== null) {
+      m.scaffoldFrom = out.length / POST_STRIDE
+      for (const [x, z] of postsAt(m.scaffold)) out.push(x, z, m.scaffold.ux, m.scaffold.uz, rand() * TAU, rand(), SCAFFOLD.girth, SCAFFOLD.post / POST_HEIGHT)
+    }
     m._posts = new Float32Array(out)
     return m._posts
   }
+
+  /** The footprint of the labyrinth whose outer wall's line (x, z) is inside, or null. */
+  labyrinthAt(x, z) {
+    return this.insideAt(x, z) ? this.siteAt(x, z) : null
+  }
+
+  /** `{ x, y, z, heading }` ENTRANCE_OUT metres outside `s`'s gate, facing in; heading is the creatures' convention (forward (cos, -sin)). */
+  entranceOf(s) {
+    const m = this.mazeOf(s)
+    const [[ax, az], [bx, bz]] = m.torches
+    const mx = (ax + bx) / 2, mz = (az + bz) / 2
+    const d = Math.hypot(m.mouth[0] - mx, m.mouth[1] - mz)
+    const ox = (m.mouth[0] - mx) / d, oz = (m.mouth[1] - mz) / d
+    const x = mx + ox * ENTRANCE_OUT, z = mz + oz * ENTRANCE_OUT
+    return { x, y: this.ground.heightAt(x, z), z, heading: Math.atan2(oz, -ox) }
+  }
+
+  /**
+   * The solved route from the gate to the prize, memoized as `{ walk, up, points, ladders }`: `points` [x, z] along the ground from the gate through the cells to the middle's node, then (a tower labyrinth) to its first ladder's foot; `walk` the metres walked in all, the scaffold's included (a bay to the next is `SCAFFOLD.bay`, a drop is free), `up` the metres climbed up ladders, `ladders` the scaffold ladders it climbs in order as `{ l, i, j, d }`.
+   */
+  routeOf(s) {
+    const m = this.mazeOf(s)
+    if (m._route !== null) return m._route
+    const total = m.cells.length
+    const first = m.offs[s.rings - 1] + m.entrance
+    const prev = new Int32Array(total + 1).fill(-2)
+    prev[first] = -1
+    const queue = [first]
+    for (let q = 0; q < queue.length; q++) for (const w of m.ways[queue[q]]) if (prev[w.to] === -2) { prev[w.to] = queue[q]; queue.push(w.to) }
+    if (prev[total] === -2) throw new Error(`Labyrinths.routeOf: the middle is not reached from the entrance of ${s.rx},${s.rz}`)
+    const ids = []
+    for (let id = total; id !== -1; id = prev[id]) ids.unshift(id)
+    const gate = this.entranceOf(s)
+    const points = [[gate.x, gate.z], m.cells[first]]
+    for (let q = 1; q < ids.length; q++) {
+      const w = m.ways[ids[q - 1]].find((o) => o.to === ids[q])
+      points.push([w.x, w.z], ids[q] === total ? m.middle : m.cells[ids[q]])
+    }
+    const out = { walk: 0, up: 0, points, ladders: [] }
+    const walkTo = (p) => {
+      const o = out.points[out.points.length - 1]
+      out.walk += Math.hypot(p[0] - o[0], p[1] - o[1])
+      out.points.push(p)
+    }
+    for (let q = 1; q < points.length; q++) out.walk += Math.hypot(points[q][0] - points[q - 1][0], points[q][1] - points[q - 1][1])
+    if (m.scaffold !== null) this._climbRoute(m, out, walkTo)
+    else walkTo([m.altar.x, m.altar.z])
+    m._route = out
+    return out
+  }
+
+  // Extends `out` over the scaffold: `walkTo` the first ladder's foot by groundWay and each later one's from the bay it leaves, then the cheapest way from the ground to the plank (a bay's step costs its width at CLOCK.walk, a ladder up its rise at CLOCK.climb, a drop nothing, a ladder down is never taken), then to the altar.
+  _climbRoute(m, out, walkTo) {
+    const sc = m.scaffold, ground = (x, z) => this.ground.heightAt(x, z)
+    const ids = routeOf(sc, (kind) => (kind === 'walk' ? SCAFFOLD.bay / CLOCK.walk : kind === 'up' ? SCAFFOLD.rise / CLOCK.climb : kind === 'drop' ? 0 : Infinity))
+    for (let q = 1; q < ids.length; q++) {
+      const a = placeOf(ids[q - 1]), b = placeOf(ids[q])
+      if (b.l > a.l) {
+        const bay = a.l === 0 ? b : a
+        const ld = sc.ladders.find((o) => o.l === a.l && o.i === bay.i && o.j === bay.j)
+        const { foot, exit } = ladderSpots(sc, ld)
+        if (a.l === 0) for (const p of groundWay(sc, out.points[out.points.length - 1], bay.i, bay.j)) walkTo(p)
+        walkTo(foot)
+        out.up += a.l === 0 ? levelY(sc, ground, 1) - ground(foot[0], foot[1]) : SCAFFOLD.rise
+        out.ladders.push({ l: ld.l, i: ld.i, j: ld.j, d: ld.d })
+        out.points.push(exit)
+      } else if (b.l === a.l) walkTo(bayPoint(sc, b.i, b.j, 0, 0, [0, 0]))
+    }
+    walkTo(bayPoint(sc, sc.altar.i, sc.altar.j, 0, 0, [0, 0]))
+  }
+
+  /** Seconds she is given for `s`'s solved route (routeOf): its walking at CLOCK.walk and its climbing at CLOCK.climb. */
+  timeLimit(s) {
+    const r = this.routeOf(s)
+    return r.walk / CLOCK.walk + r.up / CLOCK.climb
+  }
+}
+
+/** The points from `from` (outside the scaffold) to bay (ti, tj)'s middle along the ground: in through the middle of the nearest outer edge, where no post stands, then bay middle to bay middle. */
+function groundWay(sc, from, ti, tj) {
+  const half = (SCAFFOLD.bay * SCAFFOLD.bays) / 2, n = SCAFFOLD.bays
+  const dx = from[0] - sc.cx, dz = from[1] - sc.cz
+  const a = dx * sc.ux + dz * sc.uz, b = dx * sc.vx + dz * sc.vz
+  const idx = (c) => Math.min(n - 1, Math.max(0, Math.floor(c / SCAFFOLD.bay + n / 2)))
+  let i = idx(a), j = idx(b)
+  const out = []
+  const mid = (c) => (c - (n - 1) / 2) * SCAFFOLD.bay
+  if (Math.abs(a) >= Math.abs(b)) { i = a > 0 ? n - 1 : 0; out.push(bayPoint(sc, i, j, Math.sign(a) * (half + 0.5) - mid(i), 0, [0, 0])) }
+  else { j = b > 0 ? n - 1 : 0; out.push(bayPoint(sc, i, j, 0, Math.sign(b) * (half + 0.5) - mid(j), [0, 0])) }
+  for (; i !== ti; i += Math.sign(ti - i)) out.push(bayPoint(sc, i, j, 0, 0, [0, 0]))
+  for (; j !== tj; j += Math.sign(tj - j)) out.push(bayPoint(sc, i, j, 0, 0, [0, 0]))
+  out.push(bayPoint(sc, i, j, 0, 0, [0, 0]))
+  return out
 }
 
 /** The polyline `xz` with `t0` metres cut off its start and `t1` off its end. */

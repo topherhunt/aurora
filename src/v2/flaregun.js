@@ -111,6 +111,38 @@ export function aimTarget(muzzle, dir, groundAt, levelAt, out) {
   return out
 }
 
+const STRIKE_STEP_M = 0.25
+const _p = new THREE.Vector3()
+const _n = new THREE.Vector3()
+const along = (muzzle, dir, t) => _p.copy(dir).multiplyScalar(t).add(muzzle)
+
+/**
+ * Where a shot down `dir` (unit) from `muzzle` first strikes within AIM_M, `depthAt(x, y, z)` being how deep into
+ * ground, water or rock a point is (positive inside): `lift` off it along its normal, into `out`. False when it strikes
+ * nothing. Rock thinner than STRIKE_STEP_M is flown through.
+ */
+export function strikeAt(muzzle, dir, depthAt, lift, out) {
+  let air = 0
+  for (let t = STRIKE_STEP_M; t <= AIM_M; t += STRIKE_STEP_M) {
+    along(muzzle, dir, t)
+    if (!(depthAt(_p.x, _p.y, _p.z) > 0)) { air = t; continue }
+    let solid = t
+    for (let i = 0; i < 12; i++) {
+      const m = (air + solid) / 2
+      along(muzzle, dir, m)
+      if (depthAt(_p.x, _p.y, _p.z) > 0) solid = m
+      else air = m
+    }
+    along(muzzle, dir, air)
+    const e = 0.05, { x, y, z } = _p
+    _n.set(depthAt(x - e, y, z) - depthAt(x + e, y, z), depthAt(x, y - e, z) - depthAt(x, y + e, z), depthAt(x, y, z - e) - depthAt(x, y, z + e))
+    if (!(_n.lengthSq() > 1e-12)) _n.copy(dir).negate()
+    out.copy(_n.normalize()).multiplyScalar(lift).add(_p)
+    return true
+  }
+  return false
+}
+
 const _m = new THREE.Matrix4()
 const _w = new THREE.Matrix4()
 const _s = new THREE.Vector3()

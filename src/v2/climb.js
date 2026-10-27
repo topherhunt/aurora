@@ -1,4 +1,4 @@
-// Climbing a watchtower's ladder (design/41-palisade-labyrinths.md): on the desktop she walks into it and the walk keys climb; in the headset an empty hand grips a rung and pulls. Either way Player.hold keeps her height until her next walk or teleport, and reaching the top steps her onto the deck.
+// Climbing a watchtower's or scaffold's ladder (design/41-palisade-labyrinths.md): on the desktop she walks into it and the walk keys climb; in the headset an empty hand grips a rung and pulls. Either way Player.hold keeps her height until her next walk or teleport, and reaching the top steps her off at the ladder's exit.
 import { TOWER } from './layers/labyrinths.js'
 
 // Metres a second up or down on the keys; how near the ladder's foot she must stand and how square to it she must face (her gaze along it, as a cosine) to start; how near a rung a gripping hand must be.
@@ -20,13 +20,15 @@ export class Climb {
     const p = this.player, o = p.rig.position
     if (this.ladder !== null && !p.held) this.ladder = null
     if (this.ladder === null) {
-      if (input.move <= 0 || p.flying || p.swimming || p.travel) return
+      if (input.move <= 0 || p.flying || p.swimming || p.travel || p.standY === null) return
       // Anywhere on the deck: its corner posts stand closer than her body is wide, so the ladder is its only way off on foot.
-      const l = this.palisades.ladderAt(o.x, o.z, TOWER.foot)
+      const l = this.palisades.ladderAt(o.x, o.z, TOWER.foot, p.standY)
       if (l === null) return
       const onDeck = Math.abs(p.standY - l.top) < 0.1
       if (!onDeck && Math.hypot(o.x - l.x, o.z - l.z) > CLIMB.reach) return
-      if ((onDeck ? 1 : -1) * (fx * l.ux + fz * l.uz) < CLIMB.face) return
+      // Down from the deck she faces from the ladder's exit toward its foot; up, against the ladder's face.
+      const dx = l.x - l.exitX, dz = l.z - l.exitZ, dl = Math.hypot(dx, dz)
+      if (onDeck ? (fx * dx + fz * dz) / dl < CLIMB.face : -(fx * l.ux + fz * l.uz) < CLIMB.face) return
       this.ladder = l
       this._sign = onDeck ? -1 : 1
       o.x = l.x
@@ -79,7 +81,7 @@ export class Climb {
     return took
   }
 
-  // Up the ladder by `dy`: held between its foot and the deck, and onto the deck's middle at the top.
+  // Up the ladder by `dy`: held between its foot and its top, and off onto its exit at the top.
   _rise(dy) {
     const p = this.player, l = this.ladder
     const y = Math.max(l.bottom, p.rig.position.y + dy)
@@ -89,6 +91,6 @@ export class Climb {
     }
     this.ladder = null
     this.grips.left = this.grips.right = null
-    p.teleportTo(l.x - l.ux * TOWER.foot, l.z - l.uz * TOWER.foot, l.top)
+    p.teleportTo(l.exitX, l.exitZ, l.top)
   }
 }

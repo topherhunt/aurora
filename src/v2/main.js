@@ -87,10 +87,10 @@ import { LeafkinGround } from './render/leafkin-ground.js'
 import { Villagers } from './render/villagers.js'
 import { Trust } from './trust.js'
 import { Loot, place } from './loot.js'
-import { ALTAR, LABYRINTH } from './layers/labyrinths.js'
+import { ALTAR, LABYRINTH, altarY, entranceOf, labyrinthAt, timeLimit } from './layers/labyrinths.js'
 import { mulberry32 } from '../sim/mathx.js'
 import { ITEMS, SMALL, Items, itemUrl } from './items.js'
-import { SINGE, SWORD, recut, shielded } from './singe.js'
+import { SINGE, SWORD, landed, recut, shielded } from './singe.js'
 import { Her } from './keep-up.js'
 import { Conversations } from './conversations.js'
 import { Mic } from './audio/mic.js'
@@ -129,8 +129,8 @@ import { EyeLevel } from './eye-level.js'
 import { WalkSurface } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
-import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, CHARGES as FLARE_CHARGES, PALETTE, MUZZLE, RECALL_M, RECALL_DEG, aimTarget, pressSafety, roomKey } from './flaregun.js'
-import { FLARE, Flares, fromWire, toWire, recallFromWire, recallToWire } from './render/flares.js'
+import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, CHARGES as FLARE_CHARGES, PALETTE, MUZZLE, RECALL_M, RECALL_DEG, aimTarget, strikeAt, pressSafety, roomKey } from './flaregun.js'
+import { FLARE, Flares, fromWire, toWire, recallFromWire, recallToWire, REST_M, GROUND_M, LIFT_M } from './render/flares.js'
 import { Flints, KIND as FLINT, SPARK, SPARK_CAP, SPARK_M, SPARK_S, STRIKE, clickBuffer, sparkColor, strikeCatches } from './flint.js'
 import { CreatureNet } from './creature-net.js'
 import { taken } from './taken.js'
@@ -944,11 +944,14 @@ const BACKPACK_PHOTO_COLS = 5
 const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : migrateSave(JSON.parse(raw)) }
-/** A save from before the purse: its 8 large slots padded to 12, an empty purse, no loot. */
+/** An older save brought up to this one: one from before the purse gets its 8 large slots padded to 12, an empty purse and no loot; flares from before they could strike ground all rest in the sky. */
 function migrateSave(doc) {
-  if (doc.purse !== undefined) return doc
-  if (doc.backpack.length !== 8) throw new Error(`v2: a save with no purse has ${doc.backpack.length} slots, not 8`)
-  return { ...doc, backpack: [...doc.backpack, null, null, null, null], purse: Object.fromEntries(SMALL.map((k) => [k, 0])), loot: [] }
+  if (doc.purse === undefined) {
+    if (doc.backpack.length !== 8) throw new Error(`v2: a save with no purse has ${doc.backpack.length} slots, not 8`)
+    doc = { ...doc, backpack: [...doc.backpack, null, null, null, null], purse: Object.fromEntries(SMALL.map((k) => [k, 0])), loot: [] }
+  }
+  if (doc.flares === undefined) return doc
+  return { ...doc, flares: doc.flares.map((a) => (a.length === 10 ? [...a, REST_M] : a)) }
 }
 // Which villagers trust which player, she among them as `trust.player` (trust.js).
 const trust = new Trust()
@@ -966,7 +969,41 @@ const talkLog = new QuestLog()
 // The labyrinths whose middle she has stood in, by `rx,rz`, saved: their drums are still for good.
 const drumsStilled = new Set()
 const drumsHere = { s: null, near: 0, middle: false }
+// The labyrinth she is in against its clock (timeLimit), `left` of `limit` seconds till she is faded back to its gate; `done` once she stands by its altar, which stops it till she leaves. Unsaved: a load inside starts it afresh.
+let mazeClock = null
+const MAZE_PRIZE_M = 1.5
+
+function mazeTick(dt, o) {
+  const s = palisades !== null && cave === null && indoors === null ? labyrinthAt(o.x, o.z) : null
+  if (s === null) { mazeClock = null; return }
+  if (mazeClock === null || mazeClock.s.rx !== s.rx || mazeClock.s.rz !== s.rz) { const limit = timeLimit(s); mazeClock = { s, limit, left: limit, done: false } }
+  if (mazeClock.done || doorBusy) return
+  const m = palisades.labyrinths.mazeOf(s)
+  if (Math.hypot(o.x - m.altar.x, o.z - m.altar.z) < MAZE_PRIZE_M && o.y > altarY(m, (x, z) => height.heightAt(x, z)) - 0.5) { mazeClock.done = true; return }
+  mazeClock.left -= dt
+  if (mazeClock.left <= 0) mazeKick(s).catch(reportRuntimeError)
+}
+
+/** Out of time: under the fade, back to just outside `s`'s gate facing in, its clock to start again when she steps through. */
+async function mazeKick(s) {
+  doorBusy = true
+  makeBlackout()
+  ready = false
+  await fade(1)
+  if (wildStriders && wildStriders.riding) wildStriders.letGo()
+  const e = entranceOf(s)
+  player.teleportTo(e.x, e.z, e.y)
+  faceAlong(Math.cos(e.heading), -Math.sin(e.heading))
+  mazeClock = null
+  console.log(`[v2] labyrinth ${s.rx},${s.rz}: out of time, back to the gate`)
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
 const drumsAt = { x: 0, y: 0, z: 0, near: 0 }
+// Her pets in every room but this one (wildlife.js LOST), by petRoom, saved; and this room's name there.
+const petsIn = new Map()
+let petRoom = null
 // Her voice as the hail (audio/mic.js), asked for on the first gesture once the sound is open.
 let talkMic = null
 const talkGaze = new THREE.Vector3()
@@ -1003,6 +1040,7 @@ function saveGame() {
     size: effects.size,
     talk: { topics: [...talkKnown] },
     drumsStilled: [...drumsStilled],
+    pets: { ...Object.fromEntries(petsIn), ...(wildlife ? { [petRoom]: wildlife.pets() } : {}) },
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -1044,6 +1082,15 @@ function applySave(doc) {
   if (doc.talk !== undefined) for (const t of doc.talk.topics) talkKnown.add(t)
   drumsStilled.clear()
   if (doc.drumsStilled !== undefined) for (const k of doc.drumsStilled) drumsStilled.add(k)
+  // A save from before pets were kept has none.
+  restorePets(doc.pets ?? {})
+}
+
+/** Her pets as a save has them, by petRoom: this room's waiting where they were, the rest kept for their rooms. */
+function restorePets(pets) {
+  petsIn.clear()
+  for (const [k, list] of Object.entries(pets)) if (k !== petRoom) petsIn.set(k, list)
+  if (wildlife) wildlife.restorePets(petRoom in pets ? pets[petRoom] : [], clock.seconds)
 }
 
 /** A new flare gun into the first free backpack slot, unless she has one in the backpack or a hand already. */
@@ -1140,6 +1187,7 @@ function newGame() {
   talkRapport.of.clear()
   talkLog.of.clear()
   drumsStilled.clear()
+  restorePets({})
   giveFlareGun()
   giveFlint()
   paintBackpack()
@@ -1261,7 +1309,11 @@ function getUp() {
 function harm(n, why, from = null) {
   if (n <= 0 || health.dead) return
   n *= effects.guard
-  if (from !== null) n *= shieldFor(from)
+  if (from !== null) {
+    const k = shieldFor(from)
+    n *= k
+    if (k < 1 && ambience) sound.play(`clang${1 + Math.floor(Math.random() * 3)}`, { bus: 'near', rate: THREE.MathUtils.randFloat(0.95, 1.05), gain: 0.9 })
+  }
   const died = health.harm(n)
   console.log(`[vitals] ${why}: -${n} HP, ${health.hp} left`)
   vitalsHud.flash()
@@ -1419,7 +1471,7 @@ function stepHud(dt) {
   const card = health.dead && !reviving
   const hit = questPointer === null ? null : questPointer.hit
   const hot = hit === null ? null : hit.object.userData.death
-  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card, buttons: renderer.xr.isPresenting, hot, tint: effects.tint })
+  const beat = vitalsHud.update(dt, { hp: health.hp, max: MAX_HP, hurt: health.hurt, lid: sleep.lid, dead: health.dead, card, buttons: renderer.xr.isPresenting, hot, tint: effects.tint, clock: mazeClock === null || mazeClock.done ? null : Math.max(0, mazeClock.left) / mazeClock.limit })
   if (beat && ambience) sound.play('heartbeat', { bus: 'near', gain: 0.25 + 0.35 * health.hurt })
   const buttons = card && vitalsHud.deathShown && !renderer.xr.isPresenting
   if (buttons !== (deathButtons.style.display === 'flex')) {
@@ -2267,6 +2319,7 @@ const pack = {
     }
     return null
   },
+  holds(kind) { return HAND_KEYS.some((key) => hands.holding(key)?.kind === kind) },
   add(kind, n = 1) {
     if (!ITEMS[kind] || !Number.isInteger(n) || n < 1) throw new Error(`pack.add: ${n} of ${kind}`)
     if (SMALL.includes(kind)) purse[kind] += n
@@ -2383,12 +2436,15 @@ function fireFlare(key, aim = null) {
     if (ambience) sound.play('uiPop', { bus: 'near', rate: 0.5, gain: 0.25 })
     return
   }
-  aimTarget(gunMuzzle, gunAim, (x, z) => walk.heightAt(x, z), (x, z) => waterSurfaces.levelAt(x, z, true), gunTarget)
+  // One that strikes ground, water or cave rock rests small just off it; one that strikes nothing climbs to hang in the sky.
+  const depthAt = cave !== null ? (x, y, z) => walk.field.at(x, y, z) : (x, y, z) => Math.max(walk.heightAt(x, z), waterSurfaces.levelAt(x, z, true) ?? -Infinity) - y
+  const struck = strikeAt(gunMuzzle, gunAim, depthAt, LIFT_M, gunTarget)
+  if (!struck) aimTarget(gunMuzzle, gunAim, (x, z) => walk.heightAt(x, z), (x, z) => waterSurfaces.levelAt(x, z, true), gunTarget)
   rec.charges--
   const f = {
     id: Math.random().toString(36).slice(2, 12), room: flares.room,
     ox: gunMuzzle.x, oy: gunMuzzle.y, oz: gunMuzzle.z, tx: gunTarget.x, ty: gunTarget.y, tz: gunTarget.z,
-    color: PALETTE[rec.hue], seed: Math.random(),
+    color: PALETTE[rec.hue], seed: Math.random(), rest: struck ? GROUND_M : REST_M,
   }
   flares.add(f, 0)
   if (giants) giants.scare(gunMuzzle.x, gunMuzzle.z)
@@ -2396,6 +2452,17 @@ function fireFlare(key, aim = null) {
   netplay.sendFlare(toWire(f))
   if (ambience) sound.play('flaregun', { bus: 'near', rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 })
   questPulse(key, 0.8, 80)
+}
+
+/** A jar of flare charges in one hand and a gun short of charges in the other: the jar is poured in and gone, the gun full. */
+function refillGun() {
+  const jar = HAND_KEYS.find((key) => hands.holding(key)?.kind === 'flare-charges')
+  const gun = HAND_KEYS.find((key) => hands.holding(key)?.kind === FLAREGUN)
+  if (jar === undefined || gun === undefined || hands.holding(gun).charges >= FLARE_CHARGES) return
+  hands.put(jar)
+  hands.holding(gun).charges = FLARE_CHARGES
+  if (ambience) sound.play('flaregunBack', { bus: 'near', rate: 0.7 * FLARE_RATE, gain: 0.9 })
+  questPulse(gun, 0.8, 120)
 }
 
 const flintFrame = new THREE.Matrix4()
@@ -2563,7 +2630,11 @@ function shieldFor(from) {
 window.v2hearthLight = HEARTH_LIGHT // console: `v2hearthLight.on = 0` puts the hearths' live light out, for an A/B
 window.v2windowGlow = WINDOW_GLOW // console: `v2windowGlow.night = 5`, read every frame
 let townHearths = null
-/** Every frame: torches put out under water, the flames and torch flames drawn, the nearest torches and town hearths fed to the lighting, and each town's baked glow dimmed by however much of it a live slot now carries. */
+// A flare at rest on ground or rock lights what is round it in its own colour, as a torch would; tints by colour, linear.
+const FLARE_LIGHT = { strength: 1.4, reach: 10 }
+const flareTints = new Map()
+const groundedFlares = []
+/** Every frame: torches put out under water, the flames and torch flames drawn, the nearest torches, grounded flares and town hearths fed to the lighting, and each town's baked glow dimmed by however much of it a live slot now carries. */
 function updateFire(dt) {
   const now = fireNow()
   for (const a of netplay.flames) {
@@ -2588,6 +2659,10 @@ function updateFire(dt) {
   torchSorted.length = 0
   for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), reach: TORCH_REACH, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
   if (palisades) palisades.torchLights(headTmp, now, TORCH_REACH, torchSorted)
+  for (const f of flares.grounded(groundedFlares)) {
+    if (!flareTints.has(f.color)) flareTints.set(f.color, new THREE.Color(f.color))
+    torchSorted.push({ x: f.tx, y: f.ty, z: f.tz, strength: FLARE_LIGHT.strength * flameFlicker(now, f.seed * 10), reach: FLARE_LIGHT.reach, tint: flareTints.get(f.color), d: Math.hypot(f.tx - headTmp.x, f.ty - headTmp.y, f.tz - headTmp.z) })
+  }
   const night = lampNight()
   const hearthGain = HEARTH_LIGHT.gain * (HEARTH_LIGHT.day + (1 - HEARTH_LIGHT.day) * night)
   const far = lighting.uniforms.uHearthFar.value
@@ -2618,8 +2693,8 @@ function cycleFlareColor(key) {
 function drainFlares() {
   player.headPosition(headTmp)
   for (const a of netplay.flares) {
-    const age = a[10] / 1000
-    const f = fromWire(a.slice(0, 10))
+    const age = a[11] / 1000
+    const f = fromWire(a.slice(0, 11))
     if (!flares.add(f, age) || age > 0.5 || f.room !== flares.room || !ambience) continue
     const d = Math.hypot(f.ox - headTmp.x, f.oy - headTmp.y, f.oz - headTmp.z)
     if (d < FLARE_HEARD_M) sound.play('flaregun', { rate: FLARE_RATE * THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.9 * (1 - d / FLARE_HEARD_M) ** 2, at: { x: f.ox, y: f.oy, z: f.oz }, distance: d })
@@ -2678,8 +2753,8 @@ function layLoot() {
     for (const { site: s } of palisades.active.values()) {
       const key = (s.rx + 0x8000) * 0x10000 + (s.rz + 0x8000)
       const rand = mulberry32((SEED ^ Math.imul(key, 0x9e3779b1)) >>> 0)
-      const al = palisades.labyrinths.mazeOf(s).altar
-      const y = height.heightAt(al.x, al.z) + ALTAR.height
+      const maze = palisades.labyrinths.mazeOf(s), al = maze.altar
+      const y = altarY(maze, (x, z) => height.heightAt(x, z)) + ALTAR.height
       const tier = RINGS_MOST - s.rings
       items.lay(place('l', key), 0, 'coin', al.x - al.uz * 0.2, y, al.z + al.ux * 0.2, 20 + Math.floor(rand() * 41))
       items.lay(place('l', key), 1, tier < ALTAR_GEMS.length ? ALTAR_GEMS[tier] : 'jade', al.x + al.ux * 0.22, y, al.z + al.uz * 0.22)
@@ -4190,6 +4265,7 @@ function disposeRoom() {
   dropCaveBuild()
   if (caveMouths) { caveMouths.dispose(); caveMouths = null }
   items.clear()
+  if (wildlife) petsIn.set(petRoom, wildlife.pets())
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish, seaweed,
     boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
@@ -4470,6 +4546,7 @@ const caveHidden = new Set()
 let caveLeadAt = 0
 // When her sword last cut each cave spider (singe.js recut), keyed system seed and spider id.
 const spiderCuts = new Map()
+let slashesRung = 0
 // In a house, the same hiding: everything but its view and residents, put back by closeHouse.
 const houseKeep = new Set()
 const houseHidden = new Set()
@@ -5519,6 +5596,8 @@ async function buildRoom(room, at) {
   const wildAvoid = towns || palisades ? (x, z) => (towns !== null && towns.nearBuildingAt(x, z, 20)) || (palisades !== null && palisades.labyrinths.keepOutAt(x, z, 2)) : null
   wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: wildAvoid, eat: (lure, sp) => hands.eatLure(lure, sp), harm, butt: (key, hp, x, z, now) => dragons.butted(key, hp, x, z, now) })
   wildlife.her = her
+  petRoom = roomKey(room.id, room.village ? cameInBy : null)
+  if (petsIn.has(petRoom)) { wildlife.restorePets(petsIn.get(petRoom), clock.seconds); petsIn.delete(petRoom) }
   wildlife.marks = (x, z) => {
     const R = LABYRINTH.region
     const marks = [
@@ -8366,6 +8445,7 @@ function tick() {
       player.shove(wallAcross.x * side * WALL_TOP.shove, wallAcross.z * side * WALL_TOP.shove)
     }
     if (palisades !== null && player.th === walk && palisades.labyrinths.nearness(o.x, o.z, 0, drumsHere) && drumsHere.middle) drumsStilled.add(`${drumsHere.s.rx},${drumsHere.s.rz}`)
+    mazeTick(dt, o)
   }
   if (boats) boats.settle()
   portalTest()
@@ -8426,6 +8506,7 @@ function tick() {
   placeDeskHand()
   hands.update(dt, handsHead())
   placeHeld()
+  refillGun()
   gunWindows.update(hands)
   shotFlash.update(dt, headTmp)
   drainFlares()
@@ -8436,6 +8517,11 @@ function tick() {
   visions.update(dt, flarePx.y)
   updateFire(dt)
   updateBlades(dt)
+  // Last frame's cuts, wherever they landed (singe.js landed).
+  if (landed.n !== slashesRung) {
+    slashesRung = landed.n
+    if (ambience) sound.play(`slash${1 + Math.floor(Math.random() * 3)}`, { bus: 'near', rate: THREE.MathUtils.randFloat(0.95, 1.05), gain: 0.8 })
+  }
   updatePicks(dt)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()
@@ -8654,6 +8740,7 @@ function stepOverworld(dt, now) {
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   if (giants) {
+    giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider')
     stepAnimal('snowmen', () => giants.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
     const blow = giants.drainBlows()
     if (blow > 0) harm(blow, 'the green giant')

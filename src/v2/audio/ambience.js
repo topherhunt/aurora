@@ -89,6 +89,13 @@ export const SOUNDS = {
   striderWhine: 'sounds/strider-whine.mp3',
   // Her hurt by a blow or a fall (main.js harm).
   thud: 'sounds/interact-thud.mp3',
+  // Her sword landing a cut and a blow landing on her shield (main.js updateCombatSounds, harm).
+  slash1: 'sounds/combat-sword-slash-1.mp3',
+  slash2: 'sounds/combat-sword-slash-2.mp3',
+  slash3: 'sounds/combat-sword-slash-3.mp3',
+  clang1: 'sounds/combat-shield-clang-1.mp3',
+  clang2: 'sounds/combat-shield-clang-2.mp3',
+  clang3: 'sounds/combat-shield-clang-3.mp3',
   croak1: 'sounds/frog-croak-1.mp3',
   croak2: 'sounds/frog-croak-2.mp3',
   frogBoing: 'sounds/animal-frog-boing.mp3',

@@ -85,3 +85,48 @@ A stream that needs a one-line wiring change in a file it does not own (almost a
 - The pickaxe costs 50 coins and no ore (the plan's 60 is superseded).
 - Pets warp only out of her view, so a pet never visibly pops.
 - Giant cave spiders do not attack her.
+
+# Second request, 2026-10-27
+
+Same rules as above. W keeps its stream; T is done. Two new Sonnet agents, **L** (labyrinths) and **U** (talk), and C (lead) for the rest. Spending approved for this request only: ElevenLabs sword and shield SFX (2 sounds x 3 variants, pocket-game's key and spend log) and one Runware trellis-2 mesh for the flare-refill jar.
+
+| Stream | Owns |
+|---|---|
+| **C** | as above, plus `flaregun.js`, `render/flares.js`, `render/giants.js`, `render/town-residents.js`, `render/journeys.js`, `items.js`, `vitals.js` HUD, `tools/sfx/`, the jar mesh |
+| **L** | `layers/labyrinths.js`, new `layers/scaffold.js`, `render/palisades.js`, new `render/scaffold-parts.js`, `climb.js`, the walker's labyrinth spans (wherever `main.js` asks palisades for ground, by one-line wiring), `scripts/check-labyrinth*.mjs`, `public/` netting texture |
+| **U** | `talk/*`, `conversations.js`, `ui/dialog-panel.js`, `scripts/check-talk.mjs`, `scripts/check-villagers.mjs` (talk parts) |
+
+## Contracts
+
+- **Labyrinth clock** (L exports from `layers/labyrinths.js`): `labyrinthAt(x, z)` the site she stands in or null; `entranceOf(site)` `{ x, y, z, heading }` just outside its gate, facing in; `timeLimit(site)` seconds. C runs the clock, the fade, the teleport and the HUD ring.
+- **Giant fear** (C): a giant within sight of her while she holds a spider screams and flees. U only writes the tales.
+- **Sword in town** (C moves people, U speaks): `ctx.armed` is true while she holds a sword in a town. U provides `jeer(mind)` (a passing remark), `swordWarning(mind)` (a guard's warning), and the refusal opening when `ctx.armed`. C decides who passes or approaches and when.
+- **Alchemist** (C places him, U speaks): `ctx.inShop` is true while the alchemist stands in his shop, by the same rule as the smith's workshop. `SHOP['flare-charges']` in `talk/trade.js` is `{ coin: 40, firestone: 1 }`. Selling gives the large item `flare-charges`. Loading it into the flare gun in her other hand is C's.
+- **Topics** (U): the new mechanics below, each known only to the roles that would know it. Anyone who doesn't know points to who would, by profession.
+
+## C
+
+1. **Lost pets wait.** A tamed pet is kept where it was last seen (saved, and shared with the room through the creature anchor). Back there, it wanders near the spot. Within 10 m of her it calls in recognition, comes, and follows as before.
+2. **Big deer charge only near, grounded dragons**: a dragon on the ground within 20 m. Any other dragon is fled as before.
+3. **Labyrinth clock.** Starts when she steps inside. Past `timeLimit`, the view fades out and she is put back at `entranceOf`, the clock reset. An orange ring inside the health ring shows the time left.
+4. **Green giants in a labyrinth** walk, chase and swing 2x as fast.
+5. **Giants fear spiders**: holding a spider, she makes any giant that sees her bellow and flee instead of attacking.
+6. **Sword in town**: passers-by jeer; a guard walks up and warns her once per town visit; anyone she talks to refuses (U's lines).
+7. **Alchemist and flare charges**: he keeps his shop about half the day, by his schedule. A `flare-charges` jar (large, one slot; a generated mesh of a jar of glowing orange fire-marbles) refills a flare gun to `CHARGES`.
+8. **Grounded flares**: a flare landing on terrain, or on a cave wall or ceiling, sits glowing 0.5 m off the surface, 0.3 m wide, and adds its colour to the light on nearby terrain and objects.
+9. **Combat SFX**: a sword slash with a metallic ring on a hit, and a shield clang when a blow lands on the shield.
+
+## L
+
+1. **Port pocket-game's scaffold tower and its corridor sizes** (pocket-game commits f74ff4a and 48af2de, `layers/scaffold.js`, `render/scaffold-parts.js`, design/41): about half of labyrinths have a tower in the middle, climbed by ladders to the prize. Adapt it to this repo's labyrinths, which already have lookout towers (`TOWER`).
+2. **No invisible walls.** Probe every barrier the walker sees against what is drawn: sample many points over many sites (corridors, gates, the tower, the nets) and assert she can walk wherever nothing is drawn, and is stopped only by drawn posts, nets or walls. Fix the cause in the walker spans, not the probe.
+3. **Rope netting texture**: a generated, tileable, alpha-masked rope-net texture made in code, replacing pocket-game's diamond mask.
+4. **Even posts inside the maze**: every post within the outer wall is the same height, whatever its girth, so the path can be traced from a lookout.
+5. **`timeLimit(site)`**: the time to walk the solved route to the prize at 75% of her walk speed (`player.js` LOCOMOTION), with each ladder at climb speed, plus `labyrinthAt` and `entranceOf` per the contract. Gate it.
+
+## U
+
+1. **Sword in town**: jeers, a guard's warning, and refusing to talk to an armed stranger (uncouth, told off).
+2. **The alchemist**: the smith's pattern. Glad to help in his shop, not out and about or asleep. Flare-charge refills for firestone and coins, saying which she lacks.
+3. **Tales**: giants fear spiders (tall tales and fairytales); flares light tight spaces and mark the way.
+4. **Topic coverage** for everything added this session and not yet spoken of. Each NPC knows a subset fitting their trade and personality, and points to who would know more. Gate: every topic has at least one knower per town, and a non-knower's answer names a role who knows.

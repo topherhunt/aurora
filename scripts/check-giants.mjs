@@ -4,18 +4,18 @@
 //
 // Its round: from the middle through every cell and back, closed-form, the same on two clients at two frame rates, and
 // never out of the maze. Her: noticed ahead within NOTICE_M and not behind, nor high on a tower; chased inside the maze
-// slower than she walks; struck for BLOW once in reach; forgotten past FORGET_M, a rejoin owed, and the round taken up
+// at CHASE_SPEED; struck for BLOW once in reach; forgotten past FORGET_M, a rejoin owed, and the round taken up
 // again. A flare within SCARE_M: it cowers COWER_S, screaming, then takes up her chase or its round. The room: an anchor a
-// second while live, a peer put live on its player by one, and cowering by a cower anchor.
+// second while live, a peer put live on its player by one, and cowering by a cower anchor. Her holding a spider: it bellows
+// and flees FLEE_S, a flee anchor owed and heard.
 
 import * as THREE from 'three'
 import { Labyrinths, POST_HEIGHT } from '../src/v2/layers/labyrinths.js'
-import { Giants, roundOf, roundAt, HEIGHT_M, NOTICE_M, FORGET_M, REACH_M, BLOW, CHASE_SPEED, ABOVE_M, ANCHOR_S, NOTICE_HALF, SCARE_M, COWER_S } from '../src/v2/render/giants.js'
+import { Giants, roundOf, roundAt, ROUND_SPEED, HEIGHT_M, NOTICE_M, FORGET_M, REACH_M, BLOW, CHASE_SPEED, ABOVE_M, ANCHOR_S, NOTICE_HALF, SCARE_M, COWER_S, FLEE_S } from '../src/v2/render/giants.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { LOD_TIERS } from '../src/v2/render/snowmen.js'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
-import { LOCOMOTION } from '../src/player.js'
 
 setPuppetMode('skinned')
 
@@ -91,7 +91,7 @@ console.log('the round')
     roundAt(round, t, p)
     if (labyrinths.nodeAt(site, p.x, p.z) === -1) out++
     roundAt(round, t + 0.25, q)
-    if (Math.hypot(q.x - p.x, q.z - p.z) > 0.25 * 0.61) fast++
+    if (Math.hypot(q.x - p.x, q.z - p.z) > 0.25 * ROUND_SPEED * 1.02) fast++
   }
   check(out === 0 && fast === 0, 'its whole length inside the outer wall, at its walking pace', `${out} out, ${fast} too fast, ${(round.length / 60).toFixed(1)} min long`)
 }
@@ -177,7 +177,7 @@ console.log('\nher')
   })
   check(swungAt > 0, 'it reaches her standing in a cell and swings', `${swungAt > 0 ? (swungAt - t0).toFixed(1) : '-'} s, ${walked.toFixed(0)} m walked`)
   check(out === 0, 'never out of the maze on the way', `${out} ticks out`)
-  check(fast === 0 && CHASE_SPEED < LOCOMOTION.maxSpeed, `never faster than ${CHASE_SPEED} m/s, under her ${LOCOMOTION.maxSpeed}`, `${fast} frames too fast`)
+  check(fast === 0, `never faster than ${CHASE_SPEED} m/s`, `${fast} frames too fast`)
   check(blows > 0 && blows % BLOW === 0, `its blows land on her ${BLOW} HP at a time`, `${blows} HP in 120 s`)
   check(Math.hypot(c4.sx - her[0], c4.sz - her[2]) <= REACH_M + 0.05, 'it stands within reach of her')
   check(anchors >= 100 / ANCHOR_S, 'an anchor a second while live', `${anchors} in 120 s`)
@@ -236,6 +236,43 @@ console.log('\nthe flare')
   const pc = giantOf(peer)
   peer.apply([pc.key, 1001, m.cells[0][0], 0, m.cells[0][1], 0, -1, 'cower', 'client-7', 1001 + COWER_S, 1], 1001.05)
   check(pc.state === 'cower' && pc.live.by === 'client-7' && peer.voices([]).length === 1, "a peer's giant cowers on a cower anchor, and screams", pc.state)
+}
+
+console.log('\nher spider')
+{
+  // Chasing her, she holds up a spider: it bellows, owes a flee anchor, and runs from her for FLEE_S, landing no blow.
+  const g = make()
+  step(g, 1000, 1001, 30)
+  const c = giantOf(g)
+  const her = herAt(c, 1, NOTICE_M - 2)
+  step(g, 1001, 1001.2, 30, her)
+  g.voices([])
+  g.pending()
+  g.dread = true
+  const d0 = Math.hypot(c.sx - her[0], c.sz - her[2])
+  step(g, 1001.23, 1001.3, 30, her)
+  const said = g.voices([]).filter((v) => v.sound !== undefined)
+  const owed = g.pending().find((x) => x[0] === c.key && x[7] === 'flee')
+  check(c.state === 'flee' && said.length === 1 && said[0].rule === 'giantScream', 'held up, a spider sets the giant chasing her bellowing and fleeing', c.state)
+  check(owed !== undefined && Math.abs(owed[9] - (owed[1] + FLEE_S)) < 0.1, 'a flee anchor owed, carrying its end', JSON.stringify(owed))
+  let blows = 0, out = 0
+  step(g, 1001.33, 1001 + FLEE_S - 1, 30, her, () => { blows += g.drainBlows(); if (labyrinths.nodeAt(site, c.sx, c.sz) === -1) out++ })
+  check(c.state === 'flee' && blows === 0 && out === 0 && Math.hypot(c.sx - her[0], c.sz - her[2]) > d0 + 2, `for ${FLEE_S} s it runs from her inside the maze, harmless`, `${c.state}, ${blows} HP, ${Math.hypot(c.sx - her[0], c.sz - her[2]).toFixed(1)} m off, ${out} ticks out`)
+
+  // On its round, it sees her with a spider: it flees at once rather than chase.
+  const g2 = make()
+  step(g2, 1000, 1001, 30)
+  const c2 = giantOf(g2)
+  g2.dread = true
+  step(g2, 1001, 1001.2, 30, herAt(c2, 1, NOTICE_M - 2))
+  check(c2.state === 'flee', 'a giant on its round that sees her holding a spider flees instead of chasing', c2.state)
+
+  // A peer hears the flee anchor: its giant flees too.
+  const peer = make()
+  step(peer, 1000, 1001, 30)
+  const pc = giantOf(peer)
+  peer.apply([pc.key, 1001, m.cells[0][0], 0, m.cells[0][1], 0, -1, 'flee', 'client-7', 1001 + FLEE_S, 0], 1001.05)
+  check(pc.state === 'flee' && pc.live.by === 'client-7', "a peer's giant flees on a flee anchor", pc.state)
 }
 
 console.log(failures === 0 ? '\nall giant checks passed' : `\n${failures} giant check(s) FAILED`)

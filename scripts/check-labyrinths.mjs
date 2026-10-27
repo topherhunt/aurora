@@ -7,6 +7,7 @@
 // quarter-metre grid by WalkSurface's own heightAt and fits against Palisades' columnAt, every cell is reached from
 // outside, and with the gate plugged none is. Climbed, on the first labyrinth's towers: the desktop's walk up a ladder onto its deck
 // and back down unhurt, a hold that keeps her height until she walks, and a walk off the held ladder priced as a fall.
+// A tower labyrinth's middle counts as reached at its scaffold's ground ladder's foot; the scaffold itself is gated by check-labyrinth-walls and check-labyrinth-clock.
 
 import * as THREE from 'three'
 import { readFileSync } from 'node:fs'
@@ -19,6 +20,7 @@ import { Layers } from '../src/v2/layers/layers.js'
 import { BiomeField } from '../src/v2/layers/biome.js'
 import { CARROTS, CRACK, DEAD_ENDS_MAX, POST_FACE, POST_GIRTH, POST_HEIGHT, POST_R, POST_STRIDE, TOWER } from '../src/v2/layers/labyrinths.js'
 import { Palisades } from '../src/v2/render/palisades.js'
+import { scaffoldLadders } from '../src/v2/render/scaffold-parts.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { LOCOMOTION, Player } from '../src/player.js'
 import { Climb } from '../src/v2/climb.js'
@@ -144,7 +146,7 @@ check(girths[0] > POST_GIRTH[0] * 0.7 && girths[1] < POST_GIRTH[1] * 1.3, 'every
       let edge = 1
       while (labyrinths.insideAt(s.cx + ux * edge, s.cz + uz * edge)) edge += 0.05
       const at = (d) => labyrinths.nearness(s.cx + ux * d, s.cz + uz * d, R, out) ? { ...out } : null
-      const inReach = at(edge + R - 0.2), past = at(edge + R + 0.2), wall = at(edge - 0.2), mid = at(0.5), ring0 = at(3)
+      const inReach = at(edge + R - 0.2), past = at(edge + R + 0.2), wall = at(edge - 0.2), mid = at(0.5), ring0 = at(s.centre + 1.5)
       if (!inReach || past || inReach.near > 0.02 || inReach.middle || !wall || wall.near <= inReach.near || wall.middle || !mid || !mid.middle || mid.near !== 1 || ring0.middle || inReach.s !== s) bad++
     }
   }
@@ -183,7 +185,7 @@ check(girths[0] > POST_GIRTH[0] * 0.7 && girths[1] < POST_GIRTH[1] * 1.3, 'every
 
 console.log('\nthe walker in the walls')
 // Palisades' stone answers off the labyrinths and the field alone, so the gate walks the shipped columnAt without the meshes.
-const palisades = Object.assign(Object.create(Palisades.prototype), { labyrinths, field })
+const palisades = Object.assign(Object.create(Palisades.prototype), { labyrinths, field, _ladders: new WeakMap() })
 let plug = null
 const plugStone = {
   columnAt: (x, z, _min, out) => {
@@ -249,15 +251,16 @@ for (let si = 0; si < sites.length; si += EVERY) {
   const bx0 = s.cx - pad, bz0 = s.cz - pad, bx1 = s.cx + pad, bz1 = s.cz + pad
   const ring = []
   for (let t = 0; t <= 2 * pad; t += GRID) ring.push([bx0 + t, bz0], [bx0 + t, bz1], [bx0, bz0 + t], [bx1, bz0 + t])
-  // A tower's cell counts at its ladder's foot, the middle at the altar's front: the tower and the plinth stand on their centres.
+  // A tower's cell counts at its ladder's foot, the middle at the altar's front (a scaffold's, at its ground ladder's foot): the tower and the plinth stand on their centres.
   const towerAt = new Map(m.towers.map((t) => [t.cell, [t.x + t.ux * TOWER.foot, t.z + t.uz * TOWER.foot]]))
   const marks = m.cells.map((c, id) => towerAt.get(id) ?? c)
-  marks.push([m.altar.x + m.altar.ux * 0.9, m.altar.z + m.altar.uz * 0.9])
+  if (m.scaffold === null) marks.push([m.altar.x + m.altar.ux * 0.9, m.altar.z + m.altar.uz * 0.9])
+  else marks.push(scaffoldLadders(m.scaffold, (x, z) => field.heightAt(x, z)).filter((l) => l.ground).map((l) => [l.x, l.z])[0])
   const missedFrom = () => {
     const f = flood(bx0, bz0, bx1, bz1, ring)
     return marks.map((p, id) => id).filter((id) => !f.at(...marks[id]))
   }
-  const nameOf = (id) => id === m.cells.length ? 'the altar' : towerAt.has(id) ? `tower ${id}'s ladder` : `cell ${id}`
+  const nameOf = (id) => id === m.cells.length ? (m.scaffold === null ? 'the altar' : 'the scaffold\'s ladder') : towerAt.has(id) ? `tower ${id}'s ladder` : `cell ${id}`
   plug = null
   const missed = missedFrom()
   check(missed.length === 0, `${label}: the walker reaches every cell, every ladder's foot and the altar from outside`, missed.length ? `missed ${missed.map(nameOf).join(', ')}` : `${marks.length} marks`)

@@ -1,14 +1,17 @@
-// What people buy and sell, and the blacksmith's shop (design/42-valuables.md "Flows"). Pure data plus helpers that take the
+// What people buy and sell, and the blacksmith's and alchemist's shops (design/42-valuables.md "Flows"). Pure data plus helpers that take the
 // speaking `conv` (speak.js Conversation) and move items through `conv.ctx.pack`. Three-free.
+
+import { isNight } from './manners.js'
 
 export const GEMS = ['jade', 'ruby', 'sapphire', 'diamond']
 export const ORES = ['flint', 'bog-iron', 'lodestone', 'firestone', 'rimesilver']
-export const LARGE = new Set([...ORES, 'egg', 'pickaxe', 'sword', 'shield'])
+export const LARGE = new Set([...ORES, 'egg', 'pickaxe', 'sword', 'shield', 'flare-charges'])
 
 // Coins a human pays for one. Rimesilver and eggs have no table price (a rare ore, a thief's prize): these are set here.
 export const PRICE = { flint: 2, 'bog-iron': 5, lodestone: 25, firestone: 30, jade: 40, ruby: 60, sapphire: 75, diamond: 100, rimesilver: 200, egg: 150 }
-// The blacksmith's tools: coins and bog iron for each.
-export const SHOP = { sword: { coin: 100, 'bog-iron': 3 }, shield: { coin: 100, 'bog-iron': 3 }, pickaxe: { coin: 50 } }
+// What the shops sell, each item's price: the blacksmith's tools (coins and bog iron) and the alchemist's jar of flare charges (coins and a firestone).
+export const SHOP = { sword: { coin: 100, 'bog-iron': 3 }, shield: { coin: 100, 'bog-iron': 3 }, pickaxe: { coin: 50 }, 'flare-charges': { coin: 40, firestone: 1 } }
+const STOCK = { smith: ['sword', 'shield', 'pickaxe'], alchemist: ['flare-charges'] }
 // A thief's one stolen gem sells at this times its price.
 const STOLEN = 3
 
@@ -16,6 +19,7 @@ const NAME = {
   coin: ['coin', 'coins'], jade: ['jade', 'jade'], ruby: ['ruby', 'rubies'], sapphire: ['sapphire', 'sapphires'], diamond: ['diamond', 'diamonds'],
   'bog-iron': ['bog iron', 'bog iron'], lodestone: ['lodestone', 'lodestones'], rimesilver: ['rimesilver', 'rimesilver'], firestone: ['firestone', 'firestone'],
   flint: ['flint', 'flint'], egg: ['dragon egg', 'dragon eggs'], pickaxe: ['pickaxe', 'pickaxes'], sword: ['sword', 'swords'], shield: ['shield', 'shields'],
+  'flare-charges': ['jar of flare charges', 'jars of flare charges'],
 }
 
 /** `n` of `kind` in words: "1 ruby", "3 bog iron". */
@@ -31,6 +35,15 @@ const list = (parts) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -
 
 /** Whether `mind` is the town smith, whose shop opens in his workshop. */
 export const isSmith = (mind) => mind.kind === 'human' && mind.body === 'blacksmith'
+
+/** Whether `mind` is the town alchemist, whose shop opens in the potion shop. */
+export const isAlchemist = (mind) => mind.kind === 'human' && mind.body === 'alchemist'
+
+/** The shopkeeper `mind` is ('smith' or 'alchemist'), or null. */
+const keeper = (mind) => (isSmith(mind) ? 'smith' : isAlchemist(mind) ? 'alchemist' : null)
+
+/** Whether `conv`'s speaker, a shopkeeper, stands in their shop now. */
+const atShop = (conv) => (isSmith(conv.mind) ? conv.ctx.inWorkshop : conv.ctx.inShop)
 
 const TRADERS = new Set(['innkeeper', 'trapper', 'skald', 'jarlsthane', 'miner'])
 
@@ -115,11 +128,17 @@ const MISSING = (m) => {
 function refusal(conv, m, kind) {
   const more = { moment: 'refuse.price', plain: true, lacking: m }
   if (conv.leafkin) return conv._line(m.short.length === 0 ? conv._lk('tradeFull') : conv._lk('tradeShort', { need: list(m.short.map((s) => count(s.kind, s.need))) }), 'talk-shrug', more)
-  return conv._line(conv._pick(`${kind}:fail`, kind === 'shop' ? SHOP_FAIL : TRADE_FAIL).replace('{need}', MISSING(m)), 'talk-shrug', more)
+  const pool = kind === 'trade' ? TRADE_FAIL : isAlchemist(conv.mind) ? ALCH_FAIL : SHOP_FAIL
+  return conv._line(conv._pick(`${kind}:fail`, pool).replace('{need}', MISSING(m)), 'talk-shrug', more)
 }
 
 const SHOP_FAIL = ["Can't sell you that. You're short: {need}.", 'No deal yet. You still need {need}.', "Not like this. You lack {need}.", "Come back when you've {need}."]
 const TRADE_FAIL = ["I'd like to, but you're short: {need}.", 'Not yet. You lack {need}.', "You haven't got it all: {need}."]
+const ALCH_FAIL = ["I would sell, but you lack {need}.", 'Not yet. The jars are not free: you lack {need}.', 'You are short. I need {need}.', 'Come back with {need}, and the jar is yours.']
+const ALCH_DONE = ['There. A jar of flare charges, bright as the day I bottled it. Pour it into your gun.', 'Done. Keep the jar upright and out of the damp.', 'Sold. Mind the glow, and mind your fingers.', 'Yours. Load it into the gun and fire away.']
+const ALCH_OPEN = ['Welcome, welcome. Mind the bottles. What do you need?', 'Ah, a customer. Flare charges, is it? Or something stranger?', 'Step in. Mind the jars. What can I do for you?', 'Careful with the shelves. What brings you in?']
+const ALCH_AWAY = ['Not out here. My stock is in the potion shop. Come and find me there.', 'I carry no jars in the street. See me at the shop.', 'Business is for the shop, with the scales and the shelves. Come there.', 'Out here I am only someone walking. The shop, if you want to buy.']
+const ALCH_ASLEEP = ['Mm? Is it morning already? Come to the shop in the daytime.', 'The shop is shut at this hour. Let me sleep and call on me when I am up.', 'It is the dead of night. The shop opens when I do.', 'Yawn. No selling in my sleep. Come by day.']
 const SHOP_ELSEWHERE = ["Not here. Find me in my workshop.", "I don't do business out here. Come to the workshop.", 'Workshop. Not out here.']
 const SHOP_DONE = ['There. Pleasure doing business.', 'Done. Mind the edge.', 'Sold. Now let me get back to work.', "That's that. Next!"]
 const TRADE_DONE = ['A fair trade. Pleasure.', 'Done, then.', "It's a deal. Thank you.", 'Good business. Come back any time.']
@@ -145,8 +164,9 @@ export function dealsNow(conv) {
 export function chips(conv) {
   const { mind, ctx } = conv
   const out = []
-  if (isSmith(mind) && ctx.inWorkshop) {
-    for (const item of Object.keys(SHOP)) out.push([`shop:buy:${item}`, ['Can I buy', `${/^[aeiou]/.test(item) ? 'an' : 'a'} ${item}?`]])
+  const shop = keeper(mind)
+  if (shop !== null && atShop(conv)) {
+    for (const item of STOCK[shop]) out.push([`shop:buy:${item}`, ['Can I buy', `${/^[aeiou]/.test(label(item)) ? 'an' : 'a'} ${label(item)}?`]])
     out.push(['shop:offer', ['What do you', 'have on offer?']])
   }
   if (tradeable(conv)) {
@@ -159,9 +179,15 @@ export function chips(conv) {
   return out
 }
 
-/** The opener when they want what she holds, or the smith's shop greeting: a line or null. */
+/** The opener when they want what she holds, or a shopkeeper's greeting: a line or null. */
 export function opener(conv) {
   const { mind, ctx } = conv
+  if (isAlchemist(mind)) {
+    const open = ctx.inShop
+    const asleep = !open && isNight(ctx.hour)
+    const pool = open ? ALCH_OPEN : asleep ? ALCH_ASLEEP : ALCH_AWAY
+    return conv._line(conv._pick('shop:open', pool), 'talk-gesture', { moment: open ? 'greet.stranger' : asleep ? 'mood.tired' : 'mood.busy', shop: open ? true : asleep ? 'asleep' : 'away', plain: true })
+  }
   if (isSmith(mind)) {
     const open = ctx.inWorkshop
     return conv._line(conv._pick('shop:open', open ? SHOP_OPEN : SHOP_TIRED), 'talk-gesture', { moment: open ? 'mood.busy' : 'mood.tired', shop: open ? true : 'tired', plain: true })
@@ -176,21 +202,30 @@ export function opener(conv) {
 export function say(conv, head, arg) {
   const { mind, ctx } = conv
   if (head === 'shop') {
-    if (!isSmith(mind)) throw new Error(`Conversation: ${mind.id} keeps no shop`)
-    if (!ctx.inWorkshop) return conv._line(conv._pick('shop:elsewhere', SHOP_ELSEWHERE), 'talk-shrug', { moment: 'mood.tired', plain: true })
+    const shop = keeper(mind)
+    if (shop === null) throw new Error(`Conversation: ${mind.id} keeps no shop`)
+    const alch = shop === 'alchemist'
+    if (!atShop(conv)) {
+      if (!alch) return conv._line(conv._pick('shop:elsewhere', SHOP_ELSEWHERE), 'talk-shrug', { moment: 'mood.tired', plain: true })
+      const asleep = isNight(ctx.hour)
+      return conv._line(conv._pick('shop:elsewhere', asleep ? ALCH_ASLEEP : ALCH_AWAY), 'talk-shrug', { moment: asleep ? 'mood.tired' : 'mood.busy', plain: true })
+    }
     if (arg === 'offer') {
-      const stock = Object.entries(SHOP).map(([item, cost]) => `${count(item, 1)} for ${phrase(cost)}`)
-      const text = conv._pick('shop:offer', ['I make {stock}. And I buy ore: ask me what ores are worth.', 'On offer: {stock}. Bring me ore and I pay coin for that too.', 'Tools, mostly. {stock}. Ore I buy, if you have any.'])
-      return conv._line(text.replace('{stock}', list(stock)), 'talk-gesture', { moment: 'answer.sure', plain: true, unlocks: conv._unlock(['ores']), about: conv._named(['ores']) })
+      const stock = STOCK[shop].map((item) => `${count(item, 1)} for ${phrase(SHOP[item])}`)
+      const pool = alch
+        ? ['I sell {stock}. It refills a flare gun. I buy gems and firestone too, if you have any.', 'On offer: {stock}. Gems and firestone I buy for coin.', 'Mostly brews, but for you: {stock}. And I take gems and firestone.']
+        : ['I make {stock}. And I buy ore: ask me what ores are worth.', 'On offer: {stock}. Bring me ore and I pay coin for that too.', 'Tools, mostly. {stock}. Ore I buy, if you have any.']
+      const topics = alch ? ['flares'] : ['ores']
+      return conv._line(conv._pick('shop:offer', pool).replace('{stock}', list(stock)), 'talk-gesture', { moment: 'answer.sure', plain: true, unlocks: conv._unlock(topics), about: conv._named(topics) })
     }
     if (!arg.startsWith('buy:')) throw new Error(`Conversation: no shop:${arg}`)
     const item = arg.slice(4)
     const cost = SHOP[item]
-    if (cost === undefined) throw new Error(`Conversation: the smith does not sell ${item}`)
+    if (cost === undefined || !STOCK[shop].includes(item)) throw new Error(`Conversation: ${mind.id} does not sell ${item}`)
     const m = swap(ctx.pack, cost, { [item]: 1 })
     if (m !== null) return refusal(conv, m, 'shop')
     ctx.rapport.warm(mind.id, 0.05)
-    return conv._line(conv._pick('shop:done', SHOP_DONE), 'talk-nod', { mood: 'warm', moment: 'give.thanks', plain: true, sold: { item, paid: cost } })
+    return conv._line(conv._pick('shop:done', alch ? ALCH_DONE : SHOP_DONE), 'talk-nod', { mood: 'warm', moment: 'give.thanks', plain: true, sold: { item, paid: cost } })
   }
   if (head === 'trade') {
     if (arg === 'offer') {

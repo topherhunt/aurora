@@ -307,7 +307,7 @@ try {
   const keys = new Set(capped.anchors.map((a) => a[0]))
   if (keys.size !== 256 || keys.has('st:0,0:1') || !keys.has('fx:0,0:0') || !keys.has('fx:255,0:0')) throw new Error(`the cap should forget the oldest anchor: ${keys.size} kept, stag ${keys.has('st:0,0:1') ? 'kept' : 'gone'}`)
   fifth.close()
-  // A flare reaches the other client once with its age, never its shooter; a malformed one and a repeated id are dropped; a newcomer hears the sky.
+  // A flare reaches the other client once with its age, never its shooter; a malformed one, one resting no size, and a repeated id are dropped; a newcomer hears the sky.
   const nextFlares = (ws) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('flares timeout')), 1000)
     const onMessage = (event) => {
@@ -320,13 +320,14 @@ try {
     }
     ws.addEventListener('message', onMessage)
   })
-  const flareOf = (id) => [id, 'leafkin:hollow:3.5:-12.0', 1, 2, 3, 40, 90, -60, 0x30ff50, 0.37]
+  const flareOf = (id, rest = 0.3) => [id, 'leafkin:hollow:3.5:-12.0', 1, 2, 3, 40, 90, -60, 0x30ff50, 0.37, rest]
   first.send(JSON.stringify({ version: 1, type: 'flare', flare: [...flareOf('bad'), 1] }))
   first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('Bad Id') }))
+  first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('nosize', 0) }))
   first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('f1') }))
   first.send(JSON.stringify({ version: 1, type: 'flare', flare: flareOf('f1') }))
   const shot = await nextFlares(second)
-  if (shot.length !== 1 || !same(shot[0].slice(0, 10), flareOf('f1')) || !(shot[0][10] >= 0 && shot[0][10] < 500)) throw new Error(`flare round-trip mismatch: ${JSON.stringify(shot)}`)
+  if (shot.length !== 1 || !same(shot[0].slice(0, 11), flareOf('f1')) || !(shot[0][11] >= 0 && shot[0][11] < 500)) throw new Error(`flare round-trip mismatch: ${JSON.stringify(shot)}`)
   await wait(120)
   const shooter = await nextClock(first, () => true)
   if ('flares' in shooter) throw new Error(`the shooter should not hear her own flare back, got ${JSON.stringify(shooter.flares)}`)
@@ -335,7 +336,7 @@ try {
   if ('flares' in later) throw new Error(`a flare should be heard once, got ${JSON.stringify(later.flares)}`)
   const sixth = await open()
   const sky = await nextFlares(sixth)
-  if (sky.length !== 1 || sky[0][0] !== 'f1' || !(sky[0][10] >= 200)) throw new Error(`newcomer should hear the sky, aged: ${JSON.stringify(sky)}`)
+  if (sky.length !== 1 || sky[0][0] !== 'f1' || !(sky[0][11] >= 200)) throw new Error(`newcomer should hear the sky, aged: ${JSON.stringify(sky)}`)
   sixth.close()
   // A recall reaches every other client once with its age, never its recaller; a malformed one is dropped; a newcomer hears the recall and not the flare.
   const nextRecalls = (ws) => new Promise((resolve, reject) => {

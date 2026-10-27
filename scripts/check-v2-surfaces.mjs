@@ -618,9 +618,9 @@ export async function run() {
       }
     }
     check(threw(() => dist(0, 0, 0)) && threw(() => dist(0, 0, -1)), 'a non-positive reach throws')
-    // The 3x3 bucket block is 64 m on a side; a reach that, past the widest river, could see past it would miss segments and leave holes in the fringe.
+    // A query reads every bucket within the widest half-width plus its reach, so a reach many buckets long still finds the river.
     check(ws.maxHalfWidth === HW, 'the widest authored half-width is recorded', `${ws.maxHalfWidth}`)
-    check(!threw(() => dist(0, 0, 64 - HW)) && threw(() => dist(0, 0, 64 - HW + 1)), 'a reach that overruns the lookup bucket throws')
+    check(near(dist(0, -210, 100), 90 - HW), 'a reach many buckets long still finds the river', `${dist(0, -210, 100).toFixed(3)}`)
     check(threw(() => ws.shoreDistAt(0, 0, REACH)) && threw(() => ws.shoreDistAt(0, 0, REACH, 5, -1)), 'a call without the ground height and slope throws')
     ws.dispose()
 

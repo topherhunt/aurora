@@ -61,6 +61,7 @@ export class Chat {
   open() {
     const { mind, conv } = this
     const T = mind.traits
+    if (conv.ctx.armed) return this._end(conv.refuseArmed(), 'declined')
     if (mind.kind === 'leafkin' && conv.ctx.wronged) {
       const fury = conv.opener()
       return fury.fury > 1 || this._roll('fury') < CHAT.furyEnds ? this._end(fury, 'declined') : fury

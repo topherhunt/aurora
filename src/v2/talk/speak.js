@@ -9,6 +9,7 @@ import { MANNERS, MOVES, reception, isNight } from './manners.js'
 import { LK, lkLine } from './leafkin.js'
 import { dress } from './words.js'
 import * as trade from './trade.js'
+import { armedRefusal } from './armed.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -46,12 +47,16 @@ const WANTS = {
 const CALLING = {
   alchemist: 'potion master', herbalist: 'herbalist', healer: 'healer', blacksmith: 'smith', miner: 'miner', hunter: 'hunter', trapper: 'trapper',
   shepherd: 'shepherd', farmer: 'farmer', thief: 'wanderer', skald: 'skald', innkeeper: 'innkeeper', jarlsthane: 'elder',
+  guard: 'guard', shieldmaiden: 'shield maiden', battlemage: 'battle mage', woodcutter: 'woodcutter', fisherman: 'fisherman', 'child-villager-2': 'child',
 }
 // Where a speaker sends her for tall tales: the skald, else a boaster this sure of themself.
 const TALE_TELLER = 0.6
 
 // What a body's work brings up in conversation: gated lore topics (lore.js) told of it opens.
-const BODY_UNLOCKS = { miner: ['ores', 'caves'], alchemist: ['mushrooms'], herbalist: ['mushrooms', 'eating'], thief: ['gems'], trapper: ['labyrinths', 'yetis'], blacksmith: ['ores'], healer: ['eating'] }
+const BODY_UNLOCKS = {
+  miner: ['ores', 'caves', 'mining'], alchemist: ['mushrooms', 'flares'], herbalist: ['mushrooms', 'eating'], thief: ['gems'], trapper: ['labyrinths', 'yetis', 'spiders'], blacksmith: ['ores', 'weapons', 'mining'], healer: ['eating'],
+  guard: ['weapons'], shieldmaiden: ['weapons'], battlemage: ['weapons', 'giants'], jarlsthane: ['weapons'], skald: ['giants'], woodcutter: ['giants'], hunter: ['spiders'], 'child-villager-2': ['giants'],
+}
 // How each lore topic is asked (grid.js): fragments, the last one punctuated.
 const LORE_PATH = {
   striders: ['Tell me about', 'striders.'], dragons: ['Tell me about', 'dragons.'], snowlands: ['Tell me about', 'the snowlands.'], yetis: ['Tell me about', 'yetis.'],
@@ -60,6 +65,15 @@ const LORE_PATH = {
   coins: ['What are', 'coins', 'good for?'], gems: ['What are', 'gems', 'worth?'], ores: ['What are', 'flint and ores', 'worth?'],
   mushrooms: ['What are', 'mushrooms', 'good for?'], eating: ['Can I eat', 'wild things?'],
   curses: ['Tell me about', 'mushroom curses.'], flares: ['What are', 'flare guns', 'good for?'],
+  weapons: ['Tell me about', 'swords and shields.'], mining: ['How do I', 'mine ore?'], spiders: ['Tell me about', 'cave spiders.'], giants: ['Tell me about', 'green giants.'],
+  pets: ['Tell me about', 'pets.'], roads: ['Where do', 'the roads go?'],
+}
+
+// What a speaker says when they know more of a topic than they will tell her yet, by tone.
+const HOLD_BACK = {
+  curt: ['Not for strangers.', 'Not to you.', 'That I keep.'],
+  cheery: ["There's more I could tell you. Another time, when I know you better.", 'I know more, and gladly, once we are better friends.', 'Come back when we know each other, and I will tell you the rest.'],
+  plain: ["There's more to it. But I don't know you well enough.", 'There is more. Not to a stranger, though.', "I could say more, but I don't know you yet."],
 }
 
 const LEAFKIN_FAR = { "right here": 'here-here', "a stone's throw": 'close', 'a short walk': 'little walk', 'a fair walk': 'far', 'a long walk': 'far-far', 'a long road': 'far-far-far' }
@@ -91,12 +105,12 @@ const pickBy = (r, list) => list[Math.min(list.length - 1, (r * list.length) | 0
 
 /** A conversation between her and one person: `menu()` lists the chips, `say(topic)` and `tell(belief)` return lines. */
 export class Conversation {
-  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, hour, known (Set of what she has heard of, from anyone: lore topics, and `person:<id>`), pack (count/freeLarge/add/remove/held), wants (the kind of her held item they want, or null), inWorkshop (the smith is at his forge), wronged (a glade she wronged, trust.js), witness (the leafkin id who saw it, or null) }`, `from` where the speaker stands, `hour` the clock's 0..24. `salt` tells this talk from her others with them. */
+  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, hour, known (Set of what she has heard of, from anyone: lore topics, and `person:<id>`), pack (count/freeLarge/add/remove/held), wants (the kind of her held item they want, or null), inWorkshop (the smith is at his forge), inShop (the alchemist is at his shop), armed (she holds a sword in a town), wronged (a glade she wronged, trust.js), witness (the leafkin id who saw it, or null) }`, `from` where the speaker stands, `hour` the clock's 0..24. `salt` tells this talk from her others with them. */
   constructor(mind, ctx, salt = 0) {
     if (typeof ctx.hour !== 'number') throw new Error('Conversation: ctx.hour is required')
     for (const m of ['count', 'freeLarge', 'add', 'remove', 'held']) if (typeof ctx.pack?.[m] !== 'function') throw new Error(`Conversation: ctx.pack.${m} is required`)
     if (ctx.wants !== null && typeof ctx.wants !== 'string') throw new Error('Conversation: ctx.wants must be an item kind or null')
-    if (typeof ctx.inWorkshop !== 'boolean') throw new Error('Conversation: ctx.inWorkshop must be a boolean')
+    for (const k of ['inWorkshop', 'inShop', 'armed']) if (typeof ctx[k] !== 'boolean') throw new Error(`Conversation: ctx.${k} must be a boolean`)
     if (typeof ctx.wronged !== 'boolean') throw new Error('Conversation: ctx.wronged must be a boolean')
     if (ctx.witness !== null && typeof ctx.witness !== 'string') throw new Error('Conversation: ctx.witness must be an id or null')
     this.mind = mind
@@ -188,6 +202,7 @@ export class Conversation {
 
   /** What she may say: `{ topic, label, path }`, `path` the fragments the dialog grid (grid.js) builds it from. Gated lore shows once she has heard of it (`ctx.known`). */
   menu() {
+    if (this.ctx.armed) return [{ topic: 'bye', label: 'Goodbye.', path: ['Goodbye.'] }]
     const nice = this._niceties()
     const chips = [...trade.chips(this), ...this._followUps(), ...nice.lead]
     chips.push(['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']], ...nice.rest)
@@ -372,6 +387,12 @@ export class Conversation {
     if (this.leafkin) return this._line(this._lk(warm ? 'byeWarm' : 'byeCurt'), 'wave', { moment: warm ? 'bye.warm' : 'bye.curt' })
     const text = warm ? this._pick('bye', ['Safe roads.', 'Take care of yourself.', 'Come back any time.', 'Go well.', 'Until next time.']) : this._pick('bye', ['Right.', 'Well, then.', 'Off you go.', 'Mm.'])
     return this._line(text, warm ? 'wave' : 'talk-shrug', { moment: warm ? 'bye.warm' : 'bye.curt', mood: warm ? 'warm' : 'cold', plain: true })
+  }
+
+  /** Their refusal to talk to an armed stranger (armed.js), another wording each time. */
+  refuseArmed() {
+    const text = this._fresh('armed', (n) => armedRefusal(this.mind, (this._roll('armed') + n * 0.6180339887) % 1).text)
+    return this._line(text, 'talk-shrug', { mood: 'cold', moment: 'refuse.wary', plain: true })
   }
 
   /** Their first line, when they hail her or she hails them: a parent with an untaken quest pleads, the rest greet her by how they stand with her. */
@@ -1049,7 +1070,7 @@ export class Conversation {
   /** They know more of `topic` than they will tell her yet (lore.js `trust`), and say so, so she knows to win them over. */
   _holdsBack(topic) {
     const tone = this.tone
-    const text = this.leafkin ? this._lk('holdBack') : tone === 'curt' ? 'Not for strangers.' : tone === 'cheery' ? "There's more I could tell you. Another time, when I know you better." : "There's more to it. But I don't know you well enough."
+    const text = this.leafkin ? this._lk('holdBack') : this._pick('holdback', HOLD_BACK[tone])
     return this._line(text, 'talk-shrug', { moment: 'refuse.wary', about: [{ kind: 'lore', topic }] })
   }
 

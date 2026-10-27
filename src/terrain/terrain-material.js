@@ -1707,8 +1707,8 @@ export const GRAIN_FAR = 16
 // the eye distance it fades out over, and the tile's mean linear colour, which
 // the shader divides out so the tile only varies the road's own vertex colour.
 export const COBBLE_METRES = 3
-export const COBBLE_NEAR = 80
-export const COBBLE_FAR = 100
+export const COBBLE_NEAR = 130
+export const COBBLE_FAR = 150
 const COBBLE_MEAN = [0.297, 0.269, 0.224]
 
 // Shared by every stipple material: 0 until the tile has loaded, because an

@@ -165,15 +165,15 @@ function validBoats(message) {
 const ROOM_BOATS_CAP = 32
 
 // THE FLARES (src/v2/render/flares.js): [id, room, ox, oy, oz, tx, ty, tz,
-// color, seed], `room` being the client's own room key (overworld or a
+// color, seed, rest], `rest` its metres across once arrived, `room` being the client's own room key (overworld or a
 // village), kept FLARE_CAP deep so a late joiner sees the sky as it is. Each
 // goes to every other client once, with its age in ms, so a shot still in
 // flight is flown from where it is.
 const FLARE_CAP = 64
 function validFlare(f) {
-  return Array.isArray(f) && f.length === 10 && typeof f[0] === 'string' && /^[0-9a-z]{1,16}$/.test(f[0]) &&
+  return Array.isArray(f) && f.length === 11 && typeof f[0] === 'string' && /^[0-9a-z]{1,16}$/.test(f[0]) &&
     typeof f[1] === 'string' && /^[a-z0-9:.-]{1,40}$/.test(f[1]) && f.slice(2, 8).every((n) => Number.isFinite(n)) &&
-    Number.isInteger(f[8]) && f[8] >= 0 && f[8] <= 0xffffff && Number.isFinite(f[9])
+    Number.isInteger(f[8]) && f[8] >= 0 && f[8] <= 0xffffff && Number.isFinite(f[9]) && f[10] > 0 && f[10] <= 3
 }
 
 function applyFlare(room, client, flare, now) {

@@ -452,7 +452,7 @@ const flat = {
   snowLineAt: () => 9999,
 }
 const dry = { isSubmerged: () => false, shoreDistAt: (x, z, reach) => reach }
-const clear = { nearest: () => null }
+const clear = { nearest: () => null, nearBox: () => false }
 // No sandy shore anywhere: Layers.shoreAt as the dry world answers it.
 const SNOW_BAND = 47
 const noSand = { shoreAt: () => 0, fields: { occupiesAt: () => false }, snow: { band: SNOW_BAND } }
@@ -999,7 +999,7 @@ console.log('\n-- placement --')
 
 {
   const wet = { isSubmerged: (x, z, y) => y < 61, shoreDistAt: (x, z, reach) => reach }
-  const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null) }
+  const roaded = { nearest: (x, z, kind) => (kind === 'road' ? { dist: 0.1, halfWidth: 2 } : null), nearBox: (kind) => kind === 'road' }
   // The ground where the forest has halved and a whole band under the
   // snowline (where the ground starts to whiten).
   const snowAt = (line) => ({ heightAt: () => 60, heightAndSlopeAt: () => ({ h: 60, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => line })
@@ -1128,7 +1128,7 @@ console.log('\n-- placement --')
   // THE VERGE: a road along z at x = 0, half-width 3 m, feather 8 m, the stub answering only within the feather as PathSet.nearest does. Every tuft past the kerb stands where it stood on the dry flat, VERGE.size x as tall at the kerb and easing to its old height at VERGE.reach past it.
   const HW = 3
   const FEATHER = 8
-  const road = { nearest: (x, z, kind) => (kind === 'road' && Math.abs(x) <= HW + FEATHER ? { dist: Math.abs(x), halfWidth: HW } : null) }
+  const road = { nearest: (x, z, kind) => (kind === 'road' && Math.abs(x) <= HW + FEATHER ? { dist: Math.abs(x), halfWidth: HW } : null), nearBox: (kind) => kind === 'road' }
   const verged = new Grass(new THREE.Scene(), flat, dry, road, texArray, { layers: noSand, seed: 7, style: 'tufts' })
   verged.place(0, 0)
   const verge = inBand(verged, HW + PLACEMENT.pathClearance, DRAW_RADIUS)

@@ -12,7 +12,7 @@ import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { planTowns } from '../src/v2/layers/towns.js'
 import { TRAITS, VOICE, castMinds, villageMinds } from '../src/v2/talk/mind.js'
-import { LORE, TOPICS, TRUST } from '../src/v2/talk/lore.js'
+import { LORE, TOPICS, TRUST, expertise, expertBody } from '../src/v2/talk/lore.js'
 import { DialogGrid } from '../src/v2/talk/grid.js'
 import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
 import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
@@ -23,6 +23,7 @@ import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
 import * as trade from '../src/v2/talk/trade.js'
+import { jeer, swordWarning } from '../src/v2/talk/armed.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -41,7 +42,7 @@ const world = new TalkWorld(SEED, towns)
 const EPOCH = 7
 const quests = questsFor(world, EPOCH)
 // A pack in the shape main.js's has: `have` counts by kind, `slots` the large slots in all.
-const LARGE_KINDS = new Set(['bog-iron', 'lodestone', 'rimesilver', 'firestone', 'flint', 'egg', 'pickaxe', 'sword', 'shield'])
+const LARGE_KINDS = new Set(['bog-iron', 'lodestone', 'rimesilver', 'firestone', 'flint', 'egg', 'pickaxe', 'sword', 'shield', 'flare-charges'])
 const stubPack = (have = {}, slots = 12) => {
   const n = { ...have }
   const used = () => Object.entries(n).filter(([k]) => LARGE_KINDS.has(k)).reduce((a, [, c]) => a + c, 0)
@@ -54,7 +55,7 @@ const stubPack = (have = {}, slots = 12) => {
     remove(k, c = 1) { if ((n[k] ?? 0) < c) return false; n[k] -= c; return true },
   }
 }
-const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), pack: stubPack(), wants: null, inWorkshop: false, wronged: false, witness: null, ...more })
+const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), pack: stubPack(), wants: null, inWorkshop: false, inShop: false, armed: false, wronged: false, witness: null, ...more })
 const fire = (t) => ({ x: t.town.x, z: t.town.z })
 // A mind with some traits pinned, for testing one lever at a time.
 const as = (m, traits) => ({ ...m, traits: { ...m.traits, ...traits } })
@@ -179,7 +180,7 @@ check(plea.quest === q.id && plea.mood === 'distress' && qctx.log.state(q.id) ==
 const w0 = world.person(q.witnesses[0].who)
 const seen = new Conversation(as(w0, STRAIGHT), qctx).say(`ask:person:${q.child}`)
 check(seen.claim !== null && dist(seen.claim, q.where) < SPEAK.same, 'an honest witness points where the child really went', seen.text)
-const passer = qt.minds.find((m) => m.id !== q.parent && m.cls !== 'child' && !q.witnesses.some((w) => w.who === m.id) && !q.covers.includes(m.id))
+const passer = qt.minds.find((m) => m.id !== q.parent && m.cls !== 'child' && !q.witnesses.some((w) => w.who === m.id) && !q.covers.includes(m.id) && !trade.isAlchemist(m))
 if (passer) check(new Conversation(as(passer, STRAIGHT), qctx).say(`ask:person:${q.child}`).claim === null, 'someone who saw nothing says so')
 const again2 = new Conversation(parent, qctx).say(`ask:person:${q.child}`)
 check(again2.moment === 'missing.worry' && !/^Please/.test(again2.text), 'asked after the child once she has taken the search on, the parent says what they know rather than plead again', again2.text)
@@ -304,7 +305,7 @@ const gemTeller = all.map((m) => {
 check(gemTeller !== undefined && new Conversation(t0.minds[0], gemTeller).menu().some((c) => c.topic === 'lore:gems'), 'told of traders and gems, she can ask anyone about gems after', gemTeller && [...gemTeller.known].join(', '))
 check(Object.values(LORE).every((fs) => fs.length > 0) && Object.keys(TOPICS).every((t) => LORE[t] !== undefined), 'every topic has lore')
 // Whatever a fact names, she can follow up: each topic its words name is in its `unlocks`.
-const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, curses: /\bcurse/i, flares: /\bflare/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i, yetis: /\byetis?\b/i }
+const NAMES = { mushrooms: /mushroom|chanterelle|agaric|porcini|ink cap|parasol/i, curses: /\bcurse/i, flares: /\bflare/i, caves: /\bcaves?\b/i, labyrinths: /\bmazes?\b/i, gems: /\bgems?\b|diamond|ruby|jade/i, leafkin: /leafkin/i, ores: /\bflint\b|\bores?\b|\biron\b|copper|titanium|firestone/i, eating: /\beat\b/i, dragons: /dragon/i, snowlands: /\bsnow\b/i, yetis: /\byetis?\b/i, weapons: /\bswords?\b|\bshields?\b/i, mining: /pickaxe/i, spiders: /spider/i, giants: /giants?\b/i }
 const unnamed = Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => Object.entries(NAMES).filter(([k, re]) => k !== t && re.test(x.truth) && !x.unlocks.includes(k)).map(([k]) => `${t}.${x.id} names ${k}`)))
 check(unnamed.length === 0, 'every topic a fact names is one she may ask of next', unnamed.join(', '))
 const heard = new Set(Object.keys(TOPICS).filter((t) => !TOPICS[t].gated))
@@ -525,7 +526,7 @@ walk(new DialogGrid(), 0)
 check(gm.every((c) => reach.has(c.topic)), 'every chip can be reached through the grid', gm.filter((c) => !reach.has(c.topic)).map((c) => c.label).join(' | '))
 
 // --- a conversation lived ---
-const cheery = as(all.find((m) => m.cls === 'folk' && !trade.isSmith(m)), { kindness: 1, chattiness: 1, wariness: 0 })
+const cheery = as(all.find((m) => m.cls === 'folk' && !trade.isSmith(m) && !trade.isAlchemist(m)), { kindness: 1, chattiness: 1, wariness: 0 })
 const open1 = new Chat(cheery, ctxAt(fire(world.townOf(cheery)))).open()
 check(!open1.ended && open1.moment.startsWith('greet.'), 'a cheery person hailed by a stranger greets her', open1.text)
 const shunned = ctxAt(fire(world.townOf(cheery)))
@@ -597,7 +598,7 @@ if (formed) {
 
 // --- stream T: wording, pointing, shop, trade, hearsay, fury ---
 {
-const human = as(all.find((m) => m.cls === 'folk' && !trade.isSmith(m)), STRAIGHT)
+const human = as(all.find((m) => m.cls === 'folk' && !trade.isSmith(m) && !trade.isAlchemist(m)), STRAIGHT)
 const humanTown = world.townOf(human)
 const askMany = (mind, topic, ctx, n = 20) => {
   const conv = new Conversation(mind, ctx)
@@ -713,7 +714,7 @@ check(away1.every((t) => !/pet deer/i.test(t)), 'outside the deer town nobody kn
 const home1 = heardFrom(dw.towns[dw.deer.town].minds, 'lore:dragons').filter((t) => /deer/i.test(t))
 const ownerName = dw.person(dw.deer.owner).name
 check(home1.some((t) => t.includes(ownerName) && /enormous pet deer/i.test(t) && /feisty/i.test(t) && /credit/i.test(t)), 'in the deer town they say who took the credit, that it was his enormous pet deer, and that deer turn feisty if fed enough', home1[0])
-const cavesAll = world.towns.flatMap((t) => t.minds).filter((m) => m.cls !== 'child').slice(0, 60).flatMap((m) => Array.from({ length: 12 }, (_, salt) => new Conversation(as(m, STRAIGHT), ctxAt(fire(world.townOf(m))), salt).say('lore:caves').text))
+const cavesAll = world.towns.flatMap((t) => t.minds).filter((m) => m.cls !== 'child').slice(0, 60).flatMap((m) => { const c = new Conversation(as(m, STRAIGHT), ctxAt(fire(world.townOf(m)))); return Array.from({ length: 10 }, () => c.say('lore:caves').text) })
 check(cavesAll.some((t) => /rabbit/i.test(t) && /(lost|child)/i.test(t)), 'someone tells of getting lost in a cave as a child and being led out by a pet rabbit', cavesAll.find((t) => /rabbit/i.test(t)))
 check(cavesAll.some((t) => /fox/i.test(t) && /(sniff|treasure)/i.test(t)), 'someone tells that foxes sniff out cave treasure', cavesAll.find((t) => /fox/i.test(t)))
 
@@ -729,6 +730,94 @@ const calm = new Chat(fl, ctxAt({ x: 0, z: 0 }), { trusted: true, salt: 1 }).ope
 check(calm.mood !== 'angry', 'a leafkin of a glade she has not wronged is not furious', calm.text)
 
 }
+
+// --- Alchemist's shop, armed talk, and who knows what (design/42-valuables.md "Flows"; src/v2/talk/armed.js) ---
+const alchTown = world.towns.find((t) => t.minds.some(trade.isAlchemist))
+const alch = as(alchTown.minds.find(trade.isAlchemist), STRAIGHT)
+const inPotions = (pack, more = {}) => ctxAt(fire(alchTown), { inShop: true, pack, ...more })
+const alchOpen = new Conversation(alch, inPotions(stubPack())).opener()
+check(alchOpen.shop === true && /\?/.test(alchOpen.text), 'the alchemist in his shop welcomes her and asks what she needs', alchOpen.text)
+const alchChips = new Conversation(alch, inPotions(stubPack())).menu().map((c) => c.topic)
+check(alchChips.includes('shop:buy:flare-charges') && alchChips.includes('shop:offer'), 'in his shop she may buy flare charges or ask what he has', alchChips.join(' '))
+check(!new Conversation(alch, ctxAt(fire(alchTown))).menu().some((c) => c.topic.startsWith('shop:')), 'out of his shop the alchemist offers no shop chips')
+check(trade.SHOP['flare-charges'].coin === 40 && trade.SHOP['flare-charges'].firestone === 1, 'flare charges cost 40 coins and a firestone')
+const alchOffer = new Conversation(alch, inPotions(stubPack())).say('shop:offer').text
+check(/flare charges/.test(alchOffer) && /40 coins/.test(alchOffer) && /firestone/.test(alchOffer), 'asked what he has, the alchemist lists the flare charges and their price', alchOffer)
+const jar = stubPack({ coin: 40, firestone: 1 })
+const jarSold = new Conversation(alch, inPotions(jar)).say('shop:buy:flare-charges')
+check(jar.count('flare-charges') === 1 && jar.count('coin') === 0 && jar.count('firestone') === 0 && jarSold.moment === 'give.thanks' && jarSold.sold.item === 'flare-charges', 'with 40 coins and a firestone she buys a jar of flare charges and pays for it', JSON.stringify(jar.n))
+for (const [what, have, word] of [['no coins', { firestone: 1 }, /coin/], ['no firestone', { coin: 40 }, /firestone/]]) {
+  const pk = stubPack(have), before = JSON.stringify(pk.n)
+  const no = new Conversation(alch, inPotions(pk)).say('shop:buy:flare-charges')
+  check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'refuse.price', `a flare-charge sale with ${what} fails, names what she lacks and changes nothing`, no.text)
+}
+const jarTight = stubPack({ coin: 40, firestone: 1, flint: 11 }, 12)
+const jarSqueezed = new Conversation(alch, inPotions(jarTight)).say('shop:buy:flare-charges')
+check(jarTight.count('flare-charges') === 1 && jarSqueezed.moment === 'give.thanks', 'the firestone paid frees its slot, so a full pack still buys the jar', JSON.stringify(jarTight.n))
+const jarFull = stubPack({ coin: 40, firestone: 2, flint: 10 }, 12)
+const jarFullBefore = JSON.stringify(jarFull.n)
+const jarFullSay = new Conversation(alch, inPotions(jarFull)).say('shop:buy:flare-charges')
+check(jarFull.count('flare-charges') === 1 && jarFullSay.moment === 'give.thanks', 'with the firestone paid freeing a slot the jar fits', jarFullBefore)
+const awayPack = stubPack({ coin: 40, firestone: 1 }), awayBefore = JSON.stringify(awayPack.n)
+const alchAway = new Conversation(alch, ctxAt(fire(alchTown), { pack: awayPack, hour: 12 })).opener()
+const alchAwayBuy = new Conversation(alch, ctxAt(fire(alchTown), { pack: awayPack, hour: 12 })).say('shop:buy:flare-charges')
+check(alchAway.shop === 'away' && /shop/i.test(alchAway.text) && /shop/i.test(alchAwayBuy.text) && JSON.stringify(awayPack.n) === awayBefore, 'the alchemist out of his shop by day says to come to the shop and will not sell', alchAway.text)
+const alchAsleep = new Conversation(alch, ctxAt(fire(alchTown), { hour: 2 })).opener()
+check(alchAsleep.shop === 'asleep' && alchAsleep.moment === 'mood.tired' && /sleep|morning|night|hour|up\b/i.test(alchAsleep.text), 'the alchemist out of his shop at night is asleep and says so', alchAsleep.text)
+const notKeeper = as(alchTown.minds.find((m) => m.kind === 'human' && !trade.isAlchemist(m) && !trade.isSmith(m)), STRAIGHT)
+let keeperThrew = false
+try { new Conversation(notKeeper, inPotions(stubPack())).say('shop:buy:flare-charges') } catch { keeperThrew = true }
+check(keeperThrew, 'a flare-charge purchase from someone who keeps no shop throws')
+
+const guardMind = world.towns.flatMap((t) => t.minds).find((m) => m.cls === 'guard')
+const folkMind = world.towns.flatMap((t) => t.minds).find((m) => m.kind === 'human' && m.cls !== 'guard' && m.cls !== 'child')
+const throws = (f) => { try { f(); return false } catch { return true } }
+check(throws(() => jeer(guardMind, 0.3)) && throws(() => swordWarning(folkMind, 0.3)) && throws(() => jeer(folkMind)) && throws(() => swordWarning(guardMind)), 'jeer is not for guards, swordWarning is only for guards, and both need a roll')
+const hmns = world.towns.flatMap((t) => t.minds).filter((m) => m.kind === 'human' && m.cls !== 'guard')
+const wardens = world.towns.flatMap((t) => t.minds).filter((m) => m.cls === 'guard')
+const rolls = [0, 0.13, 0.27, 0.41, 0.55, 0.69, 0.83, 0.97]
+const jeers = new Set(hmns.flatMap((m) => rolls.map((r) => jeer(m, r).text)))
+const warns = new Set(wardens.flatMap((m) => rolls.map((r) => swordWarning(m, r).text)))
+check(jeers.size >= 15 && [...jeers].some((t) => /uncouth/i.test(t)) && hmns.every((m) => rolls.every((r) => jeer(m, r).moment === 'social.disagree')), 'passers-by jeer in many wordings, some calling her uncouth', `${jeers.size} wordings`)
+check(warns.size >= 6 && wardens.every((m) => rolls.every((r) => swordWarning(m, r).moment === 'refuse.wary' && /away|sheathe|put it|stays|stop|no blades/i.test(swordWarning(m, r).text))), 'guards warn her to put the sword away, in several wordings', `${warns.size} wordings`)
+check(new Set(hmns.map((m) => jeer(m, 0.9).text)).size > 1 && new Set(hmns.map((m) => jeer(m, 0.9).text)).size >= 3, 'jeers vary with the speaker\'s temperament and trade')
+const armedCtx = (m, more = {}) => ctxAt(fire(world.townOf(m)), { armed: true, ...more })
+const armedAll = world.towns.flatMap((t) => t.minds).filter((m) => m.kind === 'human')
+let armedBad = ''
+for (const m of armedAll) {
+  const chat = new Chat(m, armedCtx(m), { trusted: true, salt: 1 })
+  const o = chat.open()
+  const menu = new Conversation(m, armedCtx(m)).menu()
+  if (!(o.ended && o.moment === 'refuse.wary' && /uncouth|rude|manners|bad people|sword/i.test(o.text) && o.text.split(/(?<=[.!?])\s+/).length >= 3)) armedBad = `${m.id}: ${o.text}`
+  else if (menu.length !== 1 || !/bye|good/i.test(menu[0].label + menu[0].topic)) armedBad = `${m.id} menu ${menu.map((c) => c.topic).join(' ')}`
+  if (armedBad) break
+}
+check(armedBad === '', 'armed in town, anyone she hails calls her uncouth, tells her off, ends it, and offers only goodbye', armedBad)
+const armedLines = new Set(armedAll.map((m) => new Chat(m, armedCtx(m), { trusted: true, salt: 2 }).open().text))
+check(armedLines.size >= 12, 'armed-in-town refusals vary by person', `${armedLines.size} wordings`)
+const armedConv = new Conversation(armedAll[0], armedCtx(armedAll[0]))
+const armedA = armedConv.refuseArmed().text, armedB = armedConv.refuseArmed().text
+check(armedA !== armedB, 'the same person does not refuse twice in the same words')
+const unarmed = new Chat(armedAll[0], ctxAt(fire(world.townOf(armedAll[0]))), { trusted: true, salt: 1 }).open()
+check(!/uncouth/i.test(unarmed.text), 'unarmed she is greeted normally')
+
+// Every topic has a knower in every town, and a non-knower points to one by calling.
+const uncovered = world.towns.flatMap((t) => Object.keys(TOPICS).filter((k) => !t.minds.some((m) => m.kind === 'human' && expertise(m.body, k) > 0)).map((k) => `${t.name}:${k}`))
+check(uncovered.length === 0, 'every topic has someone who knows it in every town', uncovered.slice(0, 8).join(', '))
+const unreferred = Object.keys(TOPICS).filter((k) => expertBody(k) === null)
+check(unreferred.length === 0, 'every topic has a body that knows it best, so a non-knower can name a calling', unreferred.join(', '))
+let blind = ''
+for (const k of Object.keys(TOPICS)) for (const t of world.towns) {
+  const non = t.minds.find((m) => m.kind === 'human' && m.cls !== 'child' && expertise(m.body, k) === 0)
+  if (non === undefined) continue
+  const l = whoOf(non, k, FRIENDLY, [k]).l
+  if (!/Ask \w+|would know|looking at them|tall tales|no \w+/i.test(l.text)) blind = `${t.name} ${non.body} ${k}: ${l.text}`
+}
+check(blind === '', 'a friendly non-knower asked who knows any topic names a person or calling, or scoffs at a tall tale', blind)
+const giantsTales = [...LORE.spiders, ...LORE.giants].map((x) => [x.truth, ...x.tales, ...x.lies].join(' ')).join(' ')
+check(LORE.giants.some((x) => /afraid of spiders/i.test(x.truth)) && LORE.giants.some((x) => /tailor/i.test(x.truth) && x.tales.length > 0) && LORE.spiders.some((x) => /bigger things/i.test(x.truth) && x.unlocks.includes('giants')), 'there is lore that green giants fear spiders: an old tale, a fairytale, and a hint in the spiders lore that leads to giants', giantsTales.slice(0, 60))
+const flareLore = [...LORE.flares, ...LORE.caves, ...LORE.labyrinths].map((x) => x.truth).join(' ')
+check(/ground|wall/i.test(LORE.flares.map((x) => x.truth).join(' ')) && /flare/i.test(LORE.caves.concat(LORE.labyrinths).map((x) => x.truth).join(' ')) && /glow/i.test(flareLore), 'there is lore that a flare shot at the ground or a wall keeps glowing and so marks the way in caves and labyrinths')
 
 if (process.argv.includes('--transcript')) {
   for (const who of [parent, w0, ...q.covers.map((id) => world.person(id)).slice(0, 1), friend]) {
