@@ -67,6 +67,7 @@ const field = {
   heightAt: () => GROUND,
   snowLineAt: () => 9999,
   bands: { altLo: 0, altSpan: 900 },
+  layers: { labyrinthSites: [] },
 }
 const water = { isSubmerged: () => false, levelAt: () => null, shoreDistAt: (x, z, reach) => reach }
 const layers = { flattenAt: () => 0, dirtAt: () => 0, shoreAt: () => 0, snow: { base: 780, band: 90 }, paths: { nearest: () => null, overlaps: () => false, nearBox: () => false }, fields: { occupiesAt: () => false } }
