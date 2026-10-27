@@ -1,6 +1,8 @@
 // Where each pool's and sump's water actually lies (design/39-caves.md §5): the floor under its planned level flooded from the body's deepest point, and the shoreline as a grid the renderer and the walk both read.
 
-const CELL = 0.5
+// The flood grid pitch, 0.5 m; a lake of more than BIG_LAKE_M radius floods at twice that, since its shoreline is a smaller share of its cells and the flood costs its area.
+const BASE = 0.5
+const BIG_LAKE_M = 24
 // A body's home: its node's and lobes' ellipses times HOME, and its passages and nooks widened by PAD over their floor's cove, or for a sump its line widened by SUMP_HOME and its ends' ellipses. Floor under the planned level that the flood reaches outside it is a way out (another passage, or her own past its neighbour), so the water settles GAP under the lowest such sill and never meets the home's edge in the air.
 const HOME = 1.4
 const SUMP_HOME = 2
@@ -56,6 +58,7 @@ function settle(p, graph, field) {
   const refAt = (x, z) => (under.some((h) => h.has(x, z)) ? p.level - 0.3 : p.level + 0.3)
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
   for (const h of homes) { x0 = Math.min(x0, h.x0); x1 = Math.max(x1, h.x1); z0 = Math.min(z0, h.z0); z1 = Math.max(z1, h.z1) }
+  const CELL = p.r > BIG_LAKE_M ? 2 * BASE : BASE
   x0 -= CELL; z0 -= CELL
   const nx = Math.ceil((x1 - x0) / CELL) + 2, nz = Math.ceil((z1 - z0) / CELL) + 2
   const floor = new Float32Array(nx * nz).fill(NaN)

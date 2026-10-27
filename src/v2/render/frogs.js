@@ -42,7 +42,7 @@
 // it CHASEs, one hop at a time, each aimed at the lure and swung by up to
 // CHASE.turn either way so the track is a scribble. Within ORBIT_M of a lure
 // in a hand it STAYs, facing it, now and then hopping in place with a croak;
-// within ORBIT_M of a hob it hops across it instead. Afloat, it hops for the
+// within ORBIT_M of a hob on its feet it hops across it instead. Afloat, it hops for the
 // lure off the water. It forgets the lure once the hand is empty or the lure
 // is LURE_FORGET_M off, and REJOINS: a bout laid from where it is to the post
 // of the next segment turn at least REJOIN_MIN_S off, and the plan has it
@@ -65,7 +65,8 @@
 // off from her and sits there, chasing lures like any frog, until she is
 // RADIUS off. One that EATS the bug in her hand (held within EAT of it) grows
 // GROW and turns loose as her PET, following her (or the peer who fed it) to
-// FOLLOW_M and no nearer. The room hears a release as DROP, a feeding as FED
+// FOLLOW_M and no nearer; every bug after grows it MEAL.grow and makes it the
+// pet of whoever fed it. The room hears a release as DROP, a feeding as FED
 // and a loose frog taken as TOOK, each one anchor keyed by the loose frog.
 //
 // A HOP IS HEARD. The frame a frog starts a hop, and the frame one lands in
@@ -87,6 +88,7 @@ import { taken, TOLERANCE_M } from '../taken.js'
 import {
   CRITTER_GLB, LOD_RUNGS, TIER_TINTS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
 } from './critters.js'
+import { MEAL } from '../eating.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
@@ -137,9 +139,9 @@ export const CHASE = { hops: [1, 1], m: [1.5, 3], dur: [0.22, 0.34], pause: [0.1
 export const ORBIT_M = 0.7
 // Staying at a lure in a hand: each sit `sit` s, then `bob` of the time a hop in place `rise` body lengths high, croaking.
 export const STAY = { sit: [0.5, 1.6], bob: 0.35, dur: 0.3, rise: 0.8 }
-// Her bug is eaten by a frog it is within `m` of across the ground and `dy` above or below; the frog grows by GROW. A pet keeps FOLLOW_M off her, leaping (LEAP's reach) while she is past LURE_M.
+// Her bug or hob (MEALS) is eaten by a frog it is within `m` of across the ground and `dy` above or below; the frog grows by GROW. A pet keeps FOLLOW_M off her, leaping (LEAP's reach) while she is past LURE_M.
 export const EAT = { m: ORBIT_M, dy: 0.5 }
-const BUGS = ['spider', 'butterfly', 'grasshopper']
+const MEALS = ['spider', 'butterfly', 'grasshopper', 'hob']
 export const GROW = 1.1
 export const FOLLOW_M = 1.2
 // A frog let go hops this far on from her before it sits.
@@ -251,7 +253,7 @@ export class Frogs {
         rand: null, lured: false, lure: null,
         // A villager's hold on it (villagers.js claims) as last applied: null, 'wait', 'held' or 'thrown'; and the second it heeds hobs again.
         caught: null, calm: -Infinity,
-        // A loose frog's pet bond: null, or `{ by }`, null for her, else the peer who fed it.
+        // A loose frog's pet bond: null, or `{ by, at }`, by null for her, else the peer who fed it last, on second `at`.
         pet: null,
       })
     }
@@ -614,7 +616,7 @@ export class Frogs {
     let lure = null
     let best = Infinity
     for (const l of lures) {
-      if (!LURES.includes(l.kind) || (l.kind === 'hob' && now < f.calm)) continue
+      if (!LURES.includes(l.kind) || (l.by === 'hob' && now < f.calm)) continue
       const d = Math.hypot(l.x - f.x, l.z - f.z)
       if (d < best) { best = d; lure = l }
     }
@@ -650,14 +652,14 @@ export class Frogs {
     f.live = { ph: live, at, queue: null, until: Infinity }
   }
 
-  /** The chase's next phrase after `prev`: after a hop the beat, after a sit a hop at the lure -- swung by up to CHASE.turn and landing on a seat, dry or wet; none of three found, the beat again. Within ORBIT_M of a hand's lure it stays (STAY), within ORBIT_M of a hob it hops a quarter turn across it. */
+  /** The chase's next phrase after `prev`: after a hop the beat, after a sit a hop at the lure -- swung by up to CHASE.turn and landing on a seat, dry or wet; none of three found, the beat again. Within ORBIT_M of a hand's lure it stays (STAY), within ORBIT_M of a hob on its feet it hops a quarter turn across it. */
   _chaseNext(f, prev) {
     const spot = prev.kind === 'sit' ? prev.at : prev.to
     const l = f.lure
     const gap = Math.hypot(l.x - spot.x, l.z - spot.z)
     if (l.kind === 'mate' && gap < FOLLOW_M) return { kind: 'sit', dur: between(f.rand, STAY.sit), at: spot }
     const near = gap < ORBIT_M
-    if (near && l.kind !== 'hob') {
+    if (near && l.by !== 'hob') {
       if (prev.kind === 'hop' || spot.wet || f.rand() >= STAY.bob) return { kind: 'sit', dur: between(f.rand, STAY.sit), at: spot }
       const to = { ...spot, yaw: bearing(spot, l) }
       return { kind: 'hop', dur: STAY.dur, from: spot, to, rise: STAY.rise * f.size, bout: CHASE, croak: true }
@@ -730,7 +732,7 @@ export class Frogs {
   /** Frogs chasing a hob on dry ground, uncaught, for the villagers to see and the hobs to run from: `{ key, tx, tz, index, x, y, z, hob }` onto `into`. */
   chasers(into) {
     for (const t of this.tiles.values()) {
-      for (const f of t.frogs) if (f.lured && f.lure.kind === 'hob' && f.caught === null && !f.wet) into.push({ key: f.key, tx: t.tx, tz: t.tz, index: f.index, x: f.x, y: f.y, z: f.z, hob: f.lure.id })
+      for (const f of t.frogs) if (f.lured && f.lure.by === 'hob' && f.caught === null && !f.wet) into.push({ key: f.key, tx: t.tx, tz: t.tz, index: f.index, x: f.x, y: f.y, z: f.z, hob: f.lure.id })
     }
     return into
   }
@@ -910,7 +912,7 @@ export class Frogs {
     this.free.push(f)
   }
 
-  /** Frog `f` ate the bug in the hand of `by` (null hers) on second `now`: grown by GROW, loose under `drop` (by default where it is), that one's pet. */
+  /** Frog `f` ate the bug in the hand of `by` (null hers) on second `now`: grown by GROW (by MEAL.grow once a pet), loose under `drop` (by default where it is), that one's pet. */
   _feed(f, by, now, drop = null) {
     const home = f.tile !== null ? { x: f.homeX, z: f.homeZ } : null
     if (f.tile !== null) {
@@ -924,8 +926,8 @@ export class Frogs {
       f.rand = mulberry32(hash32(keyHash(f.key), 0x1e))
       this.drops.add(f.key)
     }
-    f.size *= GROW
-    f.pet = { by }
+    f.size *= f.pet === null ? GROW : 1 + MEAL.grow
+    f.pet = { by, at: now }
     if (f.live === null) this._startChase(f, now)
     f.lured = false
     f.lure = null
@@ -969,7 +971,7 @@ export class Frogs {
       if (mode === DROP) {
         if (!this.drops.has(key)) this._loosen({ x: dx, z: dz, yaw: dyaw }, look, { x, y, z, yaw }, T, true)
       } else if (mode === FED) {
-        if (f !== null && f.pet !== null) return
+        if (f !== null && f.pet !== null) f.size = size / (1 + MEAL.grow)
         const fed = f ?? (hx !== null ? this._bedFrog(hx, hz) : null) ?? this._loosen({ x: dx, z: dz, yaw: dyaw }, { ...look, size: size / GROW }, { x, y, z, yaw }, T, false)
         if (fed !== null) this._feed(fed, by, now, { x: dx, z: dz, yaw: dyaw })
       } else if (mode === TOOK) {
@@ -1019,10 +1021,11 @@ export class Frogs {
     if (f.ph.kind === 'hop') this.calls.push(f.ph.croak ? { sound: Math.random() < 0.5 ? 'croak1' : 'croak2', rule: 'frogCroak', x: f.x, y: f.y, z: f.z } : { sound: 'frogBoing', rule: 'frogHop', x: f.x, y: f.y, z: f.z })
   }
 
-  /** Whether frog `f` eats the bug in her hand it is on: at its face (EAT), and hands.js gives it up. */
+  /** Whether frog `f` eats the bug or hob in her hand it is on: at its face (EAT), and hands.js gives it up. */
   _eats(f, now) {
     const l = f.lure
-    if (!f.lured || l.by !== null || !BUGS.includes(l.kind)) return false
+    // One fed from its bed is in the loose list the same frame, its bug still held: one meal a frame.
+    if (!f.lured || l.by !== null || !MEALS.includes(l.kind) || (f.pet !== null && f.pet.at === now)) return false
     if (Math.hypot(l.x - f.x, l.z - f.z) > EAT.m || Math.abs(l.y - f.y) > EAT.dy || !this.eat(l)) return false
     this._feed(f, null, now)
     return true
@@ -1132,7 +1135,7 @@ export class Frogs {
       this._live(f, now)
       this._heard(f, prev, hx, hy, hz)
       this._notice(f, lures, now, mates)
-      if (f.pet === null) this._eats(f, now)
+      this._eats(f, now)
       this._draw(f, counts, breath, bob, hx, hy, hz)
     }
     // A tier that held nothing and holds nothing is not re-uploaded.

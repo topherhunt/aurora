@@ -9,7 +9,9 @@ import { DROP_MIN, reliefAt, buildGraph } from '../src/v2/caves/graph.js'
 import { columnAt, MUSH_FOOT } from '../src/v2/caves/props.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
 import { WalkSurface } from '../src/v2/walk.js'
-import { chunkList, meshChunk, CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../src/v2/caves/mesh.js'
+import { chunkList, meshChunk, drawnSurface, CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../src/v2/caves/mesh.js'
+import { mulberry32 } from '../src/sim/mathx.js'
+import { Surface } from '../src/v2/caves/surface.js'
 import { Chalk, ChalkPen, encode, decode, valid, onRock, rayRock, ribbons, QUANT_M, STEP_M, STROKE_MAX, BATCH } from '../src/v2/caves/chalk.js'
 import { groupSystems, caveEntries, CELLAR_LINK_M, MOUTH } from '../src/v2/caves/sites.js'
 import { readFileSync } from 'node:fs'
@@ -42,6 +44,15 @@ function seamOf(position, ox, oy, oz) {
     if ([0, 1, 2].some((a) => position[v + a] < o[a] || position[v + a] > o[a] + CHUNK - LODS[0].voxel)) out.push(`${position[v]},${position[v + 1]},${position[v + 2]}`)
   }
   return out.sort().join(';')
+}
+
+// Structural equality over plain objects, arrays and typed arrays (a planned graph is too big to compare as JSON).
+function deepEqual(a, b) {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return Number.isNaN(a) && Number.isNaN(b)
+  if (ArrayBuffer.isView(a)) return ArrayBuffer.isView(b) && a.length === b.length && a.every((v, i) => v === b[i])
+  const ka = Object.keys(a), kb = Object.keys(b)
+  return Array.isArray(a) === Array.isArray(b) && ka.length === kb.length && ka.every((k) => deepEqual(a[k], b[k]))
 }
 
 const MAX_TAN = Math.tan((50 * Math.PI) / 180)
@@ -78,7 +89,7 @@ for (const sys of SYSTEMS) {
   const planMs = performance.now() - t0
   const { graph, field, props, doors } = cave
   const again = planCave(sys)
-  check(JSON.stringify(again.graph) === JSON.stringify(graph) && JSON.stringify(again.props) === JSON.stringify(props), `${tag}: the same seed plans the same graph and props`)
+  check(deepEqual(again.graph, graph) && deepEqual(again.props, props), `${tag}: the same seed plans the same graph and props`)
 
   // The graph: every node reaches a mouth over two-way edges and downhill drops, none of them choked by a rockfall.
   const back = graph.nodes.map(() => [])
@@ -390,14 +401,53 @@ for (const sys of SYSTEMS) {
   }
   const near = wall !== null && onRock(cave.field, wall[0] - wall[3] * 0.02, wall[1], wall[2] - wall[4] * 0.02, 0.05, out)
   check(wall !== null && Math.abs(cave.field.at(wall[0], wall[1], wall[2])) < 0.01 && near && Math.abs(cave.field.at(...out)) < 0.005, 'chalk: a ray from the door meets the wall, and a pen 2 cm off it lands on the rock', wall === null ? 'no wall' : `field ${cave.field.at(...out).toFixed(4)}`)
-  // The wall is lumpy, so a point 3 cm up it is put back on the rock as a pen would.
-  const up = [0, 0, 0]
-  if (wall !== null) onRock(cave.field, wall[0], wall[1] + 0.03, wall[2], 0.05, up)
-  const stroke = new Float32Array(wall === null ? [0, 0, 0] : [wall[0], wall[1], wall[2], ...up])
-  const r = ribbons([stroke, stroke.slice(0, 3)], cave.field)
-  let off = true
-  for (let i = 0; i < r.position.length; i += 3) off &&= cave.field.at(r.position[i], r.position[i + 1], r.position[i + 2]) < -0.002
-  check(r.index.length === 12 && r.index.every((i) => i < r.position.length / 3) && off, 'chalk: a stroke and a dab ribbon off the rock on its air side')
+  // Ribbons lie 2 to 3 cm out from the triangles tier 0 draws, over many surfaces of two systems: strokes are walked as a pen walks them (ray to the wall, then 3 cm steps put back on the rock), then lifted.
+  for (const sys of [SYSTEMS[0], SYSTEMS[2]]) {
+    const plan = planCave(sys)
+    const surface = new Surface((key) => drawnSurface(plan.field, ...key.split(',').map(Number)))
+    const rng = mulberry32(sys.seed)
+    const strokes = []
+    const nodes = plan.graph.nodes.filter((n) => n.kind !== 'mouth')
+    for (let tries = 0; strokes.length < 300 && tries < 6000; tries++) {
+      const n = nodes[Math.floor(rng() * nodes.length)]
+      const a = rng() * Math.PI * 2, el = (rng() - 0.5) * 2.2
+      const hit = [0, 0, 0]
+      if (!rayRock(plan.field, n.x + (rng() - 0.5) * n.rx, n.y + 1.2 + rng() * 2, n.z + (rng() - 0.5) * n.rz, Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el), 30, hit)) continue
+      const pen = new ChalkPen((p) => strokes.push(p))
+      const dir = rng() * Math.PI * 2
+      pen.touch(hit[0], hit[1], hit[2])
+      const at = [...hit], next = [0, 0, 0]
+      for (let k = 0; k < 24; k++) {
+        if (!onRock(plan.field, at[0] + Math.cos(dir) * 0.04, at[1] + Math.sin(dir) * 0.04 * (k % 5 === 0 ? 1 : 0.3), at[2] + Math.sin(dir) * 0.04, 0.1, next)) break
+        at[0] = next[0]; at[1] = next[1]; at[2] = next[2]
+        pen.touch(at[0], at[1], at[2])
+      }
+      pen.lift()
+    }
+    // How much of the field's own surface lies under the drawn mesh: the cause, were a mark laid on the field.
+    const s6 = [0, 0, 0, 0, 0, 0, 0]
+    let sunk = 0, total = 0
+    for (const p of strokes) for (let k = 0; k < p.length; k += 3) {
+      if (!surface.nearest(p[k], p[k + 1], p[k + 2], 0.6, s6)) continue
+      total++
+      if ((p[k] - s6[0]) * s6[3] + (p[k + 1] - s6[1]) * s6[4] + (p[k + 2] - s6[2]) * s6[5] < -0.002) sunk++
+    }
+    const r = ribbons(strokes, surface)
+    // A rock fin thinner than a voxel is in the field but not in the mesh: a pen can hit it, no triangle is near.
+    check(r.skipped <= strokes.length * 0.01, `${sys.seed} chalk: nearly every sampled stroke sits on the drawn mesh`, `${r.skipped} of ${strokes.length} off it`)
+    let lo = Infinity, hi = -Infinity, wrong = 0, ribbonPts = 0
+    for (let v = 0; v + 1 < r.position.length / 3; v += 2) {
+      const c = [0, 1, 2].map((a) => (r.position[v * 3 + a] + r.position[v * 3 + 3 + a]) / 2)
+      if (!surface.nearest(c[0], c[1], c[2], 0.2, s6)) { wrong++; continue }
+      ribbonPts++
+      lo = Math.min(lo, s6[6]); hi = Math.max(hi, s6[6])
+      if ((c[0] - s6[0]) * s6[3] + (c[1] - s6[1]) * s6[4] + (c[2] - s6[2]) * s6[5] <= 0) wrong++
+    }
+    check(ribbonPts > 3000 && wrong <= ribbonPts * 0.01 && lo >= 0.01 && hi <= 0.03, `${sys.seed} chalk: ribbon centres stand 2 to 3 cm out from the drawn triangles, on the air side (creases and fins under 5 cm wide excepted)`, `${ribbonPts} centres on ${strokes.length} strokes, ${lo.toFixed(4)}..${hi.toFixed(4)} m, ${wrong} wrong, field-surface points under the mesh ${((100 * sunk) / total).toFixed(0)}%`)
+    check(sunk / total > 0.1, `${sys.seed} chalk: the field's surface lies under the drawn mesh often enough that it needed the mesh`, `${((100 * sunk) / total).toFixed(0)}% of ${total} points`)
+    const dab = ribbons([strokes[0].slice(0, 3)], surface)
+    check(dab.index.length === 6 && dab.skipped === 0, `${sys.seed} chalk: a one-point dab is a single quad`, `${dab.index.length / 3} triangles`)
+  }
 }
 
 {

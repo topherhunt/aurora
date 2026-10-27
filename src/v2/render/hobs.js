@@ -9,11 +9,16 @@
  * on a boot, after a clock jump, or when undrawn and LOSE_M off it; between
  * those it steers there each frame. Never sent and never exactly agreed.
  * A frog chasing one (frogs.js chasers) sends it squealing FLEE_M off.
+ *
+ * Her hands pick one up (a hands.js source): held, it is off the steering and
+ * the lures, its babies keeping the yard; let go, it walks back. One a frog
+ * eats from her hand is gone for the session, room-wide, by taken.js.
  */
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32, swing } from '../../sim/score.js'
+import { TOLERANCE_M, taken } from '../taken.js'
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, rollTint } from './baked-puppet.js'
@@ -136,6 +141,7 @@ export class Hobs {
         baby.row = i >> 1
       }
     })
+    for (const h of this.all) h.gone = taken.has(this._takenKind(h), h.yard.x, h.yard.z)
     this.puppets = []
     this.freePuppets = []
     this.asset = null
@@ -158,7 +164,7 @@ export class Hobs {
       id: this.all.length, yard, size, tint, color: rollTint(this.tintRand), k: 1, owner: null, parent: null, side: 1, row: 0,
       slotS: between(rand, SLOT_S), cry: between(this.cryRand, CRY_S), hush: 0, slot: -1, spotX: yard.x, spotZ: yard.z, eats: false,
       x: 0, y: 0, z: 0, heading: rand() * 2 * Math.PI, aim: 0, moving: false,
-      clip: 'idle', cue: 0, pace: 1, speed: 0, top: 0, lod: LOD_RUNGS, puppet: null,
+      clip: 'idle', cue: 0, pace: 1, speed: 0, top: 0, lod: LOD_RUNGS, puppet: null, held: false, gone: false,
       // The frog after it this frame, and what the frogs chase it as.
       chaser: null, lure: { kind: 'hob', x: 0, y: 0, z: 0, by: 'hob', id: this.all.length },
     }
@@ -213,10 +219,11 @@ export class Hobs {
 
   /** Where `h` makes for now, and what it faces once there (null: whichever way it came). */
   _target(h, seconds) {
-    const lead = h.parent ?? (h.owner && this._out(h) ? h.owner.pose : null)
+    const parent = h.parent !== null && !h.parent.held && !h.parent.gone ? h.parent : null
+    const lead = parent ?? (h.owner && this._out(h) ? h.owner.pose : null)
     if (lead) {
-      const rim = h.parent ? h.parent.size * 0.5 : VILLAGER_R
-      const back = rim + GAP_M + h.size * (0.5 + h.row), lat = h.side * (h.parent ? h.parent.size * 0.5 : 0.3)
+      const rim = parent ? parent.size * 0.5 : VILLAGER_R
+      const back = rim + GAP_M + h.size * (0.5 + h.row), lat = h.side * (parent ? parent.size * 0.5 : 0.3)
       const fx = Math.cos(lead.heading), fz = -Math.sin(lead.heading)
       h.spotX = lead.x - fx * back - fz * lat
       h.spotZ = lead.z - fz * back + fx * lat
@@ -285,6 +292,7 @@ export class Hobs {
   lures(into) {
     if (!this.loaded || this.villagers.tick === null || !this.batch.visible) return into
     for (const h of this.all) {
+      if (h.held || h.gone) continue
       h.lure.x = h.x; h.lure.y = h.y; h.lure.z = h.z
       into.push(h.lure)
     }
@@ -300,6 +308,7 @@ export class Hobs {
     this.seconds = seconds
     this.calls.length = 0
     for (const h of this.all) {
+      if (h.held || h.gone) continue
       const was = h.chaser
       h.chaser = null
       for (const c of chasers) if (c.hob === h.id) h.chaser = c
@@ -320,6 +329,83 @@ export class Hobs {
   voices(into) {
     for (const v of this.calls) into.push(v)
     this.calls.length = 0
+  }
+
+  // --- her hands --------------------------------------------------------------
+
+  /** The drawn hob nearest a hand at (x, y, z) whose body, a ball of its size, is within `reach`, and smaller than `maxSize`: `{ dist, h, size }` for take(), or null. For hands.js. */
+  pickAt(x, y, z, reach, maxSize) {
+    if (!this.loaded || !this.batch.visible) return null
+    let best = null
+    let bestD = reach
+    for (const h of this.all) {
+      if (h.held || h.gone || h.puppet === null || h.size >= maxSize) continue
+      const d = Math.hypot(h.x - x, h.y + h.size * 0.3 - y, h.z - z) - h.size * 0.5
+      if (d < bestD) { bestD = d; best = { dist: Math.max(0, d), h, size: h.size } }
+    }
+    return best
+  }
+
+  /** The hob of a pickAt() hit into her hand, its bind pose in its own colour on the white plain; never stowed. `rec.hob` names it for release() and eaten(). For hands.js. */
+  take(hit) {
+    const h = hit.h
+    h.held = true
+    h.chaser = null
+    this._releasePuppet(h)
+    const k = h.size / this.asset.span
+    const color = this.puppets[0].baked ? [h.color.r, h.color.g, h.color.b] : TINTS[h.tint]
+    return { kind: 'hob', name: 'hob', size: h.size, geometry: this.asset.tiers[0], material: this.plains[0], attrs: {}, color, scale: [k, k, k], stowable: false, hob: h.id }
+  }
+
+  dress(slot) {
+    if (slot.kind !== 'hob') throw new Error(`Hobs.dress: not a hob, ${slot.kind}`)
+    if (!this.loaded) return null
+    return { geometry: this.asset.tiers[0], material: this.plains[0] }
+  }
+
+  /** Her held hob let go at (x, _, z): on its feet there, or on its spot where that is wet, and it walks back. One eaten meanwhile by a peer's frog just vanishes. */
+  release(rec, x, y, z) {
+    const h = this._heldOf(rec)
+    h.held = false
+    if (h.gone) return true
+    if (this.villagers.seat(x, z) === null) {
+      this._place(h, this.seconds)
+      return true
+    }
+    h.x = x
+    h.z = z
+    h.y = this.walk.heightAt(x, z, -Infinity)
+    h.moving = false
+    return true
+  }
+
+  /** Her held hob `rec` eaten by a frog: gone, and told to the room. */
+  eaten(rec) {
+    const h = this._heldOf(rec)
+    h.held = false
+    h.gone = true
+    taken.add(this._takenKind(h), h.yard.x, h.yard.z)
+  }
+
+  /** A peer's frog ate the hob `key` names, of the yard at (x, z): gone here too. For hands-net.js. */
+  evict(key, x, z) {
+    if (!key.startsWith('hob')) return false
+    const h = this.all[Number(key.slice(3))]
+    if (h === undefined || Math.abs(h.yard.x - x) >= TOLERANCE_M || Math.abs(h.yard.z - z) >= TOLERANCE_M) return false
+    h.gone = true
+    this._releasePuppet(h)
+    return true
+  }
+
+  _heldOf(rec) {
+    const h = this.all[rec.hob]
+    if (rec.kind !== 'hob' || h === undefined || !h.held) throw new Error(`Hobs: ${rec.kind} ${rec.hob} is no hob of hers held`)
+    return h
+  }
+
+  /** Its taken.js kind: its id, keyed at its yard so another village's hob of that id is not it. */
+  _takenKind(h) {
+    return `hob${h.id}`
   }
 
   _takePuppet(h) {

@@ -71,6 +71,7 @@ import { Carrots, loadCarrotsBank } from './render/carrots.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Boats } from './boats.js'
 import { Fish } from './render/fish.js'
+import { SeaweedScatter } from './render/seaweed-scatter.js'
 import { FishLeap } from './render/fish-leap.js'
 import { Frogs } from './render/frogs.js'
 import { Crabs } from './render/crabs.js'
@@ -3363,6 +3364,7 @@ let bones = null
 let carrots = null
 let fish = null
 let fishLeap = null
+let seaweed = null
 let frogs = null
 let crabs = null
 let butterflies = null
@@ -4065,14 +4067,14 @@ function disposeRoom() {
   if (caveMouths) { caveMouths.dispose(); caveMouths = null }
   items.clear()
   for (const layer of [
-    leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish,
+    leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish, seaweed,
     boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
   ]) gone(layer)
   buildScheduler.clear()
   if (overworld !== null && waterSurfaces === overworld.waterSurfaces) waterSurfaces.detach()
   else gone(waterSurfaces)
   lighting.clearLamps()
-  leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = null
+  leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = seaweed = null
   boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = litterCards = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
   roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
@@ -5291,6 +5293,8 @@ async function buildRoom(room, at) {
   water.uniforms.uClarity.value.set(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180))
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
+  seaweed = new SeaweedScatter(scene, height, waterSurfaces, { seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-seaweed' }) })
+  seaweed.place(spawn.x, spawn.z)
   fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
   window.v2fish = fish
   // Now and then one clears the surface of a lake near her and falls back in (render/fish-leap.js).
@@ -8424,6 +8428,7 @@ function stepOverworld(dt, now) {
     fishLeap.update(dt, headTmp, submerged)
   })
   fishLeap.group.visible = animalOn('fish')
+  seaweed.place(headTmp.x, headTmp.z)
   // The frogs hunt the hobs too, and are seen to by the villagers holding them (render/villagers.js claims), last frame's.
   stepAnimal('frogs', () => {
     frogLures.length = 0

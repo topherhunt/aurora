@@ -654,8 +654,11 @@ function hollows(n, pools, floored) {
 
 /** Metres node n's floor relief stands over its nominal floor at (x, z): bilinear, 0 off its grid or where it has none. */
 export function reliefAt(n, x, z) {
-  const R = n.relief
-  if (R === undefined) return 0
+  return n.relief === undefined ? 0 : reliefIn(n.relief, x, z)
+}
+
+/** reliefAt on a node's relief grid itself. */
+export function reliefIn(R, x, z) {
   const u = (x - R.x0) / R.cell, w = (z - R.z0) / R.cell
   const i = Math.floor(u), k = Math.floor(w)
   if (i < 0 || k < 0 || i + 1 >= R.nx || k + 1 >= R.nz) return 0

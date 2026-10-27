@@ -4,7 +4,7 @@ A conversation system where every villager and leafkin is a person with a name, 
 
 ## The founding rule
 
-**Depth comes from facts being real and checkable, not from varied wording.** Procedural prose goes stale in an hour. What stays alive is "the shepherd said the boy went north past the tarn, the woodcutter said east, and one of them is wrong for a reason." Every answer is a claim about the deterministic world (towns, houses, roads, people, journeys, landmarks), so you can walk out and verify it. You remember what you were told; the game does not remember it for you, and the quest log only reminds you who asked what.
+**Depth comes from facts being real and checkable; wording only keeps it from going stale.** Procedural prose goes stale in an hour, so every answer is dressed from independently varied fragments (`talk/words.js`: lead-in, detail, closing; the leafkin's `LK.lead/detail/tail`) and the same wording never comes twice running from one person to one question (`rapport.worded`, `Conversation._fresh`). Dressing changes only `text`, never the claim. What stays alive is "the shepherd said the boy went north past the tarn, the woodcutter said east, and one of them is wrong for a reason." Every answer is a claim about the deterministic world (towns, houses, roads, people, journeys, landmarks), so you can walk out and verify it. You remember what you were told; the game does not remember it for you, and the quest log only reminds you who asked what.
 
 ## A person is a role plus an overlay
 
@@ -54,6 +54,14 @@ Small theory-of-mind touches that pay for themselves: they remember what they to
 **You can lie.** "Tell..." injects a belief: "Mara sent me", "the bridge is out", "the boy is safe". The listener checks it against what they know. If they know it is false, or a wariness roll catches it, their suspicion rises and they turn cold, maybe for good. Otherwise they adopt it, act on it, and gossip it onward.
 
 **Speech is text in a simplified grammar, under a voiced clip.** Short, plain lines from templates, coloured by temperament (terse or rambling, hedges, filler); see Voice below for what is heard. **Leafkin speak a pidgin**: dropped articles, third person, a small vocabulary that grows with their trust ("Leafkin know. Big-folk go there. Bad-dark."). They turn, point and use the existing gesture clips, but there is no pantomime language and no new animation for it.
+
+## Shop, trade and hearsay
+
+- **Busy people pass her on.** A busy human usually (`CHAT.passOn`) names a friendlier person and where to find them (`passOn()`): the blacksmith in his smithy, the innkeeper, or the chattiest other in town. The claim is the truthful `placeOf`.
+- **The blacksmith** (`talk/trade.js`) opens in his workshop (`ctx.inWorkshop`) with "what do you need, make it quick" and offers `shop:buy:<item>` and `shop:offer`; elsewhere he is tired and says to come to the workshop. Sword and shield cost 100 coins and 3 bog iron, the pickaxe 50 coins. A sale needs the coins, the iron and a free large slot (the iron paid frees its own), is all-or-nothing, and names what she lacks. Other townsfolk have `where:gear`: they point to the smith and warn he only talks shop in his workshop and is grumpy elsewhere, not that they blame him.
+- **Trade.** Someone who buys what she holds (`ctx.wants`, set by conversations.js from `pack.held()`) opens very interested and asks what she would trade. Her chips are "what do you have on offer" and one `trade:take:<deal>` per deal. Who buys what and at which price is in `trade.js` (`buys`, `PRICE`, `deals`), following the Flows table of `design/42-valuables.md`; rimesilver and egg prices, the thief's stolen gem and the leafkin's gem-for-ore deals are set there, not in the design doc.
+- **Hearsay.** One town per world seed (`TalkWorld.seatDeer`, the town nearest a roost) is where a man took credit for a dragon his enormous pet deer fought off. Elsewhere people say someone there fought one off and nobody knows how; residents tell the truth. A rare cave tale tells of a child led out of a cave by a pet rabbit, and foxes sniffing out cave treasure.
+- **A glade she wronged.** Its leafkin open furious (`ctx.wronged`), the witness (`ctx.witness`) angriest, and `LK.scold` is what they shout following her.
 
 ## Manners
 

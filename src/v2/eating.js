@@ -15,6 +15,9 @@ export const EAT = {
   pulseHz: 0.6,
 }
 
+// Every meal a pet eats past the one that tamed it grows it by `grow` (and heals an animal with hp SINGE.hp); whoever fed it last is the one it follows.
+export const MEAL = { grow: 0.05 }
+
 /** Whether her `size` is `k` of her full size or less; the ease lands a hair off its target. */
 export const atMost = (size, k) => size <= k * (1 + 1e-6)
 

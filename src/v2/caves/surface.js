@@ -5,6 +5,7 @@ import { CHUNK } from './mesh.js'
 const CELL = 1
 const PAD = 1
 const SIDE = CHUNK + 2 * PAD
+const SLIVER = 2e-4
 
 // Closest point of triangle (a, b, c) to p into `out`; Ericson, Real-Time Collision Detection 5.1.5.
 function closest(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz, out) {
@@ -81,9 +82,11 @@ export class Surface {
    */
   nearest(x, y, z, reach, out) {
     let best = reach * reach, found = false
-    const i0 = Math.floor((x - reach) / CHUNK), i1 = Math.floor((x + reach) / CHUNK)
-    const j0 = Math.floor((y - reach) / CHUNK), j1 = Math.floor((y + reach) / CHUNK)
-    const k0 = Math.floor((z - reach) / CHUNK), k1 = Math.floor((z + reach) / CHUNK)
+    // A chunk's triangles overhang its box by up to PAD, so neighbours within PAD of the query are searched too.
+    const m = reach + PAD
+    const i0 = Math.floor((x - m) / CHUNK), i1 = Math.floor((x + m) / CHUNK)
+    const j0 = Math.floor((y - m) / CHUNK), j1 = Math.floor((y + m) / CHUNK)
+    const k0 = Math.floor((z - m) / CHUNK), k1 = Math.floor((z + m) / CHUNK)
     const n = SIDE / CELL
     for (let k = k0; k <= k1; k++) for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const b = this._bucket(i, j, k)
@@ -97,17 +100,17 @@ export class Surface {
         if (list === undefined) continue
         for (const t of list) {
           const a = index[t] * 3, bb = index[t + 1] * 3, cc = index[t + 2] * 3
+          const ux = pos[bb] - pos[a], uy = pos[bb + 1] - pos[a + 1], uz = pos[bb + 2] - pos[a + 2]
+          const vx = pos[cc] - pos[a], vy = pos[cc + 1] - pos[a + 1], vz = pos[cc + 2] - pos[a + 2]
+          const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+          const l = Math.hypot(nx, ny, nz)
+          // Clustering folds sliver triangles whose winding is arbitrary; they are not a surface to stand off.
+          if (l < SLIVER) continue
           closest(x, y, z, pos[a], pos[a + 1], pos[a + 2], pos[bb], pos[bb + 1], pos[bb + 2], pos[cc], pos[cc + 1], pos[cc + 2], _q)
           const d = (_q[0] - x) ** 2 + (_q[1] - y) ** 2 + (_q[2] - z) ** 2
           if (d >= best) continue
           best = d; found = true
-          const ux = pos[bb] - pos[a], uy = pos[bb + 1] - pos[a + 1], uz = pos[bb + 2] - pos[a + 2]
-          const vx = pos[cc] - pos[a], vy = pos[cc + 1] - pos[a + 1], vz = pos[cc + 2] - pos[a + 2]
-          let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
-          const l = Math.hypot(nx, ny, nz)
-          if (l < 1e-12) { found = false; best = d; continue }
-          nx /= l; ny /= l; nz /= l
-          out[0] = _q[0]; out[1] = _q[1]; out[2] = _q[2]; out[3] = nx; out[4] = ny; out[5] = nz; out[6] = Math.sqrt(d)
+          out[0] = _q[0]; out[1] = _q[1]; out[2] = _q[2]; out[3] = nx / l; out[4] = ny / l; out[5] = nz / l; out[6] = Math.sqrt(d)
         }
       }
     }
@@ -122,7 +125,7 @@ export class Surface {
     if (!this.nearest(x, y, z, reach, s)) return false
     out[3] = s[3]; out[4] = s[4]; out[5] = s[5]
     let px = s[0] + s[3] * off, py = s[1] + s[4] * off, pz = s[2] + s[5] * off
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 12; i++) {
       if (!this.nearest(px, py, pz, off * 2, s) || s[6] > off - 0.002) break
       const dx = px - s[0], dy = py - s[1], dz = pz - s[2]
       const l = Math.hypot(dx, dy, dz)

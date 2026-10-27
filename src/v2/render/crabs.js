@@ -53,7 +53,8 @@
 // A crab that EATS the bug in her hand (held within EAT of it) leaves its rock
 // as her PET, GROW the size, and scuttles after her (or the peer who fed it)
 // to PET.m off, integrated like a hunt; the room hears FED and, when a hand
-// takes it, TOOK, each one anchor keyed by where it ate.
+// takes it, TOOK, each one anchor keyed by where it first ate. Every bug after
+// grows it MEAL.grow and makes it the pet of whoever fed it.
 //
 // Past CARD_M from her head a crab is its top card (critters.js CRAB_VIEWS), one
 // quad lying flat at the body's middle, an instance of the shared litter-card
@@ -72,7 +73,7 @@ import {
 } from './critters.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { taken, TOLERANCE_M } from '../taken.js'
-import { atMost } from '../eating.js'
+import { MEAL, atMost } from '../eating.js'
 
 export const TILE = 16
 export const RADIUS = 40
@@ -588,9 +589,16 @@ export class Crabs {
    * Crab `c` ate the bug in the hand of `by` (null hers) on second `now`, at
    * `at` facing `at.yaw` (by default where it is): off its rock or its run,
    * grown by GROW, that one's pet. A loose one's run, told to the room, ends
-   * on every client.
+   * on every client. A pet already grows MEAL.grow and keeps the key of where
+   * it first ate.
    */
   _feed(c, by, now, at = { x: snap(c.x), z: snap(c.z), yaw: snap(c.yaw) }) {
+    if (c.pet !== null) {
+      c.size *= 1 + MEAL.grow
+      c.pet = { by }
+      if (by === null) this._tellPet(c, FED, now, null)
+      return
+    }
     const drop = c.drop
     if (c.loose) {
       this.loose.splice(this.loose.indexOf(c), 1)
@@ -623,6 +631,7 @@ export class Crabs {
         for (const p of t.perches.values()) for (const c of p.crabs) if (this.under || c.y >= p.level) consider(c)
       }
       for (const c of this.loose) consider(c)
+      for (const c of this.pets) consider(c)
       if (best !== null && this.eat(l)) this._feed(best, null, now)
     }
   }
@@ -749,6 +758,11 @@ export class Crabs {
     const pet = this.pets.find((c) => c.key === key)
     if (mode === TOOK) {
       if (pet !== undefined) { this._unpet(pet); this.free.push(pet) }
+      return
+    }
+    if (pet !== undefined) {
+      pet.pet = { by }
+      pet.size = size
       return
     }
     if (this.drops.has(key)) return

@@ -107,5 +107,26 @@ console.log("a peer's ride")
   check(V.scars.get(key)?.hp === 80 && V.scars.get(key).at === 99.5, "a peer's singeing is kept, though the body is out of her range", JSON.stringify(V.scars.get(key)))
 }
 
+console.log('a crab in a hand')
+{
+  const { S, m, player } = riding()
+  Object.assign(S, { runV: 4, crowd: null, lures: [], _rideStep: (q, d) => { q.pose.x += Math.cos(q.pose.heading) * d; q.pose.z -= Math.sin(q.pose.heading) * d; return true } })
+  S.walk.obstacleAt = () => false
+  Object.assign(m.ride, { want: 'stop', goal: 'stop', wait: 0, pace: 1, v: 0, a: 0, neck: 0, phase: 0, swim: false, wet: false, willing: false, coax: 0, need: 5, squawk: 0, balk: 0, weave: 0, half: 3, reach: 0.2, sway: 0, bolt: null })
+  const still = { push: 0, steer: 0, face: false }
+  // A peer's crab a few metres off its left flank (+z is its right, heading +x).
+  S.lures = [{ kind: 'crab', by: 'peer', x: 0.5, y: 1, z: -3 }]
+  S.ride(1 / 72, still, player)
+  const bolt = m.ride.bolt
+  check(bolt !== null && bolt.left >= WILD.ride.bolt[0] && bolt.left <= WILD.ride.bolt[1], "a peer's crab near her mount sets it bolting", JSON.stringify(bolt))
+  S.lures = []
+  let t = 0
+  for (; t < 20 && m.ride.bolt !== null; t += 1 / 72) S.ride(1 / 72, still, player)
+  const ran = Math.hypot(m.pose.x, m.pose.z)
+  check(m.ride.bolt === null && ran >= WILD.ride.bolt[0] - 0.5 && m.pose.z > 0, 'it runs its metres away from the crab, her stick untouched', `${ran.toFixed(2)} m to (${m.pose.x.toFixed(2)}, ${m.pose.z.toFixed(2)}) in ${t.toFixed(2)} s`)
+  for (let i = 0; i < 72 * 5; i++) S.ride(1 / 72, still, player)
+  check(m.ride.v === 0, 'then calms under her', `${m.ride.v.toFixed(3)} m/s`)
+}
+
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }
 console.log('\nall ok')

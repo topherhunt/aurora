@@ -19,7 +19,7 @@ export const WILD = {
   home: 12, amble: 0.9, posts: 5, grid: 16, walking: 0.7, snap: 30,
   // Wary within `see` m of her head, charges within `strike`, calm again past `calm`; backs off at `back` m/s once it faces her within `facing` rad.
   see: 10, strike: 4, calm: 12, back: 0.8, facing: 0.5,
-  // One tamed by anyone never charges and trusts every player. Singed (SINGE), or a crab or spider in her hand within `scare` m, a tamed one shies: runs off `run` m at `pace` of its run and calms there; a wild one flees.
+  // One tamed by anyone never charges and trusts every player. Singed (SINGE), or a crab or spider in anyone's hand within `scare` m, a tamed one shies: runs off `run` m at `pace` of its run and calms there; a wild one flees; her mount bolts (ride.bolt).
   shy: { run: [3, 5], pace: 0.7, scare: 4, kinds: new Set(['crab', 'spider']) },
   // It charges at `pace` of its run until `close` m off (times its size) or `s` s on, then strikes: her hurt `harm` at the clip's `lunge` s if within `reach` m more. Then it flees `s` seconds or `m` metres.
   charge: { pace: 0.6, close: 1.2, s: 2.5, reach: 1.2 }, harm: 10, lunge: 0.66, flee: { s: 6, m: 40 },
@@ -54,6 +54,8 @@ export const WILD = {
     neck: 1.2, neckTau: 0.25, lean: 0.125, radius: 3, pivot: 0.7, spin: 0.9,
     // A snap turn turns her at once and the body after her, its neck leading: at most `swing` rad/s, critically damped over `heave` s. In the headset it swings the same way to face where she has physically turned, once her head has been more than `face` rad off its way for `dwell` s, so a glance does not turn it.
     swing: 1.2, heave: 0.15, face: 0.35, dwell: 0.6,
+    // Scared (WILD.shy) with her on its back, it bolts at a full run straight away from the crab or spider for `bolt` m, deaf to her stick.
+    bolt: [6, 10],
     // Her eye `eye` m over the seat, the seat's height followed over `lift` s (shortening with speed), and a stride's bob of `bob` m at a walk, `gallop` as often at a run.
     eye: 0.75, lift: 0.35, bob: 0.035, gallop: 0.25,
     // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface (to its chest, the rider's toes wet): it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), weaving `sway` rad each side of her course, a side every `weave` s, and dips deeper (never through the bed) once a stroke, each stroke rolling its depth from `duck` m (the deepest to its chin) and its length from `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s.
@@ -69,7 +71,7 @@ const WIRE = 'ws:'
 const LIVE = ['wary', 'charge', 'attack', 'flee', 'meek', 'eat', 'follow', 'led', 'ridden', 'panic', 'shy', 'swim']
 // The states her chanterelle turns to a charge: not one led, ridden, eating, fleeing, shying, panicked or afloat.
 const MADDENS = new Set(['calm', 'wary', 'follow', 'meek'])
-// The states a crab or spider in her hand scares it out of (WILD.shy).
+// The states a crab or spider in anyone's hand scares it out of (WILD.shy).
 const SCARES = new Set(['calm', 'wary', 'follow', 'meek', 'led', 'charge'])
 // What a calm one does at its spot, weighted, each played one to three times and then stood idle.
 const ACTS = [['peck', 0.45], ['idle', 0.5], ['fidget', 0.05]]
@@ -175,9 +177,10 @@ export class WildStriders {
     this.outbox = []
     // Keys tamed by any player in the room, as its anchors say (_owe); hers are bond.trusted besides.
     this.tamed = new Set()
-    // Each singed one's { hp, at }, as hurt here or as the room's anchors say, kept past its leaving the sim; and her lit torch tips (update).
+    // Each singed one's { hp, at }, as hurt here or as the room's anchors say, kept past its leaving the sim; and her lit torch tips and the frame's lures (update).
     this.scars = new Map()
     this.torches = []
+    this.lures = []
     this.warned = false
     // Whether every one of hers within EAT.chanterelle.m charges her, tamed or not (madden).
     this.maddened = false
@@ -362,6 +365,7 @@ export class WildStriders {
     this.now = seconds
     this.peers = peers
     this.torches = torches
+    this.lures = lures
     this.feet.x = feet.x
     this.feet.z = feet.z
     this._scan(feet.x, feet.z)
@@ -499,10 +503,10 @@ export class WildStriders {
     this._enter(m, tamed ? 'shy' : 'flee')
   }
 
-  /** Whether a crab or spider in her hand is within WILD.shy.scare of it. */
+  /** A crab or spider in anyone's hand within WILD.shy.scare of it, or null. */
   _scared(m, lures) {
     const p = m.pose, S = WILD.shy
-    return lures.some((l) => l.by === null && S.kinds.has(l.kind) && Math.hypot(l.x - p.x, l.z - p.z) < S.scare)
+    return lures.find((l) => S.kinds.has(l.kind) && Math.hypot(l.x - p.x, l.z - p.z) < S.scare) ?? null
   }
 
   /** Its own lure of hers nearest it within `reach`: a fish in her hand. */
@@ -573,7 +577,7 @@ export class WildStriders {
     const face = Math.atan2(-(head.z - p.z), head.x - p.x)
     const trusted = mine && this.isTamed(m.key)
     if (mine && m.state !== 'swim' && this._singed(m, dt)) { this._burn(m, trusted); return }
-    if (mine && SCARES.has(m.state) && this._scared(m, lures)) {
+    if (mine && SCARES.has(m.state) && this._scared(m, lures) !== null) {
       this._say(m, 'striderChirp1', 1.6, 1)
       this._enter(m, trusted ? 'shy' : 'flee')
       return
@@ -666,6 +670,7 @@ export class WildStriders {
         }
         if (m.t >= this.dur.peck) {
           if (trusted) this._grow(m)
+          this._heal(m)
           this.bond.trusted.add(m.key)
           this._chirp(m, 1.25, 1)
           this._enter(m, m.tack ? 'calm' : 'follow')
@@ -826,6 +831,12 @@ export class WildStriders {
     m.pose.size *= f
   }
 
+  /** A meal eaten: SINGE.hp the better, the hurt kept at its time so the room takes it as no new hurt. */
+  _heal(m) {
+    const scar = this.scars.get(m.key)
+    if (scar) this.scars.set(m.key, { hp: Math.min(SINGE.max, scar.hp + SINGE.hp), at: scar.at })
+  }
+
   // -- calm, in closed form on the room's clock ----------------------------------
 
   /** Its spots about its home, the home first: those out of the water, on gentle ground clear of trunks and the towns, and a straight open walk from home; the same on every client for one home. */
@@ -984,7 +995,8 @@ export class WildStriders {
     this.anchors.set(key, anchor)
     if (anchor[11] === 1) this.tamed.add(key)
     const at = anchor[16], was = this.scars.get(key)
-    if (at !== null && !(was && was.at >= at)) this.scars.set(key, { hp: anchor[15], at })
+    // An equal `at` is a meal's healing (_heal), taken without a cry.
+    if (at !== null && !(was && was.at > at)) this.scars.set(key, { hp: anchor[15], at })
     if (now - T > CHAPTER_S) return
     let m = this.live.get(key)
     if (!m && mode !== 'rejoin' && key.startsWith('town:') && this.loaded) {
@@ -1174,6 +1186,8 @@ export class WildStriders {
       swim: m.pose.swim, wet: m.pose.swim, willing: m.pose.swim, coax: 0, need: between(R.swim.coax), squawk: 0, balk: 0,
       // Its weave swimming forward: the phase (a side every pi), this side's seconds and reach, and the offset now on its heading.
       weave: 0, half: between(R.swim.weave), reach: between(R.swim.sway), sway: 0,
+      // A bolt (R.bolt): the metres still to run and the way away, or null.
+      bolt: null,
     }
     player.mountAt(_v.x, _v.y + R.eye * player.scale, _v.z, m.pose.heading)
     this._owe(m, 'ridden')
@@ -1210,6 +1224,15 @@ export class WildStriders {
   ride(dt, input, player) {
     const m = this.ridden, R = WILD.ride, r = m.ride, p = m.pose, big = p.size / STRIDER.size.mean
     if (r.fall) return this._fall(m, dt, player)
+    if (r.bolt === null && !r.swim) {
+      const l = this._scared(m, this.lures)
+      if (l !== null) {
+        r.bolt = { left: between(R.bolt), aim: Math.atan2(l.z - p.z, p.x - l.x) }
+        r.want = r.goal = 'run'
+        this._say(m, 'striderChirp1', 1.6, 1)
+      }
+    }
+    if (r.bolt !== null) input = { push: 1, steer: -clamp(2 * wrap(r.bolt.aim - p.heading), -1, 1), face: false }
     if (input.face) this._face(m, dt, player)
     this._seat(m, _sat)
     const push = input.push, steer = Math.abs(input.steer) > R.push ? input.steer : 0
@@ -1274,6 +1297,7 @@ export class WildStriders {
       r.sway = sway
     } else r.weave = r.sway = 0
     if (r.v !== 0 && !this._rideStep(m, r.v * dt, dt)) r.v = r.a = 0
+    if (r.bolt !== null && (r.bolt.left -= Math.abs(r.v) * dt) <= 0) r.bolt = null
     this._float(m, dt)
     const owed = this._swing(m, dt)
     m.want.yaw = clamp(r.neck + r.lead, -R.neck, R.neck)

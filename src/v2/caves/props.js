@@ -43,10 +43,10 @@ export function columnAt(field, x, z, y) {
 }
 
 // The rock face met marching from `y` (in air) in direction `dir` (+1 up, -1 down) within `reach` metres, or null.
-function surface(field, x, z, y, dir, reach) {
+function surface(field, x, z, y, dir, reachM) {
   if (field.at(x, y, z) > 0) return null
-  for (let d = 0; d < reach; d += 0.1) if (field.at(x, y + dir * d, z) > 0) return y + dir * (d - 0.05)
-  return null
+  const d = reach(field, x, y, z, dir, reachM)
+  return d < reachM ? y + dir * d : null
 }
 
 export function placeProps(graph, field, seed) {

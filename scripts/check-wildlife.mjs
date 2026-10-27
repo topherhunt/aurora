@@ -37,6 +37,7 @@ import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
   LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR,
 } from '../src/v2/render/wildlife.js'
+import { MEAL } from '../src/v2/eating.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
 import { LOD_FADE_S, POSE_EVERY, REPLANT } from '../src/v2/render/puppet.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, swing, tickAfter, tickOf } from '../src/sim/score.js'
@@ -891,7 +892,7 @@ const differ = (p, q) => {
     const owed = k.pending()
     const ticks = owed.map((a) => tickOf(a[1]))
     const every = Math.round(ANCHOR_S * TICK_HZ)
-    check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9 && owed.every((a) => a.length === 11 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && onTicks(a[1])), `${key}: owing the room [key, T, x, y, z, heading, -1, "lure", null, hp, hurtAt] every ${ANCHOR_S} s on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
+    check((owed.length === 8 || owed.length === 9) && ticks.every((t, i) => i === 0 || t - ticks[i - 1] === every) && owed[0][1] <= wentLive + TICK_S + 1e-9 && owed.every((a) => a.length === 12 && a[0] === c.key && a[7] === 'lure' && a[8] === null && a[6] === -1 && onTicks(a[1])), `${key}: owing the room [key, T, x, y, z, heading, -1, "lure", null, hp, hurtAt, meals] every ${ANCHOR_S} s on the tick grid`, `${owed.length} anchors, ticks ${ticks.join(' ')}`)
     check(k.anchored.get(c.key) === owed[owed.length - 1], `${key}: and keeping its latest as the room's`)
     hold(carrot.x + 4, z0)
     seen = run(4, [carrot])
@@ -919,6 +920,17 @@ const differ = (p, q) => {
     seen = run(10, [])
     const gap = Math.hypot(head.x - c.x, head.z - c.z)
     check(c.live?.mode === 'tame' && [...seen].some((s) => s.startsWith('follow/')) && gap <= sp.heel + 0.1 && Math.hypot(c.x - x1, c.z - z1) > 6, `${key}: she walks ten metres off and it follows her, to ${sp.heel} m of her`, `${[...seen].join(' ')}; ${gap.toFixed(2)} m off her`)
+    // A second carrot at its face, hurt as it is: it eats that too, grows and heals.
+    const wild = c.spawn.size
+    k.scars.set(c.key, { hp: 50, at: timeOf(k) - 10 })
+    const second = { kind: 'carrot', x: 0, y: 0, z: 0, by: null }
+    for (let f = 0; f < 8 * 60 && eaten.length < 2; f++) { toFace(second); run(1 / 60, [second]) }
+    check(eaten.length === 2 && eaten[1] === second && k.meals.get(c.key) === 2 && Math.abs(c.size - wild * (1 + 2 * MEAL.grow)) < 1e-9 && k.scars.get(c.key).hp === 50 + SINGE.hp && c.live?.mode === 'tame', `${key}: a pet eats every carrot of hers held to its face, each ${MEAL.grow * 100}% bigger and ${SINGE.hp} HP better`, `${eaten.length} eaten, ${k.meals.get(c.key)} meals, ${(c.size / wild).toFixed(3)}x, ${k.scars.get(c.key).hp} HP`)
+    run(2 / 60, [])
+    check(k.pending().some((a) => a[7] === 'tame' && a[11] === 2 && a[9] === 50 + SINGE.hp), `${key}: and the room hears its meals and its healing`)
+    for (let f = 0; f < 20 * 60 && c.act === 'eat'; f++) run(1 / 60, [])
+    head.x = c.x + sp.heel
+    head.z = c.z
     if (key === 'stag') {
       // She goes past LURE_FORGET_M: it is wild again, owing the room where that left it, and the rejoin walks it to the score.
       k.pending()
@@ -958,6 +970,20 @@ const differ = (p, q) => {
   const off = Math.hypot(fish.x - x.x, fish.z - x.z)
   check(x.live && trots.has('follow/trot') && off <= x.sp.standoff + 0.1 && x.speed === 0, `a fox at rest comes to a fish at a trot and stops ${x.sp.standoff} m short`, `${[...trots].join(' ')}; ${off.toFixed(2)} m off`)
   h.dispose()
+  // Her own fish at a fox's face: it eats it and is her pet.
+  const foxEaten = []
+  const g = make(7, { walk: plain, water: noWater }, null, (l) => { foxEaten.push(l); return true })
+  g.place(0, 0)
+  const fx = beside(g, 'fox')
+  const hers = { kind: 'fish', x: 0, y: 0, z: 0, by: null }
+  for (let f = 0; f < 10 * 60 && fx.live?.mode !== 'tame'; f++) {
+    hers.x = fx.sx + Math.cos(fx.sh) * fx.size * 0.5
+    hers.z = fx.sz - Math.sin(fx.sh) * fx.size * 0.5
+    hers.y = fx.y + fx.size * 0.3
+    step(g, hers.x, fx.y + 1.6, hers.z, dt, [hers])
+  }
+  check(fx.live?.mode === 'tame' && foxEaten[0] === hers && g.meals.get(fx.key) === 1, 'a fish of hers at a fox\'s face, it eats it and is her pet', `${fx.live?.mode} ${fx.act}/${fx.clip}`)
+  g.dispose()
 }
 
 // --- and the room sees it -----------------------------------------------------------
@@ -1005,6 +1031,31 @@ const differ = (p, q) => {
   const gapAB = Math.hypot(ca.x - cb.x, ca.z - cb.z)
   check(Math.hypot(ca.x - aHead.x, ca.z - aHead.z) < ca.sp.heel + 0.1 && gapAB < 0.5 && apart < 8, 'she walks eight metres, and b\'s copy has kept within eight metres of a\'s on the way and is within half a metre once a\'s has stopped a while', `${apart.toFixed(2)} m apart at most, ${gapAB.toFixed(2)} m now`)
   check(Math.abs(swing(ca.heading, cb.heading)) < 0.2, 'facing the way a\'s faces', `${Math.abs(swing(ca.heading, cb.heading)).toFixed(3)} rad apart`)
+  // b holds a carrot of b's own to its copy's face: it eats, and a's pet is b's, a's copy following b's anchors.
+  const bCarrot = { kind: 'carrot', x: 0, y: 0, z: 0, by: null }
+  const stole = (s) => {
+    for (let f = 0; f < s * 60 && b.meals.get(cb.key) !== 2; f++) {
+      bCarrot.x = cb.sx + Math.cos(cb.sh) * cb.size * 0.5
+      bCarrot.z = cb.sz - Math.sin(cb.sh) * cb.size * 0.5
+      bCarrot.y = cb.y + cb.size * 0.3
+      step(a, aHead.x, ca.y + 1.6, aHead.z, dt, [])
+      step(b, bCarrot.x, cb.y + 1.6, bCarrot.z, dt, [bCarrot])
+      relay(b, a)
+      relay(a, b, 9)
+    }
+  }
+  stole(10)
+  together(2 / 60, [], () => { relay(b, a); relay(a, b, 9) })
+  check(cb.live?.mode === 'tame' && cb.live.by === null && ca.live?.mode === 'tame' && ca.live.by === 9 && a.meals.get(ca.key) === 2 && Math.abs(ca.size - cb.size) < 1e-9, 'fed by b, the pet is b\'s: b its authority, a\'s copy after client 9\'s anchors, both the bigger for it', `b by ${cb.live?.by}, a by ${ca.live?.by}, meals ${a.meals.get(ca.key)}/${b.meals.get(cb.key)}`)
+  // a feeds it back: it is a's again.
+  for (let f = 0; f < 10 * 60 && a.meals.get(ca.key) !== 3; f++) {
+    carrot.x = aHead.x = ca.sx + Math.cos(ca.sh) * ca.size * 0.5
+    carrot.z = aHead.z = ca.sz - Math.sin(ca.sh) * ca.size * 0.5
+    carrot.y = ca.y + ca.size * 0.3
+    together(1 / 60, [carrot], () => { relay(b, a); relay(a, b, 9) })
+  }
+  for (let f = 0; f < 20 * 60 && (ca.act === 'eat' || cb.act === 'eat'); f++) together(1 / 60, [], () => { relay(b, a); relay(a, b, 9) })
+  check(ca.live?.by === null && cb.live?.by === 7 && b.meals.get(cb.key) === 3, 'and fed back by a, it is a\'s again', `a by ${ca.live?.by}, b by ${cb.live?.by}`)
   // The relay goes quiet: b's copy keeps to the last anchor for ANCHOR_STALE_S, then gives it up on its own and rejoins, owing nothing.
   const T = cb.live.anchor[1]
   while (timeOf(b) + dt < T + ANCHOR_STALE_S - 0.05) together(1 / 60, [])
@@ -1043,7 +1094,7 @@ const differ = (p, q) => {
   const asleep = (of) => { for (let f = 0; f < 900 && of.byKey.size > 0; f++) step(of, ca.home.x, 1e4, ca.home.z, dt); return of.byKey.size === 0 }
   check(asleep(b) && cb.spawn === null, 'her head ten kilometres up, b\'s stag is put back to sleep')
   const T0 = timeOf(b)
-  const lureAnchor = [ca.key, T0, ca.home.x + 5, ca.y, ca.home.z + 5, 1.2, -1, 'lure', 7, null, null]
+  const lureAnchor = [ca.key, T0, ca.home.x + 5, ca.y, ca.home.z + 5, 1.2, -1, 'lure', 7, null, null, null]
   b.apply(lureAnchor, timeOf(b))
   check(b.anchored.get(ca.key) === lureAnchor, 'an anchor for a sleeping animal is kept')
   step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
@@ -1055,7 +1106,7 @@ const differ = (p, q) => {
   const stale = b.byKey.get(ca.key)
   check(stale !== undefined && stale.live === null && stale.rejoin !== null && stale.rejoin.start === T0 + ANCHOR_STALE_S, `woken after one has gone stale, it is on the rejoin from ${ANCHOR_STALE_S} s past the anchor -- when every client gave the lure up`, `rejoin from ${stale?.rejoin?.start} of anchor ${T0}`)
   asleep(b)
-  const old = [ca.key, chapterOf(timeOf(b), ca.key).start - 1, 0, 0, 0, 0, -1, 'rejoin', 7, null, null]
+  const old = [ca.key, chapterOf(timeOf(b), ca.key).start - 1, 0, 0, 0, 0, -1, 'rejoin', 7, null, null, null]
   b.apply(old, timeOf(b))
   step(b, ca.home.x, GROUND + 1.6, ca.home.z, 1 / 60)
   const planned = b.byKey.get(ca.key)

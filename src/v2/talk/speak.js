@@ -1011,7 +1011,7 @@ export class Conversation {
     let fact = ring.find((f) => !told.has(f.id) && knows(f) && trusts(f))
     if (fact === undefined && ring.some((f) => !told.has(f.id) && knows(f))) return this._holdsBack(topic)
     if (fact === undefined && told.size > 0) {
-      if (!this.leafkin) return this._referred(this._line(`That's all I know of ${TOPICS[topic].label}.`, 'talk-shrug', { moment: 'answer.unknown' }), topic)
+      if (!this.leafkin) return this._referred(this._line(this._pick(`lore:${topic}:done`, [`That's all I know of ${TOPICS[topic].label}.`, `I have told you all I know of ${TOPICS[topic].label}.`, `There's nothing more I can say of ${TOPICS[topic].label}.`, `Of ${TOPICS[topic].label}, that is the lot.`, `You have had everything I know of ${TOPICS[topic].label}.`]), 'talk-shrug', { moment: 'answer.unknown' }), topic)
       told.clear()
       fact = ring.find((f) => knows(f) && trusts(f))
     }

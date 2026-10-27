@@ -3,10 +3,13 @@
 // fed it the id their saved game carries. Kept in the save, told to the room,
 // and taught to every client in it; a villager fed by anyone trusts every
 // player. The sim never reads it: each client alone decides whom to greet.
+// Her WRONGS are hers alone, saved but never told: `[village, kind, witness]`,
+// a glade's first of each kind kept with the villager who saw it.
 
 export const PLAYER_LEN = 12
 // server/src/main.js TRUST_BATCH.
 export const BATCH = 64
+export const WRONGS = ['hob-fed']
 
 const village36 = (seed) => {
   if (!Number.isInteger(seed) || seed < 0) throw new Error(`Trust: a village is its uint32 seed, got ${seed}`)
@@ -29,6 +32,29 @@ export class Trust {
     this.friends = new Set()
     // Entries of hers the room has yet to hear.
     this.unsent = []
+    this.wrongs = []
+  }
+
+  /** She did the glade seeded `seed` wrong `kind` ('hob-fed'), villager `witness` seeing it; false if she had already. */
+  wrong(seed, kind, witness) {
+    const v = village36(seed)
+    if (!WRONGS.includes(kind) || !Number.isInteger(witness) || witness < 0) throw new Error(`Trust.wrong: ${kind} seen by ${witness}`)
+    if (this.wrongs.some((w) => w[0] === v && w[1] === kind)) return false
+    this.wrongs.push([v, kind, witness])
+    return true
+  }
+
+  /** Whether she has wronged the glade seeded `seed`. */
+  wronged(seed) {
+    const v = village36(seed)
+    return this.wrongs.some((w) => w[0] === v)
+  }
+
+  /** The villager who saw her first wrong of the glade seeded `seed`, or null. */
+  witness(seed) {
+    const v = village36(seed)
+    const w = this.wrongs.find((o) => o[0] === v)
+    return w === undefined ? null : w[2]
   }
 
   _add(t) {
@@ -80,14 +106,16 @@ export class Trust {
   }
 
   save() {
-    return { player: this.player, known: [...this.known.values()] }
+    return { player: this.player, known: [...this.known.values()], wrongs: this.wrongs.map((w) => w.slice()) }
   }
 
-  /** A saved game's player, and its trust beside what the room has taught, all of it owed to the room. */
+  /** A saved game's player and wrongs, and its trust beside what the room has taught, all of it owed to the room. */
   load(doc) {
-    if (!doc || typeof doc.player !== 'string' || !/^[0-9a-z]{6,16}$/.test(doc.player) || !Array.isArray(doc.known)) throw new Error(`Trust: a malformed save ${JSON.stringify(doc)}`)
+    if (!doc || typeof doc.player !== 'string' || !/^[0-9a-z]{6,16}$/.test(doc.player) || !Array.isArray(doc.known) || !Array.isArray(doc.wrongs)) throw new Error(`Trust: a malformed save ${JSON.stringify(doc)}`)
     this.player = doc.player
     this.merge(doc.known)
+    this.wrongs = []
+    for (const w of doc.wrongs) this.wrong(parseInt(w[0], 36), w[1], w[2])
     this.resend()
   }
 
@@ -98,5 +126,6 @@ export class Trust {
     for (const t of this.known.values()) this.friends.add(`${t[0]} ${t[1]}`)
     this.player = newPlayer()
     this.unsent.length = 0
+    this.wrongs = []
   }
 }

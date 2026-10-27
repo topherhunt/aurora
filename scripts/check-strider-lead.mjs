@@ -75,15 +75,40 @@ console.log('a torch held to it')
   check(m.state === 'flee' && S.scars.get('k').hp === SINGE.max - SINGE.hp, 'a wild one flees', m.state)
 }
 
+console.log('a meal')
+{
+  const { S, m } = layer(true)
+  S.scars.set('k', { hp: 50, at: 3 })
+  S.inner.bites = () => true
+  S.eat = () => true
+  S.dur = { peck: 0.5 }
+  m.lure = { kind: 'fish', by: null, x: 1, y: 1.5, z: 0 }
+  S._enter(m, 'eat')
+  for (let t = 0; t < 2 && m.state === 'eat'; t += 1 / 72) step(S, m, 2, 0)
+  const scar = S.scars.get('k')
+  check(m.state !== 'eat' && scar.hp === 50 + SINGE.hp && scar.at === 3, `a fish eaten heals it ${SINGE.hp} hp, the hurt kept at its time`, JSON.stringify(scar))
+  const V = layer(true).S
+  V.live.clear()
+  V.scars.set('k', { hp: 50, at: 3 })
+  const heard = S.outbox.at(-1).slice()
+  heard[8] = 'peer'
+  V.apply(heard, S.now)
+  check(V.scars.get('k').hp === 50 + SINGE.hp, "and a peer told of it takes the healing", JSON.stringify(V.scars.get('k')))
+}
+
 console.log('a crab or spider in her hand')
 const held = (kind, by = null) => [{ kind, by, x: 0, y: 1.2, z: 2 }]
 {
   const { S, m } = layer(false)
   step(S, m, 0, 2.5, held('fish'))
-  step(S, m, 0, 2.5, held('crab', 'peer'))
-  check(m.state === 'calm', "a fish of hers, or a peer's crab, does not scare it", m.state)
+  check(m.state === 'calm', 'a fish of hers does not scare it', m.state)
   step(S, m, 0, 2.5, held('crab'))
   check(m.state === 'shy', 'her crab within reach makes a tamed one shy', m.state)
+}
+{
+  const { S, m } = layer(false)
+  step(S, m, 0, 2.5, held('crab', 'peer'))
+  check(m.state === 'shy', "and so does a peer's", m.state)
 }
 {
   const { S, m } = layer(false)

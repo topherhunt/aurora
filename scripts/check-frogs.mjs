@@ -37,6 +37,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, SIT_S, WALK, LEAP, HOPS_MAX, WET_PAUSE_S, WADE_M, WET_ROUGHNESS, MORPHS, LOD_TIERS, LURES, LURE_M, LURE_FORGET_M, CHASE, ORBIT_M, NOTICE_S, REJOIN_MIN_S, GROW, bedKey, keyOf } from '../src/v2/render/frogs.js'
+import { MEAL } from '../src/v2/eating.js'
 import { taken } from '../src/v2/taken.js'
 import { GRID_S, keyHash } from '../src/sim/score.js'
 import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, TIER_TINTS, critterLodUrl, critterTier, cullRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
@@ -727,10 +728,25 @@ let NOW = T0 + SECONDS + 10
   // The peer's client hears the feeding: its own bed frog, grown, follows the peer's head.
   peer.apply(heard(fed), NOW)
   const pg = peer.loose.find((h) => h.key === g.key)
-  check(pg !== undefined && pg.pet.by === 7 && Math.abs(pg.size - g.size) < 1e-3, "the peer's client turns the same frog loose, grown, the feeder's pet")
+  check(pg !== undefined && pg.pet.by === 7 && Math.abs(pg.size - g.size) < 1e-3, "the peer's client turns the same frog loose, grown, the feeder's pet", pg && `${pg.size.toFixed(3)} vs ${g.size.toFixed(3)}, by ${pg.pet && pg.pet.by}`)
   const feeder = { x: pg.x + 5, y: GROUND + 1.6, z: pg.z, by: 7 }
   for (let i = 0; i < 10 / DT; i++) step([], [feeder])
   check(Math.hypot(pg.x - feeder.x, pg.z - feeder.z) < LURE_M, 'and follows the feeder there', `${Math.hypot(pg.x - feeder.x, pg.z - feeder.z).toFixed(2)} m off them`)
+
+  // Her pet eats again, MEAL.grow bigger; the same feeding heard from a peer makes it theirs, on her client and the peer's.
+  const before = g.size
+  const second = { kind: 'spider', x: g.x - 0.3, y: GROUND + 0.3, z: g.z, by: null }
+  head = [g.x - 1, GROUND + 1.6, g.z]
+  for (let i = 0; i < 8 / DT && eaten.length === 1; i++) step([second])
+  check(eaten.length === 2 && eaten[1] === second && Math.abs(g.size - before * (1 + MEAL.grow)) < 1e-9 && g.pet.by === null, `her pet eats a second spider and grows ${MEAL.grow * 100}%`, `${before.toFixed(3)} -> ${g.size.toFixed(3)}`)
+  const refed = me.pending([]).find((a) => a[7] === 'fed')
+  check(refed !== undefined, 'the room hears the second meal')
+  peer.apply(heard(refed), NOW)
+  check(Math.abs(pg.size - g.size) < 1e-3 && pg.pet.by === 7, "the peer's copy grows with it")
+  const theirs = heard(refed)
+  theirs[9] = refed[9] * (1 + MEAL.grow)
+  me.apply(theirs, NOW)
+  check(Math.abs(g.size - theirs[9]) < 1e-9 && g.pet.by === 7 && me.loose.length === 1, "a peer feeding her pet makes it theirs, and it grows the same on her client", `${g.size.toFixed(3)}, by ${g.pet.by}`)
 }
 
 // Dry land far from any water: nothing.

@@ -3,7 +3,7 @@
 // Passages are vaults over a flat floor swept along each edge's samples, each edge in its own cross-section (passageForm). Nodes are ellipsoid domes cut by a floor. Each piece is misshapen by as many shape octaves as its size holds. The pieces join by a smooth min, so every junction gets a fillet instead of a crease.
 
 import { Noise3 } from './noise3.js'
-import { reliefAt } from './graph.js'
+import { reliefIn } from './graph.js'
 import { mulberry32 } from '../../sim/mathx.js'
 
 const BIN = 8
@@ -81,7 +81,7 @@ export class CaveField {
     for (const n of graph.nodes) {
       const oct = roomOct(n), reach = oct > 0 ? SHAPE_CARVE : 0, r = Math.max(n.rx, n.rz) + reach
       prims.push({
-        node: true, rough: 1, group: n.i, region: n.region, x: n.x, y: n.y, z: n.z, c: Math.cos(n.rot), s: Math.sin(n.rot), rx: n.rx, rz: n.rz, h: n.h, dish: n.dish, cavern: n.kind === 'cavern' && !n.great, owner: n, oct, bias: SHAPE_BIAS * reachOf(oct), deep: (1 + SHAPE_BIAS) * reachOf(oct), rise: Math.min(SHAPE_RISE, 0.5 * n.h),
+        node: true, rough: 1, group: n.i, region: n.region, x: n.x, y: n.y, z: n.z, c: Math.cos(n.rot), s: Math.sin(n.rot), rx: n.rx, rz: n.rz, h: n.h, dish: n.dish, cavern: n.kind === 'cavern' && !n.great, owner: n, relief: n.relief === undefined ? null : n.relief, oct, bias: SHAPE_BIAS * reachOf(oct), deep: (1 + SHAPE_BIAS) * reachOf(oct), rise: Math.min(SHAPE_RISE, 0.5 * n.h),
         x0: n.x - r, x1: n.x + r, z0: n.z - r, z1: n.z + r, y0: n.y - Math.max(n.dish, -lowOf(n)) - 1, y1: n.y + n.h * 1.05 + reach,
       })
     }
@@ -111,7 +111,7 @@ export class CaveField {
     for (const l of graph.lobes) {
       const n = graph.nodes[l.node], oct = roomOct(l), reach = oct > 0 ? SHAPE_CARVE : 0, r = Math.max(l.rx, l.rz) + reach
       prims.push({
-        node: true, rough: 1, group: group++, region: l.region, x: l.x, y: l.y, z: l.z, c: Math.cos(l.rot), s: Math.sin(l.rot), rx: l.rx, rz: l.rz, h: l.h, dish: 0, cavern: false, owner: n, oct, bias: SHAPE_BIAS * reachOf(oct), deep: (1 + SHAPE_BIAS) * reachOf(oct), rise: Math.min(SHAPE_RISE, 0.5 * l.h),
+        node: true, rough: 1, group: group++, region: l.region, x: l.x, y: l.y, z: l.z, c: Math.cos(l.rot), s: Math.sin(l.rot), rx: l.rx, rz: l.rz, h: l.h, dish: 0, cavern: false, owner: n, relief: n.relief === undefined ? null : n.relief, oct, bias: SHAPE_BIAS * reachOf(oct), deep: (1 + SHAPE_BIAS) * reachOf(oct), rise: Math.min(SHAPE_RISE, 0.5 * l.h),
         x0: l.x - r, x1: l.x + r, z0: l.z - r, z1: l.z + r, y0: l.y + lowOf(n) - 1, y1: l.y + l.h * 1.05 + reach,
       })
     }
@@ -242,7 +242,7 @@ export class CaveField {
     // The octaves steepen the shell to ~3.7 m per metre, past what a sphere tracer's 0.8 step trusts: one from deep in a room would cross a wall into the void outside every prim. Past a metre off the wall it is squeezed back under that.
     if (p.oct > 0 && (shell < -1 || shell > 1)) shell = Math.sign(shell) * (1 + (Math.abs(shell) - 1) / (1.5 + 0.5 * p.oct))
     const rho2 = lx * lx + lz * lz
-    let floor = p.y + this._floorBump(x, z) + reliefAt(p.owner, x, z)
+    let floor = p.y + this._floorBump(x, z) + (p.relief === null ? 0 : reliefIn(p.relief, x, z))
     if (p.dish > 0) floor -= p.dish * Math.max(0, 1 - rho2 / 0.4356)
     // Swells in a cavern's floor, gone by its rim so a passage's ramp starts level with it.
     if (p.cavern) floor += 0.5 * this.floorNoise.at2(x * 0.11, z * 0.11) * Math.min(1, rho2 * 2, Math.max(0, (0.81 - rho2) / 0.3))

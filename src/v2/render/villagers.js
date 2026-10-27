@@ -191,11 +191,14 @@ export const FRIEND_M = 12
 export const GREET_S = [6, 10]
 export const GREET_COOL_S = 75
 export const FUSS_S = [2, 4]
+// The one that saw a frog eat her hob (chide()): a scream, then after her at a run, told again every LURE_EVERY_S or when she has moved REPLAN_M, a scold (conversations.js voices hers) and a threaten or a talk gesture every CHIDE_S, until her feet are CHIDE_M from its door; untold COURT_S, it goes on its way.
+export const CHIDE_S = [3, 5]
+export const CHIDE_M = 30
 const NO_CHASES = []
 const NO_LURES = []
 const NOBODY = () => false
 const NOWHERE = { x: 1e6, y: 0, z: 1e6 }
-const PREFIX = { startle: '', find: 'f', frog: 'g', lure: 'l', offer: 'o', greet: 'w', hail: 'h', peer: 'p' }
+const PREFIX = { startle: '', find: 'f', frog: 'g', lure: 'l', offer: 'o', greet: 'w', hail: 'h', peer: 'p', chide: 'c' }
 // Ticks between looks for someone to talk to, or to call for a mushroom.
 const MEET_TICKS = 10
 // Seconds before a chapter's turn that everyone makes for home, so the turn finds them indoors.
@@ -206,7 +209,7 @@ const SNAPS = 30
 // A startle's anchor: its extra fields are the villagers it names (server/src/main.js ANCHOR_MAX_FIELDS).
 const MAX_NAMED = 15
 // A villager's state the rollback keeps; route, partner and seat are kept beside them.
-const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'calm', 'glad', 'greeted', 'warm', 'peered']
+const KEPT = ['rs', 'x', 'y', 'z', 'heading', 'px', 'py', 'pz', 'ph', 'aim', 'state', 'hidden', 'at', 'wp', 'then', 'hold', 'voice', 'panted', 'talked', 'phase', 'stall', 'side', 'clip', 'left', 'dur', 'cycle', 'speed', 'from', 'fx', 'fz', 'trip', 'bundle', 'saw', 'fed', 'feast', 'frog', 'toss', 'tossAt', 'lapse', 'calm', 'glad', 'greeted', 'warm', 'peered', 'hers']
 // Salts the chapter's forage roll off the villagers' own.
 const FORAGE_SALT = 0xf0a6e
 
@@ -521,8 +524,8 @@ export class Villagers {
         trip: '', bundle: 0, saw: false, fed: false, feast: false, carrier: null,
         // The frog it is seeing to, `[tx, tz, index]` (frogs.js keyOf), the bank it walks it to and the water it throws it at, `{ ex, ez, wx, wz }`, and the second it let go; and its hold as frogs.js reads it.
         frog: null, toss: null, tossAt: null, claim: { phase: 'wait', x: 0, y: 0, z: 0, heading: 0, t0: 0, from: { x: 0, y: 0, z: 0 }, to: { x: 0, z: 0 } },
-        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, till she can frighten it again, whether it chatters home with her mushroom, till it greets her again, whether the greeting is a friend's, and till it peers at her again.
-        lapse: 0, calm: 0, glad: false, greeted: 0, warm: false, peered: 0,
+        // Her, standing for whom it courts or greets at (fx, fz): seconds till a court lapses, till she can frighten it again, whether it chatters home with her mushroom, till it greets her again, whether the greeting is a friend's, till it peers at her again, and whether the one it chides is her and not a peer.
+        lapse: 0, calm: 0, glad: false, greeted: 0, warm: false, peered: 0, hers: false,
         lod: LOD_TIERS, puppet: null,
         ...easeFields(),
       }
@@ -569,6 +572,9 @@ export class Villagers {
     this.held = []
     this.trusts = NOBODY
     this.won = []
+    // The villager chiding her (chide()), or null; and its scolds at her since chides() last drained them, each { id, x, y, z }.
+    this.chider = null
+    this.scolds = []
     this.hearsOwn = true
     // The frogs chasing hobs this frame (frogs.js chasers), and the villagers' holds on frogs by frog key, for frogs.js.
     this.chases = NO_CHASES
@@ -917,6 +923,7 @@ export class Villagers {
       case 'pick': c.state = 'pick'; c.hold = this.durations.gather / c.pace; this._play(c, 'gather', c.hold); break
       case 'court':
       case 'greet':
+      case 'chide':
         c.state = c.then
         c.phase = 'wait'
         if (c.state === 'greet') c.hold = between(c.rand, GREET_S)
@@ -1477,6 +1484,69 @@ export class Villagers {
     if (c.hold <= 0 || this.homing) this._errand(c)
   }
 
+  /** Free to chide her: free to court her, or chiding already. */
+  _chidable(c) {
+    return !this.homing && (this._courtable(c) || c.state === 'chide')
+  }
+
+  /** The chider told where her feet are: a scream the first time, and after her at a run, planned again when she has moved REPLAN_M. */
+  _chide(c, e) {
+    const fresh = c.state !== 'chide'
+    c.lapse = COURT_S
+    c.hers = e.by === null
+    if (!fresh && Math.hypot(e.fx - c.fx, e.fz - c.fz) < REPLAN_M) return
+    if (fresh) {
+      if (c.state === 'court' || c.state === 'greet') c.phase = ''
+      this._voice(c, 'leafkinScream')
+      c.voice = between(c.rand, CHIDE_S)
+    }
+    c.fx = e.fx
+    c.fz = e.fz
+    this._toHer(c, 'chide')
+    if (c.state !== 'walk') return
+    c.state = 'chide'
+    c.phase = 'come'
+    this._play(c, 'run', STEP_S)
+  }
+
+  _tickChide(c, dt) {
+    c.lapse -= dt
+    if (this.homing || c.lapse <= 0) { c.phase = ''; this._errand(c); return }
+    c.voice -= dt
+    if (c.voice <= 0) {
+      c.voice = between(c.rand, CHIDE_S)
+      if (this.voicing && c.hers) this.scolds.push({ id: c.id, x: c.x, y: c.y + c.size * CHEST, z: c.z })
+      if (c.phase !== 'come') {
+        const g = c.rand() < 0.5 ? 'threaten' : TALKS[(c.rand() * TALKS.length) | 0]
+        this._play(c, g, this.durations[g] / c.pace)
+      }
+    }
+    if (c.phase === 'come') { this._follow(c, dt, TURN_RATE); return }
+    this._turn(c, dt)
+  }
+
+  /** Her chider told where her feet are for `tick` (again every LURE_EVERY_S, or when she has moved REPLAN_M); let go when they are CHIDE_M from its door. */
+  _dog(t, tick) {
+    const c = this.all[this.chider], f = this.feet
+    const door = this.graph.nodes[c.home]
+    if (Math.hypot(door.x - f.x, door.z - f.z) > CHIDE_M) { this.chider = null; return }
+    if (!this._chidable(c) || this._owed(c.id, t)) return
+    if (c.state !== 'chide' || c.lapse < COURT_S - LURE_EVERY_S || Math.hypot(c.fx - f.x, c.fz - f.z) >= REPLAN_M) this._raise('chide', f.x, f.y, f.z, [c.id], tick)
+  }
+
+  /** Villager `id` saw a frog eat her hob: it chides her (CHIDE_S) until she leaves its glade. */
+  chide(id) {
+    if (!Number.isInteger(id) || id < 0 || id >= this.all.length) throw new Error(`Villagers.chide: no villager ${id}`)
+    this.chider = id
+  }
+
+  /** Its scolds at her since the last call, each `{ id, x, y, z }`, drained. */
+  chides(into) {
+    for (const s of this.scolds) into.push(s)
+    this.scolds.length = 0
+    return into
+  }
+
   /** Standing for her: every FUSS_S a beckon, a wave or a talk gesture, and a word with half of them (most, a friend's). */
   _fuss(c, dt) {
     c.voice -= dt
@@ -1736,6 +1806,10 @@ export class Villagers {
       const e = this._eventOf(c, 'greet') ?? this._eventOf(c, 'hail')
       if (e) this._greet(c, e)
     }
+    if (this._chidable(c)) {
+      const e = this._eventOf(c, 'chide')
+      if (e) this._chide(c, e)
+    }
     if ((c.frog !== null && c.phase !== 'cry') || c.glad) {
       c.voice -= dt
       if (c.voice <= 0) { c.voice = between(c.rand, CHATTER_S); this._voice(c, this._chatter(c)) }
@@ -1826,6 +1900,7 @@ export class Villagers {
       case 'court': this._tickCourt(c, dt); break
       case 'greet': this._tickGreet(c, dt); break
       case 'peer': this._tickPeer(c, dt); break
+      case 'chide': this._tickChide(c, dt); break
       case 'flee':
         c.voice -= dt
         if (c.voice <= 0) this._call(c, 'leafkinWhimper', WHIMPER_S)
@@ -1956,7 +2031,7 @@ export class Villagers {
         for (const c of this.all) {
           if (this.trusts(c.id)) continue
           const d = Math.hypot(c.x - f.x, c.y - f.y, c.z - f.z)
-          if (!small && this._startlable(c) && c.state !== 'court' && c.state !== 'greet' && c.calm <= 0 && d < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
+          if (!small && this._startlable(c) && c.state !== 'court' && c.state !== 'greet' && c.state !== 'chide' && c.calm <= 0 && d < STARTLE_M && !this._owed(c.id, t, 'startle')) ids.push(c.id)
           else if (small && this._findable(c) && c.peered <= 0 && d < PEER.m && !this._owed(c.id, t, 'peer')) peers.push(c.id)
         }
       }
@@ -1965,6 +2040,7 @@ export class Villagers {
       this._seeHer(t, t + LEAD_TICKS)
       if (this.hands && t % MEET_TICKS === 0) this._seek(t + LEAD_TICKS)
       if (t % MEET_TICKS === 0) this._seeFrogs(t + LEAD_TICKS)
+      if (this.chider !== null && t % MEET_TICKS === 0) this._dog(t, t + LEAD_TICKS)
     }
     for (const c of this.all) this._tick(c, t)
     const events = this.log.get(t)

@@ -34,6 +34,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS, HUNT, GROW, PET } from '../src/v2/render/crabs.js'
+import { MEAL } from '../src/v2/eating.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT, hueTurnTint, setTierTint } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
@@ -614,8 +615,11 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   const owed = k.pending()
   const fed = owed[0]
   check(owed.length === 1 && fed[7] === 'fed' && fed.length === 14 && fed[8] === null && /^[a-z0-9:,-]{1,32}$/.test(fed[0]) && JSON.stringify(fed).length <= 256, 'and the room is owed one 14-field fed anchor', JSON.stringify(fed))
-  k.update(head.x, head.y, head.z, (T += DT), true, [spider])
-  check(eaten.length === 1, 'a fed pet does not eat again')
+  const second = { ...spider, x: c.x, z: c.z }
+  k.update(head.x, head.y, head.z, (T += DT), true, [second])
+  check(eaten.length === 2 && eaten[1] === second && k.pets.length === 1 && Math.abs(c.size - size0 * GROW * (1 + MEAL.grow)) < 1e-9, `her pet eats a second spider and grows ${MEAL.grow * 100}%`, `${c.size.toFixed(3)}`)
+  const refed = k.pending()
+  check(refed.length === 1 && refed[0][7] === 'fed' && refed[0][0] === fed[0] && Math.abs(refed[0][9] - c.size) < 1e-3, 'and the room hears it on the same wire, grown', JSON.stringify(refed[0]))
   const walk = (of, to, s) => { for (let i = 0; i < s / DT; i++) of.update(to.x, to.y, to.z, (T += DT), true, [], [{ by: 7, x: to.x, y: to.y, z: to.z }]) }
   const there = { x: c.x + 6, y: head.y, z: c.z + 2 }
   walk(k, there, 6)
@@ -624,12 +628,16 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   fed[8] = 7
   peer.apply(fed, T)
   const theirs = peer.pets[0]
-  check(peer.pets.length === 1 && theirs.pet.by === 7 && Math.abs(theirs.size - c.size) < 1e-3 && peer.pending().length === 0, 'the peer told of it has the same pet, by the feeder, and owes nobody')
-  peer.apply(fed, T)
-  check(peer.pets.length === 1, 'and a second telling makes no second pet')
+  refed[0][8] = 7
+  peer.apply(refed[0], T)
+  check(peer.pets.length === 1 && theirs.pet.by === 7 && Math.abs(theirs.size - c.size) < 1e-3 && peer.pending().length === 0, 'the peer told of both meals has one pet, grown, by the feeder, and owes nobody')
   walk(peer, there, 6)
   const peerOff = Math.hypot(theirs.x - there.x, theirs.z - there.z)
   check(peerOff < PET.m + 0.3, 'and it follows the feeder there', `${peerOff.toFixed(2)} m`)
+  const steal = refed[0].slice()
+  steal[9] = refed[0][9] * (1 + MEAL.grow)
+  k.apply(steal, T)
+  check(k.pets.length === 1 && c.pet.by === 7 && c.size === steal[9], 'a peer feeding her pet makes it theirs, grown the same on her client', `by ${c.pet.by}, ${c.size.toFixed(3)}`)
   const rec = k.take({ dist: 0, c, size: c.size }, Infinity)
   const took = k.pending()
   check(rec.kind === 'crab' && k.pets.length === 0 && took.length === 1 && took[0][7] === 'took' && took[0][0] === fed[0], 'taken in hand it is no pet, and the room is told on the same wire')

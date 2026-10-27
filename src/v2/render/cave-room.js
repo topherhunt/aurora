@@ -10,6 +10,7 @@ import { mushroomVariants, mushroomParams } from '../../props/mushroom-bank.js'
 import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
+import { Surface } from '../caves/surface.js'
 import { CHUNK, LODS, CULL_M, drawnLod, drawnRegions, chunkGap, lightsIn, rockAt, ROCK_AT } from '../caves/mesh.js'
 import { shoreMesh } from '../caves/water.js'
 import { WATER, RIPPLE_GLSL } from '../../water.js'
@@ -465,8 +466,18 @@ export class CaveRoom {
     // The marks laid (drawChalk), and the strokes being drawn (drawLive).
     this.marks = null
     this.live = null
-    // key -> { x, y, z (the chunk's centre), lods: [per LODS tier, null until it arrives or if empty there, else { id, region } per region: an instance in `rock`] }.
+    // The strokes in `marks`, and how many of them wait on a chunk that has not meshed (redrawn once a second while chunks keep arriving).
+    this.marksSrc = []
+    this.marksWaiting = 0
+    this.marksFresh = false
+    this.marksAt = 0
+    // key -> { x, y, z (the chunk's centre), surface: tier 0's { pos, index } or null, lods: [per LODS tier, null until it arrives or if empty there, else { id, region } per region: an instance in `rock`] }.
     this.chunks = new Map()
+    // Chalk lies on the tier-0 triangles drawn here, not on the field they were cut from.
+    this.surface = new Surface((key) => {
+      const c = this.chunks.get(key)
+      return c === undefined ? null : c.surface
+    })
     // Every chunk's rock in one multi-draw. Its instance matrices stay identity: VERT reads modelMatrix only, so a transform set here would cull but not move.
     this.rockUsed = { v: 0, i: 0, mv: 1 << 18, mi: 1 << 19 }
     this.rock = new THREE.BatchedMesh(1024, this.rockUsed.mv, this.rockUsed.mi, this.material)
@@ -554,8 +565,14 @@ export class CaveRoom {
       parts.push({ id: this._addRock(g, from.length, count), region: m.parts[p] })
     }
     const [i, j, k] = m.key.split(',').map(Number)
-    if (!this.chunks.has(m.key)) this.chunks.set(m.key, { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, lods: LODS.map(() => null) })
-    this.chunks.get(m.key).lods[m.lod] = parts
+    if (!this.chunks.has(m.key)) this.chunks.set(m.key, { x: (i + 0.5) * CHUNK, y: (j + 0.5) * CHUNK, z: (k + 0.5) * CHUNK, surface: null, lods: LODS.map(() => null) })
+    const chunk = this.chunks.get(m.key)
+    chunk.lods[m.lod] = parts
+    if (m.lod === 0) {
+      chunk.surface = { pos: m.position, index: m.index }
+      this.surface.drop(m.key)
+      this.marksFresh = true
+    }
   }
 
   // Geometry `g` (`v` vertices, `n` indices) as a hidden instance in `rock`, its buffers doubled when full.
@@ -909,7 +926,9 @@ export class CaveRoom {
 
   /** Every stroke on this system's walls, cave-local point lists (caves/chalk.js), in place of the last. */
   drawChalk(strokes) {
+    this.marksSrc = strokes
     this.marks = this._ribbon(this.marks, strokes)
+    this.marksWaiting = this._skipped
   }
 
   /** The strokes her hands are drawing now, redrawn each frame they grow. */
@@ -922,8 +941,10 @@ export class CaveRoom {
       mesh.geometry.dispose()
       mesh.removeFromParent()
     }
+    this._skipped = 0
     if (strokes.length === 0) return null
-    const r = ribbons(strokes, this.plan.field)
+    const r = ribbons(strokes, this.surface)
+    this._skipped = r.skipped
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.BufferAttribute(r.position, 3))
     g.setAttribute('normal', new THREE.BufferAttribute(r.normal, 3))
@@ -943,6 +964,11 @@ export class CaveRoom {
     this.uniforms.uLitFloor.value = flying ? FLY_LIT : 0
     this.uniforms.uTime.value = t % 1024
     const ly = eye.y - this.oy
+    if (this.marksWaiting > 0 && this.marksFresh && t - this.marksAt >= 1) {
+      this.marksAt = t
+      this.marksFresh = false
+      this.drawChalk(this.marksSrc)
+    }
     const region = flying ? -1 : this._regionAt(eye.x, ly, eye.z)
     const shown = flying ? this.everyRegion : drawnRegions(this.plan.graph, region)
     for (const c of this.chunks.values()) {

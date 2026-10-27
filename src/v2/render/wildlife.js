@@ -60,14 +60,15 @@
 //
 // WHAT SHE DOES TO THEM. An animal is LIVE, off its score, in one of three
 // modes. LURE: a thing in a hand (hands.js lures, hers or a peer's) its
-// species wants (a carrot for a stag or a hare, a fish or a crab for a fox)
+// species wants (a carrot or mushroom for a stag, a carrot for a hare, a fish or a crab for a fox)
 // within its notice range has it look up (`notice`) and face the lure. A fox
 // `follow`s it, off its tether and detouring round blocked ground, to its
 // standoff and courts it there; a WARY one (stag, hare) holds still and
-// `gaze`s. A lure at its face is `beg`ged at -- unless the animal is wary and
-// the carrot hers, which it EATS (opts.eat takes it from her hand) with a
-// contented call. TAME: from then on it follows her to its `heel` and gazes
-// there, until she is past LURE_FORGET_M. FLEE: a wary animal with her head
+// `gaze`s. A lure at its face is `beg`ged at -- unless it is hers, which it
+// EATS (opts.eat takes it from her hand) with a contented call. TAME: from then
+// on it is her pet, following her to its `heel` and gazing there, until she is
+// past LURE_FORGET_M; every meal she holds to its face grows and heals it
+// (MEAL), and a peer's pet she feeds is hers. FLEE: a wary animal with her head
 // within FLEE_M and no lure looks up, turned to her (`startle`), and runs from
 // her until FLEE_CLEAR_M off or FLEE_S. The client that set it live is the
 // authority and publishes an anchor every ANCHOR_S; a peer runs a lure on the
@@ -142,7 +143,7 @@ import {
 } from './critters.js'
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
-import { EAT, atMost } from '../eating.js'
+import { EAT, MEAL, atMost } from '../eating.js'
 import { SINGE, redAt, reddened, touches } from '../singe.js'
 import { setPropSolidAt } from '../../material.js'
 import { cardPicture } from './litter-cards.js'
@@ -293,8 +294,8 @@ export const PLANTED = new Set(['idle', 'alert', 'eat-down', 'eat-loop', 'eat-up
  * at by how many metres behind it is (the first whose figure it is under), and
  * `court` what it does once it is there and the lure is not at its face.
  * One with a `flee` gait runs from her at her full size and looks at her at
- * half (FEAR). A `wary` one holds still at a lure, eats a
- * carrot of hers and is then tame, following her to its `heel` and voicing
+ * half (FEAR). A `wary` one holds still at a lure. One with a `heel` eats a
+ * lure of hers at its face and is then her pet (MEAL), following her to its `heel` and voicing
  * its `call` (an ambience SOUNDS key, at a rate rolled in `rate`) as it eats;
  * one with a `cry` voices it, under that ambience rule, as it starts to run, and its `hurt` when a torch singes it.
  * `prefix` is the first word of its creatures' keys. `pace` plays a gait's
@@ -306,7 +307,7 @@ export const SPECIES = [
     key: 'stag', prefix: 'st', glb: CRITTER_GLB.stag, vary: 0.25, scale: 1, rate: 0.5,
     acts: [['graze', 5], ['stand', 3], ['roam', 4], ['rest', 1]],
     gaits: [['walk', 7], ['trot', 3]],
-    lures: ['carrot'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
+    lures: ['carrot', 'mushroom'], standoff: 2, follow: [['walk', 4], ['trot', 10], ['run', Infinity]], court: 'gaze',
     wary: true, flee: 'run', heel: 2.5, call: { sound: 'deerGrunt', rate: [1.1, 1.3] }, cry: { sound: 'deerGrunt', rule: 'alarm', rate: [1, 1] }, hurt: { sound: 'deerGrunt', rule: 'alarm', rate: [1.4, 1.6] },
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.15, 0.9, 0.8]]), // greyer, brown, redder
   },
@@ -315,7 +316,7 @@ export const SPECIES = [
     acts: [['roam', 5], ['stand', 3], ['dig', 2], ['rest', 2], ['graze', 1]],
     gaits: [['walk', 2], ['trot', 8]],
     lures: ['fish', 'crab'], standoff: 1.2, follow: [['trot', 8], ['run', Infinity]], court: 'gaze',
-    flee: 'run', hunts: true, preys: ['hare'], hurt: { sound: 'foxYip', rule: 'alarm', rate: [1.3, 1.5] },
+    flee: 'run', hunts: true, preys: ['hare'], heel: 1.5, call: { sound: 'foxYip', rate: [1.1, 1.3] }, hurt: { sound: 'foxYip', rule: 'alarm', rate: [1.3, 1.5] },
     tint: tintRange([[0.8, 0.92, 1.2], [1, 1, 1], [1.12, 0.85, 0.8]]),
   },
   {
@@ -495,6 +496,8 @@ export class Wildlife {
     this.anchored = new Map()
     // key -> { hp, at }: what torches have cost each animal, and when last (SINGE), hers and the room's, kept through sleep.
     this.scars = new Map()
+    // key -> the meals a pet has eaten (MEAL), hers and the room's, kept through sleep.
+    this.meals = new Map()
     // The anchors this client owes the room (pending).
     this.outbox = []
     // Where her head was when the tiles were last walked.
@@ -705,8 +708,7 @@ export class Wildlife {
     c.home = s.home
     c.y = s.y
     c.nx = s.nx; c.ny = s.ny; c.nz = s.nz
-    c.size = s.size
-    c.k = s.size / s.sp.asset.span
+    this._grown(c, s.size)
     c.lod = CARD_RUNGS
     c.puppet = null
     c.cardWant = false
@@ -1422,7 +1424,9 @@ export class Wildlife {
         if (this.eat === null) throw new Error('Wildlife: a carrot of hers at its face, and no eat() to take it with')
         if (this.eat(c.lure, c.sp.key)) {
           c.live.mode = 'tame'
+          c.live.by = null
           c.lure = null
+          this._fed(c)
           // The room hears it tame on this tick, not a second on.
           c.live.sendTick = tickOf(now)
           this._say(c)
@@ -1537,20 +1541,20 @@ export class Wildlife {
    * One tick after its goal. A follower that has closed to `near` stops
    * there and then; a gazer whose goal has gone RESUME_M further sets off
    * after it -- unless it is wary and the goal is a lure, which it waits for
-   * -- a beggar whose lure has left its face lifts its head, and a wary one
-   * with her own carrot at its face leaves off whatever it was doing to eat
+   * -- a beggar whose lure has left its face lifts its head, and one with a
+   * heel and a lure of hers at its face leaves off whatever it was doing to eat
    * it. It faces the goal, a follower once its detour is over.
    */
   _heed(c, k) {
     const g = c.goal
     const dist = Math.hypot(g.x - c.sx, g.z - c.sz)
-    if (c.sp.wary && c.lure !== null && c.lure.by === null && this._atFace(c)) {
+    if (c.sp.heel !== undefined && c.lure !== null && c.lure.by === null && this._atFace(c)) {
       c.queue.length = 0
       c.stepEndTick = k
     } else if (c.act === 'follow' && dist <= c.near) {
       c.queue.length = 0
       c.stepEndTick = k
-    } else if ((c.act === 'gaze' && this._roams(c) && dist > c.near + RESUME_M) || (c.act === 'beg' && !this._atFace(c))) {
+    } else if ((c.act === 'gaze' && this._roams(c) && dist > c.near + RESUME_M) || (c.act === 'beg' && (c.lure === null || !this._atFace(c)))) {
       c.queue.length = 0
       if (c.clip === 'eat-down' || c.clip === 'eat-loop') c.queue.push(['eat-up', onGrid(c.sp.durations['eat-up'])])
       c.stepEndTick = k
@@ -1579,7 +1583,7 @@ export class Wildlife {
    */
   _court(c, now) {
     const l = c.lure
-    if (l !== null && this._atFace(c)) { this._begin(c, c.sp.wary && l.by === null ? 'eat' : 'beg', now); return }
+    if (l !== null && this._atFace(c)) { this._begin(c, c.sp.heel !== undefined && l.by === null ? 'eat' : 'beg', now); return }
     const dist = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
     if (c.live.mode === 'mad' || c.live.mode === 'hunt') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
     if (this._roams(c) && dist > c.near + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
@@ -1672,6 +1676,9 @@ export class Wildlife {
     if (Math.hypot(h.x - c.sx, h.z - c.sz) > LURE_FORGET_M) { this._unlive(c, now); return false }
     c.goal = h
     c.near = c.sp.heel
+    // A meal of hers in reach is one it eats (_heed, _court).
+    const l = this._lure(c)
+    c.lure = l !== null && l.by === null ? l : null
     if (c.act !== 'eat') this._heed(c, k)
     if (k >= c.stepEndTick) this._next(c, now)
     this._move(c, k)
@@ -1716,7 +1723,8 @@ export class Wildlife {
   _owe(c, now, mode) {
     // A runner's heading is where it is running to, its body not turned there yet when the run begins.
     const scar = this.scars.get(c.key)
-    const anchor = [c.key, now, c.sx, c.y, c.sz, mode === 'flee' ? c.aim : c.sh, -1, mode, null, scar ? scar.hp : null, scar ? scar.at : null]
+    const meals = this.meals.has(c.key) ? this.meals.get(c.key) : null
+    const anchor = [c.key, now, c.sx, c.y, c.sz, mode === 'flee' ? c.aim : c.sh, -1, mode, null, scar ? scar.hp : null, scar ? scar.at : null, meals]
     this.outbox.push(anchor)
     this.anchored.set(c.key, anchor)
   }
@@ -1778,8 +1786,8 @@ export class Wildlife {
 
   /**
    * An anchor heard from the room, `[key, T, x, y, z, heading, phraseIndex,
-   * mode, by, hp, hurtAt]`, `by` the client it came from (null for this client's own,
-   * which is ignored), the last two its scar (SINGE) or null. Kept for an animal not yet woken; on one that is, a
+   * mode, by, hp, hurtAt, meals]`, `by` the client it came from (null for this client's own,
+   * which is ignored), hp and hurtAt its scar (SINGE) or null, meals what it has eaten (MEAL) or null. Kept for an animal not yet woken; on one that is, a
    * live anchor puts it live or nudges it, a rejoin anchor puts it on that
    * rejoin from the anchor's time.
    */
@@ -1788,18 +1796,22 @@ export class Wildlife {
     if (!Number.isFinite(T)) throw new Error(`Wildlife: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (by === null) return
     if (!LIVE_MODES.has(mode) && mode !== 'rejoin') throw new Error(`Wildlife: no anchor mode ${mode}`)
-    if (anchor.length !== 11) throw new Error(`Wildlife: an anchor of ${anchor.length} fields, not 11: ${JSON.stringify(anchor)}`)
+    if (anchor.length !== 12) throw new Error(`Wildlife: an anchor of ${anchor.length} fields, not 12: ${JSON.stringify(anchor)}`)
     this.anchored.set(key, anchor)
+    // A scar at the time already kept is a meal's healing, no new hurt.
     const at = anchor[10], was = this.scars.get(key)
     const hurt = at !== null && !(was && was.at >= at)
-    if (hurt) this.scars.set(key, { hp: anchor[9], at })
+    if (at !== null && !(was && was.at > at)) this.scars.set(key, { hp: anchor[9], at })
+    const meals = anchor[11], fed = meals !== null && meals > (this.meals.has(key) ? this.meals.get(key) : 0)
+    if (fed) this.meals.set(key, meals)
     const c = this.byKey.get(key)
     if (!c) return
+    if (fed) this._grown(c, c.spawn.size)
     if (LIVE_MODES.has(mode)) {
-      if (c.live?.mode === 'lure' && mode === 'tame') this._say(c)
       if (c.live?.mode !== mode) this._golive(c, mode, null, by, now)
       c.live.anchor = anchor
       c.live.by = by
+      if (fed && mode === 'tame') this._say(c)
       if (hurt && now - at < SINGE.pulse) this._say(c, c.sp.hurt)
     } else {
       c.live = c.lure = null
@@ -1824,6 +1836,20 @@ export class Wildlife {
   _singed(c) {
     if (!touches(this.torches, c.sx, c.y, c.sz, c.size)) { c.singe = 0; return false }
     return (c.singe += TICK_S) >= SINGE.s
+  }
+
+  /** Its size off its wild `size` by the meals it has eaten (MEAL). */
+  _grown(c, size) {
+    c.size = size * (1 + MEAL.grow * (this.meals.get(c.key) ?? 0))
+    c.k = c.size / c.sp.asset.span
+  }
+
+  /** A meal eaten: MEAL.grow the bigger and SINGE.hp the better, the hurt kept at its time so the room takes the healing as no new hurt. */
+  _fed(c) {
+    this.meals.set(c.key, (this.meals.get(c.key) ?? 0) + 1)
+    this._grown(c, c.spawn.size)
+    const scar = this.scars.get(c.key)
+    if (scar) this.scars.set(c.key, { hp: Math.min(SINGE.max, scar.hp + SINGE.hp), at: scar.at })
   }
 
   /** Singed at `now`: SINGE.hp the worse, crying out, and running from her as from a fright, this client its authority. */
@@ -1851,6 +1877,13 @@ export class Wildlife {
     const now = k * TICK_S
     c.lx = c.sx; c.lz = c.sz; c.lh = c.sh
     if (c.act !== 'dead' && (!c.live || c.live.by === null) && this._singed(c)) this._burn(c, now)
+    if (c.live && c.live.mode === 'tame' && c.live.by !== null && c.act !== 'eat') {
+      // A peer's pet with a meal of hers at its face eats it and is hers, this client its authority.
+      const l = this._lure(c)
+      c.lure = l !== null && l.by === null ? l : null
+      if (c.lure !== null && this._atFace(c)) this._begin(c, 'eat', now)
+      else c.lure = null
+    }
     if (c.live) {
       if (c.live.mode !== 'mad' && c.live.by === null && this._maddens(c)) this._golive(c, 'mad', null, null, now)
       this._stepLive(c, k, now)
