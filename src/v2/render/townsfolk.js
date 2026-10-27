@@ -162,6 +162,8 @@ export const TOWNSFOLK = {
   shySnap: 2,
   // A townsperson is `girth` m round to a running strider (folkAt), and eases off a strider's body it stands in over `shove` s.
   girth: 0.3, shove: 0.2,
+  // Off its sim (fleeing, coming to her, walking back) a townsperson steps only where no stone stands from `knee` m over its feet to its height and no trunk or strider (walk.obstacleAt), turning off its way by the least of `steer` radians that is open; boxed in, it waits, and past `stuck` s gives up the way (_stepOpen).
+  knee: 0.5, steer: [0.6, 1.2, 1.6, 2.2], stuck: 3,
   // Metres past its radius a town's striders can be: a shied one's run and a body's length.
   reach: 20,
 }
@@ -1418,7 +1420,7 @@ export class Townsfolk {
 
   /** `graph` is its town's (townGraph), null for a traveller off the road. */
   _entity(c, graph = null) {
-    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, flee: null, scream: 0, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
+    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, flee: null, scream: 0, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 }, side: 1, stuck: 0 })
   }
 
   _wake(i) {
@@ -1595,6 +1597,7 @@ export class Townsfolk {
   /** `c` comes to her unasked from `seconds`: walks up to `come` m, waves, and waits, held as hold() holds. */
   approach(c, seconds, come) {
     c.greet = { until: Infinity, at: Infinity, clip: 'wave', come }
+    c.stuck = 0
     c.gcue++
   }
 
@@ -1782,6 +1785,28 @@ export class Townsfolk {
     for (const { life } of this.alive.values()) {
       if (!life.caught) continue
       for (const m of life.mounts) if (m.key === key) return m
+    }
+    return null
+  }
+
+  /** Whether `c` can stand at (x, z) from foot height `y`: no stone from TOWNSFOLK.knee over its feet to its height, nor a trunk or a strider not its own. */
+  _open(c, x, z, y) {
+    return !this.walk.crossed(x, z, y + TOWNSFOLK.knee, y + c.size) && this.walk.obstacleAt(x, z, _shoveOut, c.mount || (c.job ? c.job.mount : null)) === null
+  }
+
+  /** `c` off its sim stepped `m` m toward unit (ux, uz), or as near that as TOWNSFOLK.steer turns it round what is in the way, every turn to the side it last turned tried before the other's: the heading it took, or null when boxed in. One already standing in the way steps straight out. */
+  _stepOpen(c, ux, uz, m) {
+    const pose = c.pose, S = TOWNSFOLK.steer, g = TOWNSFOLK.girth, free = this._open(c, pose.x, pose.z, pose.y)
+    for (let i = 0; i <= 2 * S.length; i++) {
+      const a = i === 0 ? 0 : i <= S.length ? S[i - 1] * c.side : -S[i - 1 - S.length] * c.side
+      const dx = ux * Math.cos(a) - uz * Math.sin(a), dz = ux * Math.sin(a) + uz * Math.cos(a)
+      const x = pose.x + dx * m, z = pose.z + dz * m
+      if (free && !(this._open(c, x, z, pose.y) && this._open(c, x + dx * g, z + dz * g, pose.y))) continue
+      if (a !== 0) c.side = Math.sign(a)
+      pose.x = x
+      pose.z = z
+      pose.y = this._ground(c, x, z, pose.y)
+      return Math.atan2(-dz, dx)
     }
     return null
   }
@@ -1984,17 +2009,14 @@ export class Townsfolk {
       }
     }
     if (c.greet !== null) {
-      const look = c.greet.toward && seconds - c.greet.at < this.bodies[c.body].durations[c.greet.clip] ? c.greet.toward : feet
-      const want = Math.atan2(-(look.z - pose.z), look.x - pose.x), s = swing(pose.heading, want)
-      pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       // Coming to her (approach): walked up to `come` m, and only there the wave begins.
       if (c.greet.at === Infinity && seconds < c.greet.until) {
         const dx = feet.x - pose.x, dz = feet.z - pose.z, d = Math.hypot(dx, dz)
         const m = this.bodies[c.body].gait.walk * c.k * c.pace * dt
-        if (d - c.greet.come > m) {
-          pose.x += (dx / d) * m
-          pose.z += (dz / d) * m
-          pose.y = this._ground(c, pose.x, pose.z, pose.y)
+        const h = d - c.greet.come > m ? this._stepOpen(c, dx / d, dz / d, m) : 0
+        if (h !== null && d - c.greet.come > m) {
+          const s = swing(pose.heading, h)
+          pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
           pose.clip = 'walk'
           pose.speed = m / dt
           pose.cue = 1e6 + c.gcue * 2
@@ -2002,9 +2024,14 @@ export class Townsfolk {
           pose.scale = 1
           return
         }
+        // Boxed in short of her, it waits a while, then waves from where it is.
+        if (h === null && (c.stuck += dt) < TOWNSFOLK.stuck) return this._wait(c)
         c.greet.at = seconds
         c.gcue++
       }
+      const look = c.greet.toward && seconds - c.greet.at < this.bodies[c.body].durations[c.greet.clip] ? c.greet.toward : feet
+      const want = Math.atan2(-(look.z - pose.z), look.x - pose.x), s = swing(pose.heading, want)
+      pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
       pose.from = -1
       pose.scale = 1
       pose.speed = 0
@@ -2022,6 +2049,7 @@ export class Townsfolk {
       if (seconds >= c.greet.until) {
         c.greet = null
         c.lag = true
+        c.stuck = 0
         c.cool = seconds + G.cool
         // Its sim off that strider meanwhile (down at a rail, or gone down the road), it is let go from the saddle where it sits.
         if (c.saddle !== null && !(c.mount === c.saddle && c.saddle.state === 'ridden' && c.hop >= 1)) this._unsaddle(c)
@@ -2032,14 +2060,19 @@ export class Townsfolk {
       const on = c.saddle !== null, from = on ? c.saddle.pose : pose
       const dx = sx - from.x, dz = sz - from.z, d = Math.hypot(dx, dz)
       const body = this.bodies[c.body], speed = (on ? JOURNEYS.speed.ride : body.gait.walk * c.k * c.pace) * G.catchUp
-      if (d > speed * dt) {
-        const m = speed * dt
-        pose.x = from.x + (dx / d) * m
-        pose.z = from.z + (dz / d) * m
-        pose.y = this._ground(c, pose.x, pose.z, from.y)
-        const s = swing(pose.heading, Math.atan2(-dz, dx))
+      // Boxed in past TOWNSFOLK.stuck, it is put back on its sim.
+      const h = d <= speed * dt ? null : on ? Math.atan2(-dz, dx) : this._stepOpen(c, dx / d, dz / d, speed * dt)
+      if (d > speed * dt && h === null && (c.stuck += dt) < TOWNSFOLK.stuck) return this._wait(c)
+      if (h !== null) {
+        if (on) {
+          const m = speed * dt
+          pose.x = from.x + (dx / d) * m
+          pose.z = from.z + (dz / d) * m
+          pose.y = this._ground(c, pose.x, pose.z, from.y)
+          pose.hop = 1
+        }
+        const s = swing(pose.heading, h)
         pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
-        if (on) pose.hop = 1
         pose.clip = on ? 'ride' : 'walk'
         pose.speed = speed
         pose.cue = 1e6 + c.gcue * 2
@@ -2072,6 +2105,7 @@ export class Townsfolk {
       if (near === null || c.hidden || c.saddle !== null || c.hop > 0 || (c.greet !== null && c.greet.until === Infinity)) return false
       c.greet = null
       c.lag = true
+      c.stuck = 0
       c.flee = { until: 0, hx: 1, hz: 0 }
       c.gcue++
       if (seconds >= c.scream) {
@@ -2091,11 +2125,12 @@ export class Townsfolk {
       c.cool = seconds + TOWNSFOLK.greet.cool
       return false
     }
-    const v = this.bodies[c.body].gait.run * c.k, m = v * dt
-    pose.x += f.hx * m
-    pose.z += f.hz * m
-    pose.y = this._ground(c, pose.x, pose.z, pose.y)
-    const s = swing(pose.heading, Math.atan2(-f.hz, f.hx))
+    const v = this.bodies[c.body].gait.run * c.k, h = this._stepOpen(c, f.hx, f.hz, v * dt)
+    if (h === null) {
+      this._wait(c)
+      return true
+    }
+    const s = swing(pose.heading, h)
     pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * 2 * dt)
     pose.clip = 'run'
     pose.speed = v
@@ -2103,6 +2138,16 @@ export class Townsfolk {
     pose.from = -1
     pose.scale = 1 / c.pace
     return true
+  }
+
+  /** Posed standing where it is, off its sim, for a frame it cannot step. */
+  _wait(c) {
+    const pose = c.pose
+    pose.clip = 'idle'
+    pose.speed = 0
+    pose.cue = 1e6 + c.gcue * 2 + 1
+    pose.from = -1
+    pose.scale = 1
   }
 
   /** The screams since the last step, each `{ sound, x, y, z }`, drained. */

@@ -1,11 +1,11 @@
-// Seaweed on the lake and river beds (render/seaweed-scatter.js): clump 42 of render/seaweed.js, one instanced draw, and a tip never nearer the surface than 1 m.
+// Seaweed on the lake and river beds (render/seaweed-scatter.js): clump 42 of render/seaweed.js, one instanced draw, a tip never nearer the surface than 1 m, and beds that run from bare to patchy.
 //
 //   node scripts/check-seaweed.mjs
 //
 // Beds here are synthetic basins (a lake with a sloping shore and bumps, a narrow river), so the rule is tested over many seeds and many depths; what this can NOT check is how it looks.
 
 import THREE from '../src/three-instance.js'
-import { weedSites, SeaweedScatter, SEAWEED_SCATTER as C } from '../src/v2/render/seaweed-scatter.js'
+import { weedSites, densityAt, SeaweedScatter, SEAWEED_SCATTER as C } from '../src/v2/render/seaweed-scatter.js'
 import { seaweedGeometry } from '../src/v2/render/seaweed.js'
 
 let failures = 0
@@ -27,8 +27,8 @@ const bedAt = (x, z) => {
 const SEEDS = 120
 let sites = 0, shallowest = Infinity, nearest = Infinity, hMin = Infinity, hMax = -Infinity, dry = 0, rivers = 0
 for (let seed = 1; seed <= SEEDS; seed++) {
-  for (let tx = -9; tx <= 9; tx++) {
-    for (let tz = -9; tz <= 14; tz++) {
+  for (let tx = -10; tx <= 10; tx++) {
+    for (let tz = -10; tz <= 18; tz++) {
       for (const s of weedSites(tx, tz, seed, levelAt, bedAt)) {
         sites++
         const depth = LEVEL - s.y
@@ -45,7 +45,7 @@ console.log(`\nseaweed   ${SEEDS} world seeds over a synthetic lake and river`)
 check(sites > SEEDS * 100, 'beds grow clumps', `${sites} clumps`)
 check(nearest >= C.topGapM - 1e-9, 'no clump tip is nearer the surface than 1 m', `nearest ${nearest.toFixed(3)} m`)
 check(shallowest >= 2 - 1e-9, 'no clump roots in less than 2 m of water', `shallowest ${shallowest.toFixed(3)} m`)
-check(hMin >= 1 && hMax <= 4 && hMax - hMin > 2, 'clumps stand 1 to 4 m tall, over most of that range', `${hMin.toFixed(2)}..${hMax.toFixed(2)} m`)
+check(hMin >= 1 && hMax <= 8 && hMax - hMin > 4, 'clumps stand 1 to 8 m tall, over most of that range', `${hMin.toFixed(2)}..${hMax.toFixed(2)} m`)
 check(dry === 0, 'no clump stands on dry land', `${dry} dry`)
 check(rivers > 0, 'a river bed 3 m deep at its middle takes clumps where it is deep enough', `${rivers} in the river`)
 
@@ -53,24 +53,61 @@ const again = weedSites(3, -2, 7, levelAt, bedAt)
 check(again.length > 0 && JSON.stringify(again) === JSON.stringify(weedSites(3, -2, 7, levelAt, bedAt)), 'a tile rolls the same clumps every time', `${again.length} clumps`)
 check(JSON.stringify(weedSites(3, -2, 8, levelAt, bedAt)) !== JSON.stringify(again), 'another world seed rolls other clumps')
 
-// Density on beds over 5 m deep, where every clump height fits: clumps per hectare.
+// Density on beds over 5 m deep, where every clump height fits: clumps per hectare overall, and how unevenly they fall over 8 m cells.
 let deepArea = 0, deepSites = 0
 for (let x = -120; x < 120; x += 2) for (let z = -120; z < 120; z += 2) if (levelAt(x, z) !== null && LEVEL - bedAt(x, z) >= 5) deepArea += 4
-for (let seed = 1; seed <= 20; seed++) for (let tx = -8; tx <= 7; tx++) for (let tz = -8; tz <= 7; tz++) for (const s of weedSites(tx, tz, seed, levelAt, bedAt)) if (LEVEL - s.y >= 5) deepSites++
+const deep = []
+for (let seed = 1; seed <= 20; seed++) for (let tx = -10; tx <= 9; tx++) for (let tz = -10; tz <= 9; tz++) for (const s of weedSites(tx, tz, seed, levelAt, bedAt)) if (LEVEL - s.y >= 5) { deepSites++; if (seed === 1) deep.push(s) }
 const perHa = deepSites / 20 / (deepArea / 1e4)
-check(perHa > 100 && perHa < 400, 'a reasonable density on the deep bed', `${perHa.toFixed(0)} clumps per hectare`)
+check(perHa > 100 && perHa < 1500, 'a reasonable density on the deep bed', `${perHa.toFixed(0)} clumps per hectare`)
+
+const cells = new Map()
+for (const s of deep) { const k = `${Math.floor(s.x / 8)},${Math.floor(s.z / 8)}`; cells.set(k, (cells.get(k) ?? 0) + 1) }
+let deepCells = 0
+for (let x = -120; x < 120; x += 8) for (let z = -120; z < 120; z += 8) if (levelAt(x + 4, z + 4) !== null && LEVEL - bedAt(x + 4, z + 4) >= 5) deepCells++
+const counts = [...cells.values()]
+const mean = deep.length / deepCells
+const variance = counts.reduce((a, c) => a + c * c, 0) / deepCells - mean * mean
+check(variance / mean > 4, 'clumps bunch rather than spreading evenly (an even scatter has a dispersion near 1)', `dispersion ${(variance / mean).toFixed(1)}, ${deepCells - counts.length} of ${deepCells} cells bare`)
+
+let dense = 0, sparse = 0
+for (let x = -1000; x < 1000; x += 10) for (let z = -1000; z < 1000; z += 10) { const d = densityAt(x, z, 3); if (d > 0.9) dense++; if (d < 0.1) sparse++ }
+check(dense > 2000 && sparse > 2000, 'the density field has both thick and bare ground', `${dense} dense, ${sparse} sparse of 40000 samples`)
+
+// Patches: a tall clump has many neighbours within 5 m, most of them short.
+let tall = 0, crowd = 0, short = 0
+for (const s of deep) {
+  if (s.h < C.patch.bigM[0]) continue
+  const near = deep.filter((o) => o !== s && Math.hypot(o.x - s.x, o.z - s.z) < 5)
+  if (near.length < 9) continue
+  tall++
+  crowd += near.length
+  short += near.filter((o) => o.h <= C.patch.smallM[1]).length
+}
+check(tall > 20 && short / crowd > 0.6, 'patches gather many short clumps about a few tall ones', `${tall} crowded tall clumps, ${(crowd / Math.max(tall, 1)).toFixed(1)} neighbours each, ${((100 * short) / Math.max(crowd, 1)).toFixed(0)}% short`)
 
 // The instanced layer: one mesh, one draw call, each instance standing on its bed and as tall as its clump.
+const m0 = new THREE.Matrix4()
 const scene = new THREE.Scene()
 const field = { heightAt: bedAt }
 const water = { levelAt }
 let patched = 0
 const sw = new SeaweedScatter(scene, field, water, { seed: 5, patch: () => patched++ })
-sw.place(0, 0)
+sw.place(0, 0, 0)
 const meshes = []
 scene.traverse((o) => { if (o.isMesh) meshes.push(o) })
 check(meshes.length === 1 && meshes[0].isInstancedMesh && patched === 1, 'the layer is one instanced mesh with its material patched once', `${meshes.length} mesh`)
 check(sw.mesh.count > 100 && sw.mesh.count <= C.capacity, 'the clumps in reach are uploaded', `${sw.mesh.count} instances`)
+let reach = 0, missed = 0
+for (let tx = -8; tx <= 8; tx++) for (let tz = -8; tz <= 8; tz++) for (const s of weedSites(tx, tz, 5, levelAt, bedAt)) if (Math.hypot(s.x - 1, s.z - 1) <= C.cullM) reach++
+for (const [px, pz] of [[1, 1], [11.9, 11.9], [0.1, 11.9]]) {
+  sw.place(px, pz, 0)
+  const have = new Set()
+  for (let i = 0; i < sw.mesh.count; i++) { sw.mesh.getMatrixAt(i, m0); have.add(`${m0.elements[12].toFixed(3)},${m0.elements[14].toFixed(3)}`) }
+  for (let tx = -8; tx <= 8; tx++) for (let tz = -8; tz <= 8; tz++) for (const s of weedSites(tx, tz, 5, levelAt, bedAt)) if (Math.hypot(s.x - px, s.z - pz) <= C.cullM && !have.has(`${s.x.toFixed(3)},${s.z.toFixed(3)}`)) missed++
+}
+check(reach > 0 && missed === 0, `every clump within ${C.cullM} m is uploaded, wherever she stands in her tile`, `${missed} missing of ~${reach}`)
+sw.place(0, 0, 0)
 const geo = seaweedGeometry(C.seed)
 geo.computeBoundingBox()
 const gh = geo.boundingBox.max.y
@@ -80,14 +117,14 @@ for (let i = 0; i < sw.mesh.count; i++) {
   sw.mesh.getMatrixAt(i, m)
   m.decompose(p, q, sc)
   const top = p.y + sc.y * gh
-  if (Math.abs(p.y - bedAt(p.x, p.z)) > 1e-4 || LEVEL - top < 1 - 1e-4 || sc.y * gh < 1 - 1e-4 || sc.y * gh > 4 + 1e-4) bad++
+  if (Math.abs(p.y - bedAt(p.x, p.z)) > 1e-4 || LEVEL - top < 1 - 1e-4 || sc.y * gh < 1 - 1e-4 || sc.y * gh > 8 + 1e-4) bad++
   worst = Math.min(worst, LEVEL - top)
 }
-check(bad === 0, 'every instance roots on the bed, stands 1 to 4 m tall and tops out 1 m under the water', `${bad} bad, nearest tip ${worst.toFixed(3)} m under`)
+check(bad === 0, 'every instance roots on the bed, stands 1 to 8 m tall and tops out 1 m under the water', `${bad} bad, nearest tip ${worst.toFixed(3)} m under`)
 const before = sw.mesh.count
-sw.place(1, 1)
+sw.place(1, 1, 0)
 check(sw.mesh.count === before, 'staying in a tile re-rolls nothing')
-sw.place(800, 800)
+sw.place(800, 800, 0)
 check(sw.mesh.count === 0, 'far from any water the layer is empty', `${sw.mesh.count} instances`)
 sw.dispose()
 

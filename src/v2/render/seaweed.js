@@ -2,14 +2,14 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 
 // Seaweed for the depths: a clump of ribbon blades, each a strip that tapers to a point as it rises, leaning out and
-// rippling side to side, under a dark-green mottle drawn here in code. Not scattered yet.
+// rippling side to side, under a dark-green mottle drawn here in code. Scattered by render/seaweed-scatter.js.
 
 export const SEAWEED = {
   blades: [5, 9],
   height: [0.5, 1.4],
   // The widest a blade gets, metres either side of its midrib.
   width: [0.04, 0.08],
-  segs: 8,
+  segs: 16,
   // Texture side in texels; the mottle repeats every `repeat` metres up a blade.
   tex: 64,
   repeat: 0.5,
@@ -19,7 +19,7 @@ const DARK = [0.035, 0.11, 0.03]
 const MID = [0.08, 0.2, 0.05]
 const OLIVE = [0.22, 0.3, 0.08]
 
-/** One clump of blades for `seed`, rooted at the origin: positions, normals, and a uv whose v runs in metres / SEAWEED.repeat. */
+/** One clump of blades for `seed`, rooted at the origin: positions, normals, a uv whose v runs in metres / SEAWEED.repeat, and `blade` (the blade's outward bearing x, z and a phase of its own) shared by both edges of a blade so a vertex wave bends it whole. */
 export function seaweedGeometry(seed) {
   const r = mulberry32(seed)
   const range = ([a, b]) => a + (b - a) * r()
@@ -27,6 +27,7 @@ export function seaweedGeometry(seed) {
   const S = SEAWEED.segs
   const pos = []
   const uv = []
+  const blade = []
   const index = []
   for (let b = 0; b < n; b++) {
     const yaw = (b / n + r() * 0.3) * Math.PI * 2
@@ -56,6 +57,7 @@ export function seaweedGeometry(seed) {
       pos.push(cx - ax, y, cz - az, cx + ax, y, cz + az)
       const v = y / SEAWEED.repeat
       uv.push(0, v, 1, v)
+      blade.push(dx, dz, b * 2.39996, dx, dz, b * 2.39996)
       if (s > 0) {
         const i = base + (s - 1) * 2
         index.push(i, i + 1, i + 2, i + 1, i + 3, i + 2)
@@ -65,6 +67,7 @@ export function seaweedGeometry(seed) {
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2))
+  geo.setAttribute('blade', new THREE.Float32BufferAttribute(blade, 3))
   geo.setIndex(index)
   geo.computeVertexNormals()
   return geo

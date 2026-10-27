@@ -59,6 +59,7 @@ export class TownResidents {
     // The door's one-shots since the last voices(): { sound, rule, x, y, z }.
     this.calls = []
     this.all = []
+    this.hx = this.hy = this.hz = 0
     for (const w of who) this._add(w.id, w.body, w.size, w.pace, false)
     if (this.all.length >= 2 && this.rand() < 0.4 && room.spots.some((s) => s.kind === 'talk')) this._talk(this.all[0], this.all[1], true)
     for (const r of this.all) if (!r.spot) this._choose(r, true)
@@ -82,7 +83,8 @@ export class TownResidents {
     const d = this.room.doorIn
     const r = {
       id, kind: body, b, size, pace, k: size / b.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI, level: 0,
-      state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, leaving: false,
+      state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, leaving: false, her: null,
+      pose: { x: this.group.position.x + d.x, y: this.group.position.y, z: this.group.position.z + d.z },
       body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: b.durations.walk / pace },
     }
     this.all.push(r)
@@ -231,14 +233,80 @@ export class TownResidents {
       case 'up': break
       default: throw new Error(`TownResidents: no phase ${r.phase}`)
     }
-    if (r.partner) { r.partner.partner = null; r.partner = null }
+    this._unpair(r)
     this._release(r)
     this._choose(r, false)
   }
 
+  // -- her conversation (conversations.js), the same calls as residents.js's: `r.her` is `{ at, seat, toward }` while she holds it, `at` Infinity while it comes to her.
+
+  /** Who she can talk with: awake, staying, and stood on her floor, not on the stair. */
+  talkers(into) {
+    const f = this.room.nav.floors
+    for (const r of this.all) {
+      if (r.state === 'leave' || r.state === 'gone' || r.leaving || r.phase === 'lie' || r.phase === 'sleep' || r.phase === 'rise') continue
+      if (Math.abs(r.y - f[r.level]) < 0.05 && Math.abs(r.y - this.hy) < 1) into.push(r)
+    }
+    return into
+  }
+
+  /** Stopped and turned to her until release(); one in a seat talks from it. */
+  hold(r) {
+    if (r.her !== null) { r.route.length = 0; r.her.at = 0; this._play(r, 'idle', Infinity); return }
+    if (r.state === 'act' && (r.phase === 'down' || r.phase === 'hold')) { r.her = { at: 0, seat: true, toward: null }; r.hold = Infinity; return }
+    this._unpair(r)
+    this._release(r)
+    r.state = 'her'
+    r.route.length = 0
+    r.her = { at: 0, seat: false, toward: null }
+    this._play(r, 'idle', Infinity)
+  }
+
+  /** Whether it is wanted by nothing it is doing: stood about, busy at its counter or the stove, or talking in the hall. */
+  free(r) {
+    return r.her === null && r.state === 'act' && (r.phase === 'stand' || r.phase === 'busy' || r.phase === 'talk')
+  }
+
+  /** It walks over the grid to `come` m of her and waves, then is held as hold() holds: true, as residents.js's answers whether it comes. */
+  approach(r, come) {
+    const d = Math.max(1e-3, Math.hypot(r.x - this.hx, r.z - this.hz))
+    const x = this.hx + ((r.x - this.hx) / d) * come, z = this.hz + ((r.z - this.hz) / d) * come
+    this._unpair(r)
+    this._release(r)
+    this._goTo(r, { kind: 'wander', x, z, lookX: this.hx - x, lookZ: this.hz - z, level: r.level }, false)
+    r.state = 'her'
+    r.her = { at: Infinity, seat: false, toward: null }
+    return true
+  }
+
+  /** Its `clip` once, turned to `toward` (world {x, z}) while it plays when given, then idle; one in a seat keeps its seat. */
+  gesture(r, clip, toward = null) {
+    if (r.her === null) throw new Error(`TownResidents.gesture: ${r.id} is not held`)
+    if (r.her.seat) return
+    r.her.toward = toward
+    this._play(r, clip, r.b.durations[clip])
+  }
+
+  held(r) { return r.her !== null }
+
+  arrived(r) { return r.her !== null && r.her.at !== Infinity }
+
+  release(r) {
+    if (r.her === null) return
+    const seat = r.her.seat
+    r.her = null
+    if (seat) r.hold = 0
+    else this._choose(r, false)
+  }
+
+  _unpair(r) {
+    if (r.partner) { r.partner.partner = null; r.partner = null }
+  }
+
   /** Out: from a seat or a bed straight up, then to the door and gone. */
   _leave(r) {
-    if (r.partner) { r.partner.partner = null; r.partner = null }
+    r.her = null
+    this._unpair(r)
     if (r.state === 'act' && r.on > 0) {
       r.hold = 0
       r.leaving = true
@@ -253,7 +321,12 @@ export class TownResidents {
     r.state = 'leave'
   }
 
-  update(dt, view) {
+  /** `feet` hers, in the world. */
+  update(dt, view, feet) {
+    const g = this.group.position
+    this.hx = feet.x - g.x
+    this.hy = feet.y - g.y
+    this.hz = feet.z - g.z
     this.u = view.uniforms
     residentLight(this.u, this.light.value)
     for (const r of this.all.slice()) this._step(r, dt)
@@ -263,7 +336,7 @@ export class TownResidents {
   bodies(into) {
     const g = this.group.position
     for (const r of this.all) {
-      if (r.state !== 'walk' && r.state !== 'leave') continue
+      if (r.state !== 'walk' && r.state !== 'leave' && !(r.state === 'her' && r.route.length > 0)) continue
       Object.assign(r.body, { x: g.x + r.x, y: g.y + r.y, z: g.z + r.z, speed: r.b.gait.walk * r.k * r.pace })
       into.push(r.body)
     }
@@ -283,7 +356,7 @@ export class TownResidents {
   }
 
   _step(r, dt) {
-    if (r.state === 'walk' || r.state === 'leave') {
+    if (r.state === 'walk' || r.state === 'leave' || (r.state === 'her' && r.route.length > 0)) {
       const p = r.route[0]
       const dx = p.x - r.x, dz = p.z - r.z, d = Math.hypot(dx, dz)
       const v = r.b.gait.walk * r.k * r.pace
@@ -292,6 +365,7 @@ export class TownResidents {
         r.route.shift()
         if (r.route.length === 0) {
           if (r.state === 'leave') { r.puppet.show(-1, FADE_S); r.state = 'gone'; this._door() }
+          else if (r.state === 'her') { r.her.at = 0; this._play(r, 'wave', r.b.durations.wave) }
           else { r.heading = this._stand(r, r.spot).heading; this._begin(r, false) }
         }
       } else {
@@ -316,6 +390,11 @@ export class TownResidents {
         if (r.leaving && r.phase === 'up') { r.leaving = false; r.on = 0; r.state = 'walk'; this._leave(r) }
         else this._next(r)
       }
+    } else if (r.state === 'her') {
+      const g = this.group.position, to = r.her.toward
+      const want = to ? Math.atan2(to.x - g.x - r.x, to.z - g.z - r.z) : Math.atan2(this.hx - r.x, this.hz - r.z)
+      r.heading += Math.atan2(Math.sin(want - r.heading), Math.cos(want - r.heading)) * Math.min(1, TURN_RATE * dt)
+      if ((r.left -= dt) <= 0) { r.her.toward = null; this._play(r, 'idle', Infinity) }
     } else if (r.state === 'gone') {
       r.puppet.step(dt)
       if (r.puppet.done) {
@@ -354,9 +433,11 @@ export class TownResidents {
     _scl.setScalar(r.k)
     p.group.matrix.compose(_pos, _quat, _scl)
     p.group.matrixWorldNeedsUpdate = true
+    const o = this.group.position
+    r.pose.x = o.x + x; r.pose.y = o.y + y; r.pose.z = o.z + z
     // A baked body is lit where it stands by its tint over the house's shared light, so the batch stays one draw; a skinned one has no tint and keeps the house's.
     if (p.baked) {
-      const cy = y + CHEST * r.size, o = this.group.position, L = this.light.value
+      const cy = y + CHEST * r.size, L = this.light.value
       residentLightAt(this.u, this.lightAt(x, cy, z), heldTorchAt(this.u.uTorch.value, o, x, cy, z, 0, 0, 0), p.tint)
       p.tint.setRGB(p.tint.r / L.x, p.tint.g / L.y, p.tint.b / L.z)
     }

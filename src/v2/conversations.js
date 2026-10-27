@@ -1,6 +1,7 @@
 // Talking with the townsfolk and the leafkin (_notes/conversation-and-quests.md, "Conversation"): their chatter with
 // each other voiced where they stand, her hail (a spike on the mic, or a key) to whomever she faces, the dialog panel
-// while they talk, and now and then one who comes to her unasked. The words are talk/*; this is when and where.
+// while they talk, and now and then one who comes to her unasked -- outdoors, or the residents of the house she is in.
+// The words are talk/*; this is when and where.
 
 import { TalkWorld } from './talk/world.js'
 import { villageMinds } from './talk/mind.js'
@@ -46,12 +47,13 @@ export class Conversations {
    * seed. `known`, `rapport` and `log` outlive the room (main.js). `upload` puts a canvas on the GPU; `engine()` is the
    * SoundEngine once it is open and `mic()` her Mic once asked for, else null. `pack` is what she carries (main.js),
    * `roosts` the dragon roosts or null in a village (the deer town stands near one), and `wrongs` the glade she wronged:
-   * `{ wronged(): boolean, witness(): villager id or null }`.
+   * `{ wronged(): boolean, witness(): villager id or null }`. `heard(p)` puts a point {x, y, z} where her ears hear it, in place.
    */
-  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs }) {
+  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs, heard }) {
     this.world = new TalkWorld(seed, towns)
     this.pack = pack
     this.wrongs = wrongs
+    this.heard = heard
     if (roosts) {
       const sites = []
       for (const { town } of this.world.towns) {
@@ -94,6 +96,8 @@ export class Conversations {
     this.turns = []
     // A chider's scold or a passer-by's jeer on the panel with no conversation open: `{ c, until }`, or null.
     this.scold = null
+    // The house she is in, `{ residents, t }` (`t` its town, null in a village), or null: its residents are whom she talks with.
+    this.room = null
     // Seconds until which each townsperson leaves her sword be, by mind id; the alive towns whose guard has warned her off it.
     this.jeered = new Map()
     this.warned = new Set()
@@ -156,36 +160,52 @@ export class Conversations {
     return entry.minds[id] ?? null
   }
 
-  /** Everyone drawn near enough to talk to: `{ kind, c, mind }`. */
+  /** The house's residents (render/residents.js, town-residents.js) she is among, or null outdoors. */
+  get _res() {
+    return this.room === null ? null : this.room.residents
+  }
+
+  /** Everyone drawn near enough to talk to: `{ kind, c, mind, t, res }`, `res` the residents `c` is one of, else null. */
   _people(into) {
+    if (this.room !== null) {
+      const { residents: res, t } = this.room
+      for (const c of res.talkers([])) {
+        const mind = t === null ? this.village[c.id] : this._townMind(t, c.id)
+        if (mind !== null) into.push({ kind: t === null ? 'village' : 'town', c, mind, t, res })
+      }
+      return into
+    }
     if (this.townsfolk) {
       for (const [t, { life }] of this.townsfolk.alive) {
         for (const c of life.all) {
           if (!c.puppet || (c.hidden && c.greet === null)) continue
           const mind = this._townMind(t, c.id)
-          if (mind !== null) into.push({ kind: 'town', c, mind, t })
+          if (mind !== null) into.push({ kind: 'town', c, mind, t, res: null })
         }
       }
     }
-    if (this.villagers) for (const c of this.villagers.all) if (c.puppet && !c.hidden) into.push({ kind: 'village', c, mind: this.village[c.id] })
+    if (this.villagers) for (const c of this.villagers.all) if (c.puppet && !c.hidden) into.push({ kind: 'village', c, mind: this.village[c.id], res: null })
     return into
   }
 
-  /** Once a frame. `head` her eye, `gaze` her look flattened to a unit {x, z}, `scale` hers, `trusts(id)` whether villager `id` trusts her. */
-  update(dt, { seconds, head, gaze, scale, hour, trusts, indoors }) {
+  /** Once a frame. `head` her eye, `gaze` her look flattened to a unit {x, z}, `scale` hers, `trusts(id)` whether villager `id` trusts her; `room` the house she is in (this.room), `indoors` whether she is somewhere no one talks (a cave). */
+  update(dt, { seconds, head, gaze, scale, hour, trusts, indoors, room }) {
     this.now = seconds
     this.hour = hour
     this.trusts = trusts
-    if (indoors) this._drain()
+    this.room = room
+    const away = indoors || room !== null
+    if (away) this._drain()
     else this._chatter(head)
+    if (this.coming && this.coming.p.res !== this._res) { this._unhold(this.coming.p); this.coming = null }
     if (this.chat) this._keep(head, scale, indoors)
-    else if (this.scold) this._keepScold(head, scale, indoors)
+    else if (this.scold) this._keepScold(head, scale, away)
     const mic = this.mic()
     const spoke = (mic !== null && mic.spike(seconds, dt)) || this.hailed
     this.hailed = false
     if (spoke && this.chat === null && !indoors) this._hail(head, gaze, scale)
     if (this.townsfolk) for (const t of this.warned) if (!this.townsfolk.alive.has(t)) this.warned.delete(t)
-    if (this.chat === null && this.scold === null && !indoors && Math.floor(seconds / TALK.jeer.every) !== Math.floor((seconds - dt) / TALK.jeer.every)) this._jeer(head, scale)
+    if (this.chat === null && this.scold === null && !away && Math.floor(seconds / TALK.jeer.every) !== Math.floor((seconds - dt) / TALK.jeer.every)) this._jeer(head, scale)
     if (this.coming) this._wait(head)
     else if (this.chat === null && !indoors && Math.floor(seconds / TALK.approach.every) !== Math.floor((seconds - dt) / TALK.approach.every)) this._approach(head, scale)
   }
@@ -240,8 +260,7 @@ export class Conversations {
     }
     if (this.picker === null || this.voices === null && !this._voices()) return
     const pick = this.picker.pick(p.mind, line.moment, { now: this.now, tier: 'native', force: true })
-    const at = { x: p.c.pose.x, y: p.c.pose.y + TALK.mouth * p.c.size, z: p.c.pose.z }
-    if (pick !== null) this.voices.say(pick, at, Math.hypot(at.x - head.x, at.y - head.y, at.z - head.z), { reply: true })
+    if (pick !== null) this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true })
   }
 
   _keepScold(head, scale, indoors) {
@@ -312,6 +331,7 @@ export class Conversations {
   }
 
   _busy(p) {
+    if (p.res !== null) return false
     return p.kind === 'town' ? p.c.state === 'work' || p.c.job !== null : !FREE.has(p.c.state)
   }
 
@@ -340,21 +360,31 @@ export class Conversations {
 
   /** `line` said by `p`: its gesture, and its moment in their voice where she stands. */
   _say(p, line, head) {
-    if (p.kind === 'town') this.townsfolk.gesture(p.c, line.gesture, this.now, line.toward)
+    if (p.res !== null) p.res.gesture(p.c, line.gesture, line.toward)
+    else if (p.kind === 'town') this.townsfolk.gesture(p.c, line.gesture, this.now, line.toward)
     else this.villagers.gesture(p.c.id, line.gesture, this.now, line.toward)
     if (this.picker === null || this.voices === null && !this._voices()) return
     const tier = p.kind === 'village' ? leafkinTier(this.chat.trusted, this.rapport.standing(p.mind.id)) : 'native'
     const pick = this.picker.pick(p.mind, line.moment, { now: this.now, tier, force: true })
     if (pick === null) return
-    const at = { x: p.c.pose.x, y: p.c.pose.y + TALK.mouth * p.c.size, z: p.c.pose.z }
-    this.voices.say(pick, at, Math.hypot(at.x - head.x, at.y - head.y, at.z - head.z), { reply: true })
+    this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true })
+  }
+
+  /** `c`'s mouth where her ears hear it (`heard`: a house's room is heard out at its door). */
+  _heard(c) {
+    return this.heard({ x: c.pose.x, y: c.pose.y + TALK.mouth * c.size, z: c.pose.z })
+  }
+
+  /** Metres from `c`'s mouth to her `head`. */
+  _far(c, head) {
+    return Math.hypot(c.pose.x - head.x, c.pose.y + TALK.mouth * c.size - head.y, c.pose.z - head.z)
   }
 
   /** The open conversation kept up: the panel before her, or over once she walks off or their last line has been read. */
   _keep(head, scale, indoors) {
     const { p, closing } = this.chat
     const d = Math.hypot(p.c.pose.x - head.x, p.c.pose.z - head.z)
-    if (indoors || d > TALK.leave * scale || (closing !== null && this.now >= closing)) { this._end(); return }
+    if (indoors || p.res !== this._res || (p.res !== null && !p.res.held(p.c)) || d > TALK.leave * scale || (closing !== null && this.now >= closing)) { this._end(); return }
     if (this.chat.answerAt !== null) {
       if (this.now < this.chat.answerAt) return
       this._open(head)
@@ -370,12 +400,14 @@ export class Conversations {
   }
 
   _hold(p) {
-    if (p.kind === 'town') this.townsfolk.hold(p.c, this.now)
+    if (p.res !== null) p.res.hold(p.c)
+    else if (p.kind === 'town') this.townsfolk.hold(p.c, this.now)
     else this.villagers.hold(p.c.id, this.now)
   }
 
   _unhold(p) {
-    if (p.kind === 'town') this.townsfolk.release(p.c, this.now)
+    if (p.res !== null) p.res.release(p.c)
+    else if (p.kind === 'town') this.townsfolk.release(p.c, this.now)
     else this.villagers.release(p.c.id)
   }
 
@@ -387,9 +419,9 @@ export class Conversations {
     const armed = this.pack.holds('sword')
     for (const p of this._people([])) {
       const c = p.c, id = p.mind.id
-      if (p.kind === 'town' ? c.greet !== null || c.lag || c.hidden || c.job !== null || c.state === 'work' || c.state === 'sit' : this.villagers.talking.has(c.id) || !FREE.has(c.state) || !this.trusts(c.id)) continue
+      if (p.res !== null ? !p.res.free(c) || (p.kind === 'village' && !this.trusts(c.id)) : p.kind === 'town' ? c.greet !== null || c.lag || c.hidden || c.job !== null || c.state === 'work' || c.state === 'sit' : this.villagers.talking.has(c.id) || !FREE.has(c.state) || !this.trusts(c.id)) continue
       if (Math.hypot(c.pose.x - head.x, c.pose.z - head.z) > A.m * scale) continue
-      if (armed && p.kind === 'town') {
+      if (armed && p.kind === 'town' && p.res === null) {
         if (p.mind.cls !== 'guard' || this.warned.has(p.t)) continue
         this.warned.add(p.t)
         this.townsfolk.approach(c, this.now, A.come * scale)
@@ -402,7 +434,8 @@ export class Conversations {
       if ((this.asked.get(ask) ?? -Infinity) > this.now) continue
       this.asked.set(ask, this.now + A.again)
       if (!wantsHer(p.mind, ctx, Math.random())) continue
-      if (p.kind === 'town') this.townsfolk.approach(c, this.now, A.come * scale)
+      if (p.res !== null) { if (!p.res.approach(c, A.come * scale)) continue }
+      else if (p.kind === 'town') this.townsfolk.approach(c, this.now, A.come * scale)
       else this.villagers.approach(c.id, this.now, A.come * scale)
       this.coming = { p, until: Infinity, hailed: false, warn: false }
       return
@@ -412,7 +445,7 @@ export class Conversations {
   /** The one coming to her: hails her once there and waits; left waiting, goes back to what it was doing. */
   _wait(head) {
     const { p } = this.coming
-    const greet = p.kind === 'town' ? p.c.greet : this.villagers.talking.get(p.c.id)
+    const greet = p.res !== null ? (p.res.held(p.c) ? { at: p.res.arrived(p.c) ? 0 : Infinity } : null) : p.kind === 'town' ? p.c.greet : this.villagers.talking.get(p.c.id)
     if (!greet) { this.coming = null; return }
     if (!this.coming.hailed && greet.at !== Infinity) {
       this.coming.hailed = true
@@ -420,7 +453,7 @@ export class Conversations {
       if (this.coming.warn) this._remark(p, swordWarning(p.mind, Math.random()), head)
       else if (this.picker !== null && (this.voices !== null || this._voices())) {
         const pick = this.picker.pick(p.mind, 'hail.attention', { now: this.now, force: true })
-        if (pick !== null) this.voices.say(pick, { x: p.c.pose.x, y: p.c.pose.y + TALK.mouth * p.c.size, z: p.c.pose.z }, TALK.approach.come)
+        if (pick !== null) this.voices.say(pick, this._heard(p.c), TALK.approach.come)
       }
     }
     if (this.now >= this.coming.until) {

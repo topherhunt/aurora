@@ -4428,7 +4428,7 @@ async function openHouse(e) {
   const who = villagers.all.filter((c) => c.home === home && c.state === 'inside').map((c) => ({ id: c.id, size: c.size, pace: c.pace, feast: c.feast }))
   const residents = new Residents(scene, room, { asset: villagers.asset, sitY: villagers.sitY, who, seed: villageSeed(), ox, oy, oz, hands, mushrooms, hour: () => clock.hour })
   const rDoor = rAt(room.rs, Math.PI)
-  indoors = { e, back: e.back, room, view, residents, door: { x: ox - rDoor, y: oy, z: oz, nx: -1, nz: 0 }, outside: walk }
+  indoors = { e, back: e.back, room, view, residents, talk: { residents, t: null }, door: { x: ox - rDoor, y: oy, z: oz, nx: -1, nz: 0 }, outside: walk }
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
@@ -4465,7 +4465,7 @@ async function openTownHouse(t, i) {
   const who = [...townInside(t, i).values()].map((c) => ({ id: c.id, body: c.body, size: c.size, pace: c.pace }))
   const residents = new TownResidents(scene, room, { bodies: townsfolk.bodies, who, seed: SEED, ox, oy, oz, hour: () => clock.hour })
   const e = townDoor(t, i)
-  indoors = { town: { t, i }, e, back: e.back, room, view, residents, door: { x: ox + room.door.x, y: oy, z: oz + room.door.z, nx: room.door.nx, nz: room.door.nz }, cellar, outside: walk }
+  indoors = { town: { t, i }, e, back: e.back, room, view, residents, talk: { residents, t }, door: { x: ox + room.door.x, y: oy, z: oz + room.door.z, nx: room.door.nx, nz: room.door.nz }, cellar, outside: walk }
   if (sound) sound.setIndoors(true)
   walk = window.v2walk = inner
   player.setGround(inner)
@@ -5549,7 +5549,7 @@ async function buildRoom(room, at) {
   for (const sp of fish.species) lighting.patch(sp.material, { mode: 'vertex', cacheKey: `v2-fish-${sp.id}` })
   fish.place(spawn.x, spawn.z)
   seaweed = new SeaweedScatter(scene, height, waterSurfaces, { seed, patch: (m) => lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-seaweed' }) })
-  seaweed.place(spawn.x, spawn.z)
+  seaweed.place(spawn.x, spawn.z, performance.now() / 1000)
   fish.ready.then(() => { if (build === roomBuild) fish.place(fish.head.x, fish.head.z) })
   window.v2fish = fish
   // Now and then one clears the surface of a lake near her and falls back in (render/fish-leap.js).
@@ -5826,7 +5826,7 @@ async function buildRoom(room, at) {
   window.v2villagers = villagers
   window.v2hobs = hobs
   if (townsfolk || villagers) {
-    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs })
+    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs, heard: heardAt })
   }
   window.v2conversations = conversations
 
@@ -8520,13 +8520,13 @@ function tick() {
   else if (indoors && !indoors.town && villagers) stepAnimal('leafkin', () => villagers.settle(clock.seconds, dt))
   // In a town's house the town goes on without her too, so its folk come home and go out (TownResidents.sync).
   else if (indoors && indoors.town && townsfolk && questToggles.townsfolk) townsfolk.settle(clock.seconds)
-  // After the townsfolk and villagers, whose chatter of this frame it voices; indoors or in a cave, it only ends her conversation.
+  // After the townsfolk and villagers, whose chatter of this frame it voices; in a house she talks with its residents, and in a cave it only ends her conversation.
   if (conversations) {
     player.headPosition(talkHead)
     camera.getWorldDirection(talkGaze)
     talkGaze.y = 0
     talkGaze.normalize()
-    conversations.update(dt, { seconds: clock.seconds, head: talkHead, gaze: talkGaze, scale: herScale(), hour: clock.hour, trusts: villagers ? trustsHer : () => true, indoors: !!indoors || cave !== null })
+    conversations.update(dt, { seconds: clock.seconds, head: talkHead, gaze: talkGaze, scale: herScale(), hour: clock.hour, trusts: villagers ? trustsHer : () => true, indoors: cave !== null, room: indoors ? indoors.talk : null })
   }
   stepEating(dt)
   stepSize()
@@ -8746,7 +8746,7 @@ function stepOverworld(dt, now) {
     fishLeap.update(dt, headTmp, submerged)
   })
   fishLeap.group.visible = animalOn('fish')
-  seaweed.place(headTmp.x, headTmp.z)
+  seaweed.place(headTmp.x, headTmp.z, now / 1000)
   // The frogs hunt the hobs too, and are seen to by the villagers holding them (render/villagers.js claims), last frame's.
   stepAnimal('frogs', () => {
     frogLures.length = 0

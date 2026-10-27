@@ -127,6 +127,7 @@ export class Residents {
     const treads = room.stairs.map((s) => s.top).reverse()
     this.climbY = room.climb.map((p, i) => (i === 0 ? 0 : i === room.climb.length - 1 ? room.loft.y : treads[i - 1]))
     this.all = []
+    this.herLevel = 0
     if (who.some((w) => w.id >= HOMEBODY_ID) || homebodyId(room.index, HOMEBODIES - 1) > 255) throw new Error(`Residents: house ${room.index}'s trust ids overrun HOMEBODY_ID or 255`)
     for (const w of who) this._add(w.id, w.size, w.pace, false, w.feast)
     const homebodies = Math.floor(this.rand() * (HOMEBODIES + 1))
@@ -154,7 +155,8 @@ export class Residents {
     const r = {
       id, size, pace, k: size / this.asset.height, puppet, x: d.x, z: d.z, y: 0, heading: Math.PI / 2, level: 0,
       state: 'walk', spot: null, phase: '', hold: 0, clip: 'idle', from: -1, cue: 0, left: 0, route: [], slide: 0, on: 0, partner: null, feast, carrier: null,
-      calm: 0, voice: 0, hx: 0, hz: 0, wary: false, planX: 0, planZ: 0,
+      calm: 0, voice: 0, hx: 0, hz: 0, wary: false, planX: 0, planZ: 0, her: null,
+      pose: { x: this.group.position.x + d.x, y: this.group.position.y, z: this.group.position.z + d.z },
       mutter: between(this.rand, MUTTER_S), body: { x: 0, y: 0, z: 0, size, speed: 0, clip: 'walk', cycle: this.durations.walk / pace },
     }
     this.all.push(r)
@@ -335,7 +337,65 @@ export class Residents {
     this._choose(r, false)
   }
 
+  // -- her conversation (conversations.js), the same calls as town-residents.js's: `r.her` is `{ at, seat, toward }` while she holds it, `at` Infinity while it comes to her.
+
+  /** Who she can talk with: its villagers (a homebody has no mind), awake, staying, and stood on her floor, not on the stair. */
+  talkers(into) {
+    for (const r of this.all) {
+      if (r.id >= HOMEBODY_ID || r.state === 'leave' || r.state === 'gone' || r.phase === 'lie' || r.phase === 'sleep' || r.phase === 'rise') continue
+      if (r.level === this.herLevel && Math.abs(r.y - (r.level === 1 ? this.room.loft.y : 0)) < 0.05) into.push(r)
+    }
+    return into
+  }
+
+  /** Stopped and turned to her until release(); one in a seat talks from it. */
+  hold(r) {
+    if (r.her !== null) { r.route.length = 0; r.her.at = 0; this._play(r, 'idle', Infinity); return }
+    if (r.state === 'act' && (r.phase === 'down' || r.phase === 'hold')) { r.her = { at: 0, seat: true, toward: null }; r.hold = Infinity; return }
+    this._drop(r)
+    r.state = 'her'
+    r.route = []
+    r.her = { at: 0, seat: false, toward: null }
+    this._play(r, 'idle', Infinity)
+  }
+
+  /** Whether it is wanted by nothing it is doing: stood about, busy at the stove, or talking. */
+  free(r) {
+    return r.her === null && r.state === 'act' && (r.phase === 'stand' || r.phase === 'busy' || r.phase === 'talk')
+  }
+
+  /** It walks round the ring to `come` m of her and waves, then is held as hold() holds; false, staying put, when she is up in the loft. */
+  approach(r, come) {
+    if (this.herLevel !== 0) return false
+    this._drop(r)
+    this._toHer(r, come)
+    r.state = 'her'
+    r.her = { at: Infinity, seat: false, toward: null }
+    return true
+  }
+
+  /** Its `clip` once, turned to `toward` (world {x, z}) while it plays when given, then idle; one in a seat keeps its seat. */
+  gesture(r, clip, toward = null) {
+    if (r.her === null) throw new Error(`Residents.gesture: ${r.id} is not held`)
+    if (r.her.seat) return
+    r.her.toward = toward
+    this._play(r, clip, this.durations[clip])
+  }
+
+  held(r) { return r.her !== null }
+
+  arrived(r) { return r.her !== null && r.her.at !== Infinity }
+
+  release(r) {
+    if (r.her === null) return
+    const seat = r.her.seat
+    r.her = null
+    if (seat) r.hold = 0
+    else this._choose(r, false)
+  }
+
   _leave(r) {
+    r.her = null
     r.feast = false
     if (r.state === 'act' && (r.phase === 'hold' || r.phase === 'sleep')) r.hold = 0
     this._release(r)
@@ -352,12 +412,13 @@ export class Residents {
   _her(dt, feet, lures, trusts) {
     const g = this.group.position
     const fx = feet.x - g.x, fy = feet.y - g.y, fz = feet.z - g.z
-    const herLevel = this.room.loft && fy > this.room.loft.y / 2 ? 1 : 0
+    const herLevel = this.herLevel = this.room.loft && fy > this.room.loft.y / 2 ? 1 : 0
     const held = this.hands === null ? [] : lures.filter((l) => l.by === null && l.kind === 'mushroom')
     for (const r of this.all) {
       r.calm = Math.max(0, r.calm - dt)
       r.hx = fx; r.hz = fz
       r.wary = !trusts(r.id)
+      if (r.her !== null) continue
       const fearing = r.state === 'cower' || r.state === 'court'
       if (trusts(r.id)) { if (fearing) this._choose(r, false); continue }
       const lure = r.state === 'court' ? held.find((l) => this._under(r, l)) : undefined
@@ -393,20 +454,25 @@ export class Residents {
     }
   }
 
-  /** To her round the ring, to stand COURT_STOP_M short of her feet toward the nearest ring point no nearer her than that; a squeal if `fresh`. */
-  _court(r, fresh) {
+  /** To her round the ring, to stand `stop` m short of her feet toward the nearest ring point no nearer her than that. */
+  _toHer(r, stop) {
     const her = { x: r.hx, z: r.hz }
     let ring = null, off = Infinity
     for (const p of this.room.ringPts) {
       const d = Math.hypot(p.x - her.x, p.z - her.z)
-      if (d >= COURT_STOP_M && d < off) { ring = p; off = d }
+      if (d >= stop && d < off) { ring = p; off = d }
     }
-    if (ring === null) throw new Error(`Residents: house ${this.room.index}'s ring lies within ${COURT_STOP_M} m of her`)
-    const k = COURT_STOP_M / off
+    if (ring === null) throw new Error(`Residents: house ${this.room.index}'s ring lies within ${stop} m of her`)
+    const k = stop / off
     this._goTo(r, { kind: 'wander', x: her.x + (ring.x - her.x) * k, z: her.z + (ring.z - her.z) * k, lookX: her.x - ring.x, lookZ: her.z - ring.z, level: 0 }, false)
+  }
+
+  /** To her round the ring (_toHer, COURT_STOP_M); a squeal if `fresh`. */
+  _court(r, fresh) {
+    this._toHer(r, COURT_STOP_M)
     r.state = 'court'
     r.phase = 'go'
-    r.planX = her.x; r.planZ = her.z
+    r.planX = r.hx; r.planZ = r.hz
     if (fresh) this._say(r, 'leafkinSqueal')
   }
 
@@ -437,7 +503,7 @@ export class Residents {
     residentLight(view.uniforms, this.light.value)
     for (const r of this.all.slice()) {
       this._step(r, dt)
-      if (r.state === 'gone' || r.state === 'cower' || r.state === 'court' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue
+      if (r.state === 'gone' || r.state === 'cower' || r.state === 'court' || r.state === 'her' || r.phase === 'sleep' || r.phase === 'lie' || r.phase === 'rise') continue
       r.mutter -= r.phase === 'talk' ? dt * 3 : dt
       if (r.mutter > 0) continue
       const eating = r.feast && r.phase === 'hold'
@@ -451,7 +517,7 @@ export class Residents {
   bodies(into) {
     const g = this.group.position
     for (const r of this.all) {
-      if (r.state !== 'walk' && r.state !== 'leave' && !(r.state === 'court' && r.route.length > 0)) continue
+      if (r.state !== 'walk' && r.state !== 'leave' && !((r.state === 'court' || r.state === 'her') && r.route.length > 0)) continue
       Object.assign(r.body, { x: g.x + r.x, y: g.y + r.y, z: g.z + r.z, speed: this.asset.gait.walk * r.k * r.pace })
       into.push(r.body)
     }
@@ -466,7 +532,7 @@ export class Residents {
   }
 
   _step(r, dt) {
-    if (r.state === 'walk' || r.state === 'leave' || (r.state === 'court' && r.route.length > 0)) {
+    if (r.state === 'walk' || r.state === 'leave' || ((r.state === 'court' || r.state === 'her') && r.route.length > 0)) {
       const p = r.route[0]
       const dx = p.x - r.x, dz = p.z - r.z, d = Math.hypot(dx, dz)
       const v = this.asset.gait.walk * r.k * r.pace
@@ -476,6 +542,7 @@ export class Residents {
         if (r.route.length === 0) {
           if (r.state === 'leave') { r.puppet.show(-1, FADE_S); r.state = 'gone' }
           else if (r.state === 'court') { r.phase = 'wait'; r.voice = 0.5; this._play(r, 'idle', Infinity) }
+          else if (r.state === 'her') { r.her.at = 0; this._play(r, 'wave', this.durations.wave) }
           else { r.heading = this._stand(r, r.spot).heading; this._begin(r, false) }
         }
       } else {
@@ -516,6 +583,11 @@ export class Residents {
         }
         if (r.left <= 0) this._play(r, 'idle', Infinity)
       }
+    } else if (r.state === 'her') {
+      const g = this.group.position, to = r.her.toward
+      const want = to ? Math.atan2(to.x - g.x - r.x, to.z - g.z - r.z) : Math.atan2(r.hx - r.x, r.hz - r.z)
+      r.heading += Math.atan2(Math.sin(want - r.heading), Math.cos(want - r.heading)) * Math.min(1, TURN_RATE * dt)
+      if ((r.left -= dt) <= 0) { r.her.toward = null; this._play(r, 'idle', Infinity) }
     } else if (r.state === 'gone') {
       r.puppet.step(dt)
       if (r.puppet.done) {
@@ -555,6 +627,8 @@ export class Residents {
     _scl.setScalar(r.k)
     p.group.matrix.compose(_pos, _quat, _scl)
     p.group.matrixWorldNeedsUpdate = true
+    const o = this.group.position
+    r.pose.x = o.x + x; r.pose.y = o.y + y; r.pose.z = o.z + z
     if (this.hands) this._carry(r)
   }
 

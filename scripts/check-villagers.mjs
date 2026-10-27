@@ -1102,5 +1102,39 @@ checkChide()
   check(clips.has('walk') && clips.has('wave') && Math.abs(off - 1.4) < 0.1 && v.talking.get(c.id).at !== Infinity, 'a villager sent to her walks from 8 m to 1.4 m of her and only there waves', `${[...clips].join(' ')}; ${off.toFixed(2)} m off`)
 }
 
+// --- talk at home (conversations.js through Residents' talkers/hold/approach/release) ---
+{
+  const room = rollInterior({ seed: spec.seed, index: 0, height: 5 })
+  const view = { uniforms: houseUniforms({ value: Array.from({ length: TORCHES }, () => new THREE.Vector4()) }) }
+  const hands = fakeHands()
+  hands.carriers = CARRIERS
+  const res = new Residents(new THREE.Scene(), room, { asset: makeAsset(), sitY: make().sitY, who: [{ id: 3, size: 1, pace: 1, feast: false }], seed: spec.seed, ox: 0, oy: 0, oz: 0, hands, mushrooms: { record: () => ({ kind: 'mushroom' }) } })
+  const trusts = () => true
+  let feet = { x: 400, y: 0, z: 400 }
+  const clips = new Set()
+  const run = (s) => { for (let i = 0; i < s * 60; i++) { res.update(1 / 60, view, feet, [], trusts); res.voices([]); for (const o of res.all) clips.add(o.clip) } }
+  run(1)
+  const r = res.all.find((o) => o.id === 3)
+  const across = Math.atan2(-r.x, -r.z), R = room.R - 0.4
+  feet = { x: R * Math.sin(across), y: 0, z: R * Math.cos(across) }
+  run(0.1)
+  let waited = 0
+  while (!(r.level === 0 && res.free(r)) && waited < 60) { run(1); waited++ }
+  const talk = res.talkers([])
+  check(talk.length === 1 && talk[0] === r, 'her on its floor, its villager is one she can talk with', `${talk.map((o) => o.id).join()} of ${res.all.map((o) => o.id).join()}`)
+  clips.clear()
+  check(res.approach(r, 1.2), 'on the ground floor it agrees to come to her')
+  run(30)
+  const off = Math.hypot(r.x - feet.x, r.z - feet.z)
+  check(res.arrived(r) && clips.has('walk') && clips.has('wave') && Math.abs(off - 1.2) < 0.15, 'sent to her, it walks round the ring to 1.2 m of her and waves there', `${[...clips].join(' ')}; ${off.toFixed(2)} m off, arrived ${res.arrived(r)}`)
+  feet = { x: r.x + 0.9 * Math.sin(r.heading + 1.5), y: 0, z: r.z + 0.9 * Math.cos(r.heading + 1.5) }
+  run(3)
+  const facing = Math.cos(Math.atan2(feet.x - r.x, feet.z - r.z) - r.heading)
+  check(res.held(r) && r.state === 'her' && facing > 0.9 && !res.free(r), 'held, it turns to face her where she stands', `${r.state}, facing ${facing.toFixed(2)}`)
+  res.release(r)
+  run(1)
+  check(!res.held(r) && r.state !== 'her', 'released, it goes back about its home', r.state)
+}
+
 console.log(failures === 0 ? '\nall ok' : `\n${failures} failing`)
 process.exit(failures === 0 ? 0 : 1)
