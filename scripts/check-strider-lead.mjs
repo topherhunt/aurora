@@ -2,11 +2,12 @@
 //
 //   node scripts/check-strider-lead.mjs
 //
-// What can go wrong without throwing: a peer's tamed strider that shies from her; a led one that stands off at the wild follow's distances, or never lets go; a rein left in her hand after she mounts it; a singed one that never tells the room its hurt, or runs on out of sight.
+// What can go wrong without throwing: a saddled town strider her torch never harms; a peer's tamed strider that shies from her; a led one that stands off at the wild follow's distances, or never lets go; a rein left in her hand after she mounts it; a singed one that never tells the room its hurt, or runs on out of sight.
 
 import * as THREE from 'three'
 import { WILD, WildStriders } from '../src/v2/render/wild-striders.js'
-import { SINGE } from '../src/v2/singe.js'
+import { Townsfolk } from '../src/v2/render/townsfolk.js'
+import { SINGE, redAt } from '../src/v2/singe.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -182,6 +183,25 @@ console.log('a wild strider and her overhead')
   check(at(300) === 'calm', 'nor charges her there when her chanterelle maddens it')
   S.maddened = false
   check(at(0) === 'charge', 'standing that near on the ground, it charges her')
+}
+
+console.log('a torch held to a saddled strider at its rail')
+{
+  const T = Object.create(Townsfolk.prototype)
+  T.torches = [{ x: 0.2, y: 1, z: 0.3 }]
+  T.striders = { asset: { sizeM: 2 / 1.5 }, say: () => {} }
+  T.outbox = []
+  T.now = 0
+  T.treats = 0
+  T.tamed = () => true
+  const m = { key: 'town:0:1', state: 'tied', gone: false, puppet: {}, singe: 0, hurtAt: -Infinity, treat: null, fury: null, shy: null, pose: { x: 0, y: 0, z: 0, heading: 0, size: 1.5 } }
+  const head = { x: 0, y: 1.6, z: 1.5 }
+  let t = 0
+  for (; t < 0.9; t += 1 / 72) T._singe(m, 1 / 72, head, t)
+  check(m.shy === null && m.hurtAt === -Infinity, 'held under a second, it takes no harm')
+  for (; t < 1.2 && m.shy === null; t += 1 / 72) T._singe(m, 1 / 72, head, t)
+  check(m.shy !== null && m.shy.phase === 'run' && redAt(m.hurtAt, t) > 0, 'held a second, a tamed one pulses red and bolts off its rail', m.shy && m.shy.phase)
+  check(T.outbox.length === 1 && T.outbox[0][0] === 'ts:0:1' && T.outbox[0][7] === 'run', 'and the room hears its startle', JSON.stringify(T.outbox[0]))
 }
 
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }

@@ -8687,7 +8687,7 @@ function stepOverworld(dt, now) {
   if (townsfolk && questToggles.townsfolk) {
     dreadTmp.length = dragonTmp.length = 0
     if (dragons) for (const d of dragons.bodies(dragonTmp)) if (d.fell === null) dreadTmp.push(d)
-    townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures, dreadTmp)
+    townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures, dreadTmp, herTorches)
   }
   spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)

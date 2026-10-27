@@ -62,7 +62,7 @@
 //
 // SHE TAKES ONE (hands.js source 'frog'): a bed frog taken is in the taken
 // registry and never regrows. Let go, it is LOOSE: off any bed, it lands, hops
-// off from her and sits there, chasing lures like any frog, until she is
+// off from her and WANDERs on, chasing lures like any frog, until she is
 // RADIUS off. One that EATS the bug in her hand (held within EAT of it) grows
 // GROW and turns loose as her PET, following her (or the peer who fed it) to
 // FOLLOW_M and no nearer; every bug after grows it MEAL.grow and makes it the
@@ -147,6 +147,8 @@ export const GROW = 1.1
 export const FOLLOW_M = 1.2
 // A frog let go hops this far on from her before it sits.
 const AWAY_M = [1.5, 3]
+// Loose with nothing to chase, it wanders: a WALK hop each sit, its heading swung up to `turn` off the last and bent `away` of the way to straight off the drop, a WALK beat between and `rest` of the time a SIT_S sit instead.
+const WANDER = { turn: 1.2, away: 0.3, rest: 0.2 }
 export const FED = 'fed'
 export const TOOK = 'took'
 /** A loose frog's key: where it was let go, to the centimetre, and the way from her it faced. */
@@ -750,18 +752,36 @@ export class Frogs {
     return { kind: 'sit', dur: between(f.rand, CHASE.pause), at: spot }
   }
 
+  /** A loose frog's next phrase after `prev` with nothing to chase (WANDER): after a hop a beat, after a sit a hop on, swung off where blocked as the chase is; none of three found, the beat again. */
+  _wanderNext(f, prev) {
+    const spot = prev.kind === 'sit' ? prev.at : prev.to
+    if (prev.kind === 'hop') return { kind: 'sit', dur: between(f.rand, spot.wet ? WET_PAUSE_S : f.rand() < WANDER.rest ? SIT_S : WALK.pause), at: spot }
+    const off = bearing({ x: f.homeX, z: f.homeZ }, spot)
+    let heading = spot.yaw + (f.rand() * 2 - 1) * WANDER.turn
+    heading += Math.atan2(Math.sin(off - heading), Math.cos(off - heading)) * WANDER.away
+    const reach = between(f.rand, WALK.m) * f.size
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const x = spot.x + Math.cos(heading) * reach
+      const z = spot.z - Math.sin(heading) * reach
+      const s = this.seat(x, z, false)
+      if (s !== null) return { kind: 'hop', dur: between(f.rand, WALK.dur), from: spot, to: this._spot(f, x, z, s, heading), rise: reach * HOP_RISE, bout: WALK }
+      heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 4 + f.rand() * Math.PI / 2)
+    }
+    return { kind: 'sit', dur: between(f.rand, WALK.pause), at: spot }
+  }
+
   /**
    * The lure lost: the phrase playing finishes (a sit ends now), and from
    * where it ends a bout is laid to the post of the first segment turn at
    * least REJOIN_MIN_S past that, the frog sitting there until the turn puts
    * it on its plan. No bout to be laid, it sits where it is until the turn.
-   * A loose frog has no plan, and sits where it is from then on.
+   * A loose frog has no plan, and wanders on from where it ends.
    */
   _startRejoin(f, now) {
     const L = f.live
     if (L.ph.kind === 'sit') L.ph = { kind: 'sit', dur: now - L.at, at: L.ph.at }
     const end = L.ph.kind === 'sit' ? L.ph.at : L.ph.to
-    if (f.tile === null) Object.assign(L, { queue: [{ kind: 'sit', dur: Infinity, at: end }], until: Infinity })
+    if (f.tile === null) Object.assign(L, { queue: [], until: Infinity })
     else Object.assign(L, this._rejoin(f, end, L.at + L.ph.dur))
   }
 
@@ -776,18 +796,16 @@ export class Frogs {
     return { queue: [...hops, { kind: 'sit', dur: turn - end - bout, at: post }], until: turn }
   }
 
-  /** One frame off the plan: the live phrase advanced to `now`, the chase choosing each next phrase as the last ends and a rejoin playing its queue out; false once the queue is spent, the plan's again. */
+  /** One frame off the plan: the live phrase advanced to `now`, the chase (or a loose frog's wander) choosing each next phrase as the last ends and a rejoin playing its queue out; false once a bed frog's queue is spent, the plan's again. */
   _live(f, now) {
     const L = f.live
     while (now >= L.at + L.ph.dur) {
-      if (L.queue !== null) {
-        if (L.queue.length === 0 || now >= L.until) { f.live = null; return false }
-        L.at += L.ph.dur
-        L.ph = L.queue.shift()
-      } else {
-        L.at += L.ph.dur
-        L.ph = this._chaseNext(f, L.ph)
+      if (L.queue !== null && (L.queue.length === 0 || now >= L.until)) {
+        if (f.tile !== null) { f.live = null; return false }
+        L.queue = null
       }
+      L.at += L.ph.dur
+      L.ph = L.queue !== null ? L.queue.shift() : f.lure !== null ? this._chaseNext(f, L.ph) : this._wanderNext(f, L.ph)
     }
     this._pose(f, L.ph, now - L.at)
     return true
@@ -941,7 +959,7 @@ export class Frogs {
   /**
    * A loose frog keyed by `drop`, dressed as `look`, let go at `from` on second
    * `now`: it falls to the ground under it, and, `away`, hops on AWAY_M from
-   * where it faced before it sits for good. Null when the pool is empty.
+   * where it faced, and wanders on from there. Null when the pool is empty.
    */
   _loosen(drop, look, from, now, away) {
     const f = this.free.pop()
@@ -965,7 +983,7 @@ export class Frogs {
     }
     const fall = Math.max(FREEZE_HOP_S, Math.sqrt((2 * Math.max(0, from.y - to.y)) / 9.8))
     const start = { x: from.x, y: from.y, z: from.z, h: from.y, wet: false, level: null, nx: 0, ny: 1, nz: 0, yaw: from.yaw }
-    f.live = { ph: { kind: 'hop', dur: fall, from: start, to, rise: 0, bout: LEAP }, at: now, queue: [{ kind: 'sit', dur: NOTICE_S, at: to }, ...(hops ?? []), { kind: 'sit', dur: Infinity, at: end }], until: Infinity }
+    f.live = { ph: { kind: 'hop', dur: fall, from: start, to, rise: 0, bout: LEAP }, at: now, queue: [{ kind: 'sit', dur: NOTICE_S, at: to }, ...(hops ?? []), { kind: 'sit', dur: between(f.rand, SIT_S), at: end }], until: Infinity }
     this._pose(f, f.live.ph, 0)
     this._in = null
     this.loose.push(f)

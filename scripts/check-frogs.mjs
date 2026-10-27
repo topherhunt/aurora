@@ -696,6 +696,13 @@ let NOW = T0 + SECONDS + 10
   const off = Math.hypot(L.x - head[0], L.z - head[2])
   check(L.state === 'sit' && Math.abs(L.y - (GROUND + ground.lift)) < 0.01 && off > 2.5, 'it lands on the ground and hops on away from her', `${off.toFixed(2)} m off, y ${L.y.toFixed(3)}`)
   check(P !== undefined && P.key === L.key && Math.hypot(P.x - L.x, P.z - L.z) < 1e-6 && P.size === L.size, "the peer's client has the same frog in the same place", P && `${Math.hypot(P.x - L.x, P.z - L.z).toFixed(4)} m apart`)
+  // Nothing to chase, it wanders on off the drop rather than sitting for good.
+  const atSix = { x: L.x, z: L.z }
+  head = [head[0] - 30, head[1], head[2]]
+  for (let i = 0; i < 30 / DT; i++) step()
+  const wandered = Math.hypot(L.x - drop.x, L.z - drop.z), moved = Math.hypot(L.x - atSix.x, L.z - atSix.z)
+  check(me.loose.includes(L) && moved > 2 && wandered > off - 1, 'left be, it hops on and on, off from where it was let go', `${moved.toFixed(2)} m on in 30 s, ${wandered.toFixed(2)} m off the drop`)
+  check(Math.hypot(P.x - L.x, P.z - L.z) < 1e-6, "and the peer's client watches the same wander", `${Math.hypot(P.x - L.x, P.z - L.z).toFixed(4)} m apart`)
   head = [L.x - 0.5, GROUND + 1.6, L.z]
   step()
   const again = me.pickAt(L.x, L.y, L.z, 0.3, 10)

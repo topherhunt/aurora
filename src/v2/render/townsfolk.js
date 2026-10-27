@@ -6,12 +6,13 @@ import { CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, swing, tickAfter, tickOf
 import { LOD_RUNGS, critterTier } from './critters.js'
 import { HEARTH, Hearth, hearthKit } from './hearth.js'
 import { lodFadeS, cloneBones, groundFeet, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
-import { makePuppet } from './baked-puppet.js'
+import { makePuppet, tintFor } from './baked-puppet.js'
 import { snap } from '../creature-net.js'
 import { ANCHOR_S, ANCHOR_STALE_S, CORRECT_S, loadBipedGlb } from './snowmen.js'
 import { atFace, dashAim, fromSide, Striders, loadStriderGlb, mountFields, STRIDER, striderSize, walled } from './striders.js'
 import { touchesSaddle, WILD } from './wild-striders.js'
 import { EAT } from '../eating.js'
+import { SINGE, redAt, reddened, touches } from '../singe.js'
 import { lazyLoad } from '../lazy-load.js'
 import { TRADES, smithyLayout, toWorld } from '../layers/trades.js'
 import { RISER, TREAD } from '../layers/towns.js'
@@ -156,7 +157,7 @@ export const TOWNSFOLK = {
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
-  // A tied strider no one has tamed, her head within `m` m from its side or behind and no fish of hers within twice that, shrieks and runs off `run` m at `pace` of its run, stands `wait` s and walks back to its rail the way it ran by the points it dropped every `crumb` m, and will not again for `cool` s.
+  // A tied strider no one has tamed, her head within `m` m from its side or behind and no fish of hers within twice that, or any tied one her torch singes (SINGE), shrieks and runs off `run` m at `pace` of its run, stands `wait` s and walks back to its rail the way it ran by the points it dropped every `crumb` m, and will not again for `cool` s.
   shy: { m: 3, run: [3, 10], pace: 0.7, cool: 5, wait: [3, 6], crumb: 0.5 },
   // Metres a peer's startled copy is put straight to its owner's anchor rather than eased there.
   shySnap: 2,
@@ -1433,7 +1434,7 @@ export class Townsfolk {
     for (const c of life.all) this._entity(c, life.graph)
     for (const m of life.mounts) {
       const key = `town:${i}:${m.id}`
-      Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null, held: null })
+      Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null, held: null, singe: 0, hurtAt: -Infinity, red: false })
     }
     // The smithy's forge burns all day; its flame's shader reads world space, so it hangs off the scene.
     const smithy = town.works.find((w) => w.kind === 'smithy')
@@ -1467,8 +1468,8 @@ export class Townsfolk {
     c.puppet = null
   }
 
-  /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders. */
-  update(feet, head, seconds, dt, t, lures = [], dread = []) {
+  /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders; `torches` her lit torch tips, which singe the tied striders (SINGE). */
+  update(feet, head, seconds, dt, t, lures = [], dread = [], torches = []) {
     if (!this.loaded) {
       if (this._near(head, seconds)) this.lazy.want()
       return
@@ -1476,6 +1477,7 @@ export class Townsfolk {
     this.now = seconds
     this.frame++
     this.dread = dread
+    this.torches = torches
     const [wake, sleep] = TOWNSFOLK.live
     this.towns.forEach((town, i) => {
       const d = Math.hypot(town.x - head.x, town.z - head.z) - town.radius
@@ -1511,6 +1513,7 @@ export class Townsfolk {
         this._poseMount(m, life.alpha)
         this._fury(m, dt, head)
         this._shy(m, dt, head, seconds, lures)
+        this._singe(m, dt, head, seconds)
         m.dist = Math.hypot(m.pose.x - head.x, m.pose.y - head.y, m.pose.z - head.z)
         mounts.push(m)
       }
@@ -1521,7 +1524,12 @@ export class Townsfolk {
       if (!parts.striders) mounts.length = 0
       mounts.sort((a, b) => a.dist - b.dist)
       this.striders.begin()
-      for (const m of mounts) this.striders.draw(m, dt)
+      for (const m of mounts) {
+        this.striders.draw(m, dt)
+        const p = m.puppet, red = redAt(m.hurtAt, seconds)
+        if (p && p.baked && (red > 0 || m.red)) { tintFor(p, m.hue, STRIDER.tint); reddened(p.tint, red) }
+        m.red = red > 0
+      }
     }
     drawn.sort((a, b) => a.dist - b.dist)
     this.ranks.fill(0)
@@ -1651,8 +1659,7 @@ export class Townsfolk {
     if (!m.shy) {
       if (m.state !== 'tied' || m.gone || m.treat || m.fury || !m.puppet || seconds < (m.shyAt ?? -Infinity) || this.tamed(m.key)) return
       if (Math.hypot(p.x - head.x, p.z - head.z) > Y.m || atFace(p, head) || lures.some((l) => l.by === null && l.kind === 'fish' && Math.hypot(l.x - p.x, l.z - p.z) < 2 * Y.m)) return
-      this._startle(m, { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), since: seconds, by: null, aim: Math.atan2(-(p.z - head.z), p.x - head.x) })
-      this._oweShy(m, 'run')
+      this._bolt(m, head, seconds)
     }
     const s = m.shy, mine = s.by === null, walkV = S.asset.gait.walk * S.k * p.size, runV = Y.pace * S.asset.gait.run * S.k * p.size
     const next = (phase) => { s.phase = phase; s.t = 0; s.cue = -1 - ++this.treats; if (mine) this._oweShy(m, phase) }
@@ -1707,6 +1714,25 @@ export class Townsfolk {
     p.clip = clip
     p.speed = speed
     p.cue = s.cue
+  }
+
+  /** `m` startled off its rail by her where it stands now, and the room told. */
+  _bolt(m, head, seconds) {
+    const Y = TOWNSFOLK.shy, p = m.pose
+    this._startle(m, { phase: 'run', x: p.x, y: p.y, z: p.z, h: p.heading, left: Y.run[0] + (Y.run[1] - Y.run[0]) * Math.random(), t: 0, wait: Y.wait[0] + (Y.wait[1] - Y.wait[0]) * Math.random(), since: seconds, by: null, aim: Math.atan2(-(p.z - head.z), p.x - head.x) })
+    this._oweShy(m, 'run')
+  }
+
+  /** Her torch held to a tied strider, at its rail or shied off it, SINGE.s: it pulses red and bolts again from where it is, tamed or not, leaving off a meal or a fury. */
+  _singe(m, dt, head, seconds) {
+    const p = m.pose
+    if (m.state !== 'tied' || m.gone || !m.puppet) { m.singe = 0; return }
+    m.singe = touches(this.torches, p.x, p.y, p.z, this.striders.asset.sizeM * p.size) ? m.singe + dt : 0
+    if (m.singe < SINGE.s) return
+    m.singe = 0
+    m.hurtAt = seconds
+    m.treat = m.fury = null
+    this._bolt(m, head, seconds)
   }
 
   /** `m` startled as `s` has it (_shy's fields), crying out. */
