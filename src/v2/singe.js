@@ -2,6 +2,8 @@ import THREE from '../three-instance.js'
 
 // A lit torch held to a creature: `s` seconds of its tip within `reach` of the body's size across from its middle, and no higher over its feet than its size, costs it `hp` of its `max`. It pulses toward `red` `beats` times over `pulse` s, cries out and runs.
 export const SINGE = { s: 1, hp: 10, max: 100, reach: 0.5, pulse: 1.2, beats: 3, red: [1.5, 0.12, 0.08] }
+// A creature brought to 0 hp falls where it stands (one with no dead clip tipping onto its side over `tip` s), goes black over `dark` s and dissolves `lie` s after the fall, not to come again this session.
+export const FELL = { tip: 0.5, dark: 1.5, lie: 3.5 }
 const RED = new THREE.Color(...SINGE.red)
 
 /** Whether any of `tips` ({ x, y, z }) is in the body `size` m long standing at (x, y, z). */

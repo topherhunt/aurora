@@ -8,7 +8,7 @@ import { FALL, fallDamage } from '../vitals.js'
 import { MAX_TRAVEL_S } from './avatar-rig.js'
 import { solverStub, tintFor } from './baked-puppet.js'
 import { EAT } from '../eating.js'
-import { SINGE, redAt, reddened, touches } from '../singe.js'
+import { FELL, SINGE, redAt, reddened, touches } from '../singe.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -92,6 +92,7 @@ const _t = new THREE.Quaternion()
 const _acc = new THREE.Quaternion()
 const _e = new THREE.Euler()
 const _trunk = { x: 0, z: 0, r: 0 }
+const _fall = new THREE.Matrix4()
 const _sat = new THREE.Vector3()
 const GRAVITY = 9.81
 // A peer's head further than this (times its size over the mean) from the seat of the strider it rides has hopped: the copy walks or runs after it (_carried).
@@ -260,7 +261,7 @@ export class WildStriders {
     for (let ix = Math.floor((x - R) / T); ix <= Math.floor((x + R) / T); ix++) {
       for (let iz = Math.floor((z - R) / T); iz <= Math.floor((z + R) / T); iz++) {
         const key = `${ix},${iz}`
-        if (this.live.has(key) || this.away.has(key)) continue
+        if (this.live.has(key) || this.away.has(key) || this._dead(key)) continue
         const h = this._home(ix, iz)
         if (h && Math.hypot(h.x - x, h.z - z) <= R) this._spawn(key, h, x, z)
       }
@@ -290,7 +291,7 @@ export class WildStriders {
     const h = keyHash(key)
     const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1), key), {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
-      state: 'calm', t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, singe: 0, red: false, aim: 0,
+      state: 'calm', fell: null, t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, singe: 0, red: false, aim: 0,
       // Room time this client took it live from calm (apply's tie-break), and (a peer's ridden copy) until its relayed shake ends.
       since: 0, shake: 0, trip: null,
       look: { yaw: 0, pitch: 0, roll: 0 }, want: { yaw: 0, pitch: 0, roll: 0 },
@@ -328,6 +329,7 @@ export class WildStriders {
     if (m.by === null && m.state !== 'calm') this._owe(m, 'rejoin')
     this.inner.release(m)
     this.live.delete(m.key)
+    if (m.fell !== null) return
     if (m.tack) this.returned(m.key)
     else if (stillHome) this.away.add(m.key)
   }
@@ -378,7 +380,9 @@ export class WildStriders {
         this._drop(m, Math.hypot(h.x - feet.x, h.z - feet.z) <= WILD.despawn)
         continue
       }
-      if (m.by === null) {
+      if (m.fell === null && m !== this.ridden && this._dead(m.key)) this._fell(m)
+      if (m.fell !== null) m.gone = this.now - m.fell >= FELL.lie
+      else if (m.by === null) {
         if (m !== this.ridden) this._step(m, dt, head, feet, lures)
         if (m.state !== 'calm' && this.now >= m.sendAt) this._owe(m, m.state)
       } else this._theirs(m, dt)
@@ -388,6 +392,7 @@ export class WildStriders {
     const S = this.inner
     S.begin()
     for (const m of list) {
+      if (m.gone && !m.puppet) { this._drop(m, false); continue }
       const e = ease(0.3, dt)
       for (const k of ['yaw', 'pitch', 'roll']) m.look[k] += (m.want[k] - m.look[k]) * e
       S.draw(m, dt)
@@ -400,11 +405,18 @@ export class WildStriders {
       }
       Object.assign(p.solver.look, m.look)
       const scar = this.scars.get(m.key), red = scar ? redAt(scar.at, this.now) : 0
-      if (p.baked && (red > 0 || m.red)) { tintFor(p, m.hue, STRIDER.tint); reddened(p.tint, red) }
+      if (p.baked && (red > 0 || m.red || m.fell !== null)) { tintFor(p, m.hue, STRIDER.tint); reddened(p.tint, red) }
       m.red = red > 0
       if (m.pose.clip === 'sit') {
         const a = p.actions.get('sit'), [lo, hi] = WILD.fish.hold
         if (m.state === 'meek' && a.time > hi) a.time = lo
+        if (m.state === 'dead' && a.time > hi) a.time = hi
+      }
+      if (m.fell !== null) {
+        // Over on its side: rolled about its length, raised so the flank and not its middle meets the ground.
+        const t = this.now - m.fell, A = this.inner.asset
+        if (p.baked) p.tint.multiplyScalar(Math.max(0, 1 - t / FELL.dark))
+        p.group.matrix.multiply(_fall.makeTranslation(0, 0.35 * A.width, 0)).multiply(_fall.makeRotationX(-0.5 * Math.PI * Math.min(1, t / FELL.tip)))
       }
     }
     const l = this.led
@@ -499,8 +511,29 @@ export class WildStriders {
     m.singe = 0
     const was = this.scars.get(m.key)
     this.scars.set(m.key, { hp: Math.max(0, (was ? was.hp : SINGE.max) - SINGE.hp), at: this.now })
+    if (this._dead(m.key)) {
+      this._owe(m, 'rejoin')
+      this._fell(m)
+      return
+    }
     this._cry(m)
     this._enter(m, tamed ? 'shy' : 'flee')
+  }
+
+  _dead(key) {
+    const scar = this.scars.get(key)
+    return scar !== undefined && scar.hp === 0
+  }
+
+  /** Brought to 0 hp (FELL): a cry if the hurt is fresh, down where it stands and still till it dissolves (update), and never spawned again (_scan). */
+  _fell(m) {
+    const at = this.scars.get(m.key).at
+    m.fell = at
+    m.state = 'dead'
+    m.moving = false
+    m.want.yaw = m.want.pitch = m.want.roll = 0
+    this._set(m, 'sit', 0, true)
+    if (this.now - at < SINGE.pulse) this._cry(m)
   }
 
   /** A crab or spider in anyone's hand within WILD.shy.scare of it, or null. */
@@ -999,6 +1032,8 @@ export class WildStriders {
     if (at !== null && !(was && was.at > at)) this.scars.set(key, { hp: anchor[15], at })
     if (now - T > CHAPTER_S) return
     let m = this.live.get(key)
+    // Felled, the update loop lays it down.
+    if (this._dead(key)) return
     if (!m && mode !== 'rejoin' && key.startsWith('town:') && this.loaded) {
       const lent = this.lend(key)
       if (lent) {
@@ -1134,7 +1169,7 @@ export class WildStriders {
 
   /** This client's striders a dragon may chase (dragons.js quarry), into `into`: `{ key, x, y, z }`, never her mount or one adrift. */
   prey(into) {
-    for (const m of this.live.values()) if (m.by === null && m !== this.ridden && m.state !== 'swim') into.push({ key: m.key, x: m.pose.x, y: m.pose.y, z: m.pose.z })
+    for (const m of this.live.values()) if (m.by === null && m !== this.ridden && m.state !== 'swim' && m.state !== 'dead') into.push({ key: m.key, x: m.pose.x, y: m.pose.y, z: m.pose.z })
     return into
   }
 

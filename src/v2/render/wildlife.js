@@ -144,7 +144,7 @@ import {
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { EAT, MEAL, atMost } from '../eating.js'
-import { SINGE, redAt, reddened, touches } from '../singe.js'
+import { FELL, SINGE, redAt, reddened, touches } from '../singe.js'
 import { setPropSolidAt } from '../../material.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
@@ -254,8 +254,6 @@ const FREE_PLANS = 256
 export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
-// An animal her torches bring to 0 hp falls on its dead clip, goes black over `dark` s and dissolves `lie` s after the fall.
-const FELL = { dark: 1.5, lie: 3.5 }
 // The modes an anchor may carry besides 'rejoin', each a live animal.
 const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt'])
 // Under her chanterelle (eating.js), an animal within `m` m of her comes for her and strikes from `reach` body lengths: `harm` every strike, a strike `strikeS` then `idleS` before the next.

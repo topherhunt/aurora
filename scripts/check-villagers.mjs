@@ -33,7 +33,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import { HEARTH, buildHearth } from '../src/v2/render/hearth.js'
 import { Stools } from '../src/v2/render/stools.js'
 import {
-  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, BECKONS, COURT_STOP_M, dijkstra, pickIndoors, roadGraph,
+  Villagers, AWAY_S, CLIPS, DOOR_FADE_S, EXTRA, HOMING_S, MOUTH_M, NODE_M, SPACE_M, GAZE_OFF_M, GAZE_S, INSIDE_S, LOD_TIERS, PACE, SIT, SIT_CUT, SIT_S, STARTLE_M, HIDE_S, FIND_M, TALK_M, TALK_S, WHIMPER_S, LURE_M, COURT_S, CALM_S, GREET_M, GREET_S, GREET_COOL_S, FRIEND_M, BECKONS, COURT_STOP_M, CHIDE_M, TALKS, dijkstra, pickIndoors, roadGraph,
 } from '../src/v2/render/villagers.js'
 import { keyOf as frogKey } from '../src/v2/render/frogs.js'
 import { WalkSurface } from '../src/v2/walk.js'
@@ -596,6 +596,43 @@ console.log('\nthe peer')
   check(was === 'peer' && gc.state === 'flee' && g.stats.startles >= 1, `peering, and she grows to ${PEER.size * 2}: it runs`, `${was} then ${gc.state}`)
 }
 
+// --- the hob-fed chide (run last: it needs standOff and outFor) --------------------------
+function checkChide() {
+  console.log('\nthe chide')
+  const v = make(), w = make()
+  let t = run(v, T0, 120, FAR)
+  run(w, T0, 120, FAR)
+  const c = outFor(v, 6, 12)
+  const feet = standOff(v, c, 6, 12)
+  v.chide(c.id)
+  const states = [], sounds = [], clips = new Set(), scolds = [], events = []
+  let fled = 0
+  const watch = () => {
+    if (states.at(-1) !== c.state) states.push(c.state)
+    if (c.state === 'chide' && c.phase === 'wait') clips.add(c.clip)
+    if (c.state === 'flee' || c.state === 'startle') fled++
+    for (const s of v.voices([])) if (Math.hypot(s.x - c.x, s.z - c.z) < 0.5) sounds.push(s.sound)
+    v.chides(scolds)
+    for (const a of v.pending([])) events.push([...a.slice(0, 8), 'b', ...a.slice(9)])
+  }
+  t = run(v, t, 20, feet, watch)
+  const gap = Math.hypot(c.x - feet.x, c.z - feet.z)
+  check(states.includes('chide') && c.state === 'chide' && c.phase === 'wait' && gap < COURT_STOP_M + NODE_M && fled === 0, 'told she fed its hob to a frog, it comes to her, unfrightened by her feet', `${states.join(' > ')}, ${gap.toFixed(2)} m`)
+  check(sounds[0] === 'leafkinScream', 'screaming first', sounds.slice(0, 3).join(' '))
+  check(scolds.length >= 2 && scolds.every((s) => s.id === c.id) && (clips.has('threaten') || TALKS.some((g) => clips.has(g))), `scolding her every CHIDE_S with a threaten or a talk`, `${scolds.length} scolds, ${[...clips].join(' ')}`)
+  const door = v.graph.nodes[c.home]
+  const n = v.graph.nodes.find((o) => o.road !== 'door' && Math.hypot(o.x - c.x, o.z - c.z) > 5 && Math.hypot(o.x - c.x, o.z - c.z) < 10 && Math.hypot(o.x - door.x, o.z - door.z) < CHIDE_M - 5)
+  const there = { x: n.x, y: walk.heightAt(n.x, n.z), z: n.z }
+  t = run(v, t, 20, there, watch)
+  check(c.state === 'chide' && Math.hypot(c.x - there.x, c.z - there.z) < COURT_STOP_M + NODE_M, 'she walks on within CHIDE_M of its door: it follows her', `${c.state}, ${Math.hypot(c.x - there.x, c.z - there.z).toFixed(2)} m`)
+  for (const a of events) w.apply(a)
+  const heard = []
+  run(w, T0 + 120, t - T0 - 120, FAR, () => { w.voices([]); w.chides(heard) })
+  check(w.all[c.id].state === 'chide' && heard.length === 0, 'a peer\'s client steps the chide, and voices no scold at her', `${w.all[c.id].state}, ${heard.length} scolds`)
+  t = run(v, t, COURT_S + 2, FAR, watch)
+  check(v.chider === null && c.state !== 'chide', `her feet CHIDE_M from its door, it lets her go`, `${c.state}`)
+}
+
 // --- a carrier startled --------------------------------------------------------------
 console.log('\na carrier startled')
 {
@@ -837,6 +874,17 @@ console.log('\ntrust')
   let threw = false
   try { back.merge([['k3x', 256, 'abc123def456']]) } catch { threw = true }
   check(threw, 'a malformed entry is refused')
+
+  const bad = new Trust()
+  const marks = [bad.wrong(7, 'hob-fed', 2), bad.wrong(7, 'hob-fed', 5)]
+  const saved = new Trust()
+  saved.load(JSON.parse(JSON.stringify(bad.save())))
+  check(marks.join() === 'true,false' && bad.wronged(7) && bad.witness(7) === 2 && !bad.wronged(9) && bad.witness(9) === null && bad.unsent.length === 0, 'a hob fed to a frog wrongs its glade once, kept with the villager who saw it first, and is never told the room', marks.join())
+  check(saved.wronged(7) && saved.witness(7) === 2, 'a saved game brings the wrong back')
+  saved.clear()
+  threw = false
+  try { bad.wrong(7, 'egg-stolen', 1) } catch { threw = true }
+  check(!saved.wronged(7) && threw, 'a new game is forgiven, and a wrong of no known kind is refused')
 }
 
 console.log('\nher mushroom, in the room')
@@ -1036,6 +1084,8 @@ console.log('\nat home')
   run(wary, 1 / 60)
   check(wary.hands.eaten[0] === lure && wary.res.befriended([]).join() === '3' && wary.res.befriended([]).length === 0 && r.feast && r.state === 'walk', 'held over it, her mushroom is taken to eat, its taker named once by befriended')
 }
+
+checkChide()
 
 console.log(failures === 0 ? '\nall ok' : `\n${failures} failing`)
 process.exit(failures === 0 ? 0 : 1)

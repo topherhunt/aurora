@@ -154,6 +154,7 @@ import { EYE_LINE, FIT_MIN, FIT_MAX } from './render/avatar-rig.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, RULES as SOUND_RULES, SOUNDS } from './audio/ambience.js'
+import { Music, poolFor } from './audio/music.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 import { WarnMark } from './render/warn-mark.js'
@@ -954,8 +955,9 @@ const loot = new Loot()
 // What the talk has given her (conversations.js): the topics she has heard of, saved; how each person stands with her and the quests she has taken, for the session.
 const talkKnown = new Set()
 const talkRapport = new Rapport()
-// The glade she wronged (trust.js 'hob-fed'), for the talk: whether it is furious and which villager saw. Stream C replaces this with the trust ledger's.
-const talkWrongs = { wronged: () => false, witness: () => null }
+// The glade she wronged (trust.js 'hob-fed'), for the talk: whether it is furious and which villager saw.
+const HOB_WITNESS_M = 20
+const talkWrongs ={ wronged: () => villagers !== null && trust.wronged(villageSeed()), witness: () => (villagers === null ? null : trust.witness(villageSeed())) }
 const talkLog = new QuestLog()
 // The labyrinths whose middle she has stood in, by `rx,rz`, saved: their drums are still for good.
 const drumsStilled = new Set()
@@ -1027,7 +1029,8 @@ function applySave(doc) {
   else flares.load(doc.flares)
   if (doc.flint === undefined) giveFlint()
   // A save from before trust has none: she stays the player she booted as.
-  if (doc.trust !== undefined) trust.load(doc.trust)
+  // A save from before wrongs has none.
+  if (doc.trust !== undefined) trust.load({ wrongs: [], ...doc.trust })
   // After trust, whose player the strokes are hers by. A save from before chalk has none.
   if (doc.chalk !== undefined) chalk.load(doc.chalk)
   // A save from before eating has no `size`: she is her own.
@@ -3507,6 +3510,8 @@ let panel = null
 // the frame loop runs silent rather than half-voiced. See bootWorld.
 let sound = null
 let ambience = null
+// The score (audio/music.js): made once with the engine and kept across rooms, so its silences run on through a room swap.
+let music = null
 let ready = false
 
 // The menu's toggle state. The world boots as it ships -- every layer the
@@ -3857,6 +3862,8 @@ async function bootWorld() {
       sound.buffers.set('zoomBack', reversedBuffer(sound.ctx, sound.buffers.get('zoom')))
       sound.buffers.set('flaregunBack', reversedBuffer(sound.ctx, sound.buffers.get('flaregun')))
       buzz = startBuzz(sound)
+      music = new Music({ engine: sound })
+      window.v2music = music
       console.log(`[v2] sound: ${Object.keys(SOUNDS).length} clips loaded`); return true },
     (err) => { console.error('[v2] sound disabled:', err); return false },
   )
@@ -5441,8 +5448,20 @@ async function buildRoom(room, at) {
     thud: (x, y, z) => { if (ambience) sound.play('footfall', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.6, at: heardAt({ x, y, z }) }) },
     splash: (x, y, z) => { if (ambience) sound.play('splash', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
     douse: (x, y, z) => { if (ambience) sound.play('extinguish', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
-    // A creature eating from her hand: deeper from a strider or a stag.
-    eaten: (lure, eater) => { if (ambience) sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) }) },
+    // A creature eating from her hand: deeper from a strider or a stag. A hob gone down a frog wrongs its glade, the nearest leafkin within HOB_WITNESS_M seeing it.
+    eaten: (lure, eater, rec) => {
+      if (ambience) sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) })
+      if (rec.kind !== 'hob') return
+      hobs.eaten(rec)
+      let witness = null, best = HOB_WITNESS_M
+      for (const c of villagers.all) {
+        const d = Math.hypot(c.x - lure.x, c.z - lure.z)
+        if (!c.hidden && d < best) { witness = c; best = d }
+      }
+      if (witness === null) return
+      villagers.chide(witness.id)
+      trust.wrong(villageSeed(), 'hob-fed', witness.id)
+    },
     scale: herScale(),
     world: 'overworld',
     // A peer's thing in a cave is taken to be in hers: the room does not say which system.
@@ -5533,6 +5552,7 @@ async function buildRoom(room, at) {
     creatureNet.add(villagers, ['vg'])
     // Their pets (render/hobs.js): a hob weevil at most houses, trailing its owner or keeping the yard, babies trailing it.
     hobs = new Hobs(scene, { walk, villagers, seed: villageSeed() })
+    hands.addSource(hobs, 'hob')
     for (const m of hobs.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-hobs' })
     hobs.ready.then(() => console.log(`[v2] hobs ${hobs.stats.adults} adults, ${hobs.stats.babies} babies`))
   }
@@ -6715,6 +6735,13 @@ function updateAmbience(dt, state) {
     hushed: effects.maddened,
     cave: cave === null ? null : { water: cave.walk.nearestWater(ears.x, ears.y, ears.z, SOUND_RULES.caveDrip.reach, caveDripAt) },
   })
+  music.update(dt, poolFor({
+    cave: cave !== null,
+    glade: currentRoom.village,
+    town: townPlan !== null && townPlan.towns.some((t) => Math.hypot(ears.x - t.x, ears.z - t.z) <= t.radius),
+    aboveSnow: height.heightAt(ears.x, ears.z) > height.snowLineAt(ears.x, ears.z),
+    day: daynessOf(state) >= 0.5,
+  }), indoors !== null)
 }
 
 // Browsers keep an AudioContext suspended until a user gesture on the page;

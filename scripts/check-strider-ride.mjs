@@ -105,6 +105,50 @@ console.log("a peer's ride")
   const V = room()
   V.apply([`ws:${key}`, 100, 300, 0, 0, 0, -1, 'shy', 'peer', 1.5, 0, 1, 0, 90, 0, 80, 99.5], 100)
   check(V.scars.get(key)?.hp === 80 && V.scars.get(key).at === 99.5, "a peer's singeing is kept, though the body is out of her range", JSON.stringify(V.scars.get(key)))
+
+  console.log('felled')
+  /** `S` stepped `s` seconds through update with a drawing layer that keeps no puppets. */
+  const run = (S, s) => {
+    for (let t = 0; t < s; t += 0.1) {
+      S.now += 0.1
+      S.update(0.1, { x: 0, y: 1.6, z: 0 }, { x: 0, y: 0, z: 0 }, [], S.now, [], [])
+    }
+  }
+  const quiet = (S) => {
+    Object.assign(S, { list: [], led: null, outbox: [], returned: () => { throw new Error('a felled strider returned to town') } })
+    S.inner = { begin() {}, draw() {}, end() {}, release() {} }
+    S._scan = () => {}
+    S._cry = () => { S.cried = (S.cried ?? 0) + 1 }
+    return S
+  }
+  const W = quiet(room())
+  W.apply([`ws:${key}`, 100, 10, 0, 5, 0, -1, 'shy', 'peer', 1.5, 0, 1, 0, 90, 0, 80, 99.5], 100)
+  W.apply([`ws:${key}`, 100.5, 10, 0, 5, 0, -1, 'rejoin', 'peer', 1.5, 0, 1, 0, 90, 0, 0, 100.5], 100.5)
+  const w = W.live.get(key)
+  W.now = 100.5
+  W.cried = 0
+  run(W, 0.1)
+  check(w.state === 'dead' && w.fell === 100.5 && w.pose.speed === 0 && W.cried === 1, "a peer's anchor bringing it to 0 hp: it cries out and falls where it is", `${w.state}, fell ${w.fell}, cried ${W.cried}`)
+  const at = { x: w.pose.x, z: w.pose.z }
+  run(W, 3)
+  check(W.live.get(key) === w && !w.gone && w.pose.x === at.x && w.pose.z === at.z, 'it lies still where it fell till FELL.lie')
+  run(W, 0.6)
+  check(w.gone && !W.live.has(key), 'then dissolves out of the world')
+  const spawned = []
+  W._scan = WildStriders.prototype._scan
+  W._spawn = (k) => spawned.push(k)
+  W._scan(0, 0)
+  check(spawned.length > 0 && !spawned.includes(key), 'and is never spawned again', `${spawned.length} others spawned`)
+  W.apply([`ws:${key}`, 101, 10, 0, 5, 0, -1, 'shy', 'peer', 1.5, 0, 1, 0, 90, 0, 0, 100.5], 101)
+  check(!W.live.has(key), "nor brought back by a peer's anchor")
+  const X = quiet(room())
+  X.apply([`ws:${key}`, 100, 10, 0, 5, 0, -1, 'shy', 'peer', 1.5, 0, 1, 0, 90, 0, 10, 99.5], 100)
+  const x = X.live.get(key)
+  x.by = null
+  X._enter = () => { throw new Error('a strider singed to death fled') }
+  X._burn(x, false)
+  const sent = X.outbox.at(-1)
+  check(x.state === 'dead' && sent[15] === 0 && sent[16] === 100, 'her torch taking its last 10 hp: it falls rather than flees, and the room hears 0 hp', JSON.stringify(sent))
 }
 
 console.log('a crab in a hand')

@@ -11,6 +11,7 @@ import { DialogGrid, GRID } from './talk/grid.js'
 import { LinePicker, leafkinTier } from './talk/lines.js'
 import { epochOf, questsFor } from './talk/quests.js'
 import { RAPPORT } from './talk/rapport.js'
+import { LK } from './talk/leafkin.js'
 import { Voices } from './audio/voices.js'
 import { DialogPanel } from './ui/dialog-panel.js'
 
@@ -34,7 +35,7 @@ export const TALK = {
 }
 
 const EMPTY = Array.from({ length: GRID.cols * GRID.rows }, () => ({ text: '', kind: 'empty' }))
-const FREE = new Set(['walk', 'stand', 'gaze', 'sit', 'talk', 'greet', 'peer', 'court'])
+const FREE = new Set(['walk', 'stand', 'gaze', 'sit', 'talk', 'greet', 'peer', 'court', 'chide'])
 
 export class Conversations {
   /**
@@ -88,6 +89,8 @@ export class Conversations {
     this.asked = new Map()
     this.pairs = new Map()
     this.turns = []
+    // A chider's scold on the panel with no conversation open: `{ c, until }`, or null.
+    this.scold = null
   }
 
   /** The key's stand-in for her voice. */
@@ -161,6 +164,7 @@ export class Conversations {
     if (indoors) this._drain()
     else this._chatter(head)
     if (this.chat) this._keep(head, scale, indoors)
+    else if (this.scold) this._keepScold(head, scale, indoors)
     const mic = this.mic()
     const spoke = (mic !== null && mic.spike(seconds, dt)) || this.hailed
     this.hailed = false
@@ -180,13 +184,35 @@ export class Conversations {
     if (this.villagers) for (const v of this.villagers.chatter(turns.splice(0))) {
       this._turn(this.village[v.id], `v:${Math.min(v.id, v.partner)}:${Math.max(v.id, v.partner)}`, v.x, v.y, v.z, head)
     }
+    if (this.villagers) for (const v of this.villagers.chides(turns.splice(0))) this._scold(v, head)
   }
 
   /** Their turns unheard, from behind walls. */
   _drain() {
     if (this.townsfolk) this.townsfolk.chatter(this.turns.splice(0))
-    if (this.villagers) this.villagers.chatter(this.turns.splice(0))
+    if (this.villagers) {
+      this.villagers.chatter(this.turns.splice(0))
+      this.villagers.chides(this.turns.splice(0))
+    }
     this.turns.length = 0
+  }
+
+  /** A chider's scold at her (villagers.js chide): furious in its voice, and on the panel over it unless she is talking. */
+  _scold(v, head) {
+    const mind = this.village[v.id]
+    if (this.chat === null) {
+      const text = LK.scold[(Math.random() * LK.scold.length) | 0]
+      this.scold = { c: this.villagers.all[v.id], until: this.now + TALK.linger + text.split(' ').length / TALK.wordsPerS }
+      this.panel.show(mind.name, text, EMPTY)
+    }
+    if (this.picker === null || this.voices === null && !this._voices()) return
+    const pick = this.picker.pick(mind, 'tell.caught', { now: this.now, tier: 'native', force: true })
+    if (pick !== null) this.voices.say(pick, v, Math.hypot(v.x - head.x, v.y - head.y, v.z - head.z), { reply: true })
+  }
+
+  _keepScold(head, scale, indoors) {
+    if (indoors || this.now >= this.scold.until) { this.scold = null; this.panel.hide(); return }
+    this.panel.place(head, this.scold.c.pose, scale)
   }
 
   /** `mind`'s turn in its pair's chatter: the next step of their exchange (chat.js EXCHANGES), which only a line heard moves on. */
@@ -228,6 +254,7 @@ export class Conversations {
     const approached = this.coming !== null && this.coming.p.mind === p.mind && this.coming.hailed
     if (this.coming && this.coming.p.mind !== p.mind) this._unhold(this.coming.p)
     this.coming = null
+    this.scold = null
     const trusted = p.kind === 'village' ? this.trusts(p.c.id) : true
     // A leafkin that trusts her is at least as warm as a fed one (RAPPORT.fed).
     if (p.kind === 'village' && trusted) {

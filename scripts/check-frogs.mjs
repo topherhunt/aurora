@@ -578,7 +578,7 @@ let NOW = T0 + SECONDS + 10
   run(2, [spider])
   check(!f.lured && onPlan(), `a spider ${LURE_M + 1} m off is nothing to a frog on its plan`)
   run(2, [{ kind: 'carrot', x: f.x, y: GROUND + 1, z: f.z + 1, by: null }])
-  check(!f.lured && onPlan(), 'nor is a carrot a metre off: a frog wants a spider, a butterfly or a grasshopper', LURES.join(' '))
+  check(!f.lured && onPlan(), 'nor is a carrot a metre off: a frog wants a spider, a butterfly, a grasshopper or a hob', LURES.join(' '))
   check(setsFor().every((set) => !names(set)), 'and the room hears nothing of it')
   // Sitting, within LURE_M: it has it, its sit cut to NOTICE_S.
   for (let i = 0; i < 20 / DT && !(f.state === 'sit' && f.ph.dur - f.t > NOTICE_S + 0.2); i++) step(head(), [])
@@ -747,6 +747,15 @@ let NOW = T0 + SECONDS + 10
   theirs[9] = refed[9] * (1 + MEAL.grow)
   me.apply(theirs, NOW)
   check(Math.abs(g.size - theirs[9]) < 1e-9 && g.pet.by === 7 && me.loose.length === 1, "a peer feeding her pet makes it theirs, and it grows the same on her client", `${g.size.toFixed(3)}, by ${g.pet.by}`)
+
+  // A hob on its feet is chased, never eaten; one held at its face is eaten like a bug.
+  const wild = { kind: 'hob', x: g.x - 0.3, y: GROUND, z: g.z, by: 'hob', hob: 0 }
+  head = [g.x - 1, GROUND + 1.6, g.z]
+  for (let i = 0; i < 4 / DT; i++) step([wild])
+  check(eaten.length === 2, 'a frog never eats a hob on its feet', `${eaten.length - 2} eaten`)
+  const hob = { kind: 'hob', x: g.x - 0.3, y: GROUND + 0.3, z: g.z, by: null }
+  for (let i = 0; i < 8 / DT && eaten.length === 2; i++) step([hob])
+  check(eaten.length === 3 && eaten[2] === hob, 'a hob held at its face is eaten')
 }
 
 // Dry land far from any water: nothing.

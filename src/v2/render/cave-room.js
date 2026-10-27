@@ -11,6 +11,9 @@ import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
 import { Surface } from '../caves/surface.js'
+import { veinList } from '../caves/veins.js'
+import { VeinLayer } from './veins.js'
+import { CaveSpiders } from './cave-spiders.js'
 import { CHUNK, LODS, CULL_M, drawnLod, drawnRegions, chunkGap, lightsIn, rockAt, ROCK_AT } from '../caves/mesh.js'
 import { shoreMesh } from '../caves/water.js'
 import { WATER, RIPPLE_GLSL } from '../../water.js'
@@ -488,6 +491,10 @@ export class CaveRoom {
     this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.woodMaterial,this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.mirror, this.rock]
     this._props(plan.props)
     this._water(plan.waters)
+    this.mined = new Set()
+    this.veins = new VeinLayer(this.group, this.uniforms, COMMON, veinList(plan))
+    this.spiders = new CaveSpiders(this.group, this.uniforms, COMMON, plan, oy)
+    this.spiderT = null
     this._mouths(plan.graph)
   }
 
@@ -917,6 +924,12 @@ export class CaveRoom {
     }
   }
 
+  /** Veins and gems whose ids are in `mined` are gone from the walls (caves/veins.js); `this.mined` is the set routeFrom reads. */
+  setMined(mined) {
+    this.mined = mined
+    this.veins.setMined(mined)
+  }
+
   /** Chalk lump `i` picked up: gone from the floor. */
   hideChalk(i) {
     this.chalkGone[i] = true
@@ -963,6 +976,8 @@ export class CaveRoom {
     this.uniforms.uFogColor.value.setRGB(...fog.color)
     this.uniforms.uLitFloor.value = flying ? FLY_LIT : 0
     this.uniforms.uTime.value = t % 1024
+    this.spiders.update(this.spiderT === null ? 0 : Math.max(0, Math.min(t - this.spiderT, 0.1)), eye, this.uniforms.uTorch.value)
+    this.spiderT = t
     const ly = eye.y - this.oy
     if (this.marksWaiting > 0 && this.marksFresh && t - this.marksAt >= 1) {
       this.marksAt = t
@@ -1045,6 +1060,8 @@ export class CaveRoom {
     for (const d of this.disposables) d.dispose()
     this.drawChalk([])
     this.drawLive([])
+    this.veins.dispose()
+    this.spiders.dispose()
     this.group.removeFromParent()
   }
 }

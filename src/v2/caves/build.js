@@ -14,7 +14,7 @@ const DAY_STEP = 2.5
 export const ARRIVE_IN = 3.5
 export const EXIT_R = 1.6
 
-/** `entries` as buildGraph takes them. Returns { graph, field, props, lights, waters, doors }, doors[e] being { x, y, z, dx, dz } at mouth e's arrival spot facing in, `cellar`, and (mx, my, mz) where she leaves: the mouth node, or a cellar's door face. */
+/** `entries` as buildGraph takes them. Returns { seed, graph, field, props, lights, waters, doors }, doors[e] being { x, y, z, dx, dz } at mouth e's arrival spot facing in, `cellar`, and (mx, my, mz) where she leaves: the mouth node, or a cellar's door face. */
 export function planCave({ seed, entries }) {
   const graph = buildGraph({ seed, entries })
   const field = new CaveField(graph, seed)
@@ -41,5 +41,5 @@ export function planCave({ seed, entries }) {
     const m = cellar ? mouthFlare(n).end : n
     doors[n.entry] = { node: n.i, x, y: col.floor, z, dx, dz, cellar: cellar === true, mx: m.x, my: m.y, mz: m.z }
   }
-  return { graph, field, props, lights, waters: waterBodies(graph), doors }
+  return { seed, graph, field, props, lights, waters: waterBodies(graph), doors }
 }

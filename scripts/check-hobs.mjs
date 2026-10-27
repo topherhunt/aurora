@@ -28,6 +28,7 @@ import { Shell } from '../src/v2/render/shell.js'
 import { Villagers } from '../src/v2/render/villagers.js'
 import { BABY, CLIPS, CRY_S, HOB_GLB, Hobs, LOSE_M, SIZE_M, SIZE_VAR, SQUEAL_S, TINTS, YARD_R } from '../src/v2/render/hobs.js'
 import { WalkSurface } from '../src/v2/walk.js'
+import { taken } from '../src/v2/taken.js'
 import { keyHash } from '../src/sim/score.js'
 import { readGlb } from '../tools/creatures/apply-rig-edit.mjs'
 import { buildVillage, rollVillage } from '../src/v2/rooms/village.js'
@@ -265,6 +266,48 @@ console.log('\nthe chased squeal')
   for (let i = 1; i < at.length; i++) gap = Math.min(gap, at[i] - at[i - 1])
   check(at.length > 0 && at[0] < 0.1, 'a hob squeals the moment a frog starts after it', at.length ? `${at[0].toFixed(2)} s in` : 'never')
   check(at.length >= 5 && gap >= SQUEAL_S[0] - 1 / hz, `then no oftener than every ${SQUEAL_S[0]}-${SQUEAL_S[1]} s, a fresh chase included`, `${at.length} squeals in 71 s, least gap ${gap.toFixed(2)} s`)
+}
+
+// --- her hands ----------------------------------------------------------------------
+console.log('\nher hands')
+{
+  const w = make(), hz = 60
+  let t = run(w, T0, 5)
+  const h = w.hobs.all.find((o) => !o.parent && o.owner === null && w.villagers.seat(o.x, o.z) !== null)
+  const babies = w.hobs.all.filter((b) => b.parent === h)
+  const step = (seconds, head) => {
+    for (let i = 0; i < seconds * hz; i++) {
+      t += 1 / hz
+      w.villagers.update(FAR, FAR, t, 1 / hz)
+      w.villagers.voices([])
+      w.hobs.update(head, t, 1 / hz)
+      w.hobs.voices([])
+    }
+  }
+  const eye = () => ({ x: h.x + 1, y: h.y + 1.6, z: h.z })
+  step(0.5, eye())
+  const hit = w.hobs.pickAt(h.x, h.y + h.size * 0.3, h.z, 0.3, 1)
+  check(hit !== null && hit.h === h && w.hobs.pickAt(h.x, h.y, h.z, 0.3, h.size) === null, 'a drawn hob is picked up at a hand, if the hand takes things its size', hit && `${hit.dist.toFixed(2)} m`)
+  const rec = w.hobs.take(hit)
+  const yard = { x: h.x, z: h.z }
+  step(5, eye())
+  check(rec.kind === 'hob' && !rec.stowable && h.held && h.x === yard.x && h.z === yard.z && w.hobs.pickAt(h.x, h.y, h.z, 0.3, 1)?.h !== h && babies.every((b) => Math.hypot(b.x - b.yard.x, b.z - b.yard.z) <= YARD_R + 0.5), 'held, it is a hob never stowed, off the steering and the hands, its babies keeping the yard', `${babies.length} babies`)
+  const drop = { x: yard.x + 1.5, z: yard.z }
+  w.hobs.release(rec, drop.x, 0, drop.z)
+  check(!h.held && Math.hypot(h.x - drop.x, h.z - drop.z) < 0.01 && Math.abs(h.y - walk.heightAt(drop.x, drop.z, -Infinity)) < 0.01, 'let go on dry ground, it stands where it was let go', `${Math.hypot(h.x - drop.x, h.z - drop.z).toFixed(2)} m off`)
+  step(0.5, eye())
+  const again = w.hobs.take(w.hobs.pickAt(h.x, h.y + h.size * 0.3, h.z, 0.3, 1))
+  w.hobs.eaten(again)
+  step(2, eye())
+  check(h.gone && !h.held && taken.has(`hob${h.id}`, h.yard.x, h.yard.z) && w.hobs.pickAt(h.x, h.y, h.z, 1, 1)?.h !== h && babies.every((b) => b.parent === h), 'eaten from her hand, it is gone room-wide, nobody\'s to pick up', `${taken.has(`hob${h.id}`, h.yard.x, h.yard.z)}`)
+  let threw = false
+  try { w.hobs.release(again, 0, 0, 0) } catch { threw = true }
+  check(threw, 'and a hob no hand holds is refused back')
+  const fresh = make(), o = fresh.hobs.all[h.id]
+  check(o.gone, 'a client booting after it was eaten never has it')
+  const peer = make(), p = peer.hobs.all.find((x) => x.id !== h.id && !x.gone)
+  check(peer.hobs.evict(`hob${p.id}`, p.yard.x + 1, p.yard.z) === false && peer.hobs.evict(`hob${p.id}`, p.yard.x, p.yard.z) && p.gone && peer.hobs.evict(`mushroom${p.id}`, p.yard.x, p.yard.z) === false, 'a peer\'s frog eating one evicts it only by its id at its own yard')
+  taken.clear()
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall ok')

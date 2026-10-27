@@ -175,7 +175,7 @@ export class ChalkPen {
 }
 
 // The field's gradient at (x, y, z): out of the rock is minus it.
-function gradient(field, x, y, z, out) {
+export function gradient(field, x, y, z, out) {
   const e = 0.02
   out[0] = field.at(x + e, y, z) - field.at(x - e, y, z)
   out[1] = field.at(x, y + e, z) - field.at(x, y - e, z)
