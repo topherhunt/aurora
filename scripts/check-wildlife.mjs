@@ -35,7 +35,7 @@ import * as THREE from 'three'
 import fs from 'node:fs'
 import {
   Wildlife, SPECIES, CLIPS, ONE_SHOT, PLANTED, GRIP, LAIN, TILE, RADIUS, DENSITY, MAX, NIGHT_REST, PUPPETS, MAX_SLOPE, SNOW_MARGIN, TETHER_M, TURN_RATE, CARD_BODY_M, PROBE_EVERY, CARD_EVERY,
-  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR,
+  LURE_M, LURE_FORGET_M, RESUME_M, FACE_M, SAMPLE_M, ANCHOR_S, ANCHOR_STALE_S, FLEE_M, STARTLE_S, FLEE_CLEAR_M, FLEE_S, FEAR, MAD, BUTT,
 } from '../src/v2/render/wildlife.js'
 import { MEAL } from '../src/v2/eating.js'
 import { CARD_RUNGS, CRITTER_GLB, CULL_KEEP, LOD_DEG, LOD_HYSTERESIS, LOD_RUNGS, LOD_STEP, critterTier, cullRange, forgetRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
@@ -47,7 +47,9 @@ import { webpSize } from '../tools/tripo-pack.mjs'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
 import { LitterCards, cardPicture } from '../src/v2/render/litter-cards.js'
 import { PROP_FADE_SECONDS, getPropClock } from '../src/material.js'
-import { SINGE } from '../src/v2/singe.js'
+import { SHIELD, SINGE, SWORD, shielded } from '../src/v2/singe.js'
+import { Her, KEEP_UP } from '../src/v2/keep-up.js'
+import { hash32 } from '../src/sim/score.js'
 
 // These gates read the skinned Puppet's own parts (its bones, its IK, its tier meshes); check-baked-puppet.mjs covers the baked body.
 setPuppetMode('skinned')
@@ -1161,6 +1163,133 @@ const differ = (p, q) => {
   check(!a.byKey.has(ca.key) && !b.byKey.has(cb.key) && a.kill(ca.key, timeOf(a)) === null, 'and is never woken again, nor there for a dragon to take')
   a.dispose()
   b.dispose()
+}
+
+// --- her sword through it, and her shield ---------------------------------------------
+{
+  const dt = 1 / 60
+  const a = make(7, { walk: plain, water: noWater })
+  a.place(0, 0)
+  const c = beside(a, 'stag')
+  const swing = (s, inIt = true) => {
+    for (let f = 0; f < s * 60; f++) {
+      a.blades = inIt ? [{ x: c.sx, y: c.y + c.size * 0.4, z: c.sz }] : []
+      step(a, c.sx, c.y + FLEE_M + 1, c.sz, dt)
+    }
+  }
+  swing(0.5, false)
+  swing(0.1)
+  check(a.scars.get(c.key)?.hp === SINGE.max - SINGE.hp && c.live?.mode === 'flee', `a fast blade through a stag for 0.1 s costs it ${SINGE.hp} HP, and it runs`, `${a.scars.get(c.key)?.hp} HP, ${c.live?.mode}`)
+  swing(SWORD.every * 0.7)
+  check(a.scars.get(c.key).hp === SINGE.max - SINGE.hp, `held through it under ${SWORD.every} s, it costs nothing more`, `${a.scars.get(c.key).hp} HP`)
+  swing(SWORD.every * 0.3)
+  check(a.scars.get(c.key).hp === SINGE.max - 2 * SINGE.hp, `past ${SWORD.every} s, the next cut costs another ${SINGE.hp}`, `${a.scars.get(c.key).hp} HP`)
+  a.dispose()
+  const head = { x: 0, z: 0 }, shield = { x: 0, z: 0.3 }
+  check(shielded(head, shield, { x: 0.5, z: 5 }) === 1 - SHIELD.off && shielded(head, shield, { x: 5, z: 0.5 }) === 1 && shielded(head, shield, { x: 0, z: -5 }) === 1, `a shield turns ${SHIELD.off * 100}% of a blow from within ${SHIELD.deg} deg of where it faces, and none from its side or behind her`)
+}
+
+// --- a grown pet stag butts a dragon ----------------------------------------------------
+{
+  const dt = 1 / 60
+  const butts = []
+  const a = make(7, { walk: plain, water: noWater })
+  a.butt = (key, hp, x, z, now) => { butts.push({ key, hp, now }); return true }
+  a.place(0, 0)
+  const c = beside(a, 'stag')
+  const head = { x: c.sx, y: c.y + 1.6, z: c.sz + 2 }
+  const run = (s) => { for (let f = 0; f < s * 60; f++) step(a, head.x, head.y, head.z, dt) }
+  a.meals.set(c.key, Math.round((BUTT.grown - 1) / MEAL.grow) - 1)
+  a._grown(c, c.spawn.size)
+  a._golive(c, 'tame', null, null, timeOf(a))
+  const dragon = { key: 'dr:test', x: c.sx + 12, z: c.sz, size: 4 }
+  a.foes = [dragon]
+  run(2)
+  check(c.live?.mode === 'tame' && butts.length === 0, `a pet stag short of ${BUTT.grown}x its size stays at her heel, a dragon on the ground ${12} m off`, `${c.live?.mode}`)
+  a.meals.set(c.key, a.meals.get(c.key) + 1)
+  a._grown(c, c.spawn.size)
+  run(0.5)
+  check(c.live?.mode === 'butt' && c.live.foe === dragon.key && a.pending().some((an) => an[7] === 'butt'), `grown to ${BUTT.grown}x, it charges the dragon, and the room hears it`, `${c.live?.mode}`)
+  for (let f = 0; f < 15 * 60 && butts.length === 0; f++) run(dt)
+  const off = Math.hypot(dragon.x - c.sx, dragon.z - c.sz)
+  check(butts.length === 1 && butts[0].key === dragon.key && butts[0].hp === BUTT.hp && off <= c.size * MAD.reach + dragon.size * SINGE.reach + 0.5 && a.scars.get(c.key).hp === SINGE.max - BUTT.snap, `it butts the dragon from beside it for ${BUTT.hp} HP, and its snap back costs the stag ${BUTT.snap}`, `${butts.length} butts, ${off.toFixed(2)} m off, ${a.scars.get(c.key)?.hp} HP`)
+  run(4)
+  check(c.live?.mode === 'tame' && butts.length === 1, `one butt, then it is back at her heel, not butting again inside ${BUTT.againS} s`, `${c.live?.mode}, ${butts.length} butts`)
+  a.dispose()
+}
+
+// --- a pet keeps up with her (keep-up.js) -------------------------------------------------
+//
+// A pet fox at her heel while she walks east at the desktop pace (a run in one) across ground
+// it cannot take as she does. Behind her, out of her sight, it never goes KEEP_UP.stallS past KEEP_UP.near
+// without closing on her while there is ground behind her it may stand on, nor falls past KEEP_UP.m, before it
+// is warped up behind her; in her sight it is never warped.
+{
+  const dt = 1 / 30
+  const blocked = (o) => ({
+    'cliff steps': (x) => [15, 30, 45].some((s) => x > o.x + s && x < o.x + s + 1.5),
+    'dense deadwood': (x, z) => x > o.x + 8 && (Math.hypot(x - Math.round(x / 2.5) * 2.5, z - Math.round(z / 2.5) * 2.5) < 0.7) && hash32(Math.round(x / 2.5), Math.round(z / 2.5)) % 5 < 3,
+    'a river': (x) => x > o.x + 15 && x < o.x + 21,
+    'a steep valley': (x, z) => x > o.x + 15 && x < o.x + 30 && !(z > o.z + 40 && z < o.z + 44),
+    'a teleport jump': () => false,
+    'the cave mouth': (x, z) => x > o.x + 20 && x < o.x + 24 && Math.abs(z - o.z) > 1,
+  })
+  const runs = [['cliff steps', 2.9], ['dense deadwood', 2.9], ['a river', 2.9], ['a steep valley', 2.9], ['a teleport jump', 2.9], ['the cave mouth', 2.9], ['cliff steps', 5.8]]
+  for (const [name, mps] of runs) {
+    const a = make(7, { walk: plain, water: noWater })
+    a.place(0, 0)
+    const c = beside(a, 'fox')
+    const o = { x: c.sx, z: c.sz }
+    a.avoid = blocked(o)[name]
+    a.her = new Her()
+    a._golive(c, 'tame', null, null, timeOf(a))
+    let stall = 0, worst = 0, far = 0, warps = 0, best = Infinity, warped = false, hx = NaN
+    const keepUp = a.her.keepUp.bind(a.her)
+    a.her.keepUp = (...args) => { const to = keepUp(...args); if (to !== null) warped = true; return to }
+    const t0 = timeOf(a)
+    for (let f = 0; f < 30 / dt; f++) {
+      const t = f * dt
+      hx = o.x + 3 + mps * t + (name === 'a teleport jump' ? 20 * Math.floor(t / 5) : 0)
+      a.her.update(hx, o.z, 1, 0, t0 + t)
+      warped = false
+      step(a, hx, GROUND + 1.6, o.z, dt)
+      const dist = Math.hypot(hx - c.sx, o.z - c.sz)
+      if (warped) warps++
+      far = Math.max(far, dist)
+      if (warped || dist <= best - KEEP_UP.moveM || dist <= KEEP_UP.near) { best = dist; stall = 0 } else if (a.her.behind((x, z) => a.seat(x, z) !== null) !== null) stall += dt
+      worst = Math.max(worst, stall)
+    }
+    const end = Math.hypot(hx - c.sx, o.z - c.sz)
+    check(c.live?.mode === 'tame' && worst <= KEEP_UP.stallS + 2 * TICK_S + dt && far <= KEEP_UP.m + (name === 'a teleport jump' ? 20 : 0) + mps * 2 * TICK_S + 1 && end < 12, `a pet fox keeps up with her at ${mps} m/s over ${name}: never ${KEEP_UP.stallS} s without closing on her, never past ${KEEP_UP.m} m behind for long, at her heel at the end`, `${warps} warps, longest stall ${worst.toFixed(2)} s, furthest ${far.toFixed(1)} m, ${end.toFixed(1)} m off at the end`)
+    a.dispose()
+  }
+  {
+    const a = make(7, { walk: plain, water: noWater })
+    a.place(0, 0)
+    const c = beside(a, 'fox')
+    const o = { x: c.sx, z: c.sz }
+    a.avoid = (x) => x > o.x + 5 && x < o.x + 6.5
+    a.her = new Her()
+    a._golive(c, 'tame', null, null, timeOf(a))
+    const t0 = timeOf(a)
+    let warps = 0
+    // She walks east backwards, looking back at it the whole way.
+    for (let f = 0; f < 20 / dt; f++) {
+      const hx = o.x + 3 + 1.45 * f * dt
+      a.her.update(hx, o.z, -1, 0, t0 + f * dt)
+      const was = { x: c.sx, z: c.sz }
+      step(a, hx, GROUND + 1.6, o.z, dt)
+      if (Math.hypot(c.sx - was.x, c.sz - was.z) > 3) warps++
+    }
+    check(warps === 0 && c.live?.mode === 'tame', 'a pet she is looking at is never warped, however stuck it is', `${warps} warps, ${Math.hypot(o.x + 3 + 29 - c.sx, o.z - c.sz).toFixed(1)} m off`)
+    a.dispose()
+  }
+  const h = new Her()
+  for (let f = 0; f <= 180; f++) h.update(f * 0.05, 0, 1, 0, f / 60)
+  const fast = h.speed
+  h.update(40, 0, 1, 0, 3 + 1 / 60)
+  const back = h.behind(() => true)
+  check(Math.abs(fast - 3) < 0.05 && h.speed === fast && h.trail.length === 1 && back !== null && !h.sees(back.x, back.z) && Math.hypot(back.x - 40, back.z) >= KEEP_UP.backM[0] - 1e-9, 'her pace is read off her walk, a teleport neither counts toward it nor leaves its old trail to be warped onto, and the ground behind her is out of her sight', `${fast.toFixed(2)} m/s, then ${h.speed.toFixed(2)}; behind at ${back && `${back.x.toFixed(1)}, ${back.z.toFixed(1)}`}`)
 }
 
 // --- a standing body puts its feet on the ground -----------------------------------

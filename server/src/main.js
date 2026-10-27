@@ -137,6 +137,7 @@ function validRoom(name) {
 // `scale` is the client's size against the world, absent at 1. `foot` is the
 // world height of the client's feet, which a peer stands its body on instead
 // of guessing; absent from a client too old to send it. `asleep` is present only while it sleeps.
+// `music` is [pool, song index or -1, start in world seconds] (src/v2/audio/music.js wire).
 function validPose(message) {
   return message && message.type === 'pose' && Array.isArray(message.pose) && message.pose.length === 21 &&
     message.pose.every((n) => Number.isFinite(n)) && Array.isArray(message.hands) && message.hands.length === 2 &&
@@ -144,7 +145,9 @@ function validPose(message) {
     (message.avatar === undefined || (typeof message.avatar === 'string' && /^[a-z0-9-]{1,32}$/.test(message.avatar))) &&
     (message.foot === undefined || Number.isFinite(message.foot)) &&
     (message.asleep === undefined || message.asleep === true) &&
-    (message.scale === undefined || (Number.isFinite(message.scale) && message.scale >= 0.05 && message.scale <= 20))
+    (message.scale === undefined || (Number.isFinite(message.scale) && message.scale >= 0.05 && message.scale <= 20)) &&
+    (message.music === undefined || (Array.isArray(message.music) && message.music.length === 3 && typeof message.music[0] === 'string' &&
+      /^[a-z-]{1,32}$/.test(message.music[0]) && Number.isInteger(message.music[1]) && message.music[1] >= -1 && message.music[1] < 256 && Number.isFinite(message.music[2])))
 }
 
 // A pose may say where aboard a rowboat the client is (`aboard`: origin key,
@@ -582,7 +585,7 @@ wss.on('connection', (ws, request) => {
   }
 
   const client = {
-    id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null, scale: 1, foot: null, asleep: false, aboard: null,
+    id: randomUUID(), ws, room, roomName, lastSeen: Date.now(), lastPoseAt: 0, pose: null, hands: [false, false], avatar: null, scale: 1, foot: null, asleep: false, aboard: null, music: null,
     // What its hands hold, the rev that last changed, and how far through the room's things it has been told.
     held: new Array(HANDS).fill(null), heldRev: 0, seenRev: 0, takenSent: 0,
     // How far through the room's creatures it has been told.
@@ -694,6 +697,7 @@ wss.on('connection', (ws, request) => {
     client.foot = message.foot ?? null
     client.asleep = message.asleep === true
     client.aboard = message.aboard ?? null
+    client.music = message.music ?? null
     if (message.boat) {
       if (room.boats.size >= ROOM_BOATS_CAP && !room.boats.has(message.boat[0])) {
         // Full: the boat left alone longest makes room.
@@ -731,13 +735,15 @@ setInterval(() => {
         if (peer.foot !== null) p.foot = peer.foot
         if (peer.aboard) p.aboard = peer.aboard
         if (peer.asleep) p.asleep = true
+        if (peer.music) p.music = peer.music
         peers.push(p)
       }
       // The clock rides on every snapshot rather than on welcome alone, so a
       // late joiner, a reconnect and a missed message all converge in one tick.
       // So do the boats, each with its sample's age for the client to dead-reckon by.
       // The things, the creatures, the flares, their recalls, the flames, the trust, the chalk and the loot ride only when something changed since this client last heard.
-      const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, peers, boats }
+      // The owner, whose music the room follows (src/v2/audio/music.js), is its oldest client: the Map keeps join order.
+      const snapshot = { version: 1, type: 'snapshot', tick: serverTick, anchorMs: room.anchorMs, skipHours: room.skipHours, owner: room.clients.keys().next().value, peers, boats }
       const things = thingsFor(room, client)
       if (things) snapshot.things = things
       const creatures = creaturesFor(room, client)

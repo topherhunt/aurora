@@ -1073,7 +1073,7 @@ export class Fish {
         if (now - f.bitT < PREY.biteS) continue
         if (this.harm === null) throw new Error('Fish: a fish bites her, and no harm() to hurt her with')
         f.bitT = now
-        this.harm(PREY.harm, why)
+        this.harm(PREY.harm, why, f)
       }
     }
   }

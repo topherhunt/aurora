@@ -74,6 +74,7 @@ import {
 import { PERCH_STRIDE } from './rocks.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 import { MEAL, atMost } from '../eating.js'
+import { headway } from '../keep-up.js'
 
 export const TILE = 16
 export const RADIUS = 40
@@ -275,6 +276,8 @@ export class Crabs {
     this.now = 0
     this.spells = 0
     this.head = { x: 0, z: 0 }
+    // Her, as her pets keep up with her (keep-up.js); null and one she leaves RADIUS behind is forgotten.
+    this.her = null
     // Whether the last update stepped the crabs under the water too (she was submerged).
     this.under = true
     this.perchBuf = new Float32Array(PERCH_BUF * PERCH_STRIDE)
@@ -607,6 +610,7 @@ export class Crabs {
     } else if (c.perch !== null) this._unperch(c)
     c.size *= GROW
     c.pet = { by }
+    c.way = headway()
     c.fedAt = at
     c.hunt = null
     c.spell = null
@@ -1074,12 +1078,20 @@ export class Crabs {
       }
     }
     this.loose.length = kept
-    // The pets, after whoever fed them; one she has left RADIUS behind is forgotten.
+    // The pets, after whoever fed them; hers keep up with her, and one she has left RADIUS behind otherwise is forgotten.
     for (let i = this.pets.length - 1; i >= 0; i--) {
       const c = this.pets[i]
-      if (Math.hypot(c.x - hx, c.z - hz) > RADIUS) { this._unpet(c); this.free.push(c); continue }
+      const hers = c.pet.by === null && this.her !== null
+      const dist = Math.hypot(c.x - hx, c.z - hz)
+      if (!hers && dist > RADIUS) { this._unpet(c); this.free.push(c); continue }
       const m = c.pet.by === null ? this.head : peers.find((p) => p.by === c.pet.by)
-      if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, PET.speed)) { c.state = 'pause'; c.speed = 0; c.amp = 0 }
+      const speed = hers ? this.her.pace(PET.speed * c.size) / c.size : PET.speed
+      if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, speed)) { c.state = 'pause'; c.speed = 0; c.amp = 0 }
+      const to = hers ? this.her.keepUp(c.way, c.x, c.z, dist > PET.m + c.size, now, () => true) : null
+      if (to !== null) {
+        const s = this._looseSpot(c, to.x, to.z, c.yaw)
+        this._seat(c, s.x, s.y, s.z, Math.atan2(hx - s.x, hz - s.z), s.stone)
+      }
       const level = this.water.lakeLevelAt(c.x, c.z)
       if (under || level === null || c.y >= level) write(c)
     }
@@ -1151,7 +1163,7 @@ export class Crabs {
       if (now - c.hunt.bitT >= HUNT.biteS) {
         if (this.harm === null) throw new Error('Crabs: a crab bites her, and no harm() to hurt her with')
         c.hunt.bitT = now
-        this.harm(HUNT.harm, 'a crab')
+        this.harm(HUNT.harm, 'a crab', c)
       }
       return true
     }

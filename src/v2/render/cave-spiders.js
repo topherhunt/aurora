@@ -1,6 +1,6 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { onRock, rayRock, gradient } from '../caves/chalk.js'
+import { rayRock, gradient } from '../caves/chalk.js'
 import { columnAt } from '../caves/props.js'
 
 // The giant cave spiders (design/39-caves.md §12): body-length-a-metre crawlers on the walls and ceilings of the caverns and chambers. They never attack her. A torch near one stops it, it rears and hisses, then backs away from the light, facing it, until the light is far. Each has HP for the fight (hurt, onDeath).
@@ -32,12 +32,16 @@ export const TICK_S = 0.15
 export const SHADE = 0.35 * 0.3
 export const BASE_COLOR = [0.32, 0.24, 0.18]
 
-const LIFT_M = 0.25
+const LIFT_M = 0.1
 const REACH_M = 1.5
 const FLOOR_NY = 0.6
 const STUCK_TURNS = 6
-// A seat's field value must be this near the surface: the projection can land short on a thin fin.
-const SEAT_F = 0.35
+// A spider is seated only where there is this much open air off the wall, along its normal.
+const ROOM_M = 1.2
+// A seated point's field value is within this of the surface.
+const SEAT_F = 0.02
+// A step lands between half its length and this far from where it started.
+const GONE_MAX = 0.35
 
 class Spider {
   constructor(id, x, y, z, n, rand) {
@@ -78,6 +82,20 @@ function tangent(n, want, fallback) {
   throw new Error('tangent: no direction in the plane')
 }
 
+/** (x, y, z) walked down the field's gradient onto the surface, up to 8 Newton steps (the field is no true distance, so a step lands short): into `out`, the unit gradient into `g`; false if it meets no surface within REACH_M. */
+function seat(f, x, y, z, out, g) {
+  if (f.at(x, y, z) < -REACH_M * 2) return false
+  for (let i = 0; i < 8; i++) {
+    const v = f.at(x, y, z)
+    if (Math.abs(v) < SEAT_F) { out[0] = x; out[1] = y; out[2] = z; return gradient(f, x, y, z, g) > 0 }
+    const len = gradient(f, x, y, z, g)
+    if (len === 0) return false
+    const k = Math.max(-REACH_M, Math.min(REACH_M, v / len))
+    x -= g[0] * k; y -= g[1] * k; z -= g[2] * k
+  }
+  return false
+}
+
 /** Where the plan seats spiders: [{ x, y, z, nx, ny, nz }] on walls and ceilings of its caverns and chambers, cave-local; deterministic from the seed. */
 export function spiderHomes(plan) {
   const { graph, field, seed } = plan
@@ -100,9 +118,9 @@ export function spiderHomes(plan) {
         const hit = [0, 0, 0]
         if (!rayRock(field, x, col.floor + 1 + rand() * (col.roof - col.floor - 1.5), z, dx, dy, dz, 40, hit)) continue
         const g = [0, 0, 0]
-        if (Math.abs(field.at(hit[0], hit[1], hit[2])) > SEAT_F || gradient(field, hit[0], hit[1], hit[2], g) === 0) continue
+        if (Math.abs(field.at(hit[0], hit[1], hit[2])) > 0.35 || gradient(field, hit[0], hit[1], hit[2], g) === 0) continue
         const nrm = [-g[0], -g[1], -g[2]]
-        if (nrm[1] > FLOOR_NY) continue
+        if (nrm[1] > FLOOR_NY || field.at(hit[0] + nrm[0] * ROOM_M, hit[1] + nrm[1] * ROOM_M, hit[2] + nrm[2] * ROOM_M) >= 0) continue
         out.push({ x: hit[0], y: hit[1], z: hit[2], nx: nrm[0], ny: nrm[1], nz: nrm[2] })
         break
       }
@@ -345,7 +363,7 @@ export class CaveSpiders {
       return
     }
     // wander: a drift of the heading about the normal, now and then a pause.
-    const turn = (s.rand() - 0.5) * 0.7
+    const turn = (s.rand() - 0.5) * 0.25
     const c = Math.cos(turn), sn = Math.sin(turn)
     const side = [s.n[1] * s.h[2] - s.n[2] * s.h[1], s.n[2] * s.h[0] - s.n[0] * s.h[2], s.n[0] * s.h[1] - s.n[1] * s.h[0]]
     s.h = tangent(s.n, [s.h[0] * c + side[0] * sn, s.h[1] * c + side[1] * sn, s.h[2] * c + side[2] * sn], s.h)
@@ -355,15 +373,16 @@ export class CaveSpiders {
     s.speed = 0.5
   }
 
-  /** One step of `dist` along the heading, re-seated on the rock. A step that finds no wall, a floor or water is retried at a new heading, up to 3 times; STUCK_TURNS failed steps in a row sit it down. */
+  /** One step of `dist` along the heading, re-seated on the rock. A step that finds no wall, a floor or water, or lands under half its length or over GONE_MAX away, is retried at a new heading, up to 5 times; STUCK_TURNS failed steps in a row sit it down. */
   _move(s, dist, steerFace) {
     const f = this.field
     const out = [0, 0, 0], g = [0, 0, 0]
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       const cx = s.p[0] + s.h[0] * dist + s.n[0] * LIFT_M, cy = s.p[1] + s.h[1] * dist + s.n[1] * LIFT_M, cz = s.p[2] + s.h[2] * dist + s.n[2] * LIFT_M
-      if (onRock(f, cx, cy, cz, REACH_M, out) && Math.abs(f.at(out[0], out[1], out[2])) < SEAT_F && gradient(f, out[0], out[1], out[2], g) > 0) {
+      if (seat(f, cx, cy, cz, out, g)) {
         const nn = [-g[0], -g[1], -g[2]]
-        if (nn[1] <= FLOOR_NY && dot(nn, s.n) > -0.3 && !this._wet(out)) {
+        const gone = Math.hypot(out[0] - s.p[0], out[1] - s.p[1], out[2] - s.p[2])
+        if (nn[1] <= FLOOR_NY && dot(nn, s.n) > -0.3 && gone > dist * 0.5 && gone < GONE_MAX && !this._wet(out)) {
           s.p = [out[0], out[1], out[2]]
           s.n = nn
           s.h = tangent(nn, s.h, s.face)
@@ -378,7 +397,7 @@ export class CaveSpiders {
       s.h = tangent(s.n, [s.h[0] * c + side[0] * sn, s.h[1] * c + side[1] * sn, s.h[2] * c + side[2] * sn], s.h)
       if (steerFace) s.face = s.h
     }
-    if (++s.turns >= STUCK_TURNS) { s.turns = 0; s.state = 'pause'; s.until = this.now + SPIDER.pauseS[1] }
+    if (++s.turns >= STUCK_TURNS && s.state === 'wander') { s.turns = 0; s.state = 'pause'; s.until = this.now + SPIDER.pauseS[0] }
   }
 
   _wet(p) {

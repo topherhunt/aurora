@@ -29,8 +29,9 @@ import {
   WAY, WALK_TURN_RATE, EAT_REACH, EASE_MPS, EASE_TURN, SPOT_AWAY, SPOT_SLOPE_DEG, SCALE_ROUGHNESS, measureFly, keyOf, GUARD_VIVID, MALE_VIVID, WALK_RING,
   HUNT_M, HUNT_MPS, STOOP_M, STOOP_AGL, STRIKE_AGL, MEAL_S,
   LURES, LURE, LURE_FORGET, MENACE_RUN, MENACE, ANCHOR_S, ANCHOR_STALE_S,
-  SPOT_M, EYE_M, EYE_P, CIRCLE_M, LAND_SHORT, SPOT_S, CHARGE_MPS, BITE_M, HURT_M, BITE_HP, BITE_AT_S, CHOMP_S, GROWL_S, GIVE_UP_M, SPURN_S, AGGRO_ANCHOR_S, HER as HER_ID,
+  SPOT_M, EYE_M, EYE_P, CIRCLE_M, LAND_SHORT, SPOT_S, CHARGE_MPS, BITE_M, HURT_M, BITE_HP, BITE_AT_S, CHOMP_S, GROWL_S, GIVE_UP_M, SPURN_S, AGGRO_ANCHOR_S, HER as HER_ID, DRAGON_HP,
 } from '../src/v2/render/dragons.js'
+import { FELL, SINGE, SWORD } from '../src/v2/singe.js'
 import { CATCH_UP_TICKS, CHAPTER_S, TICK_S, chapterOf, tickAfter, tickOf } from '../src/sim/score.js'
 import {
   Roosts, TILE, SPACING, SEAT_REACH, MAX_TILT, WIDTH, FLOOR_R, LODS, FAR_AT, RADIUS_M, SCREE, WALL_RISE, CELL, GRID_N, NEST_FERNS, REACH, buildFortress, layFortress, gridCell,
@@ -1683,6 +1684,70 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   check(d.byKey.size === 0 && d.free.length === MAX && d.fading.length === PUPPETS, 'every roost gone, every dragon retired, the puppets they wore dissolving')
   d.dispose()
   check(d.batch.parent === null && d.freePuppets.length === PUPPETS, 'disposed, the batch is out of the scene and every puppet parked')
+}
+
+// --- hurt: DRAGON_HP, each blow owed on the dragon's own hurt key, the fall where it stands, its gems' word, never born again ---
+{
+  const flat = flatField(GROUND)
+  const site = homeSite(4321)
+  const born = () => { const dd = dragonsOn(flat, [site], makeHerd([])); dd.plan = restPlan(dd); return dd }
+  const A = born(), B = born(), C = born()
+  const her = { x: 12, y: GROUND + 1.6, z: 0 }
+  let now = chapterOf(1000, keyOf(site)).start
+  const both = (s) => { for (let i = 0; i < s * 60; i++) { now += DT; A.update(her.x, her.y, her.z, now); B.update(her.x, her.y, her.z, now) } }
+  const stamp = (an) => { const s = an.slice(); s[8] = 'peerA'; return s }
+  both(DT)
+  const a = A.byKey.get(keyOf(site)), b = B.byKey.get(keyOf(site))
+  const growl = a.growlCue
+  const left = A.wound(a.key, 10, now)
+  const first = A.pending()
+  check(left === DRAGON_HP - 10 && a.growlCue === growl + 1 && first.length === 1 && first[0][0] === `${a.key}:h` && first[0][7] === 'hurt' && first[0][9] === left && JSON.stringify(first[0]).length <= 256 && first[0][0].length <= 32, `a blow of 10 leaves ${DRAGON_HP - 10} of DRAGON_HP and growls, owed to the room on the dragon's own hurt key`, JSON.stringify(first[0]))
+  B.apply(stamp(first[0]), now)
+  check(B.scars.get(b.key).hp === left && B.anchored.size === 0 && b.fell === null && b.state === 'roost', 'the peer keeps the scar, the dragon\'s live anchor on the relay untouched')
+  for (let i = 0; i < DRAGON_HP / 10 - 2; i++) A.wound(a.key, 10, now)
+  check(a.fell === null && A.scars.get(a.key).hp === 10 && A.slain().length === 0, 'one blow short, it stands')
+  both(0.5)
+  const roar = a.roarCue
+  check(A.wound(a.key, 25, now) === 0 && a.fell === now && a.state === 'dead' && a.clip === 'lie' && a.live === null && a.speed === 0 && a.roarCue === roar + 1, 'the last blow fells it: down where it stands, lying, a roar')
+  const fall = A.slain()
+  check(fall.length === 1 && fall[0].key === a.key && fall[0].at === now && fall[0].x === a.x && fall[0].z === a.z && A.slain().length === 0, 'and its fall is handed once to slain(), where its gems drop')
+  const blows = A.pending()
+  check(A.wound(a.key, 10, now) === 0 && A.pending().length === 0, 'a dragon down takes no more blows and owes none')
+  const x = a.x, y = a.y
+  B.apply(stamp(blows[blows.length - 1]), now)
+  B.apply(stamp(first[0]), now)
+  check(b.fell === now && b.state === 'dead' && B.dead(b.key) && B.slain().length === 1, 'the fatal blow heard fells it on the peer too, an older blow arriving after it changing nothing')
+  both(FELL.lie - 0.1)
+  check(a.x === x && a.y === y && A.byKey.has(a.key) && a.clip === 'lie', `it lies still FELL.lie ${FELL.lie} s`)
+  both(0.2)
+  check(!A.byKey.has(keyOf(site)) && !B.byKey.has(keyOf(site)) && A.fading.length === 1, 'then dissolves')
+  both(2)
+  check(!A.byKey.has(keyOf(site)) && !B.byKey.has(keyOf(site)), 'and is not born again while its roost is resident')
+  C.apply(stamp(blows[blows.length - 1]), now)
+  C.update(her.x, her.y, her.z, now)
+  check(C.byKey.size === 0 && C.slain().length === 1, 'a client that hears the fatal blow before its dragon is born never births it, and drops its gems all the same')
+  for (const dd of [A, B, C]) dd.dispose()
+  const S = born()
+  now = chapterOf(1000, keyOf(site)).start
+  S.update(her.x, her.y, her.z, now)
+  const s = S.byKey.get(keyOf(site))
+  const blade = [{ x: s.x, y: s.y + s.size * 0.4, z: s.z }]
+  S.cut(blade, now)
+  S.cut(blade, now + SWORD.every / 2)
+  check(S.scars.get(s.key).hp === DRAGON_HP - SINGE.hp && s.live?.prey === HER_ID, `her blade through a resting dragon costs it ${SINGE.hp} HP once a ${SWORD.every} s, and it turns on her`, `${S.scars.get(s.key).hp} HP, prey ${s.live?.prey}`)
+  S.dispose()
+  const G = born()
+  G.update(her.x, her.y, her.z, now)
+  const g = G.byKey.get(keyOf(site))
+  const foes = G.grounded()
+  G.pending()
+  const stag = { x: g.x - 3, z: g.z }
+  const snapped = G.butted(g.key, 10, stag.x, stag.z, now)
+  const owed = G.pending()
+  check(foes.length === 1 && foes[0].key === g.key && snapped && G.scars.get(g.key).hp === DRAGON_HP - 10 && g.live === null && g.rejoin !== null && g.spurned > now && owed.some((an) => an[0] === g.key && an[7] === 'rejoin'), 'a resting dragon is a stag\'s foe; butted, it loses 10, snaps back, and is off home, owed to the room as its rejoin', `${foes.length} foes, ${G.scars.get(g.key).hp} HP, rejoin ${g.rejoin !== null}`)
+  for (let i = 0; i < 4 * 60; i++) { now += DT; G.update(her.x, her.y, her.z, now) }
+  check(G.grounded().length === 0 && Math.hypot(g.x - stag.x, g.z - stag.z) > 15, 'four seconds on it is in the air, flown away from the stag', `${Math.hypot(g.x - stag.x, g.z - stag.z).toFixed(1)} m off it, ${g.phrase.kind}`)
+  G.dispose()
 }
 
 console.log(`\n${failures} failing`)

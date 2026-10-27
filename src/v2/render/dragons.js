@@ -121,6 +121,7 @@ import { setPropSolidAt } from '../../material.js'
 import { stepLodFade, Puppet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, puppetMode, solverStub, tintRange } from './baked-puppet.js'
 import { TailLag } from './tail-lag.js'
+import { FELL, SINGE, recut, redAt, reddened, touches } from '../singe.js'
 import { TILE as ROOST_TILE } from './roosts.js'
 
 /** The room's key for a dragon of a roost: its tile, which is where the roost is a pure function of, and `:g` for the guard (creature-net.js routes the `dr` prefix here). */
@@ -268,6 +269,9 @@ export const GIVE_UP_M = 50
 export const SPURN_S = 30
 // Seconds between an aggro dragon's anchors: it turns and charges faster than a menace stomps.
 export const AGGRO_ANCHOR_S = 0.5
+// A dragon's hp. Each blow is owed to the room on its own key, `${key}:h` (mode 'hurt', field 9 the hp left), so it never overwrites the dragon's live anchor on the relay; at 0 it falls (singe.js FELL), drops its gems (slain) and is not born again this session.
+export const DRAGON_HP = 150
+const HURT_SUFFIX = ':h'
 export const HER = 'her'
 const AGGRO_CLIP = { swoop: 'fly', land: 'fly', spot: 'alert', charge: 'walk', chomp: 'eat', growl: 'alert' }
 const NO_QUARRY = { her: null, striders: [] }
@@ -419,6 +423,10 @@ export class Dragons {
     wildlife.hunter = (key, t0, t1) => this.strikeOn(key, t0, t1)
     // key -> the latest anchor heard for it, live or rejoin (apply); read when its dragon is born.
     this.anchored = new Map()
+    // key -> { hp, at }: every dragon hurt this session, born or not; the falls not yet handed to slain(); when her sword last cut each (cut).
+    this.scars = new Map()
+    this.falls = []
+    this.cuts = new Map()
     // Anchors this client owes the room (pending).
     this.outbox = []
 
@@ -458,6 +466,8 @@ export class Dragons {
         lure: null, eyed: new Map(), spurned: 0,
         // The clip playing, its playback rate, how long the rest step holds it, and one cycle of it in seconds, for the ear's clocks; `cue` counts steps, as the wildlife's does; the ear's cues for an aggro dragon's roar, its thud down and its growl.
         clip: 'idle', rate: 1, cue: 0, left: 0, cycle: 0, roarCue: 0, thudCue: 0, growlCue: 0,
+        // The world time it fell at 0 hp, or null.
+        fell: null,
         size: 1, k: 1, lodSize: 1,
         // `cardDrawn`: the frame its pool cards were last drawn, so a frame that does not redraw them hides them.
         lod: CARD_RUNGS, puppet: null, cardWant: false, cardP: 1, carded: false, cardDrawn: -1,
@@ -615,6 +625,7 @@ export class Dragons {
     d.phase = born.phase
     d.lod = CARD_RUNGS
     d.puppet = null
+    d.fell = null
     d.cardWant = false
     d.cardP = 1
     d.dest = d.site
@@ -911,6 +922,7 @@ export class Dragons {
         const site = this.roosts.siteAt(tx, tz)
         if (!site || (home.x - site.x) ** 2 + (home.z - site.z) ** 2 > HUNT_M * HUNT_M) continue
         const dkey = keyOf(site)
+        if (this.dead(dkey)) continue
         for (let t = t0; t < t1;) {
           const ch = this.score.chapter(dkey, t)
           for (let i = 0; i < ch.phrases.length; i++) {
@@ -1414,7 +1426,7 @@ export class Dragons {
 
   /** The bite landing on quarry `id`: her hurt, or the strider sent bolting from the dragon. */
   _bite(d, id) {
-    if (id === HER) this.harm(BITE_HP, 'a fen dragon')
+    if (id === HER) this.harm(BITE_HP, 'a fen dragon', d)
     else this.fright(id, d.x, d.z)
   }
 
@@ -1587,9 +1599,14 @@ export class Dragons {
     const [key, T, , , , , , mode, by] = anchor
     if (!Number.isFinite(T)) throw new Error(`Dragons: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (by === null) return
+    if (mode === 'hurt') {
+      if (!key.endsWith(HURT_SUFFIX)) throw new Error(`Dragons: a hurt anchor off its key: ${JSON.stringify(anchor)}`)
+      this._scar(key.slice(0, -HURT_SUFFIX.length), anchor, now)
+      return
+    }
     this.anchored.set(key, anchor)
     const d = this.byKey.get(key)
-    if (!d) return
+    if (!d || d.fell !== null) return
     if (mode === 'menace') {
       if (!d.live || d.live.mode !== 'menace') this._menace(d, null, by, now)
       d.live.anchor = anchor
@@ -1618,10 +1635,104 @@ export class Dragons {
     return into
   }
 
+  /** `hp` dealt at `now` by this client to the live dragon keyed `key`: the hp it has left, the blow owed to the room. One already down takes none. */
+  wound(key, hp, now) {
+    if (!(hp > 0)) throw new Error(`Dragons.wound: ${hp} hp`)
+    const d = this.byKey.get(key)
+    if (!d) throw new Error(`Dragons.wound: no dragon is keyed ${key}`)
+    if (d.fell !== null) return 0
+    const scar = this.scars.get(key)
+    const left = Math.max(0, (scar ? scar.hp : DRAGON_HP) - hp)
+    const anchor = [key + HURT_SUFFIX, now, d.x, d.y, d.z, d.heading, -1, 'hurt', null, left]
+    this.outbox.push(anchor)
+    this._scar(key, anchor, now)
+    return left
+  }
+
+  /** Her swung blade's points this frame (singe.js SWORD): each dragon it is in, not cut this SWORD.every, wounded SINGE.hp; one on the ground and not already after her turns on her. */
+  cut(blades, now) {
+    if (blades.length === 0) return
+    for (const d of this.byKey.values()) {
+      if (d.fell !== null || !touches(blades, d.x, d.y, d.z, d.size) || !recut(this.cuts, d.key, now)) continue
+      this.wound(d.key, SINGE.hp, now)
+      const grounded = d.live ? d.live.mode === 'menace' : d.phrase.kind === 'rest'
+      if (d.fell === null && grounded) this._aggro(d, HER, null, now, 'spot')
+    }
+  }
+
+  /** The standing dragons on the ground, `{ key, x, z, size }` each, into `into` (emptied first): what a grown pet stag charges (wildlife.js BUTT). */
+  grounded(into = []) {
+    into.length = 0
+    for (const d of this.byKey.values()) {
+      if (d.fell !== null) continue
+      const air = d.live ? d.live.mode === 'aggro' && (d.live.phase === 'swoop' || d.live.phase === 'land') : d.phrase.kind !== 'rest'
+      if (!air) into.push({ key: d.key, x: d.x, z: d.z, size: d.size })
+    }
+    return into
+  }
+
+  /** A pet stag at (x, z) butting the dragon keyed `key` for `hp` at `now`: one left standing snaps back -- whether it did -- and then, spurned SPURN_S, takes off away from the stag and flies home, owed to the room as its rejoin. */
+  butted(key, hp, x, z, now) {
+    const d = this.byKey.get(key)
+    if (!d) throw new Error(`Dragons.butted: no dragon is keyed ${key}`)
+    if (d.fell !== null || this.wound(key, hp, now) === 0) return false
+    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
+    d.live = d.lure = null
+    d.queue.length = 0
+    d.spurned = now + SPURN_S
+    d.eyed.clear()
+    d.heading = bearing({ x, z }, d)
+    d.pitch = d.roll = 0
+    this.outbox.push(this._anchor(d, now, 'rejoin'))
+    this._startRejoin(d, now)
+    return true
+  }
+
+  /** Whether the dragon is at 0 hp as the room has it, born or not. */
+  dead(key) {
+    const scar = this.scars.get(key)
+    return scar !== undefined && scar.hp === 0
+  }
+
+  /** A blow dealt or heard, its hurt anchor carrying the hp left at T and the pose: kept unless an older blow than the one kept, or the dragon is already down; a growl if fresh, and at 0 the fall where the anchor has it. */
+  _scar(key, anchor, now) {
+    const [, T, x, , z, , , , , hp] = anchor
+    const was = this.scars.get(key)
+    if (was && (was.at > T || was.hp === 0)) return
+    this.scars.set(key, { hp, at: T })
+    if (hp === 0) this.falls.push({ key, at: T, x, z })
+    const d = this.byKey.get(key)
+    if (!d) return
+    if (hp === 0) this._fall(d, T, now)
+    else if (now - T < SINGE.pulse) d.growlCue++
+  }
+
+  /** Down at world time `at`: its kill let go, off any chase or phrase, lying on the ground where it stands. */
+  _fall(d, at, now) {
+    if (d.cargo) { this.wildlife.drop(d.cargo); d.cargo = null }
+    d.live = d.rejoin = d.lure = null
+    d.queue.length = 0
+    d.fell = at
+    d.state = 'dead'
+    d.y = this.ground.heightAt(d.x, d.z)
+    d.speed = d.pitch = d.roll = 0
+    this._place(d, d)
+    this._play(d, 'lie', Infinity)
+    if (now - at < SINGE.pulse) d.roarCue++
+  }
+
+  /** The dragons fallen since the last call, `{ key, at, x, z }` each, moved into `into`: where their gems drop. */
+  slain(into = []) {
+    for (const f of this.falls) into.push(f)
+    this.falls.length = 0
+    return into
+  }
+
   /** One tick of a dragon at absolute tick `k`: the tick before kept for the frame to draw from, a phrase boundary snapped and crossed, the phrase's own step, and the ease onto its end. */
   _step(d, k) {
     const now = k * TICK_S
     d.px = d.x; d.py = d.y; d.pz = d.z; d.pheading = d.heading; d.ppitch = d.pitch; d.proll = d.roll
+    if (d.fell !== null) return
     if (d.live) {
       if (d.live.mode === 'aggro') this._stepAggro(d, k, now)
       else this._stepLive(d, now)
@@ -1750,7 +1861,7 @@ export class Dragons {
   /** One dragon: stepped to `now`, then drawn on whichever rung its flying body's size puts it at. */
   _tick(d, hx, hy, hz, now, dt) {
     // The clock moved further since its last frame than a frame can replay (a skip): the gap is not replayed at all, the dragon is put where the score has it now, as if she had stepped out of the timeline and back in. A join's replay lags `rec.tick` just as far, over many frames, and is not a skip.
-    if (tickOf(now) - d.rec.at > CATCH_UP_TICKS) this._replace(d, now)
+    if (tickOf(now) - d.rec.at > CATCH_UP_TICKS && d.fell === null) this._replace(d, now)
     d.rec.at = tickOf(now)
     this.replayed += stepTo(d.rec, now, (k) => this._step(d, k))
     if (d.rec.tick < tickOf(now)) this.behind++
@@ -1777,6 +1888,11 @@ export class Dragons {
     puppet.play(d.clip, d.cue)
     // A pooled puppet's actions keep whatever rate they were last given.
     puppet.actions.get(d.clip).timeScale = d.rate
+    const scar = this.scars.get(d.key)
+    if (puppet.baked && scar) {
+      reddened(puppet.tint.copy(d.tint), redAt(scar.at, now))
+      if (d.fell !== null) puppet.tint.multiplyScalar(Math.max(0, 1 - (now - d.fell) / FELL.dark))
+    }
     puppet.solver.steer(_heading, _pitch)
     puppet.step(dt)
     puppet.group.matrix.copy(_mat)
@@ -1816,8 +1932,12 @@ export class Dragons {
     this.roosts.sites(sites)
     for (const site of sites) {
       for (const guard of PAIR) {
-        const d = this.byKey.get(keyOf(site, guard)) ?? this._spawn(site, guard, now)
+        const key = keyOf(site, guard)
+        if (!this.byKey.has(key) && this.dead(key)) continue
+        const d = this.byKey.get(key) ?? this._spawn(site, guard, now)
         if (!d) continue
+        // Lain FELL.lie: left unseen, so retired below, its body dissolving.
+        if (d.fell !== null && now - d.fell >= FELL.lie) continue
         d.seen = this.frame
         this._tick(d, hx, hy, hz, now, dt)
       }

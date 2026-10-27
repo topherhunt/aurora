@@ -90,6 +90,8 @@ import { Loot, place } from './loot.js'
 import { ALTAR, LABYRINTH } from './layers/labyrinths.js'
 import { mulberry32 } from '../sim/mathx.js'
 import { ITEMS, SMALL, Items, itemUrl } from './items.js'
+import { SWORD, shielded } from './singe.js'
+import { Her } from './keep-up.js'
 import { Conversations } from './conversations.js'
 import { Mic } from './audio/mic.js'
 import { Rapport } from './talk/rapport.js'
@@ -154,7 +156,7 @@ import { EYE_LINE, FIT_MIN, FIT_MAX } from './render/avatar-rig.js'
 import { SoundEngine } from './audio/sound-engine.js'
 import { WorldSense } from './audio/sense.js'
 import { Ambience, RATE, RULES as SOUND_RULES, SOUNDS } from './audio/ambience.js'
-import { Music, poolFor } from './audio/music.js'
+import { Music, musicFromWire, poolFor } from './audio/music.js'
 import { BED_REACH_M, Health, MAX_HP, SLEEP, Sleep, besideBed, fallDamage, feetOnBed, hoursToBoundary, inBed, leadsSleep, liesOn, rayHitsBed } from './vitals.js'
 import { VitalsHud, heartbeatBuffer } from './render/vitals-hud.js'
 import { WarnMark } from './render/warn-mark.js'
@@ -1253,9 +1255,11 @@ function getUp() {
   if (slept) { saveGame(); vitalsHud.showSaved() }
 }
 
-function harm(n, why) {
+/** `n` hp off her for `why`; `from`, a creature's { x, z } when one dealt it, is what her shield can turn. */
+function harm(n, why, from = null) {
   if (n <= 0 || health.dead) return
   n *= effects.guard
+  if (from !== null) n *= shieldFor(from)
   const died = health.harm(n)
   console.log(`[vitals] ${why}: -${n} HP, ${health.hp} left`)
   vitalsHud.flash()
@@ -2464,6 +2468,48 @@ const litTipList = []
 // Her own lit tips, last updateFire's: what the animals take for her torch (singe.js).
 const herTorches = []
 const torchSorted = []
+
+// Her sword's blade (singe.js SWORD): BLADE_POINTS points end to end along each sword she holds, this frame, while either end moves faster than SWORD.mps; what the animals and dragons are cut by.
+const BLADE_POINTS = 5
+const blades = []
+const bladeEnds = new Map()
+const bladeFrame = new THREE.Matrix4()
+const bladeHalf = new THREE.Vector3()
+const _bladeA = new THREE.Vector3(), _bladeB = new THREE.Vector3()
+function updateBlades(dt) {
+  blades.length = 0
+  for (const key of HAND_KEYS) {
+    if (!bladeEnds.has(key)) bladeEnds.set(key, { held: false, a: new THREE.Vector3(), b: new THREE.Vector3() })
+    const ends = bladeEnds.get(key)
+    const was = ends.held
+    ends.held = hands.holding(key)?.kind === 'sword'
+    if (!ends.held) continue
+    hands.heldFrame(key, bladeFrame)
+    items.half('sword', bladeHalf)
+    _bladeA.copy(bladeHalf).applyMatrix4(bladeFrame)
+    _bladeB.copy(bladeHalf).negate().applyMatrix4(bladeFrame)
+    const fast = was && dt > 0 && Math.max(_bladeA.distanceTo(ends.a), _bladeB.distanceTo(ends.b)) / dt > SWORD.mps
+    ends.a.copy(_bladeA)
+    ends.b.copy(_bladeB)
+    if (!fast) continue
+    for (let i = 0; i < BLADE_POINTS; i++) {
+      const u = i / (BLADE_POINTS - 1)
+      blades.push({ x: _bladeA.x + (_bladeB.x - _bladeA.x) * u, y: _bladeA.y + (_bladeB.y - _bladeA.y) * u, z: _bladeA.z + (_bladeB.z - _bladeA.z) * u })
+    }
+  }
+}
+
+// What of a creature's blow from `from` gets past the shields she holds (singe.js SHIELD).
+const shieldFrame = new THREE.Matrix4()
+function shieldFor(from) {
+  let k = 1
+  for (const key of HAND_KEYS) {
+    if (hands.holding(key)?.kind !== 'shield') continue
+    const e = hands.heldFrame(key, shieldFrame).elements
+    k = Math.min(k, shielded(headTmp, { x: e[12], z: e[14] }, from))
+  }
+  return k
+}
 window.v2hearthLight = HEARTH_LIGHT // console: `v2hearthLight.on = 0` puts the hearths' live light out, for an A/B
 window.v2windowGlow = WINDOW_GLOW // console: `v2windowGlow.night = 5`, read every frame
 let townHearths = null
@@ -2602,6 +2648,18 @@ function layLoot() {
   items.update(headTmp.x, headTmp.z)
 }
 const roostSites = []
+
+// A fallen dragon's 2-4 gems of HOARD strewn round where it fell, the same on every client: its place is the dragon and the time it fell.
+function dropGems({ key, at, x, z }) {
+  const id = keyHash(`${key}@${Math.round(at * 1000)}`) >>> 0
+  const rand = mulberry32(id)
+  const n = 2 + Math.floor(rand() * 3)
+  for (let k = 0; k < n; k++) {
+    const a = rand() * Math.PI * 2, r = 0.6 + rand() * 1.2
+    const gx = x + Math.cos(a) * r, gz = z + Math.sin(a) * r
+    items.lay(place('d', id), k, HOARD[Math.floor(rand() * HOARD.length)], gx, walk.heightAt(gx, gz), gz)
+  }
+}
 
 function buildSettingsView() {
   const group = new THREE.Group()
@@ -3412,6 +3470,11 @@ let roosts = null
 let rowboats = null
 let boats = null
 let dragons = null
+// The grounded dragons a grown pet stag charges (wildlife.js BUTT), refilled each frame.
+const dragonFoes = []
+// Her pace, gaze and trail, which her pets and snowmen keep up with.
+const her = new Her()
+const herLook = new THREE.Vector3()
 let entrances = null
 // A village's own (DESIGN.md §30): its huts, its lamps, its gathering place and the boulder's inside; all null in the overworld.
 let roomProps = null
@@ -5312,6 +5375,7 @@ async function buildRoom(room, at) {
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
   await bootStep('frogs')
   frogs = new Frogs(scene, height, waterSurfaces, { seed, rocks, ground: terrain, eat: (lure) => hands.eatLure(lure, 'frog') })
+  frogs.her = her
   lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
   frogs.place(spawn.x, spawn.z)
   console.log(`[v2] frogs ${frogs.stats.alive} on ${frogs.stats.tiles} tiles at boot`)
@@ -5319,6 +5383,7 @@ async function buildRoom(room, at) {
   await bootStep('crabs')
   // The crab's cross card is photographed off its GLB, so the bake waits on the load.
   crabs = new Crabs(scene, height, waterSurfaces, { seed, rocks, cards: litterCards, harm, eat: (lure) => hands.eatLure(lure, 'crab') })
+  crabs.her = her
   lighting.patch(crabs.material, { mode: 'vertex', cacheKey: 'v2-crabs' })
   crabs.place(spawn.x, spawn.z, clock.seconds)
   crabs.ready.then(() => { if (build === roomBuild) crabs.bakeCard(renderer) })
@@ -5371,7 +5436,8 @@ async function buildRoom(room, at) {
   await bootStep('wildlife')
   // Nothing wild spawns by a town's buildings or in a labyrinth (DESIGN.md §41).
   const wildAvoid = towns || palisades ? (x, z) => (towns !== null && towns.nearBuildingAt(x, z, 20)) || (palisades !== null && palisades.labyrinths.keepOutAt(x, z, 2)) : null
-  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: wildAvoid, eat: (lure, sp) => hands.eatLure(lure, sp), harm })
+  wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: wildAvoid, eat: (lure, sp) => hands.eatLure(lure, sp), harm, butt: (key, hp, x, z, now) => dragons.butted(key, hp, x, z, now) })
+  wildlife.her = her
   for (const m of wildlife.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-wildlife' })
   wildlife.ready.then(() => {
     if (build !== roomBuild) return
@@ -5383,6 +5449,7 @@ async function buildRoom(room, at) {
   window.v2wildlife = wildlife
   if (!room.village) {
     wildStriders = new WildStriders(scene, { walk, cards: litterCards, avoid: wildAvoid, crowd: townsfolk ? townsfolk.crowd : null, harm, eat: (lure) => hands.eatLure(lure, 'strider'), bond: striderBond, returned: (key) => townsfolk.unlend(key), lend: (key) => townsfolk.lendKey(key) })
+    wildStriders.her = her
     for (const m of wildStriders.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-striders' })
     walk.addBody(wildStriders)
     window.v2wildStriders = wildStriders // console: `v2wildStriders.stats`
@@ -5406,6 +5473,7 @@ async function buildRoom(room, at) {
   // ground and the same late-landing GLB as the wildlife.
   await bootStep('snowmen')
   snowmen = new Snowmen(scene, height, waterSurfaces, { seed, walk })
+  snowmen.her = her
   for (const m of snowmen.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-snowmen' })
   snowmen.ready.then(() => {
     if (build !== roomBuild) return
@@ -6735,13 +6803,21 @@ function updateAmbience(dt, state) {
     hushed: effects.maddened,
     cave: cave === null ? null : { water: cave.walk.nearestWater(ears.x, ears.y, ears.z, SOUND_RULES.caveDrip.reach, caveDripAt) },
   })
-  music.update(dt, poolFor({
-    cave: cave !== null,
-    glade: currentRoom.village,
-    town: townPlan !== null && townPlan.towns.some((t) => Math.hypot(ears.x - t.x, ears.z - t.z) <= t.radius),
-    aboveSnow: height.heightAt(ears.x, ears.z) > height.snowLineAt(ears.x, ears.z),
-    day: daynessOf(state) >= 0.5,
-  }), indoors !== null)
+  // The room owner's music, which hers follows in its pool; none when she is the owner or it has not been seen.
+  const owner = netplay.owner !== null && netplay.owner !== netplay.id ? netplay.peers.get(netplay.owner) : undefined
+  music.update(dt, {
+    pool: poolFor({
+      cave: cave !== null,
+      glade: currentRoom.village,
+      town: townPlan !== null && townPlan.towns.some((t) => Math.hypot(ears.x - t.x, ears.z - t.z) <= t.radius),
+      aboveSnow: height.heightAt(ears.x, ears.z) > height.snowLineAt(ears.x, ears.z),
+      day: daynessOf(state) >= 0.5,
+    }),
+    indoors: indoors !== null,
+    seconds: clock.seconds,
+    lead: owner === undefined ? null : musicFromWire(owner.music),
+  })
+  netplay.music = music.wire()
 }
 
 // Browsers keep an AudioContext suspended until a user gesture on the page;
@@ -8266,6 +8342,7 @@ function tick() {
   sparks.update(dt, flarePx.y)
   visions.update(dt, flarePx.y)
   updateFire(dt)
+  updateBlades(dt)
   // After the hands, so what this frame took or let go leaves for the relay this frame; the peers' copies are placed at the bodies' wrists as rendered last frame.
   handsNet.update()
   // After the wildlife, so the anchor an animal owes this frame leaves this frame, and a peer's anchor lands before the animal's next step.
@@ -8449,6 +8526,8 @@ function stepOverworld(dt, now) {
   const fishShown = animalOn('fish') && submerged
   fish.batch.visible = fishShown
   // The fish and the frogs run on the room's clock (creature-sync.md): every client has each one in the same place.
+  camera.getWorldDirection(herLook)
+  her.update(headTmp.x, headTmp.z, herLook.x, herLook.z, clock.seconds)
   stepAnimal('fish', () => {
     if (fishShown) fish.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures)
     else fish.follow(headTmp.x, headTmp.y, headTmp.z)
@@ -8473,7 +8552,10 @@ function stepOverworld(dt, now) {
   // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go. Laid in a bed in the headset the rig is turned about her head, its origin beside or above it, so her body is her head alone.
   stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, peerHeadsNow()))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
+  wildlife.blades = blades
+  wildlife.foes = dragons ? dragons.grounded(dragonFoes) : dragonFoes
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, herTorches))
+  if (wildStriders) wildStriders.blades = blades
   if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow(), herTorches))
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
@@ -8495,6 +8577,8 @@ function stepOverworld(dt, now) {
   if (dragons) stepAnimal('dragons', () => {
     roosts.update(headTmp.x, headTmp.y, headTmp.z)
     dragons.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, dragonQuarry())
+    dragons.cut(blades, clock.seconds)
+    for (const f of dragons.slain()) dropGems(f)
   })
   spikes.lap('animals')
 }

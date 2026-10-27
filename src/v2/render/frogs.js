@@ -89,6 +89,7 @@ import {
   CRITTER_GLB, LOD_RUNGS, TIER_TINTS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
 } from './critters.js'
 import { MEAL } from '../eating.js'
+import { headway } from '../keep-up.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
@@ -281,6 +282,8 @@ export class Frogs {
     this.applying = false
     // Her, as a pet follows her: her head across the ground.
     this.me = { kind: 'mate', x: 0, y: 0, z: 0, by: null }
+    // Her, as her pets keep up with her (keep-up.js); null and one she leaves RADIUS behind is forgotten.
+    this.her = null
     this.stats = { alive: 0, tiles: 0, overflow: 0, segments: 0 }
     // This frame's one-shots for the ear, drained by voices(): { sound, rule, x, y, z }.
     this.calls = []
@@ -667,7 +670,9 @@ export class Frogs {
     if (prev.kind === 'hop') return { kind: 'sit', dur: between(f.rand, CHASE.pause), at: spot }
     let heading = bearing(spot, l)
     if (near) heading += (f.rand() < 0.5 ? 1 : -1) * (Math.PI / 2)
-    const reach = between(f.rand, l.kind === 'mate' && gap > LURE_M ? LEAP.m : CHASE.m) * f.size
+    let reach = between(f.rand, l.kind === 'mate' && gap > LURE_M ? LEAP.m : CHASE.m) * f.size
+    // After her, a leap and its beat cover as much ground as she does.
+    if (l === this.me && gap > LURE_M && this.her !== null) reach = Math.max(reach, this.her.pace(0) * (CHASE.dur[0] + CHASE.dur[1] + CHASE.pause[0] + CHASE.pause[1]) / 2)
     for (let attempt = 0; attempt < 3; attempt++) {
       const a = heading + (f.rand() - 0.5) * CHASE.turn
       const x = spot.x + Math.cos(a) * reach
@@ -928,6 +933,7 @@ export class Frogs {
     }
     f.size *= f.pet === null ? GROW : 1 + MEAL.grow
     f.pet = { by, at: now }
+    f.way = headway()
     if (f.live === null) this._startChase(f, now)
     f.lured = false
     f.lure = null
@@ -1130,12 +1136,19 @@ export class Frogs {
     }
     for (let i = this.loose.length - 1; i >= 0; i--) {
       const f = this.loose[i]
-      if (Math.hypot(f.x - hx, f.z - hz) > RADIUS) { this._unloose(f); continue }
+      const hers = f.pet !== null && f.pet.by === null && this.her !== null
+      const dist = Math.hypot(f.x - hx, f.z - hz)
+      if (!hers && dist > RADIUS) { this._unloose(f); continue }
       const prev = f.ph
       this._live(f, now)
       this._heard(f, prev, hx, hy, hz)
       this._notice(f, lures, now, mates)
       this._eats(f, now)
+      const to = hers ? this.her.keepUp(f.way, f.x, f.z, dist > LURE_M, now, (x, z) => this.seat(x, z, false) !== null) : null
+      if (to !== null) {
+        f.live = { ph: { kind: 'sit', dur: 0, at: this._spot(f, to.x, to.z, this.seat(to.x, to.z, false), bearing(to, this.me)) }, at: now, queue: null, until: Infinity }
+        this._pose(f, f.live.ph, 0)
+      }
       this._draw(f, counts, breath, bob, hx, hy, hz)
     }
     // A tier that held nothing and holds nothing is not re-uploaded.

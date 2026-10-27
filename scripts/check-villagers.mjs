@@ -1087,5 +1087,20 @@ console.log('\nat home')
 
 checkChide()
 
+// --- one comes to her (conversations.js approach) ---
+{
+  const v = make()
+  let t = T0
+  for (let i = 0; i < 600 && v.all.every((o) => o.hidden); i++) t = run(v, t, 1, FAR, null, 10)
+  const c = v.all.find((o) => !o.hidden)
+  const feet = { x: c.x + 8, y: c.y, z: c.z }
+  t = run(v, t, 0.1, feet)
+  v.approach(c.id, t, 1.4)
+  const clips = new Set()
+  run(v, t, 30, feet, () => { clips.add(c.pose.clip); v.voices([]) })
+  const off = Math.hypot(c.pose.x - feet.x, c.pose.z - feet.z)
+  check(clips.has('walk') && clips.has('wave') && Math.abs(off - 1.4) < 0.1 && v.talking.get(c.id).at !== Infinity, 'a villager sent to her walks from 8 m to 1.4 m of her and only there waves', `${[...clips].join(' ')}; ${off.toFixed(2)} m off`)
+}
+
 console.log(failures === 0 ? '\nall ok' : `\n${failures} failing`)
 process.exit(failures === 0 ? 0 : 1)

@@ -63,6 +63,9 @@ export class Netplay {
     this.scale = 1
     // Whether she sleeps (v2/vitals.js); the relay moves the room's clock only when every client does.
     this.asleep = false
+    // Her music's wire() (v2/audio/music.js), sent with every pose; and the relay's room owner, whose music a client in its pool follows. Null until known.
+    this.music = null
+    this.owner = null
     // The room's world clock as the relay last stated it, `{ anchorMs,
     // skipHours }` for WorldClock.sync, or null until the first snapshot.
     this.time = null
@@ -144,6 +147,7 @@ export class Netplay {
       if (Array.isArray(message.trust)) this.trust.push(...message.trust)
       if (Array.isArray(message.chalk)) this.chalk.push(...message.chalk)
       if (Array.isArray(message.loot)) this.loot.push(...message.loot)
+      if (typeof message.owner === 'string') this.owner = message.owner
       if (Number.isFinite(message.anchorMs) && Number.isFinite(message.skipHours)) {
         this.time = { anchorMs: message.anchorMs, skipHours: message.skipHours, offsetMs: this.offsetMs }
       }
@@ -176,6 +180,7 @@ export class Netplay {
     if (avatar) message.avatar = avatar
     if (scale !== 1) message.scale = scale
     if (this.asleep) message.asleep = true
+    if (this.music) message.music = this.music
     if (Number.isFinite(foot)) message.foot = Math.round(foot * 1000) / 1000
     if (boats && boats.aboard) message.aboard = boats.aboard
     if (boats && boats.boat) message.boat = boats.boat

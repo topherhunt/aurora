@@ -20,7 +20,10 @@ Cave mouths stand at the feet of cliffs. Walking a couple of metres into one fad
 | `caves/walk.js` | `CaveWalk`: the walk surface read off the field |
 | `render/cave-room.js` | the system drawn: chunks, instanced props, water, chalk |
 | `caves/chalk.js`, `render/chalk.js` | chalk strokes: codec, store, pens, ribbons; the lumps as a hands source |
-| `check-caves.mjs` | determinism, the no-trap proof on the built surface, sump flooding, triangle budget, chalk |
+| `caves/surface.js` | the drawn mesh as a lookup (`Surface`): chalk and the veins are placed on it, not on the field |
+| `caves/veins.js`, `caves/route.js`, `render/veins.js` | ore veins and gems on the walls, `veinsOf`, `routeFrom`; the walking network; the drawn layer (§9) |
+| `render/cave-spiders.js` | the giant cave spiders (§10) |
+| `check-caves.mjs`, `check-veins.mjs`, `check-cave-spiders.mjs` | determinism, the no-trap proof on the built surface, sump flooding, triangle budget, chalk on the mesh; the veins and routes; the spiders |
 
 All of `caves/` is pure and node-runnable. main.js wires it (`--- caves` section): `siteCaves` groups the world plan's mouths at overworld build, `caveTest` runs the portal each step, `enterCave`/`leaveCave` swap the walk under the fade (`enterCave` plans the system and starts the worker there, nothing ahead of her: a plan on the main thread near a mouth froze flight 0.25-1.4 s per mouth passed), `stepCave` runs the frame underground.
 
@@ -43,7 +46,7 @@ All of `caves/` is pure and node-runnable. main.js wires it (`--- caves` section
 
 ## 3. The graph
 
-Nodes are `mouth`, `junction`, `chamber` and `cavern`. Each mouth gets a throat junction 18 m in; more junctions scatter at `SPACING` and some become chambers or caverns. The first cavern with room, kept 35 m clear of every mouth, is a **great cavern**: 30 to 200 m long, its roof 40-70 m up, ringed by lobes and nooks, with up to 16 braids off it (most passages elsewhere take 4) and never fewer than two open passages, a rockfall included. Edges are `walk`, `drop` or `sump`; a walk may also be a squeeze or a river.
+Nodes are `mouth`, `junction`, `chamber` and `cavern`. Each mouth gets a throat junction 18 m in; more junctions scatter at `SPACING` and some become chambers or caverns. Junctions scatter at `SPACING` (26 m), links reach `LINK_MAX` (76 m), and a system's body runs to `BODY_R` (240 m). The first cavern with room, kept 70 m clear of every mouth, is a **great cavern**: 60 to 400 m long, its roof out of a torch's sight, ringed by lobes and nooks, with up to 16 braids off it (most passages elsewhere take 4) and never fewer than two open passages, a rockfall included. Edges are `walk`, `drop` or `sump`; a walk may also be a squeeze or a river.
 
 **The no-trap rule is structural.** Every node hangs off a spanning tree of two-way edges (walks and sumps), so any node reaches a mouth by walking and swimming alone. Drops (a lip from `DROP_MIN`, 2.2 m, past her reach, to `DROP_MAX`, 9 m) are only ever added on top of the tree as shortcuts down, often opening high in the lower chamber's wall. Grades stay under `GRADE_MAX` (0.42), a fifth of tree walks descending into the cave. Passage width and height vary per edge (from 1.8 m wide and 2.3 m tall, some vaulting several metres higher), stacked passages keep `SILL` (4 m) of rock between them, since the field eats about 3.5 m of it (the lower vault's octaves and roughness, the upper floor's bump), and two links out of one node keep 50 degrees apart (`alongside`), so a climbing passage never leaves a ledge in its sibling's tube. A tree passage that still clashes after 12 rerolls swings its bend wider; after 16 it is laid anyway. A rockfall chokes `CHOKE_ODDS` (0.4) of the plain braids (never a tree edge, a river, a mouth's passage, or one that would leave a great cavern under two open) partway along, at a spot no other passage's run comes near: the edge's `choke` is the metres along it, and props.js fills the tube there with boulders and a wall-to-wall row of obstacles, so the braid becomes two dead ends. `check-caves.mjs` proves the rule on the graph with chokes removed, then walks every unchoked two-way passage both ways on the built surface and checks each rockfall stops her in both directions, swimming included.
 
@@ -55,7 +58,7 @@ Nodes are `mouth`, `junction`, `chamber` and `cavern`. Each mouth gets a throat 
 
 **Surface nets** on a voxel grid in 16 m chunks (`LODS`, `CHUNK`). A chunk samples one voxel past each face but emits quads only for edges it owns, so seams close without cracks. Per vertex the mesher bakes region colour, a cheap AO, and the glow of every light within reach (§8). Passages end in rounded caps whose floor climbs a metre a metre under a vault left on the unclimbed floor, so a climb never shelves a terrace and a cap never leaves a film of air at its neighbour's roof; a passage's floor coves up `COVE` (0.9 m) into its walls, so climbing out of another's tube is a ramp. Chamber and cavern floors carry `relief` (graph.js `relieve`): a tilt and mounds on a 1 m grid, slope-limited, flattened where passages arrive (in a great cavern, no hollow under a passage's whole line: its level floor would be a ledge beside the wall's pillars); a great cavern's is rougher (its own noise stream, not the graph's), runs past the floor's edge so hills climb into the wall instead of dropping to floor level at the rim, and cuts a river channel and pools in its hollows (only hollows whose low point is on the floor).
 
-**LOD and regions.** Every chunk is meshed once at 0.5 m and every tier vertex-clustered from that, its seam rows clustered at 1 m along the face whatever the tier, so a chunk's seam vertices are identical at every tier and neighbours at different tiers meet without a crack (the gate checks it). The hem is thus twice as fine as the 2 m tier and four times the 4 m; the seam fans are about half the coarse tiers' triangles. A seam vertex whose triangles a coarse tier would all collapse keeps them at full detail there, so none goes missing in one tier only. One mesh per region: 0.5 m within 10 m of her (gap to the chunk's box), 1 m clusters to 25 m, 2 m to 50 m, 4 m to `CULL_M` (85 m), nothing past it (`drawnLod`, shared by `CaveRoom` and the gate). Only her region and those it touches are drawn. Clear sightlines past 30 m are rare and the black fog hides most of what lies past 25 m, so the thin walls the coarse tiers drop do not show. The gate holds the triangles drawn from any node, counting every direction, under 120k; its systems peak around 110k, a great cavern's open floor among the heaviest.
+**LOD and regions.** Every chunk is meshed once at 0.5 m and every tier vertex-clustered from that, its seam rows clustered at 1 m along the face whatever the tier, so a chunk's seam vertices are identical at every tier and neighbours at different tiers meet without a crack (the gate checks it). The hem is thus twice as fine as the 2 m tier and four times the 4 m; the seam fans are about half the coarse tiers' triangles. A seam vertex whose triangles a coarse tier would all collapse keeps them at full detail there, so none goes missing in one tier only. One mesh per region: 0.5 m within 10 m of her (gap to the chunk's box), 1 m clusters to 25 m, 2 m to 50 m, 4 m to `CULL_M` (85 m), nothing past it (`drawnLod`, shared by `CaveRoom` and the gate). Only her region and those it touches are drawn. Clear sightlines past 30 m are rare and the black fog hides most of what lies past 25 m, so the thin walls the coarse tiers drop do not show. The gate holds the triangles drawn from any node, counting every direction, under 120k; its systems peak around 110k, a great cavern's open floor among the heaviest. A full system meshes in about 115-170 s (7.3k-9.6k chunks) and plans in 1.9-3.3 s.
 
 **The worker** plans the same cave from `{ seed, entries }` and posts chunks nearest her arrival first, then 'near' once everything within `NEAR_M` is out; `enterCave` waits on 'near'. The main thread also runs `planCave` itself, for the walk and props.
 
@@ -89,11 +92,25 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 
 **Storage.** A stroke is `[system seed, id, player, points]`; points are int16 triples at `QUANT_M` (2 cm) about the system's centre (cx, cz) and cave-local y, base64, 6 bytes a point. Out of range throws rather than wraps. Wall normals and grain are recomputed at draw time, so only points are stored.
 
-**Ribbons.** `ribbons()` lays each stroke as a strip lifted `LIFT_M` off the rock along the field's gradient; the mark shader discards by a grain hash for the dry, broken look, with a polygon offset and no blending. The room rebuilds the marks mesh when the system's rev changes, and the live strokes when they grow.
+**Ribbons.** `ribbons()` lays each stroke as a strip `OFF_M` (2.5 cm) out from the drawn mesh (`Surface.lifted`) along its face normal, since the field is only roughly a distance and sits 2-3 cm off the mesh; a point over `SNAP_M` from the mesh is skipped and counted; the mark shader discards by a grain hash for the dry, broken look, with a polygon offset and no blending. The room rebuilds the marks mesh when the system's rev changes, and the live strokes when they grow.
 
 **Sharing** copies the trust relay. The client keeps every stroke it learns (`Chalk`), saves only hers, and resends them on load and on every welcome, `BATCH` (8) a flush. The relay keeps up to `CHALK_CAP` (4096) per room with a rev, tells each client what it has not seen at most 32 a snapshot, and never echoes. A stroke lasts as long as its author keeps their save.
 
-## 9. Open
+## 9. Veins and gems
+
+`placeVeins(plan)` (caves/veins.js) seeds each vein from the system's seed, on the drawn wall (`Surface`), 0.5-2 m over the floor at the vein itself, facing into the air with clear air 0.5 m out, never in water and 1.2 m apart. None lies within 100 m of a mouth by walked path. Ore thickens with depth: bog iron past 100 m, lodestone from 250 m, and 5-10 rimesilver only on the great cavern's walls. Gems sit at nook tips, the rarer kinds deeper. Ids are `${seed}:${index}`.
+
+**API.** `veinsOf(system)` returns `[{ id, kind, x, y, z, nx, ny, nz }]` in world coordinates (every vein, mined or not); `routeFrom(system, from, to)` with `to` 'treasure' (the nearest unmined vein) or 'exit' returns a polyline of world points over walkable floor (steps 2.5 m at most, wet passages costing 6x), or null if nothing is reachable. `system` is `{ plan, oy, mined: Set }` (a `CaveRoom` has all three); a vein in `mined` is neither drawn nor a goal (`CaveRoom.setMined`).
+
+**Look.** One merged mesh in one draw call (6.6k-10.9k triangles a system). Ore is lumpy knots lit by the torch; a gem is nearly black until a torch is near, then glints, a different facet each moment (`render/veins.js`).
+
+## 10. Giant cave spiders
+
+`spiderHomes(plan)` seats them on the walls and ceilings of caverns and chambers at least 50 m from a mouth. `CaveSpiders` (render/cave-spiders.js) crawls them over the rock by Newton-seating on the field every `TICK_S`, sleeping past `sleepM` (70 m) from her eye. They are darker than the forest's wood spiders. A torch within `hissM` (6 m) makes one rear and hiss, then back away from the light facing it, until the light is `calmM` away; they never attack. One instanced draw of 224 triangles each, at most 40.
+
+**Hooks.** `hurt(id, amount)` returns `{ hp, dead }` (`SPIDER.hp` 20); `onHiss(spider)`, `onDeath(spider)` (a corpse freezes curled until `remove(id)`; with no `onDeath` it goes after `deathS`); `list()` gives `{ id, x, y, z, hp, maxHp, state, size }` in world coordinates.
+
+## 11. Open
 
 - `planCave` runs twice per entry, on the main thread under the fade and again on the worker, so the black lasts both plus the near chunks' meshing; `settleWaters` is 120-200 ms of each, and the props' `rockAt` another ~70 ms on a big system.
 - A dripstone's foot on the floor takes the floor palette, which can read browner than a purple or blue wall around it.
@@ -104,4 +121,4 @@ A region is a connected group of nodes with one of seven `PALETTES` (grey rocky,
 - Torch shadows.
 - The chalk relay needs the server redeployed.
 - Not yet felt in a headset: how dark, how lost, VR chalk drawing.
-- Spiders and horrors are out of scope; caverns leave room for lairs.
+- The hiss makes no sound yet (only `onHiss`); the vein and spider shaders are compile-checked on a stub page, not yet in the room.

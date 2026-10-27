@@ -1513,7 +1513,7 @@ export class Spiders {
       if (tick * TICK_S - c.bitT >= HUNT.biteS) {
         if (this.harm === null) throw new Error('Spiders: a spider bites her, and no harm() to hurt her with')
         c.bitT = tick * TICK_S
-        this.harm(HUNT.harm, 'a spider')
+        this.harm(HUNT.harm, 'a spider', c)
       }
       return
     }

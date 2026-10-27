@@ -347,17 +347,21 @@ export class Conversations {
 
   // -- one who comes to her ------------------------------------------------------------------------------------
 
-  /** Now and then a townsperson near her and free comes over, if they want something of her or are the friendly sort. */
+  /** Now and then someone near her and free -- a leafkin only if it trusts her -- comes over, if they want something of her or are the friendly sort. Each is asked once an `again` about the item in her hand, and once about nothing. */
   _approach(head, scale) {
     const A = TALK.approach
     for (const p of this._people([])) {
       const c = p.c, id = p.mind.id
-      if (p.kind !== 'town' || c.greet !== null || c.lag || c.hidden || c.job !== null || c.state === 'work' || c.state === 'sit') continue
+      if (p.kind === 'town' ? c.greet !== null || c.lag || c.hidden || c.job !== null || c.state === 'work' || c.state === 'sit' : this.villagers.talking.has(c.id) || !FREE.has(c.state) || !this.trusts(c.id)) continue
       if (Math.hypot(c.pose.x - head.x, c.pose.z - head.z) > A.m * scale) continue
-      if ((this.alone.get(id) ?? -Infinity) > this.now || (this.asked.get(id) ?? -Infinity) > this.now) continue
-      this.asked.set(id, this.now + A.again)
-      if (!wantsHer(p.mind, this._ctx(p, p.mind), Math.random())) continue
-      this.townsfolk.approach(c, this.now, A.come * scale)
+      if ((this.alone.get(id) ?? -Infinity) > this.now) continue
+      const ctx = this._ctx(p, p.mind)
+      const ask = ctx.wants === null ? id : `${id}:${ctx.wants}`
+      if ((this.asked.get(ask) ?? -Infinity) > this.now) continue
+      this.asked.set(ask, this.now + A.again)
+      if (!wantsHer(p.mind, ctx, Math.random())) continue
+      if (p.kind === 'town') this.townsfolk.approach(c, this.now, A.come * scale)
+      else this.villagers.approach(c.id, this.now, A.come * scale)
       this.coming = { p, until: Infinity, hailed: false }
       return
     }
@@ -366,8 +370,9 @@ export class Conversations {
   /** The one coming to her: hails her once there and waits; left waiting, goes back to what it was doing. */
   _wait() {
     const { p } = this.coming
-    if (p.c.greet === null) { this.coming = null; return }
-    if (!this.coming.hailed && p.c.greet.at !== Infinity) {
+    const greet = p.kind === 'town' ? p.c.greet : this.villagers.talking.get(p.c.id)
+    if (!greet) { this.coming = null; return }
+    if (!this.coming.hailed && greet.at !== Infinity) {
       this.coming.hailed = true
       this.coming.until = this.now + TALK.approach.wait
       if (this.picker !== null && (this.voices !== null || this._voices())) {

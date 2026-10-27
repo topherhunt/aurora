@@ -144,7 +144,8 @@ import {
 import { stepLodFade, Puppet, groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { EAT, MEAL, atMost } from '../eating.js'
-import { FELL, SINGE, redAt, reddened, touches } from '../singe.js'
+import { FELL, SINGE, recut, redAt, reddened, touches } from '../singe.js'
+import { headway } from '../keep-up.js'
 import { setPropSolidAt } from '../../material.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
@@ -225,7 +226,7 @@ const WALK_M = 4
 // Seconds one clip takes to give way to the next. Nothing to do with the LOD dissolve, which is render/puppet.js's LOD_FADE_S.
 const FADE_S = 0.25
 
-// LURES. An animal notices a thing in a hand its species wants within LURE_M of it (a wary one within FLEE_M, where it would otherwise run) and forgets it past LURE_FORGET_M; a tame one forgets her there too.
+// LURES. An animal notices a thing in a hand its species wants within LURE_M of it (a wary one within FLEE_M, where it would otherwise run) and forgets it past LURE_FORGET_M; a tame one with no Her to keep up with (keep-up.js) forgets her there too.
 export const LURE_M = 3
 export const LURE_FORGET_M = 30
 // FRIGHT. Her head within FLEE_M across the ground (and as near in height) of a wary animal on its score startles it for STARTLE_S, then it runs until FLEE_CLEAR_M from her or FLEE_S, whichever is first.
@@ -255,9 +256,11 @@ export const ANCHOR_STALE_S = 3
 export const CORRECT_S = 1
 const NO_LURES = []
 // The modes an anchor may carry besides 'rejoin', each a live animal.
-const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt'])
+const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt', 'butt'])
 // Under her chanterelle (eating.js), an animal within `m` m of her comes for her and strikes from `reach` body lengths: `harm` every strike, a strike `strikeS` then `idleS` before the next.
 export const MAD = { m: EAT.chanterelle.m, reach: 0.7, harm: 5, strikeS: 0.8, idleS: 1.2 }
+// A pet stag grown to `grown` times its wild size charges a grounded dragon within `m` m (foes) and butts it once from MAD.reach body lengths for `hp`; a dragon that snaps back costs it `snap`. Not again for `againS`.
+export const BUTT = { grown: 2, m: 30, hp: 10, snap: 30, againS: 60 }
 // Her size (sized) against an animal with a `flee` gait, within FLEE_M: above `look` of her full size it runs; at `look` or under it stops and looks at her for `lookS`, not again for `againS`.
 // A species that `hunts` comes for her from `hunt.m` at `hunt.fits` or under and strikes as MAD does, `harm` a strike (`small` at `smallFits` or under), until she is past LURE_FORGET_M or grows.
 export const FEAR = { look: 0.5, lookS: 2.5, againS: 30, hunt: { fits: 0.25, m: 12, harm: 10, smallFits: 0.125, small: 20 } }
@@ -397,9 +400,10 @@ export class Wildlife {
    * @param opts.species the SPECIES keys this room holds; every one when absent
    * @param opts.eat  (lure, species key) => true once her hand holding it has lost it (hands.js eatLure); a wary animal with her carrot at its face calls it
    * @param opts.harm  (n, why) => her hurt by a maddened animal's strike (MAD)
+   * @param opts.butt  (dragon key, hp, x, z, now) => whether the dragon a pet stag at (x, z) butts snaps back (BUTT)
    * @param opts.cards  the shared LitterCards the card rung is drawn by
    */
-  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null, harm = null, cards } = {}) {
+  constructor(scene, height, water, { seed = 1, walk, dayness = null, assets = null, species = null, avoid = null, eat = null, harm = null, butt = null, cards } = {}) {
     if (!cards || typeof cards.claim !== 'function') throw new Error('Wildlife needs the LitterCards its card rung is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.normalAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Wildlife needs a height field with heightAt, normalAt and snowLineAt')
@@ -410,8 +414,15 @@ export class Wildlife {
     if (avoid !== null && typeof avoid !== 'function') throw new Error('Wildlife: avoid must be a function of (x, z)')
     if (eat !== null && typeof eat !== 'function') throw new Error('Wildlife: eat must be a function of a lure')
     if (harm !== null && typeof harm !== 'function') throw new Error('Wildlife: harm must be a function of (n, why)')
+    if (butt !== null && typeof butt !== 'function') throw new Error('Wildlife: butt must be a function of (dragon key, hp, x, z, now)')
     this.eat = eat
     this.harm = harm
+    this.butt = butt
+    // The grounded dragons this frame, { key, x, z, size } each (dragons.js grounded), and key -> when a pet stag last butted one.
+    this.foes = NO_LURES
+    this.butts = new Map()
+    // Her, as a tame one keeps up with her (keep-up.js); null and a tame one forgets her past LURE_FORGET_M.
+    this.her = null
     // Whether the animals near her come for her (madden).
     this.maddened = false
     // Her size, a multiple of her full height (sized).
@@ -528,8 +539,10 @@ export class Wildlife {
     // Her chanterelle's dark (madden), which the pooled cards take as a colour.
     this.dark = 0
     this.lures = NO_LURES
-    // Her lit torch tips this frame (SINGE).
+    // Her lit torch tips this frame (SINGE); her swung blade's points (SWORD), set by the caller, and when each animal was last cut.
     this.torches = NO_LURES
+    this.blades = NO_LURES
+    this.cuts = new Map()
     // Her head this frame, what a wary animal flees and a tame one follows.
     this.head = { x: Infinity, y: Infinity, z: Infinity }
     // One-shots since the ear last drained them (voices).
@@ -1430,10 +1443,11 @@ export class Wildlife {
           this._say(c)
         } else act = 'beg'
       }
-      if (act === 'strike' && c.live.by === null) {
+      if (act === 'strike' && c.live.by === null && c.live.mode === 'butt') this._butt(c, now)
+      else if (act === 'strike' && c.live.by === null) {
         if (this.harm === null) throw new Error('Wildlife: an animal strikes, and no harm() to hurt her with')
         const H = FEAR.hunt
-        if (c.live.mode === 'hunt') this.harm(atMost(this.size, H.smallFits) ? H.small : H.harm, `a hunting ${c.sp.key}`)
+        if (c.live.mode === 'hunt') this.harm(atMost(this.size, H.smallFits) ? H.small : H.harm, `a hunting ${c.sp.key}`, { x: c.sx, z: c.sz })
         else this.harm(MAD.harm, `a maddened ${c.sp.key}`)
       }
       // The room hears the run the tick it begins, its heading the way it runs.
@@ -1478,7 +1492,8 @@ export class Wildlife {
         c.detour = ticksOf(DETOUR_S)
       }
     }
-    const d = c.speed * TICK_S * this._turn(c)
+    const speed = this.her !== null && c.live.mode === 'tame' && c.act === 'follow' ? this.her.pace(c.speed) : c.speed
+    const d = speed * TICK_S * this._turn(c)
     c.sx += Math.cos(c.sh) * d
     c.sz -= Math.sin(c.sh) * d
   }
@@ -1518,6 +1533,7 @@ export class Wildlife {
     c.lure = lure
     c.goal = null
     c.detour = 0
+    c.way = headway()
     if (mode === 'look') c.lookedT = now
     this._begin(c, mode === 'lure' ? 'notice' : mode === 'tame' ? 'gaze' : mode === 'look' ? 'look' : 'startle', now)
   }
@@ -1583,7 +1599,7 @@ export class Wildlife {
     const l = c.lure
     if (l !== null && this._atFace(c)) { this._begin(c, c.sp.heel !== undefined && l.by === null ? 'eat' : 'beg', now); return }
     const dist = Math.hypot(c.goal.x - c.sx, c.goal.z - c.sz)
-    if (c.live.mode === 'mad' || c.live.mode === 'hunt') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
+    if (c.live.mode === 'mad' || c.live.mode === 'hunt' || c.live.mode === 'butt') { this._begin(c, dist > c.near + 0.3 * c.size ? 'follow' : 'strike', now); return }
     if (this._roams(c) && dist > c.near + (c.act === 'follow' ? 0 : RESUME_M)) { this._begin(c, 'follow', now); return }
     this._begin(c, c.sp.court, now)
   }
@@ -1592,7 +1608,8 @@ export class Wildlife {
   _stepLive(c, k, now) {
     const live = c.live
     const on = live.mode === 'lure' ? this._lureTick(c, k, now) : live.mode === 'look' ? this._lookTick(c, k, now) : live.by !== null ? this._anchorTick(c, k, now)
-      : live.mode === 'flee' ? this._fleeTick(c, k, now) : live.mode === 'mad' ? this._madTick(c, k, now) : live.mode === 'hunt' ? this._huntTick(c, k, now) : this._tameTick(c, k, now)
+      : live.mode === 'flee' ? this._fleeTick(c, k, now) : live.mode === 'mad' ? this._madTick(c, k, now) : live.mode === 'hunt' ? this._huntTick(c, k, now)
+      : live.mode === 'butt' ? this._buttTick(c, k, now) : this._tameTick(c, k, now)
     if (!on) return
     if (live.anchor !== null && live.by !== null) {
       const [, T, ax, , az, ah] = live.anchor
@@ -1668,10 +1685,18 @@ export class Wildlife {
     return true
   }
 
-  /** At her heel, still while it eats. Her past LURE_FORGET_M ends it. False once it is off. */
+  /** At her heel, still while it eats, warped up behind her when it falls behind (this.her), or with none, ended by her past LURE_FORGET_M. False once it is off. */
   _tameTick(c, k, now) {
     const h = this.head
-    if (Math.hypot(h.x - c.sx, h.z - c.sz) > LURE_FORGET_M) { this._unlive(c, now); return false }
+    const dist = Math.hypot(h.x - c.sx, h.z - c.sz)
+    if (this.her === null && dist > LURE_FORGET_M) { this._unlive(c, now); return false }
+    const foe = c.act === 'eat' ? null : this._foe(c, now)
+    if (foe !== null) {
+      this._golive(c, 'butt', null, null, now)
+      c.live.foe = foe.key
+      c.live.butted = false
+      return true
+    }
     c.goal = h
     c.near = c.sp.heel
     // A meal of hers in reach is one it eats (_heed, _court).
@@ -1680,6 +1705,15 @@ export class Wildlife {
     if (c.act !== 'eat') this._heed(c, k)
     if (k >= c.stepEndTick) this._next(c, now)
     this._move(c, k)
+    if (this.her !== null) {
+      const to = this.her.keepUp(c.way, c.sx, c.sz, c.act !== 'eat' && dist > c.near + RESUME_M, now, (x, z) => this.seat(x, z) !== null)
+      if (to !== null) {
+        c.sx = c.lx = to.x
+        c.sz = c.lz = to.z
+        c.sh = c.lh = bearing(to, h)
+        c.live.sendTick = k
+      }
+    }
     return true
   }
 
@@ -1693,6 +1727,46 @@ export class Wildlife {
     if (k >= c.stepEndTick) this._next(c, now)
     this._move(c, k)
     return true
+  }
+
+  /** The grounded dragon this pet charges (BUTT), or null: a stag grown BUTT.grown, not butting these BUTT.againS, the nearest of this.foes within BUTT.m. */
+  _foe(c, now) {
+    const at = this.butts.get(c.key)
+    if (c.sp.key !== 'stag' || c.size < BUTT.grown * c.spawn.size || (at !== undefined && now - at < BUTT.againS)) return null
+    let foe = null
+    let best = BUTT.m
+    for (const f of this.foes) {
+      const d = Math.hypot(f.x - c.sx, f.z - c.sz)
+      if (d <= best) { best = d; foe = f }
+    }
+    return foe
+  }
+
+  /** Charging the dragon c.live.foe, butting it from MAD.reach body lengths off its side (_butt); the butt over, or the dragon off the ground, back at her heel. Her past LURE_FORGET_M ends it. False once it is off. */
+  _buttTick(c, k, now) {
+    const live = c.live
+    const f = this.foes.find((e) => e.key === live.foe)
+    if (f === undefined || (live.butted && k >= c.stepEndTick && c.queue.length === 0)) {
+      live.mode = 'tame'
+      live.sendTick = tickOf(now)
+      return this._tameTick(c, k, now)
+    }
+    const h = this.head
+    if (Math.hypot(h.x - c.sx, h.z - c.sz) > LURE_FORGET_M) { this._unlive(c, now); return false }
+    c.goal = f
+    c.near = c.size * MAD.reach + f.size * SINGE.reach
+    this._heed(c, k)
+    if (k >= c.stepEndTick) this._next(c, now)
+    this._move(c, k)
+    return true
+  }
+
+  /** Its butt on the dragon c.live.foe at `now`: BUTT.snap HP the worse if it snaps back. */
+  _butt(c, now) {
+    if (this.butt === null) throw new Error('Wildlife: a stag butts a dragon, and no butt() to tell the dragons with')
+    c.live.butted = true
+    this.butts.set(c.key, now)
+    if (this.butt(c.live.foe, BUTT.hp, c.sx, c.sz, now)) this._hurt(c, BUTT.snap, now)
   }
 
   /** A peer's flee or tame animal, after its fresh anchor: startled and running along the anchor's heading, or following to the anchor's place and facing its way. A stale anchor ends it. False once it is off. */
@@ -1850,17 +1924,27 @@ export class Wildlife {
     if (scar) this.scars.set(c.key, { hp: Math.min(SINGE.max, scar.hp + SINGE.hp), at: scar.at })
   }
 
-  /** Singed at `now`: SINGE.hp the worse, crying out, and running from her as from a fright, this client its authority. */
+  /** Whether her blade is in it this tick and it may be cut again (SWORD). */
+  _slashed(c, now) {
+    return touches(this.blades, c.sx, c.y, c.sz, c.size) && recut(this.cuts, c.key, now)
+  }
+
+  /** Singed or cut at `now`: SINGE.hp the worse, and running from her as from a fright. */
   _burn(c, now) {
     c.singe = 0
-    const was = this.scars.get(c.key)
-    const hp = Math.max(0, (was ? was.hp : SINGE.max) - SINGE.hp)
-    this.scars.set(c.key, { hp, at: now })
     if (c.live?.mode !== 'flee') this._golive(c, 'flee', null, null, now)
+    this._hurt(c, SINGE.hp, now)
+  }
+
+  /** Live and `n` HP the worse at `now`, crying out, this client its authority. */
+  _hurt(c, n, now) {
+    const was = this.scars.get(c.key)
+    const hp = Math.max(0, (was ? was.hp : SINGE.max) - n)
+    this.scars.set(c.key, { hp, at: now })
     c.live.sendTick = tickOf(now)
     this._say(c, c.sp.hurt)
     // Its last anchor, the room's word that it fell: update() lays it down after this step.
-    if (hp === 0) this._owe(c, now, 'flee')
+    if (hp === 0) this._owe(c, now, c.live.mode)
   }
 
   /** The anchors this client owes the room since the last call, moved into `into`. */
@@ -1874,7 +1958,7 @@ export class Wildlife {
   _step(c, k) {
     const now = k * TICK_S
     c.lx = c.sx; c.lz = c.sz; c.lh = c.sh
-    if (c.act !== 'dead' && (!c.live || c.live.by === null) && this._singed(c)) this._burn(c, now)
+    if (c.act !== 'dead' && (!c.live || c.live.by === null) && (this._singed(c) || this._slashed(c, now))) this._burn(c, now)
     if (c.live && c.live.mode === 'tame' && c.live.by !== null && c.act !== 'eat') {
       // A peer's pet with a meal of hers at its face eats it and is hers, this client its authority.
       const l = this._lure(c)
@@ -2079,7 +2163,9 @@ export class Wildlife {
         if (!live && d2 > s.card * s.card) continue
         const dist = Math.sqrt(d2)
         // One rule decides all three: the rung it is drawn at, whether that rung is the card, and whether it is alive at all.
-        const tier = critterTier(s.lodSize, dist, live ? live.lod : CARD_RUNGS, CARD_RUNGS)
+        // A pet keeping up with her is a card at worst, so it is stepped however far behind it falls.
+        const pet = live && live.live !== null && live.live.mode === 'tame' && live.live.by === null && this.her !== null
+        const tier = Math.min(pet ? CARD_RUNGS - 1 : CARD_RUNGS, critterTier(s.lodSize, dist, live ? live.lod : CARD_RUNGS, CARD_RUNGS))
 
         if (tier === CARD_RUNGS) {
           if (!live) continue

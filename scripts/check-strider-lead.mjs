@@ -26,6 +26,8 @@ function layer(trusted) {
   S.struck = new Set()
   S.scars = new Map()
   S.torches = []
+  S.blades = []
+  S.cuts = new Map()
   S.now = 0
   S.ridden = S.led = S.leadBy = null
   S.walkV = 1

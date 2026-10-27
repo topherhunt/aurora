@@ -68,6 +68,7 @@ import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, keyHash,
 import { CRITTER_GLB, LOD_RUNGS, critterTier, tileSeed, walkTiles } from './critters.js'
 import { groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
+import { headway } from '../keep-up.js'
 
 export const TILE = 32
 export const RADIUS = 96
@@ -239,6 +240,8 @@ export class Snowmen {
 
     // Her head, and the peers' heads this frame, as update() was given them.
     this.hx = 0; this.hy = 0; this.hz = 0
+    // Her, as one following her keeps up (keep-up.js); null and it forgets her past FORGET_M.
+    this.her = null
     this.peers = []
     // The room's latest anchor per key, and the anchors this client owes it.
     this.anchored = new Map()
@@ -503,6 +506,7 @@ export class Snowmen {
   /** Live on `by`'s player from tick `k` in `mode`, `near` the closest they have come. `by` null is her, which makes this client the authority, owing the room its anchors from this tick; a peer's is nudged by the error `ex, ez, eh` its anchors find. */
   _golive(c, mode, by, k, near) {
     c.live = { by, anchor: null, sendTick: k + ticksOf(ANCHOR_S), near, ex: 0, ez: 0, eh: 0 }
+    c.way = headway()
     c.rand = mulberry32(hash32(c.hash, k, 2))
     this._clearDetour(c)
     if (mode === 'follow') this._follow(c, k)
@@ -607,7 +611,7 @@ export class Snowmen {
    * it aims at its mark. Then the turn, then a step along the heading, and
    * the ground under it.
    */
-  _walk(c, x, z, k) {
+  _walk(c, x, z, k, speed = c.speed) {
     if (c.detour > 0) c.detour--
     if ((k + c.hash) % PROBE_EVERY === 0) {
       const ahead = c.size * AHEAD
@@ -621,7 +625,7 @@ export class Snowmen {
     }
     if (!c.blocked) c.clear++
     if (c.detour <= 0) c.aim = this._toward(c, x, z)
-    const d = c.blocked ? 0 : c.speed * TICK_S * this._turn(c)
+    const d = c.blocked ? 0 : speed * TICK_S * this._turn(c)
     if (c.blocked) this._turn(c)
     if (d > 0) {
       c.sx += Math.cos(c.sh) * d
@@ -642,7 +646,8 @@ export class Snowmen {
     const live = c.live
     const p = this._player(live.by)
     const fresh = live.by === null || (live.anchor !== null && k * TICK_S - live.anchor[1] < ANCHOR_STALE_S)
-    if (p === null || !fresh || this._dist(c, p) > FORGET_M) { this._unlive(c, k); return }
+    const keeps = live.by === null && this.her !== null
+    if (p === null || !fresh || (!keeps && this._dist(c, p) > FORGET_M)) { this._unlive(c, k); return }
     const dist = this._dist(c, p)
     if (c.state === 'watch') {
       live.near = Math.min(live.near, dist)
@@ -662,7 +667,7 @@ export class Snowmen {
       }
     }
     if (c.speed > 0) {
-      this._walk(c, p.x, p.z, k)
+      this._walk(c, p.x, p.z, k, keeps && c.state === 'follow' ? this.her.pace(c.speed) : c.speed)
     } else {
       if (k >= c.stepEnd) this._gesture(c, WATCH_ACTS, k)
       c.aim = this._toward(c, p.x, p.z)
@@ -673,6 +678,15 @@ export class Snowmen {
       c.sx += live.ex * f; live.ex -= live.ex * f
       c.sz += live.ez * f; live.ez -= live.ez * f
       c.sh += live.eh * f; live.eh -= live.eh * f
+    }
+    const to = keeps && c.state === 'follow' ? this.her.keepUp(c.way, c.sx, c.sz, dist > STANDOFF_M + RESUME_M, k * TICK_S, (x, z) => this.seat(x, z) !== null) : null
+    if (to !== null) {
+      c.sx = c.lx = to.x
+      c.sz = c.lz = to.z
+      c.sy = c.ly = this.walk.heightAt(to.x, to.z)
+      c.sh = c.lh = this._toward(c, p.x, p.z)
+      this._clearDetour(c)
+      live.sendTick = k
     }
     if (live.by === null && k >= live.sendTick) {
       this._owe(c, k, c.state)

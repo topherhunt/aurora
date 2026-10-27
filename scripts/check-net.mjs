@@ -91,6 +91,13 @@ try {
   const bare = await nextSnapshot(second, (p) => p.hands[0] === false)
   if (bare.avatar !== null) throw new Error(`avatar should be null when unsent, got ${JSON.stringify(bare.avatar)}`)
   if (bare.foot !== undefined) throw new Error(`foot should be absent when unsent, got ${JSON.stringify(bare.foot)}`)
+  // The music (src/v2/audio/music.js wire) rides the pose to the peer; a malformed one drops the whole pose.
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [false, true], music: ['forest-day', 'x', 0] }))
+  await wait(30)
+  first.send(JSON.stringify({ version: 1, type: 'pose', pose, hands: [true, false], music: ['forest-day', 2, 1234.5] }))
+  const sung = await nextSnapshot(second, (p) => p.music !== undefined)
+  if (sung.hands[1] !== false || sung.music.join() !== 'forest-day,2,1234.5') throw new Error(`music should round-trip and a bad one be dropped, got ${JSON.stringify(sung)}`)
   // The room clock: every snapshot carries the room's anchor and skip count,
   // a skip from one client reaches the other, and an unbounded skip is dropped.
   const nextClock = (ws, accept) => new Promise((resolve, reject) => {
@@ -130,6 +137,8 @@ try {
   const clock = await nextClock(second, () => true)
   if (!Number.isFinite(clock.anchorMs) || clock.anchorMs > startedAt || startedAt - clock.anchorMs > 5000) throw new Error(`anchorMs should be the room's creation time, got ${clock.anchorMs} at ${startedAt}`)
   if (clock.skipHours !== 0) throw new Error(`a fresh room has no skips, got ${clock.skipHours}`)
+  // The owner, whose music the room follows, is its oldest client.
+  if (clock.owner !== sung.id) throw new Error(`the owner should be the first client ${sung.id}, got ${JSON.stringify(clock.owner)}`)
   first.send(JSON.stringify({ version: 1, type: 'skip', hours: 1000 }))
   first.send(JSON.stringify({ version: 1, type: 'skip', hours: 6.5 }))
   first.send(JSON.stringify({ version: 1, type: 'skip', hours: 6 }))
@@ -419,7 +428,7 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'clock', skipHours: 12.25 }))
   const alone = await nextClock(first, (m) => m.skipHours !== 7)
   if (alone.skipHours !== 12.25 || alone.anchorMs !== clock.anchorMs) throw new Error(`a clock from a room of one should land within the bound, got ${alone.skipHours}`)
-  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one or a room that all sleeps, and a sleeper\'s flag relays; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer; a recall likewise, the recalled flare gone from the sky a newcomer hears; trust relayed once, not to its teller, a malformed batch dropped, all of it to a newcomer; chalk likewise, a backlog trickled to a newcomer 32 a snapshot)')
+  console.log('net relay check: OK (the foot lerps with the head client-side; pose, hands, avatar, foot and a rider\'s place aboard round-trip, a three-number aboard from an older client too; malformed avatar dropped; music round-trips, a malformed one dropped, and the oldest client is named owner; a ping comes back with the relay\'s clock and the quickest trip\'s offset is believed, said to the relay\'s log settled and on a move; a diag line is logged beside its sender\'s address, id and device; room clock anchor and skip relayed, a saved hour lands only from a room of one or a room that all sleeps, and a sleeper\'s flag relays; hold, loose, lift and take relayed once, nothing between changes, a newcomer hears the room as it stands, the loose cap forgets the oldest; creature anchors and lured sets relayed once with the sender stamped, replaced not appended, malformed ones dropped, the whole map to a newcomer, the anchor cap forgets the oldest; a flare relayed once with its age, not to its shooter, malformed and repeated ones dropped, the sky to a newcomer; a recall likewise, the recalled flare gone from the sky a newcomer hears; trust relayed once, not to its teller, a malformed batch dropped, all of it to a newcomer; chalk likewise, a backlog trickled to a newcomer 32 a snapshot)')
   first.close()
   second.close()
 } finally {

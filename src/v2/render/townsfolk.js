@@ -1832,7 +1832,7 @@ export class Townsfolk {
     p.cue = -1 - f.cue
     if (!f.hit && f.t >= WILD.lunge) {
       f.hit = true
-      if (Math.hypot(p.x - head.x, p.z - head.z) < WILD.charge.close * p.size + WILD.charge.reach) this.harm(WILD.harm, 'a maddened town strider')
+      if (Math.hypot(p.x - head.x, p.z - head.z) < WILD.charge.close * p.size + WILD.charge.reach) this.harm(WILD.harm, 'a maddened town strider', p)
     }
     const clip = this.striders.asset.clips.find((c) => c.name === 'attack')
     if (!clip) throw new Error('Townsfolk: the strider has no attack clip')

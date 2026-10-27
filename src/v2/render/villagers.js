@@ -2006,6 +2006,12 @@ export class Villagers {
     Object.assign(h, { clip, at: seconds, cue: h.cue + 1, toward })
   }
 
+  /** Villager `id` comes to her unasked: walked from where it stands to `come` m of her, waving once there, then held as hold() holds. */
+  approach(id, seconds, come) {
+    this.hold(id, seconds)
+    Object.assign(this.talking.get(id), { at: Infinity, clip: 'wave', come })
+  }
+
   /** Let go: eased back onto its sim (net-ease.js). */
   release(id) {
     this.talking.delete(id)
@@ -2149,6 +2155,18 @@ export class Villagers {
     const sx = c.px + (c.x - c.px) * a, sy = c.py + (c.y - c.py) * a, sz = c.pz + (c.z - c.pz) * a, sh = c.ph + swing(c.ph, c.heading) * a
     ease(c, pose, sx, sy, sz, sh, this.rolled, dt)
     const held = this.talking.get(c.id)
+    const walk = this.asset.gait.walk * c.k * c.pace
+    if (held !== undefined && held.at === Infinity) {
+      const dx = this.feet.x - held.x, dz = this.feet.z - held.z, d = Math.hypot(dx, dz)
+      if (d - held.come > walk * dt) {
+        held.x += (dx / d) * walk * dt
+        held.z += (dz / d) * walk * dt
+        held.y = this.walk.heightAt(held.x, held.z)
+      } else {
+        held.at = seconds
+        held.cue++
+      }
+    }
     if (held !== undefined) {
       // Held, its offset from the sim is the ease's, so a release eases it back.
       const look = held.toward && seconds - held.at < this.durations[held.clip] ? held.toward : this.feet
@@ -2162,8 +2180,9 @@ export class Villagers {
     c.shown = !c.hidden || held !== undefined
     pose.k = c.k
     pose.size = c.size
-    const clip = held === undefined ? c.clip : seconds - held.at < this.durations[held.clip] ? held.clip : 'idle'
-    pose.speed = held === undefined ? c.speed : 0
+    const coming = held !== undefined && held.at === Infinity
+    const clip = held === undefined ? c.clip : coming ? 'walk' : seconds - held.at < this.durations[held.clip] ? held.clip : 'idle'
+    pose.speed = held === undefined ? c.speed : coming ? walk : 0
     pose.clip = clip
     pose.cycle = c.cycle
 

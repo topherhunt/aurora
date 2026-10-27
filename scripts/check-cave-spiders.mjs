@@ -76,12 +76,12 @@ for (const sys of SYSTEMS) {
   for (let i = 0; i < 72 * 0.5; i++) cs.update(DT, eye, lights)
   check(hissed.includes(s0.id) && s0.state === 'hiss', `${tag}: a torch 2 m off the wall makes the spider hiss and rear`, `state ${s0.state}, rear ${s0.rear.toFixed(2)}`)
   const startAt = [...s0.p]
-  for (let i = 0; i < 72 * 6; i++) { cs.update(DT, eye, lights); if (s0.state === 'retreat' && i === 72 * 3) torch.set(torch.x, torch.y, torch.z, 1) }
+  for (let i = 0; i < 72 * 6; i++) cs.update(DT, eye, lights)
   const toLight = [open[0] - s0.p[0], open[1] - s0.p[1], open[2] - s0.p[2]]
   const dn = Math.hypot(...toLight)
   const movedAway = Math.hypot(s0.p[0] - startAt[0], s0.p[1] - startAt[1], s0.p[2] - startAt[2])
-  check(movedAway > 1 || s0.turns > 0 || s0.state === 'pause', `${tag}: it backs away from the light`, `moved ${movedAway.toFixed(2)} m, now ${dn.toFixed(2)} m from the torch (was ${d0.toFixed(2)})`)
-  check(dn >= d0 - 0.01 && (s0.face[0] * toLight[0] + s0.face[1] * toLight[1] + s0.face[2] * toLight[2]) / dn > 0 || s0.state !== 'retreat', `${tag}: backing away it keeps its face to the light`)
+  check(dn > d0 + 0.2, `${tag}: it backs away from the light`, `moved ${movedAway.toFixed(2)} m, now ${dn.toFixed(2)} m from the torch (was ${d0.toFixed(2)})`)
+  check(s0.state !== 'retreat' || (s0.face[0] * toLight[0] + s0.face[1] * toLight[1] + s0.face[2] * toLight[2]) / dn > 0, `${tag}: backing away it keeps its face to the light`)
   torch.w = 0
   for (let i = 0; i < 72 * 4; i++) cs.update(DT, eye, noLights)
   check(s0.state === 'wander' || s0.state === 'pause', `${tag}: with the light gone it goes back to crawling`, s0.state)

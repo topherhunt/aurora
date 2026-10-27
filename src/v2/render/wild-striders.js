@@ -8,7 +8,8 @@ import { FALL, fallDamage } from '../vitals.js'
 import { MAX_TRAVEL_S } from './avatar-rig.js'
 import { solverStub, tintFor } from './baked-puppet.js'
 import { EAT } from '../eating.js'
-import { FELL, SINGE, redAt, reddened, touches } from '../singe.js'
+import { FELL, SINGE, recut, redAt, reddened, touches } from '../singe.js'
+import { headway } from '../keep-up.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -173,6 +174,8 @@ export class WildStriders {
     // The room's clock, the peers' heads (main.js peerHeadsNow) and her feet, as of update; the latest anchor per key, the room's and this client's own; the anchors owed.
     this.now = 0
     this.peers = []
+    // Her, as one following her keeps up (keep-up.js); null and it loses her past W.follow.lose.
+    this.her = null
     this.feet = { x: 0, z: 0 }
     this.anchors = new Map()
     this.outbox = []
@@ -181,6 +184,9 @@ export class WildStriders {
     // Each singed one's { hp, at }, as hurt here or as the room's anchors say, kept past its leaving the sim; and her lit torch tips and the frame's lures (update).
     this.scars = new Map()
     this.torches = []
+    // Her swung blade's points (SWORD), set by the caller, and when each strider was last cut.
+    this.blades = []
+    this.cuts = new Map()
     this.lures = []
     this.warned = false
     // Whether every one of hers within EAT.chanterelle.m charges her, tamed or not (madden).
@@ -291,7 +297,7 @@ export class WildStriders {
     const h = keyHash(key)
     const m = Object.assign(mountFields(base * (this.bond.grown.get(key) ?? 1), key), {
       id: this.ids++, key, tack, home: { x: home.x, z: home.z }, posts: null, hash: h, phase: (h % 1000) / 1000 * WILD.grid, seg: null,
-      state: 'calm', fell: null, t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, singe: 0, red: false, aim: 0,
+      state: 'calm', fell: null, t: 0, voice: 0, cue: 0, hit: false, lure: null, moving: false, by: null, anchor: null, sendAt: 0, way: headway(), err: { x: 0, z: 0, h: 0 }, v: 0, run: 0, singe: 0, red: false, aim: 0,
       // Room time this client took it live from calm (apply's tie-break), and (a peer's ridden copy) until its relayed shake ends.
       since: 0, shake: 0, trip: null,
       look: { yaw: 0, pitch: 0, roll: 0 }, want: { yaw: 0, pitch: 0, roll: 0 },
@@ -506,7 +512,13 @@ export class WildStriders {
     return m.singe >= SINGE.s
   }
 
-  /** Singed: SINGE.hp the less, a cry, and off, a few metres if `tamed`, else fled. */
+  /** Whether her blade is in it this frame and it may be cut again (SWORD); never the one she rides. */
+  _slashed(m) {
+    const p = m.pose
+    return m !== this.ridden && touches(this.blades, p.x, p.y, p.z, this.inner.asset.sizeM * p.size) && recut(this.cuts, m.key, this.now)
+  }
+
+  /** Singed or cut: SINGE.hp the less, a cry, and off, a few metres if `tamed`, else fled. */
   _burn(m, tamed) {
     m.singe = 0
     const was = this.scars.get(m.key)
@@ -609,7 +621,7 @@ export class WildStriders {
     const near = Math.hypot(p.x - head.x, p.y - feet.y, p.z - head.z)
     const face = Math.atan2(-(head.z - p.z), head.x - p.x)
     const trusted = mine && this.isTamed(m.key)
-    if (mine && m.state !== 'swim' && this._singed(m, dt)) { this._burn(m, trusted); return }
+    if (mine && m.state !== 'swim' && (this._singed(m, dt) || this._slashed(m))) { this._burn(m, trusted); return }
     if (mine && SCARES.has(m.state) && this._scared(m, lures) !== null) {
       this._say(m, 'striderChirp1', 1.6, 1)
       this._enter(m, trusted ? 'shy' : 'flee')
@@ -663,7 +675,7 @@ export class WildStriders {
         if (m.t < W.lunge) this._turn(m, face, dt, W.turn * 2)
         if (!m.hit && m.t >= W.lunge) {
           m.hit = true
-          if (mine && near < W.charge.close * p.size + W.charge.reach) this.harm(W.harm, 'a frost strider')
+          if (mine && near < W.charge.close * p.size + W.charge.reach) this.harm(W.harm, 'a frost strider', p)
         }
         if (mine && m.t >= this.dur.attack) this._enter(m, 'flee')
         return
@@ -740,12 +752,14 @@ export class WildStriders {
       }
       case 'follow': case 'led': {
         const F = m.state === 'led' ? W.lead : W.follow, d = Math.hypot(feet.x - p.x, feet.z - p.z)
-        if (mine && d > F.lose) { this._enter(m, 'calm'); return }
+        const keeps = mine && m.state === 'follow' && this.her !== null
+        if (mine && !keeps && d > F.lose) { this._enter(m, 'calm'); return }
         if (mine && m.state === 'follow' && this._offered(m, lures)) { this._enter(m, 'eat'); return }
         if (d > F.walk) m.moving = true
         else if (d < F.stand) m.moving = false
         if (m.moving) {
-          const v = (d > F.run ? this.runV : this.walkV) * p.size
+          const own = (d > F.run ? this.runV : this.walkV) * p.size
+          const v = keeps ? this.her.pace(own) : own
           this._turn(m, Math.atan2(-(feet.z - p.z), feet.x - p.x), dt)
           if (this._move(m, v, dt)) this._set(m, d > F.run ? 'run' : 'walk', v)
           else this._set(m, 'idle', 0)
@@ -754,6 +768,14 @@ export class WildStriders {
           // Only its neck follows her, so she can walk round it.
           this._lookAt(m, head.x, head.y, head.z)
           this._graze(m, dt, true)
+        }
+        const to = keeps ? this.her.keepUp(m.way, p.x, p.z, d > F.walk, this.now, (x, z) => !this._deep(m, x, z) && !this.walk.obstacleAt(x, z, _trunk, m)) : null
+        if (to !== null) {
+          p.x = to.x
+          p.z = to.z
+          p.y = this.walk.heightAt(to.x, to.z, p.y)
+          p.heading = Math.atan2(-(feet.z - to.z), feet.x - to.x)
+          m.sendAt = this.now
         }
         return
       }

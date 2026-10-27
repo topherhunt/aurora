@@ -138,6 +138,15 @@ export class Items {
     return rec
   }
 
+  /** Half of `kind`'s mesh along its longest side, in its own frame, into `out`: wear centres it, so its two ends are at +out and -out. */
+  half(kind, out) {
+    const worn = this.worn.get(kind)
+    if (!worn) throw new Error(`Items.half: the ${kind} has not landed its mesh`)
+    const { min, max } = worn.geometry.boundingBox
+    const x = max.x - min.x, y = max.y - min.y, z = max.z - min.z
+    return out.set(x >= y && x >= z ? x / 2 : 0, y > x && y >= z ? y / 2 : 0, z > x && z > y ? z / 2 : 0)
+  }
+
   dress(slot) {
     return this.worn.has(slot.kind) ? this.worn.get(slot.kind) : null
   }

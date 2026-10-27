@@ -8,14 +8,21 @@
 // or a glade's house) the song goes on, and may start, through a low-pass and
 // at INDOOR_GAIN.
 //
+// THE ROOM OWNER LEADS. Every client puts wire() on its pose; the relay names
+// the owner (its oldest client). A client in the owner's pool follows it
+// instead of its own silences: the owner's song, from the world second it
+// started at (clock.seconds, the same on every client), faded in over
+// FADE_IN_S when joined late, and no song of its own while the owner is
+// silent. Out of the owner's pool it runs its own, from a fresh silence.
+//
 // THE SONGS ARE STREAMED, NOT DECODED: a decoded three-minute song is 60 MB of
-// PCM. Each is an HTMLMediaElement made the first time it is drawn, fed into
-// the engine through a MediaElementAudioSourceNode, on the master bus so the
-// panel's Sound row takes it. No three, no DOM beyond the elements: the gate
-// hands in a fake engine, a fake element factory and a seeded random.
+// PCM. Each is an HTMLMediaElement made the first time it is drawn, through
+// its own gain (its fade) onto the master bus, so the panel's Sound row takes
+// it. No three, no DOM beyond the elements: the gate hands in a fake engine,
+// a fake element factory and a seeded random.
 // ---------------------------------------------------------------------------
 
-/** Each pool's songs, public/-relative under music/<pool>/. check-music.mjs pins these to the folders on disk. */
+/** Each pool's songs, public/-relative under music/<pool>/. check-music.mjs pins these to the folders on disk; the wire carries a song as its index here. */
 export const POOLS = {
   caverns: ['Abyss 1.mp3', 'Abyss 2.mp3', 'Abyss 3.mp3', 'Abyss 4.mp3', 'Caverns 5.mp3', 'Caverns 6.mp3'],
   'forest-day': ['Home Beyond the Vale - 1.mp3', 'Home Beyond the Vale - 2.mp3', 'Home Beyond the Vale - 4 - compass.mp3', 'Home Beyond the Vale - 5.mp3', 'Home Beyond the Vale - 6 - every day.mp3', 'Home Beyond the Vale - 8 - only stories.mp3'],
@@ -26,12 +33,15 @@ export const POOLS = {
   'snow-day': ['OH - Snow - White Silence 1.mp3', 'OH - Snow - White Silence 2.mp3'],
   'snow-night': ['The Ship Awaits - bonechill, snow and swamp.mp3'],
 }
-export const songUrl = (pool, file) => `music/${pool}/${file}`
+export const songUrl = (pool, song) => `music/${pool}/${POOLS[pool][song]}`
 
 /** The silence before each song, seconds. */
 export const PAUSE_S = [180, 360]
 export const LEVEL = 0.5
 export const FADE_OUT_S = 10
+/** A followed song joined more than LATE_S into it fades in over FADE_IN_S; one joined sooner just starts. */
+export const FADE_IN_S = 3
+export const LATE_S = 1
 /** Indoors: the song's level is multiplied by INDOOR_GAIN and low-passed at INDOOR_LP Hz, eased over INDOOR_TAU. */
 export const INDOOR_GAIN = 0.7
 export const INDOOR_LP = 2000
@@ -47,6 +57,12 @@ export function poolFor({ cave, glade, town, aboveSnow, day }) {
   return aboveSnow ? `snow-${half}` : `forest-${half}`
 }
 
+/** A peer's wire() as `{ pool, song, startS }`, or null when it is not one this build can play (an older or newer client's pools). */
+export function musicFromWire(w) {
+  if (!Array.isArray(w) || w.length !== 3 || !(w[0] in POOLS) || !Number.isInteger(w[1]) || w[1] < -1 || w[1] >= POOLS[w[0]].length || !Number.isFinite(w[2])) return null
+  return { pool: w[0], song: w[1], startS: w[2] }
+}
+
 export class Music {
   /**
    * @param engine         a SoundEngine (or the gate's fake): `ctx` and `master`.
@@ -59,87 +75,130 @@ export class Music {
     this.createElement = createElement
     this.random = random
     const ctx = engine.ctx
-    // Elements -> level (the fade) -> room (indoor gain) -> muffle -> master.
-    this.level = ctx.createGain()
-    this.level.gain.value = 0
+    // Each song's gain -> room (indoor gain) -> muffle -> master.
     this.room = ctx.createGain()
     this.room.gain.value = 1
     this.muffle = ctx.createBiquadFilter()
     this.muffle.type = 'lowpass'
     this.muffle.frequency.value = OPEN_LP
-    this.level.connect(this.room)
     this.room.connect(this.muffle)
     this.muffle.connect(engine.master)
-    // url -> element, made on first draw: an element attaches to a source node once for good.
-    this.elements = new Map()
+    // url -> { el, gain }, made on first draw: an element attaches to a source node once for good.
+    this.tracks = new Map()
     this.silence = this._rollPause()
-    // { el, pool } while a song plays; the fading element and the ctx time its fade lands.
+    // { track, pool, song, startS } while a song plays; the fading tracks with the ctx time each lands.
     this.playing = null
-    this.fading = null
+    this.fading = []
     this.indoors = false
+    this.pool = null
+    this.following = false
+    // The followed song's `pool/song@startS` since she came into the owner's pool, so one that has ended here is not started again while the owner still says it plays.
+    this.heard = null
   }
 
   _rollPause() {
     return PAUSE_S[0] + (PAUSE_S[1] - PAUSE_S[0]) * this.random()
   }
 
-  _element(url) {
-    let el = this.elements.get(url)
-    if (el === undefined) {
-      el = this.createElement(url)
+  _track(url) {
+    let t = this.tracks.get(url)
+    if (t === undefined) {
+      const ctx = this.engine.ctx
+      const el = this.createElement(url)
       el.preload = 'auto'
-      this.engine.ctx.createMediaElementSource(el).connect(this.level)
-      this.elements.set(url, el)
+      const gain = ctx.createGain()
+      gain.gain.value = 0
+      gain.connect(this.room)
+      ctx.createMediaElementSource(el).connect(gain)
+      t = { el, gain, url }
+      this.tracks.set(url, t)
     }
-    return el
+    return t
   }
 
-  _play(pool) {
-    const files = POOLS[pool]
-    const url = songUrl(pool, files[Math.floor(this.random() * files.length)])
-    const el = this._element(url)
-    el.currentTime = 0
+  /** Song `song` of `pool` from `offset` seconds in, which the room calls world second `startS`. */
+  _start(pool, song, startS, offset) {
+    const track = this._track(songUrl(pool, song))
+    this.fading = this.fading.filter((f) => f.track !== track)
     const now = this.engine.ctx.currentTime
-    this.level.gain.cancelScheduledValues(now)
-    this.level.gain.setValueAtTime(LEVEL, now)
-    this.playing = { el, pool, url }
-    const p = el.play()
-    if (p && typeof p.catch === 'function') p.catch((err) => console.error(`[music] ${url} would not play:`, err))
+    const g = track.gain.gain
+    g.cancelScheduledValues(now)
+    if (offset > LATE_S) {
+      g.setValueAtTime(0, now)
+      g.linearRampToValueAtTime(LEVEL, now + FADE_IN_S)
+    } else g.setValueAtTime(LEVEL, now)
+    track.el.currentTime = offset
+    this.playing = { track, pool, song, startS }
+    const p = track.el.play()
+    if (p && typeof p.catch === 'function') p.catch((err) => console.error(`[music] ${track.url} would not play:`, err))
   }
 
   _fade() {
+    const { track } = this.playing
     const now = this.engine.ctx.currentTime
-    this.level.gain.cancelScheduledValues(now)
-    this.level.gain.setValueAtTime(this.level.gain.value, now)
-    this.level.gain.linearRampToValueAtTime(0, now + FADE_OUT_S)
-    this.fading = { el: this.playing.el, until: now + FADE_OUT_S }
+    const g = track.gain.gain
+    g.cancelScheduledValues(now)
+    g.setValueAtTime(g.value, now)
+    g.linearRampToValueAtTime(0, now + FADE_OUT_S)
+    this.fading.push({ track, until: now + FADE_OUT_S })
     this.playing = null
-    this.silence = this._rollPause()
   }
 
-  /** Once a frame: `dt` seconds, `pool` a POOLS key for where she is (poolFor), `indoors` whether she is in a house. */
-  update(dt, pool, indoors) {
+  /** What the pose carries: `[pool, song or -1, startS]`. */
+  wire() {
+    if (this.pool === null) return null
+    return this.playing === null ? [this.pool, -1, 0] : [this.pool, this.playing.song, Math.round(this.playing.startS * 100) / 100]
+  }
+
+  /**
+   * Once a frame: `dt` seconds, `pool` a POOLS key for where she is (poolFor),
+   * `indoors` whether she is in a house, `seconds` the room's world clock and
+   * `lead` the room owner's musicFromWire() (null when she is the owner, or it is
+   * unknown).
+   */
+  update(dt, { pool, indoors, seconds, lead }) {
     if (!(pool in POOLS)) throw new Error(`Music.update: no pool ${pool}`)
+    this.pool = pool
     const now = this.engine.ctx.currentTime
     if (indoors !== this.indoors) {
       this.indoors = indoors
       this.room.gain.setTargetAtTime(indoors ? INDOOR_GAIN : 1, now, INDOOR_TAU)
       this.muffle.frequency.setTargetAtTime(indoors ? INDOOR_LP : OPEN_LP, now, INDOOR_TAU)
     }
-    if (this.fading !== null && now >= this.fading.until) {
-      this.fading.el.pause()
-      this.fading = null
-    }
+    this.fading = this.fading.filter((f) => {
+      if (now < f.until) return true
+      f.track.el.pause()
+      return false
+    })
     if (this.playing !== null) {
-      const { el, url } = this.playing
+      const { el, url } = this.playing.track
       if (el.error) console.error(`[music] ${url} failed to load:`, el.error)
       if (el.error || el.ended) {
         this.playing = null
         this.silence = this._rollPause()
-      } else if (this.playing.pool !== pool) this._fade()
+      } else if (this.playing.pool !== pool) {
+        this._fade()
+        this.silence = this._rollPause()
+      }
+    }
+    const follow = lead !== null && lead.pool === pool
+    if (follow) {
+      this.following = true
+      if (lead.song < 0) return
+      const key = `${lead.pool}/${lead.song}@${lead.startS}`
+      if (key === this.heard) return
+      this.heard = key
+      if (this.playing !== null) this._fade()
+      this._start(pool, lead.song, lead.startS, Math.max(0, seconds - lead.startS))
       return
     }
+    if (this.following) {
+      this.following = false
+      this.heard = null
+      this.silence = this._rollPause()
+    }
+    if (this.playing !== null) return
     this.silence -= dt
-    if (this.silence <= 0 && this.fading === null) this._play(pool)
+    if (this.silence <= 0) this._start(pool, Math.floor(this.random() * POOLS[pool].length), seconds, 0)
   }
 }
