@@ -23,7 +23,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S, PREY } from '../src/v2/render/fish.js'
+import { Fish, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S, PREY, CURRENT_MPS } from '../src/v2/render/fish.js'
 import { CHAPTER_S, GRID_S, chapterOf, tickOf } from '../src/sim/score.js'
 import { taken } from '../src/v2/taken.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
@@ -58,6 +58,7 @@ const water = {
     if (onBar(x)) return null
     return Math.hypot(x, z) < LAKE_R ? LEVEL : null
   },
+  flowAt: () => 0,
 }
 const inWater = (f) => {
   const level = water.levelAt(f.x, f.z)
@@ -376,7 +377,7 @@ for (const sp of fish.species) {
   check(meanShallow < 0.9, 'fish in a 2 m lake are on the small side', `mean scale ${meanShallow.toFixed(2)}`)
   const DEEP2 = 24
   const deepHeight = { heightAt: (x, z) => { const r = Math.hypot(x, z) / LAKE_R; return LEVEL - DEEP2 * Math.max(0, 1 - r * r) } }
-  const deepWater = { levelAt: (x, z) => (Math.hypot(x, z) < LAKE_R ? LEVEL : null) }
+  const deepWater = { levelAt: (x, z) => (Math.hypot(x, z) < LAKE_R ? LEVEL : null), flowAt: () => 0 }
   const deepFish = new Fish(new THREE.Scene(), deepHeight, deepWater, { seed: 5, assets })
   deepFish.place(0, 0)
   const deep = deepFish.species.flatMap((sp) => sp.slots.filter((f) => f.alive && LEVEL - f.bed > 12).map((f) => f.scale))
@@ -831,6 +832,33 @@ const agree = (a, b) => {
   check(fl.leaps === before, 'no leap starts while her head is under the water')
   fl.dispose()
   check(leapScene.children.length === 0, 'dispose removes the leap group from the scene')
+}
+
+// --- a river: the same lake running +x at full weight ------------------------
+{
+  const river = { levelAt: (x, z) => water.levelAt(x, z), flowAt: (x, z, out) => { out.x = 1; out.z = 0; return water.levelAt(x, z) === null ? 0 : 1 } }
+  const T3 = clock.seconds
+  // A school's mean lead over its anchor along +x through 20 s, its fish against the anchor's own.
+  const sag = (w) => {
+    const f = new Fish(new THREE.Scene(), height, w, { seed: 23, assets })
+    f.place(0, 0)
+    let sum = 0, n = 0
+    for (let t = T3; t < T3 + 20; t += DT) {
+      f.update(0, LEVEL - 1, 0, t)
+      for (const sp of f.species) for (const sc of sp.schools) for (const m of sc.members) { sum += m.x - sc.x; n++ }
+    }
+    return { f, lead: sum / n }
+  }
+  const still = sag(water)
+  const flowing = sag(river)
+  check(flowing.lead - still.lead > 0.3 && alive(flowing.f).every(inWater), 'in a river the schools sag downstream of their anchors, every fish still in the water',
+    `${still.lead.toFixed(2)} m still, ${flowing.lead.toFixed(2)} m at ${CURRENT_MPS} m/s`)
+  const late = new Fish(new THREE.Scene(), height, river, { seed: 23, assets })
+  late.place(0, 0)
+  late.update(0, LEVEL - 1, 0, T3 + 20 - DT)
+  const r = agree(poseOf(flowing.f), poseOf(late))
+  check(r.ok, 'and a late joiner swims the same drifting fish', r.why)
+  for (const f of [still.f, flowing.f, late]) f.dispose()
 }
 
 twin.dispose()

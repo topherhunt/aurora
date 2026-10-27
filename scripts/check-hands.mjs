@@ -18,7 +18,7 @@
 // that keeps growing; a bed that regrows what she took.
 
 import * as THREE from 'three'
-import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, OVER_CAP, CARRY_MAX, CARRIERS, UNPLACED_Y, KICK_S, KICK_BACK, KICK_FLIP, KICK_GROW } from '../src/v2/hands.js'
+import { Hands, REACH_M, GRAB_MAX_M, STOW_MAX_M, LOOSE_MAX, ROLL_S, ROLL_MAX_S, ROLL_KICK, RAY_STEP, FLAP_S, FLAP_FADE_S, ZONE, ZONE_PULSE, EASE_S, POOL_CAP, OVER_CAP, CARRY_MAX, CARRIERS, UNPLACED_Y, KICK_S, KICK_BACK, KICK_FLIP, KICK_GROW, THROW_MIN_MPS, THROW_GAIN, THROW_MAX_MPS, CURRENT_MPS } from '../src/v2/hands.js'
 import { Taken } from '../src/v2/taken.js'
 
 let failures = 0
@@ -46,7 +46,7 @@ const walk = {
     return out
   },
 }
-const water = { levelAt: (x, z) => (x > 30 ? LEVEL : null) }
+const water = { levelAt: (x, z) => (x > 30 ? LEVEL : null), flowAt: () => 0 }
 
 // --- a stub source: things at fixed spots, the records the beds hand back ------
 const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2).translate(0, 0.1, 0)
@@ -78,7 +78,7 @@ class Source {
 }
 const thing = (kind, x, y, z, size) => ({ kind, x, y, z, size })
 
-const build = () => {
+const build = (wet = water) => {
   const scene = new THREE.Scene()
   const pulses = []
   const pack = []
@@ -87,7 +87,7 @@ const build = () => {
   const douses = []
   const eatens = []
   let room = 8
-  const hands = new Hands(scene, { walk, water, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), splash: (x, y, z) => splashes.push({ x, y, z }), douse: (x, y, z) => douses.push({ x, y, z }), eaten: (lure, eater) => eatens.push(eater), rand: mulberry32(3) })
+  const hands = new Hands(scene, { walk, water: wet, haptic: (key, i, ms) => pulses.push({ key, i, ms }), stow: (rec) => { if (pack.length >= room) return false; pack.push(rec); return true }, thud: (x, y, z) => thuds.push({ x, y, z }), splash: (x, y, z) => splashes.push({ x, y, z }), douse: (x, y, z) => douses.push({ x, y, z }), eaten: (lure, eater) => eatens.push(eater), rand: mulberry32(3) })
   const src = new Source([thing('mushroom', 0, 0, 0, 0.2), thing('fish', 2, 0, 0, 0.6), { ...thing('crab', 4, 0, 0, 1.5), bulky: true }, thing('crab', 6, 0, 0, 2.5)])
   hands.addSource(src, ['mushroom', 'fish', 'crab'])
   const node = new THREE.Group()
@@ -428,7 +428,7 @@ const build = () => {
   w.run(10)
   check(m.x > 30 && m.state === 'float' && water.levelAt(m.x, m.z) !== null, 'it never drifts up the beach', `x ${m.x.toFixed(2)}`)
   // Into a cave, whose water lies nowhere under the lake: the thing afloat on the lake holds still, and floats on once she is back.
-  w.hands.setWorld('cave', walk, { levelAt: () => null })
+  w.hands.setWorld('cave', walk, { levelAt: () => null, flowAt: () => 0 })
   const held = [m.x, m.y, m.z]
   let threw = null
   try { w.run(2) } catch (e) { threw = e.message }
@@ -446,6 +446,83 @@ const build = () => {
   c.run(3)
   const crab = c.hands.loose[0]
   check(crab.state !== 'float' && Math.abs(crab.y - (groundAt(crab.x) + crab.r)) < 1e-6 && c.thuds.length === 1 && c.thuds[0].y < LEVEL, 'a crab refused at the surface sinks to the bed, and is heard there', `state ${crab.state} y ${crab.y.toFixed(2)} thuds ${c.thuds.length}`)
+}
+
+// --- a throw: a hand moving fast as it lets go ------------------------------------
+{
+  // The hand swung along -z on the flat at `mps` for six frames, then let go.
+  const swing = (w, mps) => {
+    w.at(0, 0.3, 0)
+    w.hands.press('right', w.head)
+    for (let i = 0; i <= 6; i++) { w.at(-5, 1.5, -mps * i / 60); w.hands.update(1 / 60, w.head) }
+    w.hands.drop('right', w.head)
+    return w.hands.loose[0]
+  }
+  const w = build()
+  const sent = []
+  w.hands.sync = (e) => sent.push(e)
+  w.hands.tag = '0123abcd'
+  const m = swing(w, 4)
+  check(w.src.releases.length === 0 && m.state === 'fall', 'thrown, it is not offered back at the hand but flies loose')
+  const thrownEvent = sent.find((e) => e.type === 'loose')
+  check(thrownEvent?.state === 2 && thrownEvent.vel[2] === m.vz && thrownEvent.vel[0] === m.vx, 'and the room is told the throw\'s velocity', JSON.stringify(thrownEvent?.vel))
+  check(Math.abs(m.vz + 4 * THROW_GAIN) < 0.05 && Math.abs(m.vx) < 1e-6, `it leaves at THROW_GAIN ${THROW_GAIN} times the hand's speed, the hand's way`, `vz ${m.vz.toFixed(2)}`)
+  const z0 = m.z
+  w.run(1)
+  check(m.state !== 'fall' && z0 - m.z > 3 && w.thuds.length === 1, 'and lands metres off', `${(z0 - m.z).toFixed(2)} m`)
+  check(w.src.releases.length === 1 && w.src.releases[0].z < z0 - 3, 'its source offered it where it landed')
+  check(m.vz < -ROLL_KICK[1] * 0.5, 'rolling on the way it flew', `vz ${m.vz.toFixed(2)}`)
+  const slow = build()
+  const s = swing(slow, THROW_MIN_MPS * 0.5)
+  check(slow.src.releases.length === 1 && s.vx === 0 && s.vz === 0, `a hand slower than THROW_MIN_MPS ${THROW_MIN_MPS} drops it straight, offered back at the hand`)
+  const fast = build()
+  const f = swing(fast, 200)
+  check(Math.abs(Math.hypot(f.vx, f.vy, f.vz) - THROW_MAX_MPS) < 1e-3, `a wild swing leaves at THROW_MAX_MPS ${THROW_MAX_MPS}`)
+  // The hand still in a rig that moves: her walking or flying is not a throw.
+  const r = build()
+  const rig = new THREE.Group()
+  r.scene.add(rig)
+  rig.add(r.node)
+  r.at(0, 0.3, 0)
+  r.hands.press('right', r.head)
+  r.at(0, 1.5, 0)
+  for (let i = 0; i <= 6; i++) { rig.position.set(-5, 0, -30 * i / 60); rig.updateMatrixWorld(true); r.hands.update(1 / 60, r.head) }
+  r.hands.drop('right', r.head)
+  check(r.src.releases.length === 1 && r.hands.loose[0].vz === 0, 'a hand carried by a moving rig only drops it')
+}
+
+// --- a river carries what floats on it ------------------------------------------------
+{
+  // A channel |z| < 2 past x = 30, its current `dir` at full weight.
+  const river = (dir) => ({
+    levelAt: (x, z) => (x > 30 && Math.abs(z) < 2 ? LEVEL : null),
+    flowAt(x, z, out) {
+      if (!(x > 30 && Math.abs(z) < 2)) return 0
+      out.x = dir[0]; out.z = dir[1]
+      return 1
+    },
+  })
+  const afloat = (w) => {
+    w.at(0, 0.3, 0)
+    w.hands.press('right', w.head)
+    w.at(40, LEVEL + 1, 0)
+    w.hands.update(1 / 60, w.head)
+    w.hands.drop('right', w.head)
+    w.run(1)
+    return w.hands.loose[0]
+  }
+  const w = build(river([1, 0]))
+  const m = afloat(w)
+  check(m.state === 'float', 'a mushroom let go over the river floats')
+  const x0 = m.x
+  w.run(10)
+  check(m.x - x0 > CURRENT_MPS * 10 * 0.8 && m.state === 'float' && Math.abs(m.z) < 2, `carried downstream at about CURRENT_MPS ${CURRENT_MPS}`, `${(m.x - x0).toFixed(1)} m in 10 s`)
+  // A current set onto the bank: it slides along it rather than pinning there.
+  const b = build(river([Math.SQRT1_2, Math.SQRT1_2]))
+  const n = afloat(b)
+  const bx = n.x
+  b.run(10)
+  check(n.x - bx > 4 && n.state === 'float' && Math.abs(n.z) < 2, 'set onto the bank it slides on down it', `${(n.x - bx).toFixed(1)} m in 10 s, z ${n.z.toFixed(2)}`)
 }
 
 // --- the backpack zone and the buzz ------------------------------------------------
@@ -714,29 +791,36 @@ const build = () => {
   const slot = { kind: 'mushroom', name: 'mushroom', size: 0.2, attrs: { aSwim: [1, 2, 3, 4] }, color: [0.5, 0.6, 0.7], scale: [0.2, 0.2, 0.2], stowable: true }
   const pool = () => w.hands.pools.get(geo)
   // A peer's thing in motion falls and rolls here on its own; its rest is the peer's word, eased onto.
-  check(w.hands.netLoose('ffff0000-1', slot, [-5, 1, 0, 0, 0, 0, 1], 2) === true && w.hands.loose.length === 1 && w.hands.loose[0].state === 'fall' && w.hands.loose[0].mine === false, 'a peer loose thing in motion appears here falling')
+  check(w.hands.netLoose('ffff0000-1', slot, [-5, 1, 0, 0, 0, 0, 1], 2, [0, 0, 0]) === true && w.hands.loose.length === 1 && w.hands.loose[0].state === 'fall' && w.hands.loose[0].mine === false, 'a peer loose thing in motion appears here falling')
   w.run(ROLL_MAX_S + 1)
   const peerItem = w.hands.loose[0]
   check(peerItem.state === 'still' && events.length === 0, 'it comes to rest here and nothing is said of it', `${peerItem.state} ${events.length}`)
-  w.hands.netLoose('ffff0000-1', slot, [-5.5, groundAt(-5.5) + 0.1, 0.3, 0, 0, 0, 1], 0)
+  w.hands.netLoose('ffff0000-1', slot, [-5.5, groundAt(-5.5) + 0.1, 0.3, 0, 0, 0, 1], 0, [0, 0, 0])
   check(peerItem.state === 'ease' && peerItem.eState === 'still', 'the peer\'s rest pose is eased onto')
   w.run(EASE_S / 2)
   check(peerItem.state === 'ease' && Math.abs(peerItem.x + 5.5) > 1e-3, 'half way there half way through')
   w.run(EASE_S)
   check(peerItem.state === 'still' && Math.abs(peerItem.x + 5.5) < 1e-6 && Math.abs(peerItem.z - 0.3) < 1e-6, `and there, still, after EASE_S ${EASE_S}`, `${peerItem.x.toFixed(3)} ${peerItem.z.toFixed(3)}`)
+  // Thrown by a peer: it flies the throw here too.
+  const flung = build()
+  flung.hands.netLoose('ffff0000-9', slot, [-5, 1.5, 0, 0, 0, 0, 1], 2, [0, 2, -7])
+  const fl = flung.hands.loose[0]
+  check(fl.vz === -7 && fl.vy === 2, 'a peer thing thrown appears here with the throw\'s velocity')
+  flung.run(1.2)
+  check(fl.state !== 'fall' && fl.z < -4, 'and lands metres off, as it did there', `z ${fl.z.toFixed(2)}`)
   // Afloat: on the lake, drifting.
-  w.hands.netLoose('ffff0000-2', slot, [40, LEVEL, 0, 0, 0, 0, 1], 1)
+  w.hands.netLoose('ffff0000-2', slot, [40, LEVEL, 0, 0, 0, 0, 1], 1, [0, 0, 0])
   check(w.hands.loose.length === 2 && w.hands.loose[1].state === 'float', 'a peer thing afloat appears here afloat')
   // Not dressed: false, nothing made.
   w.src.landed = false
-  check(w.hands.netLoose('ffff0000-3', slot, [-6, 1, 0, 0, 0, 0, 1], 0) === false && w.hands.loose.length === 2, 'a thing whose source has not landed is refused, to be asked again')
+  check(w.hands.netLoose('ffff0000-3', slot, [-6, 1, 0, 0, 0, 0, 1], 0, [0, 0, 0]) === false && w.hands.loose.length === 2, 'a thing whose source has not landed is refused, to be asked again')
   w.src.landed = true
   // Hers is hers: a peer's word on one of her own things is ignored while it is hers to settle.
   w.at(0, 0.3, 0)
   w.hands.press('right', w.head)
   w.hands.drop('right', w.head)
   const mine = w.hands.loose[2]
-  check(mine.mine && w.hands.netLoose(mine.netId, slot, [9, 9, 9, 0, 0, 0, 1], 0) === true && mine.state === 'fall', 'a peer cannot move what she has just let go')
+  check(mine.mine && w.hands.netLoose(mine.netId, slot, [9, 9, 9, 0, 0, 0, 1], 0, [0, 0, 0]) === true && mine.state === 'fall', 'a peer cannot move what she has just let go')
   // Lifted by a peer: gone from here; an unknown id is nothing.
   w.hands.netLift('ffff0000-2')
   w.hands.netLift('nobody-1')
@@ -786,8 +870,8 @@ const build = () => {
   check(w.hands.peerHeld.get('peer-c')[1].item?.state === 'peer', 'and is dressed on a later frame')
   let bad = 0
   try { w.hands.netHold('peer-c', 3, slot) } catch { bad++ }
-  try { w.hands.netLoose('x', slot, [0, 0, 0], 0) } catch { bad++ }
-  try { w.hands.netLoose('x', slot, [0, 0, 0, 0, 0, 0, 1], 5) } catch { bad++ }
+  try { w.hands.netLoose('x', slot, [0, 0, 0], 0, [0, 0, 0]) } catch { bad++ }
+  try { w.hands.netLoose('x', slot, [0, 0, 0, 0, 0, 0, 1], 5, [0, 0, 0]) } catch { bad++ }
   check(bad === 3, 'a fourth hand, a short pose and an unknown state throw', `${bad} of 3`)
   check(POOL_CAP === LOOSE_MAX + 7 * 3 + CARRY_MAX * CARRIERS && OVER_CAP === 3, 'a pool holds the loose things, seven peers\' hands and the carriers\' armfuls; its over mesh her three hands\'', `${POOL_CAP}`)
   // Dispose, with the over group mounted where main.js renders it: a peer's pool whose over mesh was never drawn must not be left there with a nulled array, which the renderer reads on the room's next overlay pass.

@@ -173,7 +173,7 @@ class Ground {
 // The boulder the walker sees: its top over everything behind BOULDER.face, so the drawn pose's cap at the arch is checked.
 const BOULDER = { on: false, face: 0.05, top: GROUND + 3 }
 const walk = { heightAt: (x) => (BOULDER.on && x < BOULDER.face ? BOULDER.top : GROUND) }
-const water = { isSubmerged: () => false, levelAt: () => null }
+const water = { isSubmerged: () => false, levelAt: () => null, flowAt: () => 0 }
 const mouth = (key = KEY) => ({ key, x: 0, y: GROUND, z: 0, nx: 1, nz: 0, r: 8, ax: -MOUTH_STEP_M - MOUTH_SINK_M, ay: GROUND - 0.05, az: 0, holeX: -1, holeZ: 0, state: {}, flank: [], flankReach: 0 })
 const entrancesOf = (...list) => ({ list, sites(into) { into.push(...this.list); return into } })
 

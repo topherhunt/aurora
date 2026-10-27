@@ -59,8 +59,8 @@ export const WILD = {
     bolt: [6, 10],
     // Her eye `eye` m over the seat, the seat's height followed over `lift` s (shortening with speed), and a stride's bob of `bob` m at a walk, `gallop` as often at a run.
     eye: 0.75, lift: 0.35, bob: 0.035, gallop: 0.25,
-    // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface (to its chest, the rider's toes wet): it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), weaving `sway` rad each side of her course, a side every `weave` s, and dips deeper (never through the bed) once a stroke, each stroke rolling its depth from `duck` m (the deepest to its chin) and its length from `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s.
-    swim: { draft: 1.3, speed: 2.8, stroke: [0.35, 1], back: -0.8, sway: [0.12, 0.3], weave: [2, 4], duck: [0.2, 0.5], paddle: [1.1, 1.9], splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40] },
+    // Water over `draft` m (times its size over the mean) floats it, `draft` under the surface (to its chest, the rider's toes wet): it swims at `stroke` of `speed` m/s across the stick past `push` (`back` backing), weaving `sway` rad each side of her course, a side every `weave` s, and dips deeper (never through the bed) once a stroke, each stroke rolling its depth from `duck` m (the deepest to its chin) and its length from `paddle` s, splashes every `splash` s and swooshes every `swoosh` s under way. Pushed at such water it stops at the edge and squawks every `squawk` s, at `odds` a squawk balking (backing off `balk` s, then a shake at `shake` odds), and goes in once pushed there `coax` s all told; out on dry ground again it shakes. Left afloat it drifts at `drift` m/s, turning up to `veer` rad every `wander` s, and makes for the shore after `adrift` s. Afloat, ridden or not, a river carries it at `current` m/s at full flow weight (WalkSurface.flowAt).
+    swim: { draft: 1.3, speed: 2.8, stroke: [0.35, 1], back: -0.8, sway: [0.12, 0.3], weave: [2, 4], duck: [0.2, 0.5], paddle: [1.1, 1.9], splash: [1.5, 4], swoosh: [1.5, 3.5], squawk: [0.8, 1.6], odds: 0.4, balk: 0.6, shake: 0.6, coax: [3, 6], drift: 0.35, veer: 1.2, wander: [2, 5], adrift: [20, 40], current: 0.5 },
   },
   // In the headset it hops where she lobs (main.js aimTeleport), keeping its heading: `reach` times her walking lob straight ahead, falling off as the square of the cosine off its way to `side` of that at a right angle and behind, grown `grow` a hop by hops within `line` rad of the last that used `full` of it, to `most`; a sharper turn sheds it in proportion to a right angle, and `rest` s standing sheds it over `fade` s. The lob stops `cap` m of her own under its feet: a hop there is a leap, and it falls. It treads `tread` s after a hop (by how far) and clucks after one in `cluck`; standing, it fidgets every `fidget` s, shifting her `shift` m and `sway` rad.
   hop: { reach: 2, side: 0.1, grow: 1.15, most: 2, line: 0.35, full: 0.7, rest: 2, fade: 5, cap: 3.5, tread: [0.5, 1.4], cluck: 0.35, fidget: [12, 32], shift: 0.03, sway: 0.04 },
@@ -93,6 +93,7 @@ const _t = new THREE.Quaternion()
 const _acc = new THREE.Quaternion()
 const _e = new THREE.Euler()
 const _trunk = { x: 0, z: 0, r: 0 }
+const _flow = { x: 0, z: 0 }
 const _fall = new THREE.Matrix4()
 const _sat = new THREE.Vector3()
 const GRAVITY = 9.81
@@ -749,6 +750,7 @@ export class WildStriders {
           p.speed = 0
           if (mine && Math.abs(wrap(m.aim - p.heading)) < 1) { m.aim = wrap(p.heading + Math.PI); m.voice = between(S.wander) + Math.PI / (W.turn * 0.4) }
         }
+        this._drift(m, dt)
         this._bob(m, dt, level, g, p.speed)
         return
       }
@@ -1357,6 +1359,7 @@ export class WildStriders {
       r.sway = sway
     } else r.weave = r.sway = 0
     if (r.v !== 0 && !this._rideStep(m, r.v * dt, dt)) r.v = r.a = 0
+    if (r.swim) this._drift(m, dt)
     if (r.bolt !== null && (r.bolt.left -= Math.abs(r.v) * dt) <= 0) r.bolt = null
     this._float(m, dt)
     const owed = this._swing(m, dt)
@@ -1382,6 +1385,14 @@ export class WildStriders {
     r.lastY = r.y + r.bob
     player.carry(_v.x - _sat.x, dy, _v.z - _sat.z, wrap(p.heading - h0 - owed), _v.x, _v.z)
     Object.assign(r.base, { x: p.x, z: p.z, h: p.heading })
+  }
+
+  /** Afloat `m` carried dt's way down a river (WILD.ride.swim.current), within deep water and clear of trunks. */
+  _drift(m, dt) {
+    const p = m.pose, c = this.walk.flowAt(p.x, p.z, _flow) * WILD.ride.swim.current * dt
+    if (c === 0) return
+    const x = p.x + _flow.x * c, z = p.z + _flow.z * c
+    if (this._deep(m, x, z) && !this.walk.obstacleAt(x, z, _trunk, m)) { p.x = x; p.z = z }
   }
 
   /** Whether (x, z) is water deep enough to float ridden `m` (WILD.ride.swim.draft). */

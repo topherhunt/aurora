@@ -7,7 +7,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { grassTexture } from './preview-stage.js'
 import { CASTLE, castleLayout } from './v2/castles/layout.js'
-import { exteriorGeometry, interiorGeometries, stoneTexture } from './v2/castles/shell.js'
+import { courtGeometry, exteriorGeometry, interiorGeometries, UV_METRES } from './v2/castles/shell.js'
 
 const EDGE = { door: '#ffffff', gate: '#ffffff', stair: '#3fd0ff', ladder: '#a8ffff', outstair: '#ffd23f', step: '#9be564', bridge: '#ff9d3f', rope: '#ff6fcf', barred: '#ff3b3b' }
 const NODE = { entry: '#ffffff', court: '#9be564', walk: '#ffd23f', roof: '#ff9d3f', summit: '#ffdf00', keep: '#6fa8ff', hall: '#b48cff', gate: '#d0d0d0', tower: '#5fd3c4', lookout: '#ff6f6f' }
@@ -38,17 +38,27 @@ const sun = new THREE.DirectionalLight(0xfff3e2, 2.2)
 sun.position.set(40, 70, 25)
 scene.add(sun, new THREE.HemisphereLight(0x9fc6ff, 0x2a2418, 0.9))
 
-const stone = stoneTexture()
-const material = new THREE.MeshLambertMaterial({ vertexColors: true, map: stone })
+const loadTile = (path, metres) => {
+  const t = new THREE.TextureLoader().load(path, undefined, undefined, (e) => { throw new Error(`castle lab: ${path} failed to load: ${e}`) })
+  t.colorSpace = THREE.SRGBColorSpace
+  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.anisotropy = 4
+  t.repeat.setScalar(UV_METRES / metres)
+  return t
+}
+const material = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/castle_stone.webp', UV_METRES) })
+// The road's flagstones, 3 m a tile (COBBLE_METRES in terrain-material.js).
+const courtMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/terrain/cobble.webp', 3) })
+const court = new THREE.Mesh(new THREE.BufferGeometry(), courtMat)
 const ghostMat = new THREE.MeshBasicMaterial({ color: 0x9fc6ff, transparent: true, opacity: 0.1, depthWrite: false, wireframe: false })
 const exterior = new THREE.Mesh(new THREE.BufferGeometry(), material)
 const ghost = new THREE.Mesh(exterior.geometry, ghostMat)
 ghost.scale.setScalar(CASTLE.scale)
 const interior = new THREE.Group()
 const overlay = new THREE.Group()
-scene.add(exterior, ghost, interior, overlay)
+scene.add(exterior, ghost, court, interior, overlay)
 
-// A hilltop: flat where the castle stands, falling away past it.
+// A hilltop: flat CASTLE.raise below the castle's floor where it stands, falling away past it.
 const hillGeo = new THREE.PlaneGeometry(800, 800, 160, 160).rotateX(-Math.PI / 2)
 const grass = grassTexture(renderer)
 grass.repeat.set(160, 160)
@@ -58,7 +68,7 @@ function shapeHill(radius) {
   const p = hillGeo.getAttribute('position')
   for (let i = 0; i < p.count; i++) {
     const r = Math.hypot(p.getX(i), p.getZ(i)) - radius
-    p.setY(i, r < 0 ? 0 : -Math.min(60, r * r * 0.01 + r * 0.15))
+    p.setY(i, -CASTLE.raise - (r < 0 ? 0 : Math.min(60, r * r * 0.01 + r * 0.15)))
   }
   p.needsUpdate = true
   hillGeo.computeVertexNormals()
@@ -138,7 +148,7 @@ function buildInterior() {
 const tris = (g) => g.getAttribute('position').count / 3
 function applyView() {
   exterior.visible = !inside
-  hill.visible = !inside
+  hill.visible = court.visible = !inside
   ghost.visible = inside && ghostOn
   interior.visible = inside
   // The cut storey draws its waist-high twin so its floor plan reads from above.
@@ -198,6 +208,8 @@ function rebuild() {
   lay = castleLayout(seed)
   exterior.geometry.dispose()
   exterior.geometry = ghost.geometry = exteriorGeometry(lay)
+  court.geometry.dispose()
+  court.geometry = courtGeometry(lay)
   buildInterior()
   const r = Math.max(...lay.sections.flatMap((s) => [[s.x0, s.z0], [s.x0 + s.w, s.z0], [s.x0, s.z0 + s.d], [s.x0 + s.w, s.z0 + s.d]].map(([x, z]) => Math.hypot(lay.X(x), lay.Z(z)))))
   shapeHill(r + 10)

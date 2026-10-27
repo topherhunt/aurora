@@ -336,9 +336,9 @@ function chalkFor(room, client) {
 // A SLOT is what hands.js packs for the backpack: kind, name, size, scale,
 // tint, stowable, the instanced attributes, and a source's own scalars (a
 // variant); held to a small alphabet and to SLOT_MAX_JSON bytes since every
-// client draws it. A loose thing's POSE is [x, y, z, qx, qy, qz, qw] and its
-// STATE 0 (still), 1 (afloat) or 2 (in motion: let go, and the taker sends
-// where it came to rest). The taken log is [key, x, z] entries as the taken
+// client draws it. A loose thing's POSE is [x, y, z, qx, qy, qz, qw], its VEL
+// [vx, vy, vz] (a throw's flight; zero at rest) and its STATE 0 (still), 1
+// (afloat) or 2 (in motion: let go, and the taker sends where it came to rest). The taken log is [key, x, z] entries as the taken
 // registry keys them, kept to TAKEN_CAP with the oldest forgotten.
 const SLOT_MAX_JSON = 512
 const SLOT_MAX_ATTRS = 8
@@ -369,12 +369,13 @@ function validSlot(slot) {
   return JSON.stringify(slot).length <= SLOT_MAX_JSON
 }
 const validPose7 = (p) => Array.isArray(p) && p.length === 7 && p.every((n) => Number.isFinite(n))
+const validVel3 = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(n))
 
 function validThing(message) {
   if (!message || typeof message !== 'object') return false
   switch (message.type) {
     case 'hold': return Number.isInteger(message.hand) && message.hand >= 0 && message.hand < HANDS && (message.slot === null || validSlot(message.slot))
-    case 'loose': return validLooseId(message.id) && validSlot(message.slot) && validPose7(message.pose) && [0, 1, 2].includes(message.state)
+    case 'loose': return validLooseId(message.id) && validSlot(message.slot) && validPose7(message.pose) && validVel3(message.vel) && [0, 1, 2].includes(message.state)
     case 'lift': return validLooseId(message.id)
     case 'take': return Array.isArray(message.list) && message.list.length > 0 && message.list.length <= TAKE_MAX_PER_MESSAGE &&
       message.list.every((e) => Array.isArray(e) && e.length === 3 && validKey(e[0]) && Number.isFinite(e[1]) && Number.isFinite(e[2]))
@@ -397,7 +398,7 @@ function applyThing(room, client, message, now) {
       forgetLoose(room, oldest, rev)
     }
     const was = room.loose.get(message.id)
-    room.loose.set(message.id, { slot: message.slot, pose: message.pose, state: message.state, by: client.id, rev, at: was ? was.at : now })
+    room.loose.set(message.id, { slot: message.slot, pose: message.pose, vel: message.vel, state: message.state, by: client.id, rev, at: was ? was.at : now })
   } else if (message.type === 'lift') {
     if (room.loose.has(message.id)) forgetLoose(room, message.id, rev)
   } else if (message.type === 'take') {
@@ -423,7 +424,7 @@ function thingsFor(room, client) {
   for (const peer of room.clients.values()) if (peer !== client && peer.heldRev > seen) held.push([peer.id, ...peer.held])
   if (held.length) (out ??= {}).held = held
   const loose = []
-  for (const [id, l] of room.loose) if (l.rev > seen) loose.push([id, l.slot, l.pose, l.state, l.by])
+  for (const [id, l] of room.loose) if (l.rev > seen) loose.push([id, l.slot, l.pose, l.state, l.vel, l.by])
   if (loose.length) (out ??= {}).loose = loose
   // A client that has heard nothing yet has nothing to forget.
   const gone = []

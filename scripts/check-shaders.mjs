@@ -874,7 +874,7 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
 // because the map is the one texture a fish ever wears.
 {
   const FISH_ASSETS = JSON.parse(readFileSync(new URL('../public/fauna/fish.json', import.meta.url), 'utf8'))
-  const fish = new Fish(new THREE.Scene(), { heightAt: () => 0 }, { levelAt: () => null }, { assets: FISH_ASSETS })
+  const fish = new Fish(new THREE.Scene(), { heightAt: () => 0 }, { levelAt: () => null, flowAt: () => 0 }, { assets: FISH_ASSETS })
   for (const sp of fish.species) {
     const lib = THREE.ShaderLib.lambert
     const shader = {

@@ -2303,9 +2303,11 @@ function pressPurse(kind) {
 }
 
 /** What she carries, for the talk to trade against (conversations ctx.pack): the purse, the large slots and both hands. */
+// The roosts' eggs are a hands kind of their own (hands.addSource(roosts, 'egg')), large, outside ITEMS.
+const PACKABLE = new Set([...Object.keys(ITEMS), 'egg'])
 const pack = {
   count(kind) {
-    if (!ITEMS[kind]) throw new Error(`pack.count: no item ${kind}`)
+    if (!PACKABLE.has(kind)) throw new Error(`pack.count: no item ${kind}`)
     let n = SMALL.includes(kind) ? purse[kind] : backpack.filter((s) => s !== null && s.kind === kind).length
     for (const key of HAND_KEYS) {
       const rec = hands.holding(key)
@@ -4858,7 +4860,7 @@ function darkCave() {
 }
 const caveAir = new THREE.Vector3()
 // The cave's water as hands.js asks it of a dropped thing.
-const caveWater = { levelAt: (x, z) => cave.walk.trueWaterAt(x, z, cave.walk.hintY) }
+const caveWater = { levelAt: (x, z) => cave.walk.trueWaterAt(x, z, cave.walk.hintY), flowAt: () => 0 }
 
 /** The fish layer's beds over `water` and `bed` from `seed`, drawn from `spots` (Fish.setSpots), rebuilt round (x, z): the cave's pools on the way in, the overworld's on the way out. */
 function aimFish(bed, water, spots, seed, x, z) {
@@ -5311,7 +5313,7 @@ async function buildRoom(room, at) {
   // She stands on the rocks and walks around the trunks, so she is placed only
   // once both are on the ground. See v2/walk.js.
   walk = new WalkSurface(height, rocks, trees, { scale: herScale() })
-  walk.setWater(waterLevelAt)
+  walk.setWater(waterLevelAt, (x, z, out) => (cave !== null || waterSurfaces === null ? 0 : waterSurfaces.flowAt(x, z, out)))
   // Dead wood is stone to her and the creatures: a step, a wall or nothing, by height, the way a rock is.
   walk.addStone(deadwood)
   if (roomProps) walk.addStone(roomProps)

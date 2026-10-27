@@ -203,13 +203,13 @@ try {
   const mine = await nextClock(first, () => true)
   if ('things' in mine) throw new Error(`the holder should not hear her own hold back, got ${JSON.stringify(mine.things)}`)
   const pose7 = [1, 2, 3, 0, 0, 0, 1]
-  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-1', slot, pose: pose7, state: 2 }))
+  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-1', slot, pose: pose7, vel: [0, 2, -7], state: 2 }))
   const loose = await nextThings(second, (t) => t.loose)
   if (loose.held) throw new Error('a loose thing should not resend the hold')
-  if (loose.loose.length !== 1 || !same(loose.loose[0], ['deadbeef-1', slot, pose7, 2, firstId])) throw new Error(`loose round-trip mismatch: ${JSON.stringify(loose.loose)}`)
+  if (loose.loose.length !== 1 || !same(loose.loose[0], ['deadbeef-1', slot, pose7, 2, [0, 2, -7], firstId])) throw new Error(`loose round-trip mismatch: ${JSON.stringify(loose.loose)}`)
   // The same id again is an update: the rest pose, once.
   const rest = [1, 0.5, 3, 0, 0.7, 0, 0.7]
-  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-1', slot, pose: rest, state: 0 }))
+  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-1', slot, pose: rest, vel: [0, 0, 0], state: 0 }))
   const rested = await nextThings(second, (t) => t.loose)
   if (rested.loose.length !== 1 || rested.loose[0][3] !== 0 || !same(rested.loose[0][2], rest)) throw new Error(`loose update mismatch: ${JSON.stringify(rested.loose)}`)
   first.send(JSON.stringify({ version: 1, type: 'take', list: [['mushroom', 1.5, 2.5], ['spider:rock3', -4, 8]] }))
@@ -220,7 +220,7 @@ try {
   const gone = await nextThings(second, (t) => t.gone)
   if (!same(gone.gone, ['deadbeef-1']) || gone.loose) throw new Error(`lift round-trip mismatch: ${JSON.stringify(gone)}`)
   // The lifted id settling late with its owner is not put back.
-  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-1', slot, pose: rest, state: 0 }))
+  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-1', slot, pose: rest, vel: [0, 0, 0], state: 0 }))
   await wait(120)
   const late = await nextClock(second, () => true)
   if ('things' in late) throw new Error(`a lifted id should stay gone, got ${JSON.stringify(late.things)}`)
@@ -233,7 +233,7 @@ try {
   third.close()
   // The ground holds 24 loose things; the twenty-fifth forgets the one lying there longest, and the room hears it go.
   for (let i = 0; i < 25; i++) {
-    first.send(JSON.stringify({ version: 1, type: 'loose', id: `deadbeef-c${i.toString(36)}`, slot, pose: pose7, state: 0 }))
+    first.send(JSON.stringify({ version: 1, type: 'loose', id: `deadbeef-c${i.toString(36)}`, slot, pose: pose7, vel: [0, 0, 0], state: 0 }))
     if (i === 0) await wait(20)
   }
   const ids = new Set()

@@ -122,6 +122,8 @@ export const LOCOMOTION = {
   // would put her feet; afloat, she stands once it reaches that. The gap stops
   // a lap flipping her between the two at the shelf's edge.
   swimEnterHyst: 0.1,
+  // A river's pull on her at full flow weight (WalkSurface.flowAt), world m/s whatever her size: under half her stroke, so she can swim up it.
+  swimCurrent: 0.5,
   // A fall into water at least this deep (her metres) is free, and plunges her feet under the surface by this fraction of the drop to it, no deeper than the bed.
   fallWaterDeep: 4,
   fallPlunge: 0.25,
@@ -155,6 +157,7 @@ export class Player {
     this.setScale(scale)
     this.setGround(terrainHeight)
     this._obstacle = { x: 0, z: 0, r: 0 }
+    this._flow = { x: 0, z: 0 }
     this._push = { x: 0, z: 0 }
     this._probe = { x: 0, z: 0, r: 0 }
     this._inStone = null
@@ -220,6 +223,7 @@ export class Player {
     this.obstacles = typeof terrainHeight.obstacleAt === 'function' ? terrainHeight : null
     this.capsule = typeof terrainHeight.fits === 'function' ? terrainHeight : null
     this.water = typeof terrainHeight.waterAt === 'function' ? terrainHeight : null
+    this.current = typeof terrainHeight.flowAt === 'function' ? terrainHeight : null
     this._inStone = null
     this.swimming = false
   }
@@ -651,23 +655,15 @@ export class Player {
       const n = this._step.length()
       if (n > 1e-6) {
         this._step.multiplyScalar((this.speed * dt) / n)
-        const nx = THREE.MathUtils.clamp(p.x + this._step.x, -WORLD_HALF + 32, WORLD_HALF - 32)
-        const nz = THREE.MathUtils.clamp(p.z + this._step.z, -WORLD_HALF + 32, WORLD_HALF - 32)
-        // A mantle out of the water: onto anything within her reach of her
-        // feet, or of the surface by half that.
-        const bank = this.th.heightAt(nx, nz, this.swimY)
-        const wall = bank > Math.max(this.swimY + this.th.reach, level + 0.5 * this.th.reach)
-        const trunk = this.obstacles && !this.obstacles.obstacleAt(p.x, p.z, this._obstacle) &&
-          this.obstacles.obstacleAt(nx, nz, this._obstacle)
-        this.blocked = wall || !!trunk
-        if (!this.blocked) {
-          p.x = nx
-          p.z = nz
-        }
+        this.blocked = !this._swimStep(this._step.x, this._step.z, level)
         this.swimY += this._step.y
         moved = true
       }
     }
+
+    // The river carries her, stroke or none; a bank or trunk just holds her against it.
+    const pull = level === null || this.current === null ? 0 : this.current.flowAt(p.x, p.z, this._flow) * L.swimCurrent * dt
+    if (pull > 0) this._swimStep(this._flow.x * pull, this._flow.z * pull, level)
 
     level = this._waterAt(p.x, p.z)
     const floor = this.th.heightAt(p.x, p.z, this.swimY)
@@ -687,6 +683,19 @@ export class Player {
     const bob = L.swimBob * k * this._bobGain * Math.sin((2 * Math.PI * this._swimT) / L.swimBobPeriod)
     this.smoothY = p.y = this.swimY + bob
     this.standY = floor
+  }
+
+  /** Moves the swimming rig by (dx, dz) unless that meets a bank she could not mantle onto (within her reach of her feet, or of the surface by half that) or walks into a trunk; returns whether it moved. */
+  _swimStep(dx, dz, level) {
+    const p = this.rig.position
+    const nx = THREE.MathUtils.clamp(p.x + dx, -WORLD_HALF + 32, WORLD_HALF - 32)
+    const nz = THREE.MathUtils.clamp(p.z + dz, -WORLD_HALF + 32, WORLD_HALF - 32)
+    const bank = this.th.heightAt(nx, nz, this.swimY)
+    if (bank > Math.max(this.swimY + this.th.reach, level + 0.5 * this.th.reach)) return false
+    if (this.obstacles && !this.obstacles.obstacleAt(p.x, p.z, this._obstacle) && this.obstacles.obstacleAt(nx, nz, this._obstacle)) return false
+    p.x = nx
+    p.z = nz
+    return true
   }
 
   // Fly speed at a given locomotion origin, from height above the ground

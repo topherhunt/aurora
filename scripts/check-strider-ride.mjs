@@ -172,5 +172,18 @@ console.log('a crab in a hand')
   check(m.ride.v === 0, 'then calms under her', `${m.ride.v.toFixed(3)} m/s`)
 }
 
+console.log('a river')
+{
+  // A river running +z at full weight, deep to z = 0.3.
+  const S = Object.create(WildStriders.prototype)
+  S.walk = { flowAt: (x, z, out) => { out.x = 0; out.z = 1; return 1 }, obstacleAt: () => false }
+  S._deep = (m, x, z) => z < 0.3
+  const m = { pose: { x: 0, y: 0, z: 0, size: 1 } }
+  for (let i = 0; i < 36; i++) S._drift(m, 1 / 72)
+  check(near(m.pose.z, WILD.ride.swim.current / 2) && m.pose.x === 0, 'afloat, the current carries a strider downstream', `${(m.pose.z * 2).toFixed(3)} m/s`)
+  for (let i = 0; i < 72 * 5; i++) S._drift(m, 1 / 72)
+  check(m.pose.z < 0.3 && m.pose.z > 0.29, 'and only as far as the deep water goes', `z = ${m.pose.z.toFixed(3)}`)
+}
+
 if (failures) { console.log(`\n${failures} FAILED`); process.exit(1) }
 console.log('\nall ok')

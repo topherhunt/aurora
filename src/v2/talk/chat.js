@@ -7,6 +7,7 @@ import { hash32 } from '../../sim/score.js'
 import { Conversation, strHash } from './speak.js'
 import { OPEN_TOPICS, TOPICS } from './lore.js'
 import { MANNERS } from './manners.js'
+import { fits } from './caption.js'
 
 export const CHAT = {
   // Questions they will answer before they have had enough: base, plus chattiness and standing (each 0..1) times these.
@@ -77,11 +78,14 @@ export class Chat {
     }
     if (opener.quest !== undefined || opener.shop !== undefined || opener.trade !== undefined) return opener
     // Having come to her, they say plainly what brought them; a chatty one hailed may bring up a rumour unasked.
-    const lead = this.approached ? conv.news() ?? conv.wish() ?? this._rumour() : this._roll('volunteer') < CHAT.volunteer * T.chattiness ? this._rumour() : null
+    const lead = this.approached ? conv.news() ?? conv.wish() ?? this._rumour() : !opener.quirked && this._roll('volunteer') < CHAT.volunteer * T.chattiness ? this._rumour() : null
     if (lead === null) return opener
+    // Too much for one breath: one who came to her skips the greeting, one hailed keeps the rumour back.
+    const both = `${opener.text} ${lead.text}`
+    if (!fits(both) && !this.approached) return opener
     conv.about = lead.about
     conv._hear(lead.about)
-    return { ...opener, text: `${opener.text} ${lead.text}`, unlocks: lead.unlocks, about: lead.about }
+    return { ...opener, text: fits(both) ? both : lead.text, unlocks: lead.unlocks, about: lead.about }
   }
 
   /** A fact of lore they know, sometimes of a thing she has never heard of, or null. */
@@ -89,7 +93,8 @@ export class Chat {
     const topics = [...OPEN_TOPICS, ...Object.keys(TOPICS).filter((t) => TOPICS[t].gated)]
     const rumour = this.conv.say(`lore:${pick(this._roll('rumour'), topics)}`, true)
     if (rumour.claim === null) return null
-    return { ...rumour, text: `${this.mind.kind === 'leafkin' ? this.conv._lk('rumour') : 'Have you heard?'} ${rumour.text.replace(/ Glad to help\.$/, '')}` }
+    // Bare of "Like I said" or "Oh, easy": those answer a question, and nobody asked.
+    return { ...rumour, text: `${this.mind.kind === 'leafkin' ? this.conv._lk('rumour') : 'Have you heard?'} ${rumour.bare}` }
   }
 
   /** Her sentence `topic` (grid.js) answered. */
@@ -107,7 +112,8 @@ export class Chat {
     const line = this.conv.say(topic)
     if (this.turns < this.patience && this._roll('dismiss') >= CHAT.dismiss[this.conv.tone]) return line
     const off = this.mind.kind === 'leafkin' ? this.conv._lk('off') : this.conv._pick('off', ["That's enough questions.", 'I must get on.', 'Well. I have things to do.', 'No more questions now.'])
-    return this._end({ ...line, text: `${line.text} ${off}` }, 'dismissed')
+    // A line too long to add it to ends on the empty grid and their turning away.
+    return this._end(fits(`${line.text} ${off}`) ? { ...line, text: `${line.text} ${off}` } : line, 'dismissed')
   }
 }
 

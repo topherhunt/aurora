@@ -1,19 +1,20 @@
 // Castle preview shells for gen-castle.html: the exterior the layout implies (sections, battlements, the doors, flights and bridges
 // its chosen edges use) and the interior rooms at CASTLE.scale. Sections are lofted footprints with bevelled, jittered corners and a
-// flared top; every vertex then goes through one position-only warp, which keeps coincident vertices coincident (see
-// src/buildings/v2/warp.js). Crenellations stay plain boxes. The rules that keep faces from z-fighting: design/44-castles.md, Shell.
+// root crown and a flared top; every vertex then goes through one position-only warp, which keeps coincident vertices coincident (see
+// src/buildings/v2/warp.js). The court floor and gate ramps are a separate flagstone mesh. Z-fight rules: design/44-castles.md, Shell.
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { makeWarp } from '../../buildings/v2/warp.js'
 import { CASTLE } from './layout.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale
-const UV_M = 2
+// Metres of mesh per stone tile (public/buildings/castle_stone.webp, about 30 cm courses).
+export const UV_METRES = 4
 const rgb = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b] }
 const STONE = { keep: rgb(0x8d877c), hall: rgb(0x958b7a), gate: rgb(0x8a857d), tower: rgb(0x878580), lookout: rgb(0x7d7d84), wall: rgb(0x8b867e) }
 const BAND = rgb(0x6f6a63), SLATE = rgb(0x3f4652), DARK = rgb(0x15120f), WOOD = rgb(0x6b4a2a), GOLD = rgb(0xc9a33a)
 const FLOOR = { keep: rgb(0x7a5a3a), hall: rgb(0x80603e), gate: rgb(0x6d6a66), tower: rgb(0x6d6a66), lookout: rgb(0x75645f) }
-const INNER = rgb(0xb8b0a2), STEP = rgb(0x8f8a83)
+const INNER = rgb(0xb8b0a2), STEP = rgb(0x8f8a83), FLAG = [1, 1, 1]
 
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
@@ -40,7 +41,7 @@ class Mesher {
     const u = norm(fn), ax = Math.abs(nr[0]) > Math.abs(nr[1]) && Math.abs(nr[0]) > Math.abs(nr[2]) ? 0 : Math.abs(nr[1]) > Math.abs(nr[2]) ? 1 : 2
     for (let i = 0; i < 3; i++) {
       this.p.push(...w[i]); this.n.push(...u); this.c.push(...col)
-      this.uv.push(ax === 0 ? raw[i][2] / UV_M : raw[i][0] / UV_M, ax === 1 ? raw[i][2] / UV_M : raw[i][1] / UV_M)
+      this.uv.push(ax === 0 ? raw[i][2] / UV_METRES : raw[i][0] / UV_METRES, ax === 1 ? raw[i][2] / UV_METRES : raw[i][1] / UV_METRES)
     }
   }
   box(x0, y0, z0, x1, y1, z1, col, bottom = false) {
@@ -121,12 +122,15 @@ function footprint(lay, s, rng) {
 /** The section in the cell beside (x, z), or null. */
 const beside = (lay, x, z) => lay.occAt(Math.floor((x - lay.X(0)) / C), Math.floor((z - lay.Z(0)) / C))
 
-/** Ring heights and outward offsets: a footing splayed below ground, three jittered segments up the shaft, then a corbelled flare. */
-const profile = (top, fl, j) => [[-4, 0.35], [0, 0], [top * 0.36, j()], [top * 0.68, j()], [top - 1, 0.05 + j()], [top - 0.55, fl * 0.8], [top, fl]]
-const BAND_FROM = 4
+/** Ring heights and outward offsets: a footing deep below ground, a root crown spreading at grade, a narrow jittered waist, a slow
+ * swell, then a corbelled flare. Rings from BAND_FROM up are the band. */
+const ROOT = 0.8
+const profile = (top, fl, j) => [[-6, ROOT + 0.5], [0, ROOT], [0.9, ROOT * 0.45], [2.4, ROOT * 0.12], [top * 0.5, j()], [top * 0.75, 0.06 + j()],
+  [top - 1.1, 0.16 + j()], [top - 0.55, fl * 0.8], [top, fl]]
+const BAND_FROM = 6
 
 function sectionShell(m, lay, s, rng) {
-  const col = m.tint(STONE[s.kind]), band = m.tint(BAND), top = s.floors * H, fl = s.kind === 'hall' ? 0.15 : 0.45
+  const col = m.tint(STONE[s.kind]), band = m.tint(BAND), top = s.floors * H, fl = s.kind === 'hall' ? 0.25 : 0.7
   const { pts, corner } = footprint(lay, s, rng)
   const N = edgeNormals(pts), n = pts.length, nx = (i) => (i + 1) % n
   // A face against a neighbour that reaches the flare stays plumb, or the two flares would cross into one another.
@@ -160,7 +164,7 @@ function sectionShell(m, lay, s, rng) {
   if (s.roof.unused) spire(m, T, N, touch, clamp, top, Math.min(s.w, s.d) * C * 1.1 + 1, rng)
   else {
     for (let i = 0; i < n; i++) m.tri(at3(c, top), at3(T[i], top), at3(T[nx(i)], top), col, at3(c, top - 1))
-    parapet(m, T, top, col, T.map((p, i) => ceded(p, T[nx(i)])))
+    parapet(m, T, top, col, T.map((p, i) => ceded(p, T[nx(i)])), rng)
   }
   // Arrow slits on the faces of each upper storey that nothing taller stands against.
   for (let k = 1; k < s.floors; k++) for (let i = 0; i < n; i++) {
@@ -174,7 +178,7 @@ function sectionShell(m, lay, s, rng) {
 }
 
 /** A parapet round the top loop T, merlons standing on it edge by edge; edges flagged in `skip` are left open. */
-function parapet(m, T, y, col, skip) {
+function parapet(m, T, y, col, skip, rng) {
   const NT = edgeNormals(T), I = offsetLoop(T, NT, -0.36), y1 = y + 0.6, y2 = y + 1.2
   for (let i = 0; i < T.length; i++) {
     const i2 = (i + 1) % T.length, h = [NT[i][0], 0, NT[i][1]]
@@ -190,9 +194,17 @@ function parapet(m, T, y, col, skip) {
     for (let k = 0; k < cnt; k++) {
       const t0 = (k + 0.5) / cnt - w / 2, t1 = t0 + w
       const q = [lerp2(T[i], T[i2], t0), lerp2(T[i], T[i2], t1), lerp2(I[i], I[i2], t1), lerp2(I[i], I[i2], t0)]
-      m.hexa([...q.map((p) => at3(p, y1)), ...q.map((p) => at3(p, y2))], col)
+      merlon(m, q, y1, y2, col, rng)
     }
   }
+}
+
+/** A merlon on base quad q (four [x, z] going round at y0), its top flared and every corner jittered, so no edge meets square. */
+function merlon(m, q, y0, y1, col, rng) {
+  const c = centroid(q), f = 1.1 + rng() * 0.08, h = y1 + (rng() - 0.5) * 0.16, J = () => (rng() - 0.5) * 0.06
+  const base = q.map((p) => at3([p[0] + J(), p[1] + J()], y0))
+  const top = q.map((p) => at3([c[0] + (p[0] - c[0]) * f + J(), c[1] + (p[1] - c[1]) * f + J()], h + J()))
+  m.hexa([...base, ...top], col)
 }
 
 /** A two-stage spire over loop T: a shallow lower skirt and a steep upper needle, so the profile is concave. */
@@ -207,18 +219,25 @@ function spire(m, T, N, touch, clamp, y, lift, rng) {
   }
 }
 
-/** A parapet along one edge with merlons on it; `axis` runs the length, `c` is the across-centre. */
-function crenels(m, axis, a0, a1, c, y, col) {
-  const [lo, hi] = [Math.min(a0, a1), Math.max(a0, a1)]
-  const run = (u0, u1, v0, v1, y0, y1) => (axis === 'x' ? m.box(u0, y0, v0, u1, y1, v1, col) : m.box(v0, y0, u0, v1, y1, u1, col))
-  run(lo, hi, c - 0.18, c + 0.18, y, y + 0.6)
-  const n = Math.max(2, Math.round((hi - lo) / 1.3))
-  for (let i = 0; i < n; i++) { const u = lo + (hi - lo) * (i + 0.5) / n; run(u - 0.3, u + 0.3, c - 0.18, c + 0.18, y + 0.6, y + 1.2) }
+/** A wall's parapet, standing on the outer edge of its top ring: the outer face shares that edge's vertices, so the warp bends both
+ * alike and no sky shows between them. Merlons stand along [m0, m1]. */
+function crenels(m, P, us, out, inn, nOut, m0, m1, y, col, rng) {
+  const y1 = y + 0.6, v = (i) => out[i] + inn * 0.36
+  for (let i = 0; i + 1 < us.length; i++) {
+    m.quad(P(us[i], out[i], y), P(us[i + 1], out[i + 1], y), P(us[i + 1], out[i + 1], y1), P(us[i], out[i], y1), col, nOut)
+    m.quad(P(us[i], v(i), y), P(us[i + 1], v(i + 1), y), P(us[i + 1], v(i + 1), y1), P(us[i], v(i), y1), col, nOut.map((x) => -x))
+    m.quad(P(us[i], out[i], y1), P(us[i + 1], out[i + 1], y1), P(us[i + 1], v(i + 1), y1), P(us[i], v(i), y1), col, [0, 1, 0])
+  }
+  const c = out[0] + inn * 0.18, n = Math.max(2, Math.round((m1 - m0) / 1.3)), Q = (u, w) => { const p = P(u, w, 0); return [p[0], p[2]] }
+  for (let i = 0; i < n; i++) {
+    const u = m0 + (m1 - m0) * (i + 0.5) / n
+    merlon(m, [Q(u - 0.3, c - 0.18), Q(u + 0.3, c - 0.18), Q(u + 0.3, c + 0.18), Q(u - 0.3, c + 0.18)], y1, y + 1.2, col, rng)
+  }
 }
 
-/** A curtain wall lofted like a section, its ends buried 0.6 m in the towers, flaring only on the outer face. */
+/** A curtain wall lofted like a section, its ends buried 0.6 m in the towers, its court face barely flaring. */
 function wallShell(m, lay, s, rng) {
-  const col = m.tint(STONE.wall), band = m.tint(BAND), top = 2 * H, half = CASTLE.wallT / 2, fl = 0.3
+  const col = m.tint(STONE.wall), band = m.tint(BAND), top = 2 * H, half = CASTLE.wallT / 2, fl = 0.45
   const alongX = s.axis === 'x', inn = alongX ? s.inner[1] : s.inner[0]
   const a0 = (alongX ? lay.X(s.x0) : lay.Z(s.z0)) - 0.6, a1 = (alongX ? lay.X(s.x0 + s.w) : lay.Z(s.z0 + s.d)) + 0.6
   const cc = alongX ? lay.Z(s.z0) + C / 2 : lay.X(s.x0) + C / 2
@@ -228,7 +247,7 @@ function wallShell(m, lay, s, rng) {
   const P = (u, v, y) => (alongX ? [u, y, v] : [v, y, u])
   const j = () => (rng() - 0.5) * 0.06
   const rings = profile(top, fl, j).map(([y, off], r) => ({
-    y, out: us.map(() => cc - inn * (half + off + (r > 1 && r < BAND_FROM ? j() : 0))), in: us.map(() => cc + inn * (half + (r >= BAND_FROM ? 0.06 : off))),
+    y, out: us.map(() => cc - inn * (half + off + (r > 1 && r < BAND_FROM ? j() : 0))), in: us.map(() => cc + inn * (half + (r >= BAND_FROM ? 0.06 : Math.min(off, 0.3)))),
   }))
   const nOut = alongX ? [0, 0, -inn] : [-inn, 0, 0]
   for (let r = 0; r + 1 < rings.length; r++) {
@@ -240,7 +259,7 @@ function wallShell(m, lay, s, rng) {
   }
   const T = rings.at(-1)
   for (let i = 0; i + 1 < us.length; i++) m.quad(P(us[i], T.out[i], top), P(us[i + 1], T.out[i + 1], top), P(us[i + 1], T.in[i + 1], top), P(us[i], T.in[i], top), col, [0, 1, 0])
-  crenels(m, s.axis, a0 + 0.6, a1 - 0.6, cc - inn * (half + fl - 0.18), top, col)
+  crenels(m, P, us, T.out, inn, nOut, a0 + 0.6, a1 - 0.6, top, col, rng)
 }
 
 /** A flight of solid steps from the ground (or y0) along `axis`, ending in a flat landing. */
@@ -256,19 +275,76 @@ function flight(m, f, col, scale = 1) {
   }
 }
 
-/** A door as a dark plane on its face with a stone frame, bars when barred. */
+/** A door as a dark plane with a stone frame, bars when barred. A ground door stands proud of the root crown as a portal, or the
+ * flare would bury it. */
 function doorway(m, d, col) {
-  const o = d.side * 0.05, hw = d.w / 2
+  const depth = d.y === 0 ? ROOT + 0.05 : 0.05, o = d.side * depth, hw = d.w / 2
   const along = (u0, u1, y0, y1, t0, t1) => (d.axis === 'x' ? m.box(d.x + t0, y0, d.z + u0, d.x + t1, y1, d.z + u1, col) : m.box(d.x + u0, y0, d.z + t0, d.x + u1, y1, d.z + t1, col))
   const p = d.axis === 'x'
     ? [[d.x + o, d.y, d.z - hw], [d.x + o, d.y, d.z + hw], [d.x + o, d.y + d.h, d.z + hw], [d.x + o, d.y + d.h, d.z - hw]]
     : [[d.x - hw, d.y, d.z + o], [d.x + hw, d.y, d.z + o], [d.x + hw, d.y + d.h, d.z + o], [d.x - hw, d.y + d.h, d.z + o]]
   m.quad(...p, DARK, d.axis === 'x' ? [d.side, 0, 0] : [0, 0, d.side])
-  const t0 = Math.min(-d.side * 0.1, d.side * 0.18), t1 = Math.max(-d.side * 0.1, d.side * 0.18)
+  const t0 = Math.min(-d.side * 0.1, d.side * (depth + 0.13)), t1 = Math.max(-d.side * 0.1, d.side * (depth + 0.13))
   along(-hw - 0.25, -hw, d.y, d.y + d.h + 0.25, t0, t1)
   along(hw, hw + 0.25, d.y, d.y + d.h + 0.25, t0, t1)
   along(-hw - 0.25, hw + 0.25, d.y + d.h, d.y + d.h + 0.3, t0, t1)
-  if (d.look === 'barred') for (const u of [-0.35, 0, 0.35]) along(u - 0.04, u + 0.04, d.y, d.y + d.h, Math.min(0, d.side * 0.1), Math.max(0, d.side * 0.1))
+  if (d.look === 'barred') for (const u of [-0.35, 0, 0.35]) along(u - 0.04, u + 0.04, d.y, d.y + d.h, o - 0.05, o + 0.05)
+}
+
+/** A deck on a stone arch springing from the two faces it joins. The ends run 0.3 m into the masonry, so no end face lies in a
+ * wall's plane. */
+function bridge(m, b, col) {
+  const A0 = Math.min(b.a0, b.a1), A1 = Math.max(b.a0, b.a1), mid = (A0 + A1) / 2, half = (A1 - A0) / 2
+  const rise = Math.min(half * 0.75, 2.4), spring = b.y - 0.6 - rise, W = 1.1
+  const us = [A0 - 0.3], ys = [spring]
+  for (let i = 0; i <= 10; i++) { const t = i / 5 - 1; us.push(mid + t * half); ys.push(spring + rise * Math.sqrt(1 - t * t)) }
+  us.push(A1 + 0.3); ys.push(spring)
+  const P = (u, c, y) => (b.axis === 'x' ? [u, y, c] : [c, y, u]), across = b.axis === 'x' ? [0, 0, 1] : [1, 0, 0]
+  for (let i = 0; i + 1 < us.length; i++) {
+    const [u0, u1, y0, y1] = [us[i], us[i + 1], ys[i], ys[i + 1]]
+    for (const s of [-1, 1]) m.quad(P(u0, b.c + s * W, y0), P(u1, b.c + s * W, y1), P(u1, b.c + s * W, b.y), P(u0, b.c + s * W, b.y), col, across.map((v) => v * s))
+    // The soffit faces the arch's centre; the flat ends inside the masonry face down.
+    const n = i === 0 || i === us.length - 2 ? [0, -1, 0] : sub(P(mid, b.c, spring), P((u0 + u1) / 2, b.c, (y0 + y1) / 2))
+    m.quad(P(u0, b.c - W, y0), P(u1, b.c - W, y1), P(u1, b.c + W, y1), P(u0, b.c + W, y0), col, n)
+  }
+  const lo = us[0], hi = us.at(-1)
+  m.quad(P(lo, b.c - W, b.y), P(hi, b.c - W, b.y), P(hi, b.c + W, b.y), P(lo, b.c + W, b.y), col, [0, 1, 0])
+  const rail = (c0, c1) => (b.axis === 'x' ? m.box(lo, b.y, c0, hi, b.y + 0.9, c1, col) : m.box(c0, b.y, lo, c1, b.y + 0.9, hi, col))
+  rail(b.c - W, b.c - 0.8); rail(b.c + 0.8, b.c + W)
+}
+
+/** A flagstone ramp falling 30 deg out of a ground door, long enough to dive into a hillside: a cambered top with bevelled edges,
+ * widening and jittered station by station, its sides skirted below its foot. */
+function ramp(m, d) {
+  const s = d.side, flat = ROOT + 0.4, run = 11, slope = Math.tan(Math.PI / 6), deep = 0.05 - run * slope - 0.5, J = (a) => (m.rng() - 0.5) * a
+  const P = (t, u, y) => (d.axis === 'x' ? [d.x + s * t, y, d.z + u] : [d.x + u, y, d.z + s * t])
+  const out = d.axis === 'x' ? [s, 0, 0] : [0, 0, s], side = d.axis === 'x' ? [0, 0, 1] : [1, 0, 0]
+  const ts = [-0.3, flat]
+  for (let k = 1; k <= 8; k++) ts.push(flat + run * k / 8 + (k < 8 ? J(0.5) : 0))
+  // Across each station: bevel foot, edge, crown, edge, bevel foot; the first station stays square inside the door.
+  const rows = ts.map((t, k) => {
+    const y = 0.05 - Math.max(0, t - flat) * slope + (k > 1 ? J(0.08) : 0), hw = d.w / 2 + 0.3 + Math.max(0, t - flat) / run * 0.9
+    const e = k ? 0.3 + J(0.12) : 0.3, a = k ? J(0.15) : 0, b = k ? J(0.15) : 0
+    return [[-hw - e + a, y - 0.3], [-hw + a, y], [J(0.2), y + 0.05], [hw + b, y], [hw + e + b, y - 0.3]].map(([u, yy]) => P(t, u, yy))
+  })
+  const down = (p) => [p[0], deep, p[2]], up = (k) => [side[0] * k, 1, side[2] * k], hint = [up(-1), up(0), up(0), up(1)]
+  for (let k = 0; k + 1 < rows.length; k++) {
+    const A = rows[k], B = rows[k + 1]
+    for (let i = 0; i < 4; i++) m.quad(A[i], B[i], B[i + 1], A[i + 1], FLAG, hint[i])
+    m.quad(A[0], B[0], down(B[0]), down(A[0]), FLAG, side.map((v) => -v))
+    m.quad(A[4], B[4], down(B[4]), down(A[4]), FLAG, side)
+  }
+  const E = rows.at(-1)
+  for (let i = 0; i < 4; i++) m.quad(E[i], E[i + 1], down(E[i + 1]), down(E[i]), FLAG, out)
+}
+
+/** The court's flagstone floor, solid so no terrain need show under it, and a ramp out of every door the entry uses. Unwarped, so
+ * both stay true. UVs are in UV_METRES. */
+export function courtGeometry(lay) {
+  const m = new Mesher(lay.seed)
+  m.box(lay.X(0), -1, lay.Z(0), lay.X(lay.cw), 0.05, lay.Z(lay.cd), FLAG)
+  for (const e of lay.edges) if (e.a.kind === 'entry') ramp(m, e.doors[0])
+  return m.geometry()
 }
 
 /** `warp: false` builds the straight shell, which the gate scans for coplanar overlaps (the warp moves coincident faces together). */
@@ -283,17 +359,9 @@ export function exteriorGeometry(lay, { warp = true } = {}) {
     const seen = e.a.out || e.b.out || e.kind === 'bridge'
     if (seen) for (const d of e.doors) doorway(m, d, m.tint(BAND))
     if (e.flight) flight(m, e.flight, m.tint(STONE.wall))
-    if (e.bridge) {
-      const b = e.bridge, col = m.tint(STONE.wall)
-      // The ends run 0.3 m into the masonry, so no end face lies in a wall's plane.
-      const lo = Math.min(b.a0, b.a1) - 0.3, hi = Math.max(b.a0, b.a1) + 0.3
-      const span = (c0, c1, y0, y1) => (b.axis === 'x' ? m.box(lo, y0, c0, hi, y1, c1, col, true) : m.box(c0, y0, lo, c1, y1, hi, col, true))
-      span(b.c - 1.1, b.c + 1.1, b.y - 0.6, b.y)
-      span(b.c - 1.1, b.c - 0.8, b.y, b.y + 0.9)
-      span(b.c + 0.8, b.c + 1.1, b.y, b.y + 0.9)
-    }
+    if (e.bridge) bridge(m, e.bridge, m.tint(STONE.wall))
     if (e.ladder) m.box(e.ladder.x - 0.5, (e.ladder.k + 1) * H, e.ladder.z - 0.5, e.ladder.x + 0.5, (e.ladder.k + 1) * H + 0.2, e.ladder.z + 0.5, WOOD)
-    if (e.rope) m.box(e.rope.x - 0.05, 0, e.rope.z - 0.05, e.rope.x + 0.05, e.rope.top + 0.45, e.rope.z + 0.05, WOOD)
+    if (e.rope) m.box(e.rope.x - 0.05, -CASTLE.raise, e.rope.z - 0.05, e.rope.x + 0.05, e.rope.top + 0.45, e.rope.z + 0.05, WOOD)
   }
   const summit = lay.nodes.find((n) => n.kind === 'summit')
   const [sx, sy, sz] = summit.pos
@@ -380,28 +448,4 @@ export function interiorGeometries(lay) {
   // Negative keys hold each storey's waist-high-wall twin, drawn when that storey is the plan cut.
   return [...meshers.entries()].filter(([k]) => k >= 0).sort((p, q) => p[0] - q[0])
     .map(([k, m]) => ({ k, geometry: m.geometry(), low: meshers.get(-1 - k).geometry() }))
-}
-
-/** A 256 px ashlar tile for the preview, drawn in code until the real rock-wall texture is generated. */
-export function stoneTexture(seed = 3) {
-  const rng = mulberry32(seed), N = 256, cv = document.createElement('canvas')
-  cv.width = cv.height = N
-  const g = cv.getContext('2d')
-  g.fillStyle = '#5c5852'; g.fillRect(0, 0, N, N)
-  const rows = 8, rh = N / rows
-  for (let r = 0; r < rows; r++) {
-    let x = -rng() * 60
-    while (x < N) {
-      const w = 40 + rng() * 50, v = 150 + rng() * 60 | 0
-      g.fillStyle = `rgb(${v},${v - 4},${v - 10})`
-      for (const o of [0, -N, N]) g.fillRect(x + o + 2, r * rh + 2, w - 4, rh - 4)
-      x += w
-    }
-  }
-  for (let i = 0; i < 2500; i++) { const v = rng() * 60 | 0; g.fillStyle = `rgba(${v},${v},${v},0.12)`; g.fillRect(rng() * N, rng() * N, 2, 2) }
-  const tex = new THREE.CanvasTexture(cv)
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  tex.colorSpace = THREE.SRGBColorSpace
-  tex.anisotropy = 4
-  return tex
 }

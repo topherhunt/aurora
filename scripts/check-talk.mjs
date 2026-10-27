@@ -25,6 +25,9 @@ import { LK } from '../src/v2/talk/leafkin.js'
 import * as trade from '../src/v2/talk/trade.js'
 import { jeer, swordWarning } from '../src/v2/talk/armed.js'
 import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
+import { ITEMS } from '../src/v2/items.js'
+import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
+import { walkTalks } from './lib/talk-walk.mjs'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -42,14 +45,18 @@ const { towns } = planTowns({ ground: (x, z) => hm.sample(x, z), surface: (x, z)
 const world = new TalkWorld(SEED, towns)
 const EPOCH = 7
 const quests = questsFor(world, EPOCH)
-// A pack in the shape main.js's has: `have` counts by kind, `slots` the large slots in all.
-const LARGE_KINDS = new Set(['bog-iron', 'lodestone', 'rimesilver', 'firestone', 'flint', 'egg', 'pickaxe', 'sword', 'shield', 'flare-charges'])
+// A pack in the shape main.js's has: `have` counts by kind, `slots` the large slots in all. Like main.js's it throws on a
+// kind it cannot hold: the items, plus the roosts' eggs.
+const PACKABLE = new Set([...Object.keys(ITEMS), 'egg'])
+const LARGE_KINDS = new Set([...PACKABLE].filter((k) => k === 'egg' || !ITEMS[k].small))
 const stubPack = (have = {}, slots = 12) => {
   const n = { ...have }
+  const known = (k) => { if (!PACKABLE.has(k)) throw new Error(`pack: no item ${k}`); return k }
+  for (const k of Object.keys(n)) known(k)
   const used = () => Object.entries(n).filter(([k]) => LARGE_KINDS.has(k)).reduce((a, [, c]) => a + c, 0)
   return {
     n,
-    count: (k) => n[k] ?? 0,
+    count: (k) => n[known(k)] ?? 0,
     freeLarge: () => slots - used(),
     held: () => null,
     add(k, c = 1) { if (LARGE_KINDS.has(k) && slots - used() < c) return false; n[k] = (n[k] ?? 0) + c; return true },
@@ -128,7 +135,7 @@ if (lied === null) {
   const a1 = c1.say(`where:person:${lied.id}`), a2 = c1.say(`where:person:${lied.id}`)
   const peer = new Conversation(liar, ctxAt(fire(t0))).say(`where:person:${lied.id}`)
   check(dist(a1.claim, a2.claim) < 0.01 && dist(a1.claim, peer.claim) < 0.01, 'a lie holds steady when asked twice, and a second client hears the same lie', a1.text)
-  check(/^Like I said/.test(a2.text), 'asked again, they say "like I said"', a2.text)
+  check(/^(Like I said|Same as before|As I told you)\. /.test(a2.text), 'asked again, they say they said it already', a2.text)
 }
 const spacey = as(liar, { honesty: 1, accuracy: 0 })
 const cs = new Conversation(spacey, ctxAt(fire(t0)))
@@ -333,7 +340,7 @@ let referred = null
 for (const m of folk) {
   const c = new Conversation(as(m, { ...STRAIGHT, boast: 0 }), ctxAt(fire(world.townOf(m))))
   const l = c.say('lore:labyrinths')
-  if (l.claim === null && /Ask /.test(l.text)) { referred = { l, menu: c.menu() }; break }
+  if (l.claim === null && /Ask |Try |would know/.test(l.text) && l.about.length > 0) { referred = { l, menu: c.menu() }; break }
 }
 check(referred !== null && referred.menu.some((x) => x.topic === `where:person:${referred.l.about[0].id}`), 'one who does not know sends her to whoever in town knows best, and she can ask where they are', referred?.l.text)
 // Contested lore: the same honest asking draws belief, scoffing, and (from a witness who trusts her) a sighting.
@@ -356,8 +363,8 @@ check(held(yetiCold, (c) => c === yeti.seen).length === 0 && witnesses.length > 
 // Sent on: a friendly speaker who cannot help names who can; asked who knows, they point; a scoffer still sends her to the tale-teller.
 const FRIENDLY = { ...STRAIGHT, boast: 0, kindness: 1, chattiness: 1 }, SURLY = { ...STRAIGHT, boast: 0, kindness: 0, chattiness: 0, wariness: 1 }
 const dunnoOf = (traits) => folk.map((m) => asked(m, 'labyrinths', traits)).filter((l) => l.moment === 'answer.unknown')
-check(dunnoOf(SURLY).every((l) => !/Ask |would know/.test(l.text)), 'a curt speaker who does not know sends her nowhere', dunnoOf(SURLY)[0]?.text)
-check(dunnoOf(FRIENDLY).every((l) => /Ask \w+ the \w+\.|would know/.test(l.text)), 'a friendly speaker who does not know names who would, by name and calling', dunnoOf(FRIENDLY)[0]?.text)
+check(dunnoOf(SURLY).every((l) => !/Ask |Try |would know/.test(l.text)), 'a curt speaker who does not know sends her nowhere', dunnoOf(SURLY)[0]?.text)
+check(dunnoOf(FRIENDLY).every((l) => /(Ask|Try) \w+ the \w+\.|would know/.test(l.text)), 'a friendly speaker who does not know names who would, by name and calling', dunnoOf(FRIENDLY)[0]?.text)
 const whoOf = (m, topic, traits, known = []) => {
   const c = new Conversation(as(m, traits), ctxAt(fire(world.townOf(m)), { known: new Set(known) }))
   return { c, l: c.say(`who:${topic}`) }
@@ -365,7 +372,7 @@ const whoOf = (m, topic, traits, known = []) => {
 const pointer = folk.map((m) => ({ m, ...whoOf(m, 'ores', FRIENDLY) })).find(({ m, l }) => m.body !== 'blacksmith' && l.about.length > 0)
 check(pointer !== undefined && pointer.c.menu().some((x) => x.label === 'Who knows about striders?') && pointer.c.menu().some((x) => x.topic === `where:person:${pointer.l.about[0].id}`), 'asked who knows of ores, a friendly non-smith names the expert, and she can ask where they are', pointer?.l.text)
 const smiths = all.filter((m) => m.body === 'blacksmith').map((m) => whoOf(m, 'ores', FRIENDLY).l)
-check(smiths.length > 0 && smiths.every((l) => /looking at them/.test(l.text)), 'asked who knows of ores, the smith says they do', smiths[0]?.text)
+check(smiths.length > 0 && smiths.every((l) => /looking at one|would be me/.test(l.text)), 'asked who knows of ores, the smith says they do', smiths[0]?.text)
 check(folk.every((m) => whoOf(m, 'ores', SURLY).l.mood === 'cold'), 'a surly speaker will not say who knows')
 const yetiScoffs = adults.map((m) => whoOf(m, 'yetis', FRIENDLY, ['yetis']).l).filter((l) => /no yetis/.test(l.text))
 check(yetiScoffs.length > 0 && yetiScoffs.some((l) => /tall tales you want, ask \w+/.test(l.text)), 'asked who knows of yetis, a doubter says nobody, and sends her to the tale-teller', yetiScoffs.find((l) => /tall tales/.test(l.text))?.text)
@@ -647,7 +654,7 @@ for (const [what, have, word] of lack) {
   const no = new Conversation(smith, inShop(pk)).say('shop:buy:sword')
   check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'refuse.price', `a sword sale with ${what} fails, says what is short and leaves the pack as it was`, no.text)
 }
-const full = stubPack({ coin: 50, flint: 12 }, 12)
+const full = stubPack({ coin: 50, lodestone: 12 }, 12)
 const fullBefore = JSON.stringify(full.n)
 const noRoom = new Conversation(smith, inShop(full)).say('shop:buy:pickaxe')
 check(JSON.stringify(full.n) === fullBefore && /room|space|slot|full|pack|hands/i.test(noRoom.text), 'a pickaxe sale with every large slot held fails, says there is no room, and changes nothing', noRoom.text)
@@ -670,6 +677,27 @@ check(gear.text.includes(smith.name) && /workshop|smithy/i.test(gear.text) && /g
 const buyer = as(world.towns.flatMap((t) => t.minds).find((m) => m.body === 'innkeeper'), STRAIGHT)
 const buyerTown = world.townOf(buyer)
 const wantsCtx = (kind, have) => ctxAt(fire(buyerTown), { wants: kind, pack: stubPack(have) })
+const traded = new Set([...trade.GEMS, ...trade.ORES, ...Object.keys(trade.SHOP), ...Object.values(trade.SHOP).flatMap((c) => Object.keys(c)), ...world.towns.flatMap((t) => t.minds).flatMap((m) => [...trade.buys(m), ...trade.deals(m, 'ruby').flatMap((d) => [...Object.keys(d.take), ...Object.keys(d.give)])])])
+check([...traded].every((k) => PACKABLE.has(k)), 'every kind anyone buys, sells or prices is one her pack can hold', [...traded].filter((k) => !PACKABLE.has(k)).join(' '))
+for (const body of ['blacksmith', 'thief', 'innkeeper', 'alchemist']) {
+  const m = world.towns.flatMap((t) => t.minds).find((x) => x.kind === 'human' && x.body === body)
+  if (m === undefined) continue
+  const t = world.townOf(m)
+  let threw = null
+  try { new Conversation(as(m, STRAIGHT), ctxAt(fire(t), { inWorkshop: true, inShop: true, hour: 23 })).menu() } catch (e) { threw = e.message }
+  check(threw === null, `talking to a ${body} at night in their shop builds the menu without throwing`, threw)
+}
+{
+  const thief = as(thieves[0], STRAIGHT)
+  const tc = new Conversation(thief, ctxAt(fire(world.townOf(thief)), { pack: stubPack({ coin: 999, ruby: 1 }) }))
+  tc.say('trade:offer')
+  const gems = []
+  for (let i = 0; i < 12; i++) { gems.push(tc.menu().map((c) => c.topic).find((t) => t.startsWith('trade:take:stolen:'))); tc.say('nice:work') }
+  const chip = gems[0]
+  let threw = null
+  try { tc.say(chip) } catch (e) { threw = e.message }
+  check(chip !== undefined && new Set(gems).size === 1 && threw === null, "a thief's stolen gem stays the same gem all talk, and its chip can be pressed", `${[...new Set(gems)].join(' ')} ${threw ?? ''}`)
+}
 const tradeOpen = new Conversation(buyer, wantsCtx('ruby', { ruby: 2 })).opener()
 check(tradeOpen.trade === true && /ruby/i.test(tradeOpen.text) && /interest|trade|offer|swap/i.test(tradeOpen.text), 'someone who wants what she holds says they are very interested and asks what she would trade', tradeOpen.text)
 const tradeChips = new Conversation(buyer, wantsCtx('ruby', { ruby: 2 })).menu().map((c) => c.topic)
@@ -717,7 +745,7 @@ const ownerName = dw.person(dw.deer.owner).name
 check(home1.some((t) => t.includes(ownerName) && /enormous pet deer/i.test(t) && /feisty/i.test(t) && /credit/i.test(t)), 'in the deer town they say who took the credit, that it was his enormous pet deer, and that deer turn feisty if fed enough', home1[0])
 const cavesAll = world.towns.flatMap((t) => t.minds).filter((m) => m.cls !== 'child').slice(0, 60).flatMap((m) => { const c = new Conversation(as(m, STRAIGHT), ctxAt(fire(world.townOf(m)))); return Array.from({ length: 10 }, () => c.say('lore:caves').text) })
 check(cavesAll.some((t) => /rabbit/i.test(t) && /(lost|child)/i.test(t)), 'someone tells of getting lost in a cave as a child and being led out by a pet rabbit', cavesAll.find((t) => /rabbit/i.test(t)))
-check(cavesAll.some((t) => /fox/i.test(t) && /(sniff|treasure)/i.test(t)), 'someone tells that foxes sniff out cave treasure', cavesAll.find((t) => /fox/i.test(t)))
+check(cavesAll.some((t) => /fox/i.test(t) && /smell gems/i.test(t)), 'someone tells of a fox that could smell gems in the caves', cavesAll.find((t) => /fox/i.test(t)))
 
 // Furious leafkin of a glade she wronged.
 const fl = leaf[0]
@@ -752,10 +780,10 @@ for (const [what, have, word] of [['no coins', { firestone: 1 }, /coin/], ['no f
   const no = new Conversation(alch, inPotions(pk)).say('shop:buy:flare-charges')
   check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'refuse.price', `a flare-charge sale with ${what} fails, names what she lacks and changes nothing`, no.text)
 }
-const jarTight = stubPack({ coin: 40, firestone: 1, flint: 11 }, 12)
+const jarTight = stubPack({ coin: 40, firestone: 1, lodestone: 11 }, 12)
 const jarSqueezed = new Conversation(alch, inPotions(jarTight)).say('shop:buy:flare-charges')
 check(jarTight.count('flare-charges') === 1 && jarSqueezed.moment === 'give.thanks', 'the firestone paid frees its slot, so a full pack still buys the jar', JSON.stringify(jarTight.n))
-const jarFull = stubPack({ coin: 40, firestone: 2, flint: 10 }, 12)
+const jarFull = stubPack({ coin: 40, firestone: 2, lodestone: 10 }, 12)
 const jarFullBefore = JSON.stringify(jarFull.n)
 const jarFullSay = new Conversation(alch, inPotions(jarFull)).say('shop:buy:flare-charges')
 check(jarFull.count('flare-charges') === 1 && jarFullSay.moment === 'give.thanks', 'with the firestone paid freeing a slot the jar fits', jarFullBefore)
@@ -763,8 +791,8 @@ const awayPack = stubPack({ coin: 40, firestone: 1 }), awayBefore = JSON.stringi
 const alchAway = new Conversation(alch, ctxAt(fire(alchTown), { pack: awayPack, hour: 12 })).opener()
 const alchAwayBuy = new Conversation(alch, ctxAt(fire(alchTown), { pack: awayPack, hour: 12 })).say('shop:buy:flare-charges')
 check(alchAway.shop === 'away' && /shop/i.test(alchAway.text) && /shop/i.test(alchAwayBuy.text) && JSON.stringify(awayPack.n) === awayBefore, 'the alchemist out of his shop by day says to come to the shop and will not sell', alchAway.text)
-const alchAsleep = new Conversation(alch, ctxAt(fire(alchTown), { hour: 2 })).opener()
-check(alchAsleep.shop === 'asleep' && alchAsleep.moment === 'mood.tired' && /sleep|morning|night|hour|up\b/i.test(alchAsleep.text), 'the alchemist out of his shop at night is asleep and says so', alchAsleep.text)
+const alchLate = new Conversation(alch, ctxAt(fire(alchTown), { hour: 2 })).opener()
+check(alchLate.shop === 'late' && alchLate.moment === 'mood.tired' && /shut till morning|opens in the morning|in the morning/i.test(alchLate.text) && !/sleep|yawn/i.test(alchLate.text), 'met in the street at night, the alchemist says the shop opens in the morning, not that they are asleep', alchLate.text)
 const notKeeper = as(alchTown.minds.find((m) => m.kind === 'human' && !trade.isAlchemist(m) && !trade.isSmith(m)), STRAIGHT)
 let keeperThrew = false
 try { new Conversation(notKeeper, inPotions(stubPack())).say('shop:buy:flare-charges') } catch { keeperThrew = true }
@@ -812,7 +840,7 @@ for (const k of Object.keys(TOPICS)) for (const t of world.towns) {
   const non = t.minds.find((m) => m.kind === 'human' && m.cls !== 'child' && expertise(m.body, k) === 0)
   if (non === undefined) continue
   const l = whoOf(non, k, FRIENDLY, [k]).l
-  if (!/Ask \w+|would know|looking at them|tall tales|no \w+/i.test(l.text)) blind = `${t.name} ${non.body} ${k}: ${l.text}`
+  if (!/(Ask|Try) \w+|would know|looking at one|would be me|tall tales|no \w+/i.test(l.text)) blind = `${t.name} ${non.body} ${k}: ${l.text}`
 }
 check(blind === '', 'a friendly non-knower asked who knows any topic names a person or calling, or scoffs at a tall tale', blind)
 const giantsTales = [...LORE.spiders, ...LORE.giants].map((x) => [x.truth, ...x.tales, ...x.lies].join(' ')).join(' ')
@@ -831,24 +859,46 @@ check([...childNeeds].every((n) => !adultNeeds.has(n)), 'no child pines for a gr
 const topical = allQuirkLines().flatMap((l) => Object.entries(NAMES).filter(([, re]) => re.test(l)).map(([k]) => `${k}: ${l}`))
 check(topical.length === 0, 'no quirk line names a lore topic', topical[0])
 const quirkCtx = (m) => { const ctx = ctxAt(fire(world.townOf(m))); ctx.rapport.warm(m.id, 0.5); return ctx }
-const selves = people.filter((m) => !new Conversation(m, quirkCtx(m)).say('talk:self', true).text.includes(quirkLines(m.quirk).self))
-check(selves.length === 0, 'asked about themself by a friend, everyone owns up to their quirk', selves.map((m) => m.name).join(', '))
+const parents = new Set([...quests.values()].map((q) => q.parent).filter((id) => id !== undefined))
+const selves = people.filter((m) => !parents.has(m.id) && !new Conversation(m, quirkCtx(m)).say('talk:self', true).text.includes(quirkLines(m.quirk).self))
+check(selves.length === 0, 'asked about themself by a friend, everyone owns up to their quirk but a parent whose child is missing', selves.map((m) => m.name).join(', '))
+const selfFret = people.filter((m) => parents.has(m.id) && new Conversation(m, quirkCtx(m)).say('talk:self', true).text.includes(quirkLines(m.quirk).self))
+check(parents.size > 0 && selfFret.length === 0, 'telling of themself, a parent whose child is missing leaves their quirk out', selfFret.map((m) => m.name).join(', '))
 const needy = people.filter((m) => m.quirk.kind === 'need' && new Conversation(m, quirkCtx(m)).wish() === null)
 const wanting = needy.filter((m) => { const l = new Conversation(m, quirkCtx(m)).say('talk:needs', true); return l.quest === undefined && l.text !== quirkLines(m.quirk).want })
 check(needy.length > 0 && wanting.length === 0, 'asked what they need, one with a need and no errand or wish of their own names it', `${needy.length} needy, ${wanting.length} who did not say`)
 const gnomer = people.find((m) => m.quirk.need === 'gnome') ?? people.find((m) => m.quirk.kind === 'need')
 const gconv = new Conversation(gnomer, quirkCtx(gnomer)), gasides = quirkLines(gnomer.quirk).aside
 const told = []
-for (let i = 0; i < 40; i++) { const t = gconv.say('talk:town').text; const a = gasides.find((x) => t.includes(x)); if (a !== undefined) told.push(gasides.indexOf(a)) }
-check(told.length >= 6 && told.length <= 24 && told.every((x, i) => x === i % gasides.length), 'a need keeps filtering into answers now and then, its story told in order', `${gnomer.name} (${gnomer.quirk.need}): ${told.join(' ')}`)
+for (let i = 0; i < 40; i++) { const t = gconv.say(['talk:town', 'nice:work', 'nice:life'][i % 3]).text; const a = gasides.find((x) => t.includes(x)); if (a !== undefined) told.push(gasides.indexOf(a)) }
+check(told.length >= 6 && told.length <= 24 && told.every((x, i) => x === i % gasides.length), 'a need keeps filtering into small talk now and then, its story told in order', `${gnomer.name} (${gnomer.quirk.need}): ${told.join(' ')}`)
 const moody = people.filter((m) => m.quirk.kind !== 'need').slice(0, 40)
-const greeted = moody.filter((m) => { const l = quirkLines(m.quirk); return [0, 1, 2, 3, 4, 5].some((salt) => l.greet.some((g) => new Conversation(m, quirkCtx(m), salt).opener().text.endsWith(g))) })
+const greeted = moody.filter((m) => { const l = quirkLines(m.quirk); return [0, 1, 2, 3, 4, 5].some((salt) => l.greet.some((g) => new Conversation(m, quirkCtx(m), salt).opener().text.includes(g))) })
 check(greeted.length > moody.length * 0.7, 'greetings often carry the quirk', `${greeted.length} of ${moody.length}`)
 const worriedTalk = new Conversation(parent, quirkCtx(parent)), parentLines = quirkLines(parent.quirk)
 const fretful = Array.from({ length: 12 }, () => worriedTalk.say('talk:town').text).filter((t) => parentLines.aside.some((x) => t.includes(x)))
 check(fretful.length === 0, 'a parent whose child is missing has no room for their quirk', fretful[0])
 const leafQuirk = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }))
 check(leaf.every((m) => m.quirk === undefined) && !allQuirkLines().some((l) => [0, 1, 2, 3].map(() => leafQuirk.say('talk:self').text).join(' ').includes(l)), 'leafkin have no quirk')
+
+// --- the caption (src/v2/talk/caption.js): no line past its rows ---
+const longestTown = world.towns.map((t) => t.name).sort((a, b) => b.length - a.length)[0]
+const longestName = all.map((m) => m.name).sort((a, b) => b.length - a.length)[0]
+const fill = (s) => s.replaceAll('{town}', longestTown).replaceAll('{owner}', longestName)
+// A lore line at its longest: hedged, or boasted (a lead-in is added only when it fits, speak.js `_dress`).
+const loreWorst = Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => [x.truth, ...x.lies, ...x.tales, ...x.doubt, ...(x.seen ? [x.seen] : [])].map((s) => [`${t}.${x.id}`, fill(s)])))
+  .flatMap(([k, s]) => [[k, `${s} If I remember right.`], [k, `Everyone knows this. ${s}`]])
+const lkWorst = [...Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => (x.lk ?? []).map((s) => [`${t}.${x.id} lk`, s]))), ...Object.entries(LK).flatMap(([k, v]) => (Array.isArray(v) ? v : []).map((s) => [`LK.${k}`, s]))]
+const longStatic = [...loreWorst, ...lkWorst, ...allQuirkLines().map((s) => ['quirk', s])].filter(([, s]) => captionRows(s) > CAPTION.rows)
+check(longStatic.length === 0, `every lore, leafkin and quirk line fits the caption's ${CAPTION.rows} rows at its longest`, longStatic.slice(0, 40).map(([k, s]) => `${k}: ${s}`).join(' || '))
+const walked = { lines: 0, long: [], odd: [] }
+for (const seed of [1, 2, 3]) walkTalks(world, seed, 500, (mind, who, topic, line) => {
+  walked.lines++
+  if (captionRows(line.text) > CAPTION.rows) walked.long.push(`${who} [${topic}] ${line.text}`)
+  if (!/^[\x20-\x7e]*$/.test(line.text)) walked.odd.push(`${who} [${topic}] ${line.text}`)
+})
+check(walked.long.length === 0, `in 1500 random conversations no line runs past the caption's ${CAPTION.rows} rows`, `${walked.long.length} of ${walked.lines}: ${walked.long[0]}`)
+check(walked.odd.length === 0, 'and every line is plain ASCII, the alphabet the caption is measured in', walked.odd[0])
 
 if (process.argv.includes('--transcript')) {
   for (const who of [parent, w0, ...q.covers.map((id) => world.person(id)).slice(0, 1), friend]) {

@@ -76,7 +76,7 @@ export class HandsNet {
       if (hand === undefined) throw new Error(`HandsNet: no wire index for hand ${event.hand}`)
       return { type: 'hold', hand, slot: event.slot === null ? null : roundAll(event.slot) }
     }
-    if (event.type === 'loose') return { type: 'loose', id: event.id, slot: roundAll(event.slot), pose: event.pose.map(round), state: event.state }
+    if (event.type === 'loose') return { type: 'loose', id: event.id, slot: roundAll(event.slot), pose: event.pose.map(round), vel: event.vel.map(round), state: event.state }
     if (event.type === 'lift') return { type: 'lift', id: event.id }
     throw new Error(`HandsNet: unknown hands event ${event.type}`)
   }
@@ -120,7 +120,7 @@ export class HandsNet {
     }
     for (const block of net.things) this._apply(block)
     net.things.length = 0
-    if (this.pending.length) this.pending = this.pending.filter((l) => !this.hands.netLoose(l[0], l[1], l[2], l[3]))
+    if (this.pending.length) this.pending = this.pending.filter((l) => !this.hands.netLoose(l[0], l[1], l[2], l[3], l[4]))
     for (const id of this.hands.peerHeld.keys()) if (!net.peers.has(id)) this.hands.netPeerGone(id)
     this._placePeers()
   }
@@ -133,8 +133,8 @@ export class HandsNet {
       for (let h = 0; h < 3; h++) this.hands.netHold(id, h, slots[h] ?? null)
     }
     for (const l of block.loose ?? []) {
-      if (l[4] === me) continue
-      if (!this.hands.netLoose(l[0], l[1], l[2], l[3])) this.pending.push(l)
+      if (l[5] === me) continue
+      if (!this.hands.netLoose(l[0], l[1], l[2], l[3], l[4])) this.pending.push(l)
     }
     for (const id of block.gone ?? []) this.hands.netLift(id)
     for (const [key, x, z] of block.take ?? []) {

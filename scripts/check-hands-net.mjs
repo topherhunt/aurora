@@ -31,7 +31,7 @@ const mulberry32 = (a) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296
 }
 const walk = { heightAt: () => 0, normalAt: (x, z, eps, out = { x: 0, y: 1, z: 0 }) => { out.x = 0; out.y = 1; out.z = 0; return out } }
-const water = { levelAt: () => null }
+const water = { levelAt: () => null, flowAt: () => 0 }
 const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2).translate(0, 0.1, 0)
 geo.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Array(4).fill(1), 1))
 const material = new THREE.MeshBasicMaterial()
@@ -200,11 +200,11 @@ const ME = 'aabbccdd-1111-2222-3333-444444444444'
   check(atWrist(grip, 8, 1.2, 8), 'a controller put down, the copy moves to the wrist')
   check(w.net.sent.length === 0, 'nothing of a peer\'s hands goes back to the relay')
   // A peer's loose thing, one of hers echoed, a lift, a thing not yet dressable.
-  w.net.things.push({ loose: [['p1p1p1p1-0', slot, [-5, 1, 0, 0, 0, 0, 1], 2, P1], ['aabbccdd-9', slot, [9, 9, 9, 0, 0, 0, 1], 0, ME]] })
+  w.net.things.push({ loose: [['p1p1p1p1-0', slot, [-5, 1, 0, 0, 0, 0, 1], 2, [0, 0, 0], P1], ['aabbccdd-9', slot, [9, 9, 9, 0, 0, 0, 1], 0, [0, 0, 0], ME]] })
   w.run(0.05)
   check(w.hands.loose.length === 1 && w.hands.loose[0].netId === 'p1p1p1p1-0' && w.hands.loose[0].mine === false, 'a peer\'s loose thing appears; hers by the relay is not made twice', `${w.hands.loose.length}`)
   w.src.landed = false
-  w.net.things.push({ loose: [['p1p1p1p1-1', slot, [-6, 1, 0, 0, 0, 0, 1], 0, P1]] })
+  w.net.things.push({ loose: [['p1p1p1p1-1', slot, [-6, 1, 0, 0, 0, 0, 1], 0, [0, 0, 0], P1]] })
   w.run(0.05)
   check(w.hands.loose.length === 1 && w.hn.stats.pending === 1, 'a thing whose source has not landed is kept to try again', `${w.hn.stats.pending} pending`)
   w.src.landed = true

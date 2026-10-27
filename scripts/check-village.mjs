@@ -944,6 +944,7 @@ console.log('\nthe boot')
   const wet = (x, z) => { const l = layers.waterLevelAt(x, z); return l !== null && heightAt(x, z) < l }
   const water = {
     levelAt: (x, z) => layers.waterLevelAt(x, z),
+    flowAt: () => 0,
     isSubmerged: (x, z, g) => { const l = layers.waterLevelAt(x, z); return l !== null && g < l },
     shoreDistAt: (x, z, reach) => reach,
   }

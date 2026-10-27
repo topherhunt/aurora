@@ -23,13 +23,15 @@ import THREE from '../three-instance.js'
 // controller buzzes as the hand enters that zone, only while it holds
 // something that will fit. Anywhere else the source is offered it first: a
 // creature let go of runs, swims or flies off in its own layer, and the source
-// says so. A thing no source takes back -- flora, a fish out of water -- is
+// says so. A hand moving fast as it lets go THROWS instead (THROW_*): the
+// thing flies loose from the hand, and its source is offered it where it
+// lands. A thing no source takes back -- flora, a fish out of water -- is
 // simulated here for a moment: a fall to the ground, a roll off in a random
 // direction leaning downhill that slows to a stop, or a fish flapping itself
 // still, and then it is frozen
 // where it lies; anything but a fish or a crab let go over or under water
-// comes to its surface and bobs there, turning and drifting. No physics
-// beyond that.
+// comes to its surface and bobs there, turning, drifting, and carried down a
+// river by its current. No physics beyond that.
 //
 // A bed regrows from its seed, so a source records what was taken in
 // taken.js; a creature the layer would re-seed anywhere is simply freed.
@@ -105,6 +107,19 @@ const SPIN_RAD = [0.15, 0.4]
 const DRIFT_MPS = 0.06
 const TACK_S = [2, 5]
 const DRIFT_EASE_S = 1.5
+// A river's current at full flow weight (WaterSurfaces.flowAt), in m/s: a little over a boat's (boats.js CURRENT_MPS), since nothing here drags.
+export const CURRENT_MPS = 1.2
+// Against a bank, the drift tries headings this many radians either side of its own, widest last, before it turns back: a river's outer bend would otherwise pin a thing for good.
+const BANK_TURNS = [0.5, 1, 1.5]
+// A throw: hand speed over the last THROW_WINDOW_S, measured against the rig the hand hangs from so walking or flying adds nothing; under THROW_MIN_MPS it is a plain drop, over it the thing leaves at THROW_GAIN times the hand's speed, at most THROW_MAX_MPS. All at her full size.
+const THROW_WINDOW_S = 0.05
+export const THROW_MIN_MPS = 0.8
+export const THROW_GAIN = 1.75
+export const THROW_MAX_MPS = 25
+// A thrown thing landing keeps this fraction of its ground speed in the roll.
+const ROLL_CARRY = 0.25
+// Hand positions a hand keeps for the throw: enough frames to span THROW_WINDOW_S at 120 Hz.
+const TRAIL_N = 8
 // Two spots on one lake read the same level to this, in metres; a river's runs down its course.
 const LEVEL_EPS = 0.05
 // Where a held thing's centre sits in the hand's frame: a little under and ahead of the grip.
@@ -148,6 +163,9 @@ const _q = new THREE.Quaternion()
 const _dq = new THREE.Quaternion()
 const _s = new THREE.Vector3()
 const _m = new THREE.Matrix4()
+const _m3 = new THREE.Matrix3()
+const _tv = new THREE.Vector3()
+const _f = { x: 0, z: 0 }
 const _col = new THREE.Color()
 const _n = { x: 0, y: 1, z: 0 }
 // The step the ground's normal is read over, in metres.
@@ -159,7 +177,7 @@ export class Hands {
   /**
    * `walk.heightAt(x, z, y)` and `walk.normalAt(x, z)` are the ground a loose
    * thing lands on; `water.levelAt(x, z)` is where a falling thing meets the
-   * lake. `haptic(key, intensity, ms)` buzzes a hand; `stow(rec)` takes a
+   * lake, and `water.flowAt(x, z, out)` the current that carries it. `haptic(key, intensity, ms)` buzzes a hand; `stow(rec)` takes a
    * record into the backpack and says whether it fit; `thud(x, y, z)` is a
    * dropped thing meeting the ground, `splash(x, y, z)` one falling into
    * the water from above it, and `douse(x, y, z)` a lit one going out there. `rand` is the roll's, the flap's and
@@ -171,7 +189,7 @@ export class Hands {
    */
   constructor(scene, { walk, water, haptic, stow, thud, splash, douse, eaten, rand = Math.random, scale = 1, world = null, worldOf = () => this.world }) {
     if (!walk || typeof walk.heightAt !== 'function' || typeof walk.normalAt !== 'function') throw new Error('Hands needs the WalkSurface, for heightAt and normalAt')
-    if (!water || typeof water.levelAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt')
+    if (!water || typeof water.levelAt !== 'function' || typeof water.flowAt !== 'function') throw new Error('Hands needs WaterSurfaces, for levelAt and flowAt')
     if (typeof haptic !== 'function' || typeof stow !== 'function' || typeof thud !== 'function' || typeof splash !== 'function' || typeof douse !== 'function' || typeof eaten !== 'function') throw new Error('Hands needs haptic(key, intensity, ms), stow(rec), thud(x, y, z), splash(x, y, z), douse(x, y, z) and eaten(lure, eater, rec)')
     if (!(scale > 0)) throw new Error(`Hands: scale must be positive, not ${scale}`)
     this.scale = scale
@@ -228,6 +246,7 @@ export class Hands {
    * water has no level under it.
    */
   setWorld(world, walk, water) {
+    if (typeof water?.levelAt !== 'function' || typeof water.flowAt !== 'function') throw new Error(`Hands.setWorld: ${world}'s water needs levelAt and flowAt`)
     this.world = world
     this.walk = walk
     this.water = water
@@ -260,7 +279,9 @@ export class Hands {
   addHand(key, node, { reach = REACH_M } = {}) {
     if (this.hands.has(key)) throw new Error(`Hands.addHand: ${key} twice`)
     if (!node || !node.isObject3D) throw new Error(`Hands.addHand: ${key} needs an Object3D`)
-    this.hands.set(key, { key, node, reach, held: null, inZone: false, draw: 1, kick: Infinity, lure: { kind: null, x: 0, y: 0, z: 0, by: null } })
+    // `trail`: a ring of the hand's last positions in its parent's frame, newest at `trailAt`, `trailN` of them since it last took something, timed by `clock`.
+    const trail = Array.from({ length: TRAIL_N }, () => ({ x: 0, y: 0, z: 0, t: 0 }))
+    this.hands.set(key, { key, node, reach, held: null, inZone: false, draw: 1, kick: Infinity, lure: { kind: null, x: 0, y: 0, z: 0, by: null }, trail, trailAt: 0, trailN: 0, clock: 0 })
   }
 
   /** The record the hand holds, or null. */
@@ -551,6 +572,7 @@ export class Hands {
       hand.held = this._item(rec, best.src)
     }
     hand.inZone = false
+    hand.trailN = 0
     this.taken++
     this._emit({ type: 'hold', hand: hand.key, slot: this.pack(hand.held.rec) })
   }
@@ -591,6 +613,7 @@ export class Hands {
     }
     hand.held = this._item(rec, this.byKind.get(slot.kind))
     hand.inZone = false
+    hand.trailN = 0
     this._emit({ type: 'hold', hand: key, slot: this.pack(rec) })
   }
 
@@ -848,29 +871,51 @@ export class Hands {
     return this.tag === null ? null : `${this.tag}-${(this.looseN++).toString(36)}`
   }
 
-  /** A loose thing as the room hears of it. */
+  /** A loose thing as the room hears of it: in motion, with its velocity, so a peer's copy flies the same throw. */
   _looseEvent(item) {
-    return { type: 'loose', id: item.netId, slot: this.pack(item.rec), pose: [item.x, item.y, item.z, item.q.x, item.q.y, item.q.z, item.q.w], state: item.state === 'still' ? 0 : item.state === 'float' ? 1 : 2 }
+    const state = item.state === 'still' ? 0 : item.state === 'float' ? 1 : 2
+    return { type: 'loose', id: item.netId, slot: this.pack(item.rec), pose: [item.x, item.y, item.z, item.q.x, item.q.y, item.q.z, item.q.w], vel: state === 2 ? [item.vx, item.vy, item.vz] : [0, 0, 0], state }
   }
 
   // -- letting go --------------------------------------------------------------
 
-  /** The thing goes back to its source where the hand is, if the source will have it; otherwise it is loose here, falling from the hand. */
+  /** What a throw from this hand leaves at, into `out` in world axes: the hand's speed against its parent over THROW_WINDOW_S, scaled up (see THROW_*); zero for a drop. */
+  _thrown(hand, out) {
+    out.set(0, 0, 0)
+    if (hand.trailN < 2) return out
+    const now = hand.trail[hand.trailAt]
+    let then = null
+    for (let i = 1; i < hand.trailN; i++) {
+      then = hand.trail[(hand.trailAt - i + TRAIL_N) % TRAIL_N]
+      if (now.t - then.t >= THROW_WINDOW_S) break
+    }
+    const dt = now.t - then.t
+    if (!(dt > 0)) return out
+    out.set(now.x - then.x, now.y - then.y, now.z - then.z).divideScalar(dt)
+    if (hand.node.parent) out.applyMatrix3(_m3.setFromMatrix4(hand.node.parent.matrixWorld))
+    const speed = out.length()
+    if (speed < THROW_MIN_MPS * this.scale) return out.set(0, 0, 0)
+    return out.multiplyScalar(Math.min(THROW_GAIN, (THROW_MAX_MPS * this.scale) / speed))
+  }
+
+  /** Dropped, the thing goes back to its source where the hand is, if the source will have it; thrown, or refused, it is loose here, flying or falling from the hand. */
   _drop(hand, head) {
     const item = hand.held
+    const thrown = this._thrown(hand, _tv).lengthSq() > 0
     const p = this._point(hand)
     const cx = p.x + HOLD_OFFSET.x, cy = p.y + HOLD_OFFSET.y, cz = p.z + HOLD_OFFSET.z
     hand.held = null
     hand.inZone = false
+    hand.trailN = 0
     this._emit({ type: 'hold', hand: hand.key, slot: null })
-    if (this._giveBack(item, cx, cy, cz, head)) return
+    if (!thrown && this._giveBack(item, cx, cy, cz, head)) return
     item.x = cx; item.y = cy; item.z = cz
     // Held level; let go level -- or, for a thing that lies, turned flat about the way it pointed.
     if (this.lying.has(item.rec.kind)) {
       _c.set(0, 0, -1).applyQuaternion(item.q)
       item.q.setFromAxisAngle(_axis.set(0, 1, 0), Math.atan2(-_c.x, -_c.z))
     } else item.q.identity()
-    item.vx = item.vy = item.vz = 0
+    item.vx = _tv.x; item.vy = _tv.y; item.vz = _tv.z
     item.state = 'fall'
     item.t = 0
     item.tried = false
@@ -912,6 +957,12 @@ export class Hands {
       if (!hand.held) continue
       const item = hand.held
       hand.node.updateWorldMatrix(true, false)
+      hand.clock += dt
+      hand.trailAt = (hand.trailAt + 1) % TRAIL_N
+      hand.trailN = Math.min(TRAIL_N, hand.trailN + 1)
+      const s = hand.trail[hand.trailAt]
+      _v.setFromMatrixPosition(hand.node.matrix)
+      s.x = _v.x; s.y = _v.y; s.z = _v.z; s.t = hand.clock
       _m.copy(hand.node.matrixWorld)
       // Decomposed, not setFromRotationMatrix: the hand hangs under her rig, scaled to her size, and a scaled matrix read as a
       // rotation is a quaternion off unit length, which draws the thing stretched differently at every angle of the hand.
@@ -944,7 +995,9 @@ export class Hands {
     item.t += dt
     if (item.state === 'fall') {
       item.vy -= GRAVITY * dt
+      item.x += item.vx * dt
       item.y += item.vy * dt
+      item.z += item.vz * dt
       const bottom = item.y - item.r
       // The lake's surface on the way down: a fish given back there swims off stunned; a swimmer refused goes on to the bed; anything else floats.
       // A peer's copy is never offered to a source: its owner's was, and what that source does is its own layer's.
@@ -979,10 +1032,10 @@ export class Hands {
         item.q.setFromAxisAngle(_axis.set(0, 0, 1), Math.PI / 2)
         item.y = ground + item.r * FLAP_LIE / BALL
         item.jerk = between(this.rand, JERK_S)
-        item.vy = 0
+        item.vx = item.vy = item.vz = 0
         return true
       }
-      // Off in a random direction, leaning downhill with the ground's tilt.
+      // Off in a random direction, leaning downhill with the ground's tilt, plus what a throw carried in.
       item.state = 'roll'
       const n = this.walk.normalAt(item.x, item.z, SLOPE_EPS, _n)
       const a = this.rand() * Math.PI * 2
@@ -991,8 +1044,9 @@ export class Hands {
       dx /= l; dz /= l
       const lies = this.lying.has(item.rec.kind)
       const kick = between(this.rand, ROLL_KICK) * (lies ? LIE_SLIDE : 1)
-      item.vx = dx * kick
-      item.vz = dz * kick
+      const carry = ROLL_CARRY * (lies ? LIE_SLIDE : 1)
+      item.vx = dx * kick + item.vx * carry
+      item.vz = dz * kick + item.vz * carry
       return true
     }
     if (item.state === 'roll') {
@@ -1027,7 +1081,7 @@ export class Hands {
     if (item.state === 'float') {
       const level = this.water.levelAt(item.x, item.z)
       if (level === null) throw new Error(`Hands: a floating ${item.rec.kind} is out of the water at ${item.x.toFixed(1)}, ${item.z.toFixed(1)}`)
-      // A new heading every so often, eased into; at the bank -- where the water ends or the bed comes up to the line -- it turns back.
+      // A new heading every so often, and a river's current under it, eased into; at the bank -- where the water ends or the bed comes up to the line -- it slides along, or failing that turns back.
       item.tack -= dt
       if (item.tack <= 0) {
         item.tack = between(this.rand, TACK_S)
@@ -1036,16 +1090,27 @@ export class Hands {
         item.ax = Math.cos(a) * v
         item.az = Math.sin(a) * v
       }
+      const w = this.water.flowAt(item.x, item.z, _f) * CURRENT_MPS
       const k = Math.min(1, dt / DRIFT_EASE_S)
-      item.vx += (item.ax - item.vx) * k
-      item.vz += (item.az - item.vz) * k
-      const nx = item.x + item.vx * dt, nz = item.z + item.vz * dt
-      const next = this.water.levelAt(nx, nz)
-      if (next === null || Math.abs(next - level) > LEVEL_EPS || this.walk.heightAt(nx, nz, level) > level - item.r) {
-        item.ax = -item.ax; item.az = -item.az
-        item.vx = item.vz = 0
-      } else {
-        item.x = nx; item.z = nz
+      item.vx += (item.ax + _f.x * w - item.vx) * k
+      item.vz += (item.az + _f.z * w - item.vz) * k
+      if (!this._afloatTo(item, level, item.vx * dt, item.vz * dt)) {
+        let moved = false
+        for (const turn of BANK_TURNS) {
+          for (const side of [1, -1]) {
+            const c = Math.cos(turn * side), s = Math.sin(turn * side)
+            const vx = item.vx * c - item.vz * s, vz = item.vx * s + item.vz * c
+            if (!this._afloatTo(item, level, vx * dt, vz * dt)) continue
+            item.vx = vx; item.vz = vz
+            moved = true
+            break
+          }
+          if (moved) break
+        }
+        if (!moved) {
+          item.ax = -item.ax; item.az = -item.az
+          item.vx = item.vz = 0
+        }
       }
       // Up to the line from under the water, down to it from over, then the bob.
       const target = level + item.r * FLOAT_LINE + BOB_AMP * Math.sin(Math.PI * 2 * BOB_HZ * item.t + item.phase)
@@ -1096,6 +1161,15 @@ export class Hands {
     throw new Error(`Hands: a ${item.rec.kind} in state ${item.state}`)
   }
 
+  /** A floating thing moved by (dx, dz) when that is still its water and clear of the bed; false, unmoved, at the bank. */
+  _afloatTo(item, level, dx, dz) {
+    const nx = item.x + dx, nz = item.z + dz
+    const next = this.water.levelAt(nx, nz)
+    if (next === null || Math.abs(next - level) > LEVEL_EPS || this.walk.heightAt(nx, nz, level) > level - item.r) return false
+    item.x = nx; item.z = nz
+    return true
+  }
+
   /** Afloat from here: still in the water, a bob of its own phase, a turn of its own. */
   _float(item) {
     item.state = 'float'
@@ -1124,14 +1198,14 @@ export class Hands {
   }
 
   /**
-   * A loose thing as a peer has it: `pose` [x, y, z, qx, qy, qz, qw] and
-   * `state` 0 still, 1 afloat, 2 in motion. Unknown here, it appears there --
-   * in motion, it falls and rolls from there on its own; known and not hers
+   * A loose thing as a peer has it: `pose` [x, y, z, qx, qy, qz, qw], `vel`
+   * [vx, vy, vz] and `state` 0 still, 1 afloat, 2 in motion. In motion, it
+   * flies on from there at `vel` and falls and rolls on its own; known and not hers
    * to settle, it eases onto the pose and becomes what the peer says. Returns
    * false, nothing done, while the slot's source has not landed its asset.
    */
-  netLoose(id, slot, pose, state) {
-    if (typeof id !== 'string' || !Array.isArray(pose) || pose.length !== 7 || ![0, 1, 2].includes(state)) throw new Error(`Hands.netLoose: bad ${id} ${JSON.stringify(pose)} ${state}`)
+  netLoose(id, slot, pose, state, vel) {
+    if (typeof id !== 'string' || !Array.isArray(pose) || pose.length !== 7 || !Array.isArray(vel) || vel.length !== 3 || ![0, 1, 2].includes(state)) throw new Error(`Hands.netLoose: bad ${id} ${JSON.stringify(pose)} ${JSON.stringify(vel)} ${state}`)
     const stateName = ['still', 'float', 'fall'][state]
     let item = this.loose.find((i) => i.netId === id)
     if (item && item.mine) return true
@@ -1147,13 +1221,13 @@ export class Hands {
       this.loose.push(item)
       while (this.loose.length > LOOSE_MAX) this._forget(this.loose.shift())
       if (stateName === 'float') this._float(item)
-      else { item.state = stateName; item.t = 0; item.tried = false; item.vx = item.vy = item.vz = 0 }
+      else { item.state = stateName; item.t = 0; item.tried = false; item.vx = vel[0]; item.vy = vel[1]; item.vz = vel[2] }
       return true
     }
     if (stateName === 'fall') {
       item.x = pose[0]; item.y = pose[1]; item.z = pose[2]
       item.q.set(pose[3], pose[4], pose[5], pose[6])
-      item.state = 'fall'; item.t = 0; item.tried = false; item.vx = item.vy = item.vz = 0
+      item.state = 'fall'; item.t = 0; item.tried = false; item.vx = vel[0]; item.vy = vel[1]; item.vz = vel[2]
       return true
     }
     item.state = 'ease'

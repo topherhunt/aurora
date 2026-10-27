@@ -108,6 +108,8 @@ const PROBE_EVERY = 4
 const BOLT_WAVE = 4
 const BOLT_JITTER = 0.4
 const BOLT_MISS = 0.15
+// A river's pull on a fish at full flow weight (WaterSurfaces.flowAt), m/s, sampled at the probe: under every species' cruise, so a school sags downstream of its anchor and works back up rather than being swept off it.
+export const CURRENT_MPS = 0.15
 // How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. The probe is PROBE_EVERY ticks stale, so this also covers the distance a bolting fish crosses between probes.
 const BED_MARGIN = 0.25
 const SURFACE_MARGIN = 0.3
@@ -205,7 +207,7 @@ export class Fish {
   /**
    * @param scene   the three.js scene
    * @param height  V2Height: heightAt(x, z)
-   * @param water   WaterSurfaces: levelAt(x, z) -> level or null
+   * @param water   WaterSurfaces: levelAt(x, z) -> level or null, flowAt(x, z, out) -> the current
    * @param opts.seed    the world seed, for the beds and the loose fish
    * @param opts.assets  parsed fish.json for a gate; the world fetches it
    * @param opts.harm    (n, why) => her bitten by a fish (PREY)
@@ -213,7 +215,7 @@ export class Fish {
    */
   constructor(scene, height, water, { seed = 1, assets = null, harm = null, swallow = null } = {}) {
     if (!height || typeof height.heightAt !== 'function') throw new Error('Fish needs a height field with heightAt')
-    if (!water || typeof water.levelAt !== 'function') throw new Error('Fish needs WaterSurfaces, for levelAt')
+    if (!water || typeof water.levelAt !== 'function' || typeof water.flowAt !== 'function') throw new Error('Fish needs WaterSurfaces, for levelAt and flowAt')
     if (harm !== null && typeof harm !== 'function') throw new Error('Fish: harm must be a function of (n, why)')
     if (swallow !== null && typeof swallow !== 'function') throw new Error('Fish: swallow must be a function of (why)')
     this.harm = harm
@@ -293,7 +295,8 @@ export class Fish {
         phase: 0, amp: 0, curve: 0, lift: 0,
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s from `station0` at world time zero -- plus a slow vertical bob.
         pace: 1, verve: 1, beat: 1, ring: 0, station0: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
-        bed: 0, level: 0, probeAt: 0,
+        // `cx`, `cz` the current's drift where it was last probed, m/s.
+        bed: 0, level: 0, cx: 0, cz: 0, probeAt: 0,
         // Seconds left steering back to the anchor after the probe found the shore ahead, and until the shoal's startle reaches this fish.
         homing: 0, boltIn: 0,
         // Mood: pike glide/lurk/burst, bass and glimmerfin fidget. `speed` is the mood's target speed.
@@ -498,6 +501,7 @@ export class Fish {
     f.depthFrac = r.depthFrac
     f.bed = bed
     f.level = level
+    this._current(f)
     f.scale = this.sizeAt(cfg, level - bed, r.sizeU, r.sizeJ)
     f.size = sp.lengthM * f.scale
     f.margin = 0.2 * f.size
@@ -787,6 +791,7 @@ export class Fish {
       f.z = f.pz = _s.sz
       f.bed = _s.bed
       f.level = _s.level
+      this._current(f)
       // Headed for where the segment ends, which is about where the ease was taking it; a station that stays put gets a fresh heading.
       const ed = Math.hypot(f.ex - f.x, f.ez - f.z)
       f.wander = ed > 0.05 ? Math.atan2(f.ez - f.z, f.ex - f.x) : rand() * TAU
@@ -893,11 +898,13 @@ export class Fish {
         f.z = school.z
         f.level = this.water.levelAt(f.x, f.z)
         f.bed = this.height.heightAt(f.x, f.z)
+        this._current(f)
         if (f.level === null) throw new Error(`Fish: the anchor of ${school.key} is on dry ground at (${f.x.toFixed(1)}, ${f.z.toFixed(1)})`)
         f.y = this.column(f.bed, f.level, f.depthFrac, f.margin)
       } else {
         f.level = level
         f.bed = this.height.heightAt(f.x, f.z)
+        this._current(f)
       }
       const spd = Math.hypot(f.vx, f.vz)
       const ux = spd > 0.02 ? f.vx / spd : Math.cos(f.wander)
@@ -985,9 +992,9 @@ export class Fish {
     const wantY = Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) * Math.max(0.3, speed / cfg.cruise)
     f.vy += (wantY - f.vy) * Math.min(1, 2 * dt)
 
-    f.x += f.vx * dt
+    f.x += (f.vx + f.cx) * dt
     f.y += f.vy * dt
-    f.z += f.vz * dt
+    f.z += (f.vz + f.cz) * dt
     // The ease closes the gap to the end station, so the turn's snap onto it is nothing the eye reads.
     if (ease) {
       const ke = Math.min(1, w * EASE_PULL * dt)
@@ -1221,6 +1228,7 @@ export class Fish {
     f.margin = 0.2 * f.size
     f.bed = bed
     f.level = level
+    this._current(f)
     // Facing away from her, lying as it was dropped.
     f.wander = Math.atan2(z - head.z, x - head.x)
     f.hx = Math.cos(f.wander)
@@ -1268,6 +1276,7 @@ export class Fish {
       if (level === null || bed >= level) return this.unslot(sp, f)
       f.level = level
       f.bed = bed
+      this._current(f)
     }
     if (f.stun > 0) {
       f.stun -= dt
@@ -1307,9 +1316,9 @@ export class Fish {
       const target = this.column(f.bed, f.level, 0.5, f.margin)
       f.vy += (Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) - f.vy) * Math.min(1, 2 * dt)
     }
-    f.x += f.vx * dt
+    f.x += (f.vx + f.cx) * dt
     f.y += f.vy * dt
-    f.z += f.vz * dt
+    f.z += (f.vz + f.cz) * dt
     const lo = f.bed + BED_MARGIN + f.margin
     const hi = f.level - SURFACE_MARGIN - f.margin
     if (hi <= lo) { f.y = (f.bed + f.level) / 2; f.vy = 0 }
@@ -1320,6 +1329,13 @@ export class Fish {
   // --- the ear ----------------------------------------------------------------
 
   /** The fish has just taken a new target speed: listed for the ear if it is a fast one, once a frame. */
+  /** The current's drift at the fish's spot into f.cx, f.cz. */
+  _current(f) {
+    const w = this.water.flowAt(f.x, f.z, _o) * CURRENT_MPS
+    f.cx = _o.x * w
+    f.cz = _o.z * w
+  }
+
   setOff(f) {
     if (f.speed >= DART_SPEED && f.listedAt !== this.frame) {
       f.listedAt = this.frame

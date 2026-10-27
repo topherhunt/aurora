@@ -102,16 +102,23 @@ export class WalkSurface {
 
   /**
    * The water she swims in: `levelAt(x, z)` answers the drawn surface over the
-   * point or null on dry land. A room's walk with none (a house) is all dry.
+   * point or null on dry land, and `flowAt(x, z, out)` the river's current as
+   * WaterSurfaces.flowAt does. A room's walk with none (a house) is all dry.
    */
-  setWater(levelAt) {
-    if (typeof levelAt !== 'function') throw new Error('WalkSurface.setWater: needs a levelAt(x, z) function')
+  setWater(levelAt, flowAt) {
+    if (typeof levelAt !== 'function' || typeof flowAt !== 'function') throw new Error('WalkSurface.setWater: needs levelAt(x, z) and flowAt(x, z, out) functions')
     this._water = levelAt
+    this._flow = flowAt
   }
 
   /** The water surface over (x, z), or null where there is none. */
   waterAt(x, z) {
     return this._water === null ? null : this._water(x, z)
+  }
+
+  /** The current's weight at (x, z), 0..1, its unit direction into out.x/out.z; 0 with no water. */
+  flowAt(x, z, out) {
+    return this._water === null ? 0 : this._flow(x, z, out)
   }
 
   /**

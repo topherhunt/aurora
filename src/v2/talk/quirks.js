@@ -4,8 +4,8 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 
 export const QUIRKS = {
-  // Odds a quirk shows on an answer, a greeting and a goodbye.
-  odds: { aside: 0.35, greet: 0.5, bye: 0.5 },
+  // Odds a quirk shows on an answer (a mood's on any, a need's on small talk), a greeting and a goodbye.
+  odds: { aside: 0.2, need: 0.6, greet: 0.5, bye: 0.5 },
 }
 
 const MOODS = {
@@ -29,53 +29,62 @@ const MOODS = {
   },
 }
 
-// A need's asides come in order, one more each time it surfaces with her, so the story builds. `child` needs are for children only.
+// A need's asides come in order, one more each time it surfaces with her, so the story builds; the first introduces it,
+// and each must follow small talk about the town or their life (speak.js SMALL_TALK). `child` needs are for children only.
 const NEEDS = {
   gnome: {
     self: 'I used to have a wife, you know. She forbade me from having garden gnomes. I am still without a gnome.',
+    greet: "You're not carrying a gnome, by any chance?",
     want: "A gnome. I need a gnome. I'm not joking.",
-    aside: ["That's all very well, but who can we share it with? Don't you feel empty without a little special someone? I used to have a wife, you know. Oh no, I don't mean her. She forbade me from having garden gnomes. And a world without gnomes is not worth rebuilding. I'm not joking, I need a gnome.", "You haven't seen a gnome on your travels, have you? Little stone fellow, red hat. Asking for me.", 'A gnome would know what to do about all that. They always look so certain.', "I've cleared a spot by the door for him. The gnome. For when he comes."],
+    aside: ["Not one garden gnome in the whole place, mind. I've looked.", "You haven't seen a gnome on your travels, have you? Little stone fellow, red hat.", "I used to have a wife. She forbade garden gnomes. I'll let you guess which of them I miss.", "I've cleared a spot by the door for him. The gnome. For when he comes."],
     bye: 'If you find a gnome, you know where I live.',
   },
   goat: {
     self: 'Three winters ago my goat Bertil wandered off. He has one horn and no conscience.',
+    greet: "You haven't seen a one-horned goat, have you?",
     want: 'Bertil. My goat. Bring him home, and bring him to justice.',
-    aside: ['Speaking of which, if you see a goat with one horn, his name is Bertil, and he owes me an apology.', 'Bertil would have known that. Clever goat. Cruel, but clever.', 'Sorry, I thought I heard bleating.', 'Some nights I leave the gate open. Not for him. For me.'],
+    aside: ['A goat of mine lived here once. Bertil. One horn, no conscience. He owes me an apology.', 'Bertil would have liked it here. Clever goat. Cruel, but clever.', 'Sorry, I thought I heard bleating.', 'Some nights I leave the gate open. Not for him. For me.'],
     bye: "Say hello to Bertil if you see him. Don't lend him anything.",
   },
   saga: {
     self: "I'm writing a saga. Ninety verses so far, all about me, and every one of them true, more or less.",
+    greet: 'Ah! A face for the saga.',
     want: 'Something to rhyme with "magnificent". The saga is stuck on it.',
-    aside: ["That'll go in my saga. Verse ninety-one. The saga is about me.", 'Does anything rhyme with "magnificent"? Asking for the saga.', 'Hold still. I want to remember your face for a minor verse.', "You're in the saga now, by the way. Small part. Don't let it go to your head."],
+    aside: ["It'll all go in my saga, of course. Verse ninety-one. The saga is about me.", 'Does anything rhyme with "magnificent"? Asking for the saga.', 'Hold still. I want to remember your face for a minor verse.', "You're in the saga now, by the way. Small part. Don't let it go to your head."],
     bye: 'Look for yourself in verse ninety-four. Third line.',
   },
   uncle: {
     self: 'Any day now my uncle will send for me. He is very rich, in a far town. Probably very rich. Probably a town.',
+    greet: 'Are you a rider from my uncle? No? Pity.',
     want: 'A letter from my uncle. Has one come? It will come.',
-    aside: ['Not that it matters. When my uncle sends for me I am leaving all this behind.', 'My uncle would pay handsomely for an answer like that. When he writes.', 'Has a letter come for me? No? Tomorrow, then.', 'I have my bag packed by the door. Have done for nine years.'],
+    aside: ['Not that it matters. When my rich uncle sends for me, I am leaving all this behind.', 'My uncle would like it here. When he writes. He will write.', 'Has a letter come for me? No? Tomorrow, then.', 'I have my bag packed by the door. Have done for nine years.'],
     bye: 'If a rider comes asking for me, tell him I am ready.',
   },
   soup: {
     self: 'My grandmother made a soup that could end a feud. She took the last ingredient to her grave, and I have been guessing ever since.',
+    greet: 'You smell of the road. Anything interesting in your pack? For soup.',
     want: 'The last ingredient. I will know it when I taste it.',
-    aside: ['Doesn\'t that make you think of soup? Everything does, lately. I am one ingredient short of the perfect soup.', "Not salt. I've tried salt. It isn't salt.", 'If you find something that smells like a summer evening, bring it to me. For the soup.', 'I tried bark last week. It was not bark.'],
+    aside: ["Good place for soup, too. I'm one ingredient short of the perfect soup, mind.", "Still hunting the last ingredient. It isn't salt. I've tried salt.", 'If you find something that smells like a summer evening, bring it to me. For the soup.', 'I tried bark last week. It was not bark.'],
     bye: 'Bring me anything strange you find. The soup is waiting.',
   },
   cockerel: {
     self: "I haven't slept a whole night since the cockerel moved in next door. We are at war, he and I.",
+    greet: 'Sorry if I look rough. The cockerel.',
     want: 'A quiet night. Or a cockerel-sized sack.',
-    aside: ["Sorry. Haven't slept. The cockerel.", "Did you hear that? No? That's him. He's inside my head now.", 'One day that bird and I will settle this, beak to face.', 'He looked at me this morning. Right at me. He knows.'],
+    aside: ['Lovely and quiet, apart from the cockerel next door. We are at war, he and I.', "Sorry. Haven't slept. The cockerel.", "Did you hear that? No? That's him. He's inside my head now.", 'He looked at me this morning. Right at me. He knows.'],
     bye: "If you hear crowing, don't tell me.",
   },
   goose: {
     self: 'I was a hero once. There was a bridge and a goose, and I won. Ask anyone. Actually, don\'t ask anyone.',
+    greet: "Mind the geese out there. I'd know.",
     want: 'For someone to remember the Battle of the Bridge. Properly, this time.',
-    aside: ['Reminds me of the Battle of the Bridge. Me against the goose. I won. Mostly.', "When you've stared down a goose, nothing frightens you. Except geese.", 'They never made a song about it. I would have liked a song.', "I still have the scar. I won't show you. It's in a place."],
+    aside: ['Not much happens here. Not since the Battle of the Bridge. Me against a goose. I won. Mostly.', "When you've stared down a goose, nothing frightens you. Except geese.", 'They never made a song about it. I would have liked a song.', "I still have the scar. I won't show you. It's in a place."],
     bye: 'Mind the bridges out there. You know why.',
   },
   pony: {
     child: true,
     self: "I'm getting a pony one day. I've named her already. Her name is Pony.",
+    greet: 'Did you come on a pony?',
     want: 'A pony. Her name is Pony.',
     aside: ['Do you have a pony? You look like you might have a pony.', "When I get my pony I'll ride her everywhere and never walk again.", "Pony would like you. That's the pony I'm getting.", "I practise on the fence. The fence doesn't mind."],
     bye: "If you see a spare pony, she's mine.",
@@ -83,8 +92,9 @@ const NEEDS = {
   frog: {
     child: true,
     self: "I've got a frog in my pocket. His name is Sir. Don't tell.",
+    greet: 'Shh. Sir is sleeping. In my pocket.',
     want: 'A bigger pocket. Sir is growing.',
-    aside: ['Sir says hello. Sir is my frog. In my pocket.', 'Sir thinks so too. He blinked twice.', "Can you keep a secret? It's about Sir. Never mind, he says no.", 'Sir is hungry. Sir is always hungry.'],
+    aside: ["Sir likes it here. Sir is my frog. He's in my pocket. Don't tell.", 'Sir thinks so too. He blinked twice.', "Can you keep a secret? It's about Sir. Never mind, he says no.", 'Sir is hungry. Sir is always hungry.'],
     bye: 'Sir says goodbye. He says it with his eyes.',
   },
 }
@@ -106,13 +116,13 @@ export function quirkOf(seed, mind) {
   return { kind, need: needs[(rand() * needs.length) | 0] }
 }
 
-/** The lines quirk `q` speaks with: `{ aside, greet, bye, self, want }`, `want` null but for a need, whose `aside` runs in story order and whose greeting is its want. */
+/** The lines quirk `q` speaks with: `{ aside, greet, bye, self, want }`, `want` null but for a need, whose `aside` runs in story order. */
 export function quirkLines(q) {
   if (q.kind !== 'need') return { ...MOODS[q.kind], want: null }
   const n = NEEDS[q.need]
   if (n === undefined) throw new Error(`quirks: no need ${q.need}`)
-  return { aside: n.aside, greet: [n.want], bye: [n.bye], self: n.self, want: n.want }
+  return { aside: n.aside, greet: [n.greet], bye: [n.bye], self: n.self, want: n.want }
 }
 
 /** Every line a quirk may say, for checks. */
-export const allQuirkLines = () => [...Object.values(MOODS), ...Object.values(NEEDS)].flatMap((x) => [x.self, x.want ?? '', ...(x.aside ?? []), ...(x.greet ?? []), ...(Array.isArray(x.bye) ? x.bye : [x.bye])].filter((l) => l !== ''))
+export const allQuirkLines = () => [...Object.values(MOODS), ...Object.values(NEEDS)].flatMap((x) => [x.self, x.want ?? '', ...(x.aside ?? []), ...[x.greet ?? []].flat(), ...(Array.isArray(x.bye) ? x.bye : [x.bye])].filter((l) => l !== ''))

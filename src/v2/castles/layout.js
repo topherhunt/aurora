@@ -3,7 +3,8 @@
 // same layout at CASTLE.scale about that centre, so a door inside lands on its door outside.
 import { mulberry32 } from '../../sim/mathx.js'
 
-export const CASTLE = { cell: 4, storey: 4, scale: 1.5, wallT: 2.4, trials: 60, minRoute: 12, minSwitches: 3 }
+// `raise`: how far the castle's floor (y 0) stands above the ground it is sited on (design/44-castles.md, Siting).
+export const CASTLE = { cell: 4, storey: 4, scale: 1.5, wallT: 2.4, raise: 1.2, trials: 60, minRoute: 12, minSwitches: 3 }
 const C = CASTLE.cell, H = CASTLE.storey
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
@@ -45,11 +46,11 @@ export function castleLayout(seed) {
   const gate = add('G', 'gate', int(1, cw - 2), cd, 1, 2, 3)
   for (const x of [-1, cw]) if (cd >= 4 && rng() < 0.55) add('T', 'tower', x, int(1, cd - 2), 1, 1, int(3, 4))
   if (rng() < 0.6) add('H', 'hall', kx0, 0, kw, 1, 2)
-  // The lookout: a back corner raised, a tower against the keep's back, or one a cell behind it that only a bridge reaches.
+  // The lookout, built into the castle: a back corner raised, or a tower against the keep's back.
   const lf = Math.min(8, Math.max(...secs.map((s) => s.floors)) + 2 + int(0, 1))
   const mode = rng()
   const look = mode < 0.4 ? Object.assign(corners[int(0, 1)], { id: 'L', kind: 'lookout', floors: lf })
-    : add('L', 'lookout', kx0 + int(0, kw - 1), -kd - (mode < 0.7 ? 1 : 2), 1, 1, lf)
+    : add('L', 'lookout', kx0 + int(0, kw - 1), -kd - 1, 1, 1, lf)
   let tn = 0
   for (const s of secs) if (s.id === 'T') s.id = `T${++tn}`
   // Half the one-cell towers are round, from a stream of their own so the choice reshuffles nothing else.
@@ -110,7 +111,7 @@ export function castleLayout(seed) {
   }
   const courtCells = [...court].map((c) => c.split(',').map(Number))
   const courtNode = node({ id: 'court', kind: 'court', out: true, k: 0, pos: [courtCells.reduce((a, c) => a + X(c[0] + 0.5), 0) / courtCells.length, 0.4, courtCells.reduce((a, c) => a + Z(c[1] + 0.5), 0) / courtCells.length] })
-  const entry = node({ id: 'out', kind: 'entry', out: true, k: 0, pos: [X(gate.x0 + 0.5), 0.4, Z(gate.z0 + gate.d) + 6] })
+  const entry = node({ id: 'out', kind: 'entry', out: true, k: 0, pos: [X(gate.x0 + 0.5), 0.4 - CASTLE.raise, Z(gate.z0 + gate.d) + 4.5] })
   const rooms = nodes.filter((n) => n.kind === 'room')
   const solid = secs.filter((s) => s.kind !== 'wall')
   const roomAt = (s, k, x, z) => {
@@ -226,11 +227,13 @@ export function castleLayout(seed) {
     const inn = w.inner[0] || w.inner[1]
     const starts = range(0, w.cells.length - 1).filter((i) => [i, i + 1].every((j) => isCourt(w.cells[j][0] + w.inner[0], w.cells[j][1] + w.inner[1])))
     if (!starts.length) continue
-    const i = starts[int(0, starts.length - 1)], dir = rng() < 0.5 ? 1 : -1
+    // The top lands mid-wall where the wall is long enough, never against the tower it ends on.
+    const i = starts[int(0, starts.length - 1)], coin = rng() < 0.5 ? 1 : -1, long = w.cells.length > 2
+    const dir = long && i === 0 ? 1 : long && i === w.cells.length - 2 ? -1 : coin
     const A = w.axis === 'x' ? X : Z, B = w.axis === 'x' ? Z : X
     const g = w.cells[i][w.axis === 'x' ? 0 : 1], across = B(w.axis === 'x' ? w.z0 : w.x0) + C / 2 + inn * CASTLE.wallT / 2
     const a0 = A(dir > 0 ? g : g + 2), a1 = A(dir > 0 ? g + 2 : g), mid = across + inn * 0.7
-    const flight = { axis: w.axis, a0, a1, c0: across, c1: across + inn * 1.4, rise: 2 * H, landing: 0 }
+    const flight = { axis: w.axis, a0, a1, c0: across, c1: across + inn * 1.4, rise: 2 * H, landing: 1.6 }
     if (!claim(flight)) continue
     cand(courtNode, w.walk, 'outstair', {
       flight,
@@ -276,11 +279,11 @@ export function castleLayout(seed) {
     const P = ax === 'x' ? X : Z
     cand(ra, rb, 'bridge', { doors: [da, db], bridge: { axis: ax, a0: P(fa.at), a1: P(fb.at), c: (ax === 'x' ? Z : X)(t + 0.5), y: k * H }, pts: [ra.pos, through(da), through(db), rb.pos] })
   }
-  // The way back down from the summit: a rope off the lookout's face farthest from the centre.
+  // The way back down from the summit: a rope a metre off the lookout's face farthest from the centre, clear of its flares.
   const [lx0, lz0, lx1, lz1] = [X(look.x0), Z(look.z0), X(look.x0 + look.w), Z(look.z0 + look.d)]
-  const [rx, rz] = [[(lx0 + lx1) / 2, lz0 - 0.3], [(lx0 + lx1) / 2, lz1 + 0.3], [lx0 - 0.3, (lz0 + lz1) / 2], [lx1 + 0.3, (lz0 + lz1) / 2]]
+  const [rx, rz] = [[(lx0 + lx1) / 2, lz0 - 1], [(lx0 + lx1) / 2, lz1 + 1], [lx0 - 1, (lz0 + lz1) / 2], [lx1 + 1, (lz0 + lz1) / 2]]
     .reduce((p, q) => (Math.hypot(...q) > Math.hypot(...p) ? q : p))
-  fixed.push({ a: look.roof, b: entry, kind: 'rope', doors: [], rope: { x: rx, z: rz, top: look.floors * H }, pts: [look.roof.pos, [rx, look.floors * H + 0.6, rz], [rx, 0.4, rz], entry.pos] })
+  fixed.push({ a: look.roof, b: entry, kind: 'rope', doors: [], rope: { x: rx, z: rz, top: look.floors * H }, pts: [look.roof.pos, [rx, look.floors * H + 0.6, rz], [rx, 0.4 - CASTLE.raise, rz], entry.pos] })
 
   const best = pickMaze(seed, nodes, rooms, cands, entry, look.roof)
   for (const n of nodes) n.unused = best.unused.has(n)

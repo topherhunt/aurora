@@ -3,6 +3,7 @@
 // turned to her. Two meshes, two canvases, drawn over the world like the quest menu.
 import THREE from '../../three-instance.js'
 import { GRID } from '../talk/grid.js'
+import { CAPTION, wrap } from '../talk/caption.js'
 
 export const DIALOG = {
   // Metres, at her scale: the grid's cells and gaps, the caption above.
@@ -28,21 +29,6 @@ function canvasTexture(w, h) {
 }
 
 const material = (texture) => new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true, toneMapped: false, forceSinglePass: true, depthTest: false, depthWrite: false })
-
-/** Words `text` broken into lines no wider than `w` px in the context's font. */
-function wrap(ctx, text, w) {
-  const lines = []
-  let line = ''
-  for (const word of text.split(' ')) {
-    const next = line ? `${line} ${word}` : word
-    if (line && ctx.measureText(next).width > w) {
-      lines.push(line)
-      line = word
-    } else line = next
-  }
-  if (line) lines.push(line)
-  return lines
-}
 
 export class DialogPanel {
   /** `upload(texture)` puts a redrawn canvas on the GPU between frames (main.js uploadQuestTexture). */
@@ -76,6 +62,7 @@ export class DialogPanel {
     this.mesh.name = 'qa-dialog-grid'
     this.group.add(this.mesh)
     this.caption = canvasTexture(Math.round(width * D.pxPerM), Math.round(D.captionH * D.pxPerM))
+    if (this.caption.ctx.canvas.width !== CAPTION.width) throw new Error(`DialogPanel: caption is ${this.caption.ctx.canvas.width} px wide, talk/caption.js measures for ${CAPTION.width}`)
     const cap = new THREE.Mesh(new THREE.PlaneGeometry(width, D.captionH), material(this.caption.texture))
     cap.position.y = D.gap + D.captionH / 2
     cap.renderOrder = D.order
@@ -110,9 +97,16 @@ export class DialogPanel {
     ctx.font = SERIF(30)
     ctx.fillText(name, 16, 10)
     ctx.fillStyle = '#ffffff'
-    ctx.font = SERIF(26, 'normal')
-    const lines = wrap(ctx, text, w - 32)
-    lines.slice(0, 4).forEach((l, i) => ctx.fillText(i === 3 && lines.length > 4 ? `${l}...` : l, 16, 50 + i * 32))
+    const C = CAPTION
+    // A line past its rows is a talk bug check-talk missed: say so, and shrink it to fit rather than cut it.
+    let px = C.px, lines
+    for (; ; px--) {
+      ctx.font = SERIF(px, 'normal')
+      lines = wrap(ctx, text, w - 2 * C.inset)
+      if (lines.length <= C.rows || px <= 14) break
+    }
+    if (px < C.px) console.error(`dialog-panel: ${name}'s line needs ${px}px to fit ${C.rows} rows: ${text}`)
+    lines.slice(0, C.rows).forEach((l, i) => ctx.fillText(l, C.inset, C.top + i * C.step * (px / C.px)))
     this.upload(texture)
   }
 

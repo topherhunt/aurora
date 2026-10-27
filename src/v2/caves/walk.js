@@ -178,6 +178,8 @@ export class CaveWalk {
         const roof = this.ceilingAt(x, z, this.heightAt(x, z, level) + 0.05)
         return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
       },
+      // A cave's water carries nothing (main.js caveWater too).
+      flowAt: () => 0,
     }
     const bed = {
       heightAt: (x, z) => this.heightAt(x, z, this.trueWaterAt(x, z, null) ?? this.hintY),

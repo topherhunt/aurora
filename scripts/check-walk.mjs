@@ -63,15 +63,15 @@ const walker = (rocks, x, z, yaw, feet, scale = 1, trunks = trees) => {
   rig.updateMatrixWorld(true)
   return player
 }
-// A player on `ground` with no stone, and water at `level` everywhere when given.
-const walkerOn = (ground, x, z, yaw, level) => {
+// A player on `ground` with no stone, and water at `level` everywhere when given, its current `flow(x, z, out)`.
+const walkerOn = (ground, x, z, yaw, level, flow = () => 0) => {
   const rig = new THREE.Group()
   const camera = new THREE.PerspectiveCamera()
   camera.position.y = LOCOMOTION.eyeHeight
   camera.rotation.y = yaw
   rig.add(camera)
   const surface = new WalkSurface(ground, stone([]), trees)
-  if (level !== undefined) surface.setWater(() => level)
+  if (level !== undefined) surface.setWater(() => level, flow)
   const player = new Player(rig, camera, surface)
   player.spawnAt(x, z)
   rig.updateMatrixWorld(true)
@@ -378,6 +378,24 @@ console.log('going down and swimming (§4, §12)')
   walk(p, 15)
   check(!p.swimming && p.standY === GROUND && p.rig.position.x < 10, 'swimming back to the shore, she walks out',
     `x = ${p.rig.position.x.toFixed(2)}, feet at ${p.standY}`)
+}
+
+{
+  // A RIVER running +z at full weight, deep everywhere, a cliff of a bank past z = 6.
+  const LEVEL = GROUND - 0.5
+  const river = { heightAt: (x, z) => (z > 6 ? GROUND + 3 : GROUND - 6) }
+  const flow = (x, z, out) => { out.x = 0; out.z = 1; return 1 }
+  const p = walkerOn(river, 0, 0, 0, LEVEL, flow)
+  p.swimTo(0, LEVEL + 0.2, 0)
+  for (let f = 0; f < Math.round(4 / DT); f++) p.update(DT, { ...INPUT, move: 0 })
+  check(Math.abs(p.rig.position.z - LOCOMOTION.swimCurrent * 4) < 0.01 && p.rig.position.x === 0, 'at rest in a river, the current carries her downstream',
+    `${(p.rig.position.z / 4).toFixed(3)} m/s`)
+  const from = p.rig.position.z
+  walk(p, 4)
+  const up = (from - p.rig.position.z) / 4
+  check(Math.abs(up - (LOCOMOTION.deskSpeed - LOCOMOTION.swimCurrent)) < 0.01, 'and she can swim up it, at her pace less its', `${up.toFixed(3)} m/s upstream`)
+  for (let f = 0; f < Math.round(30 / DT); f++) p.update(DT, { ...INPUT, move: 0 })
+  check(p.swimming && p.rig.position.z <= 6 && p.rig.position.z > 5.9, 'a bank she cannot mantle holds her against it', `z = ${p.rig.position.z.toFixed(2)}`)
 }
 
 console.warn = warn
