@@ -7007,7 +7007,9 @@ function updateAmbience(dt, state) {
   const owner = netplay.owner !== null && netplay.owner !== netplay.id ? netplay.peers.get(netplay.owner) : undefined
   music.update(dt, {
     pool: poolFor({
+      underwater: submerged,
       cave: cave !== null,
+      aloft: ears.y - Math.max(height.heightAt(ears.x, ears.z), waterSurfaces.levelAt(ears.x, ears.z) ?? -Infinity),
       glade: currentRoom.village,
       town: townPlan !== null && townPlan.towns.some((t) => Math.hypot(ears.x - t.x, ears.z - t.z) <= t.radius),
       aboveSnow: height.heightAt(ears.x, ears.z) > height.snowLineAt(ears.x, ears.z),

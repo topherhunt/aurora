@@ -1,6 +1,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32, smoothstep } from '../../sim/mathx.js'
 import { CURRENT } from '../../water.js'
+import { FADE_FRAGMENT, FADE_VERTEX, IGN_GLSL, PROP_FADE_SECONDS, dissolvesOn, getPropClock, propClockUniform, setPropFadeTimerAt, setPropSolidAt } from '../../material.js'
 import { HEAD_EYE_DECL, HEAD_EYE_GLSL, bindHeadEye } from '../../head-eye.js'
 import { SPUN_VIEWS, bakeCritterCard, billboardVertex, setCritterCard, spunBounds, tileSeed, walkTiles } from './critters.js'
 import { seaweedGeometry, seaweedMaterial } from './seaweed.js'
@@ -145,6 +146,17 @@ export function cardYaw(geo, reach, steps = 36, grid = 48) {
 
 const TAU = (Math.PI * 2).toFixed(6)
 
+/** material.js's per-instance dissolve, for the clump and its card alike: `aPropFade` stamps, the prop clock, and the screen-space stipple. */
+function withFade(shader) {
+  shader.uniforms.uPropClock = propClockUniform()
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nuniform float uPropClock;\nvarying float vPropFade;\n#define PROP_FADE_ATTRIBUTE\nattribute float aPropFade;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>\n${FADE_VERTEX}`)
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>\nvarying float vPropFade;\n${IGN_GLSL}`)
+    .replace('#include <color_fragment>', `#include <color_fragment>\n${FADE_FRAGMENT}`)
+}
+
 const SWAY_DECL = 'uniform float uSwayT;\nuniform float uSwayGeoH;\nuniform vec2 uSwayDir;'
 const SWAY_VARS = /* glsl */ `
     vec3 swRoot = instanceMatrix[3].xyz;
@@ -199,6 +211,7 @@ export class SeaweedScatter {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\nattribute vec3 blade;\n${SWAY_DECL}`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>\n  {${SWAY_VARS}${RIPPLE_GLSL}${LEAN_GLSL}\n  }`)
+      withFade(shader)
     }
     patch(this.material, 'v2-seaweed')
     this.mesh = this._layer(geo, this.material, 'v2-seaweed')
@@ -217,12 +230,16 @@ export class SeaweedScatter {
         // Behind the far plane with w positive, so the clipper drops the whole card.
         .replace('#include <project_vertex>', `#include <project_vertex>
           if ( distance( ( modelMatrix * instanceMatrix[3] ).xyz, cameraPosition ) > ${C.cullM.toFixed(1)} ) gl_Position = vec4( 0.0, 0.0, 2.0, 1.0 );`)
+      withFade(shader)
     }
     patch(this.cardMaterial, 'v2-seaweed-card')
     this.cards = this._layer(new THREE.BufferGeometry(), this.cardMaterial, 'v2-seaweed-card')
     setCritterCard(this.cards, spunBounds(this.bounds), SPUN_VIEWS)
     scene.add(this.cards)
     this.cardReady = false
+    // Each clump's rung at the last split, and the clumps crossing NEAR_M: drawn on both rungs for PROP_FADE_SECONDS, the one dithering in as the other dithers out.
+    this.rungs = new Map()
+    this.fading = new Map()
 
     this.at = null
     this.splitAt = null
@@ -235,6 +252,7 @@ export class SeaweedScatter {
 
   _layer(geo, material, name) {
     const mesh = new THREE.InstancedMesh(geo, material, SEAWEED_SCATTER.capacity)
+    geo.setAttribute('aPropFade', new THREE.InstancedBufferAttribute(new Float32Array(SEAWEED_SCATTER.capacity).fill(1), 1))
     mesh.name = name
     // Instances span the whole radius and never move once placed; the one bounding sphere would have to be the radius anyway.
     mesh.frustumCulled = false
@@ -274,6 +292,9 @@ export class SeaweedScatter {
       )
       if (changed > 0) this.splitAt = null
     }
+    // A finished dissolve re-splits at once, dropping the departed rung's copy.
+    const now = getPropClock()
+    for (const t0 of this.fading.values()) if (!(now - t0 >= 0 && now - t0 <= PROP_FADE_SECONDS)) this.splitAt = null
     if (this.splitAt !== null && Math.hypot(x - this.splitAt[0], z - this.splitAt[1]) < C.splitM) return
     this.splitAt = [x, z]
     this._split(x, z)
@@ -294,21 +315,37 @@ export class SeaweedScatter {
   _split(x, z) {
     const C = SEAWEED_SCATTER
     const near2 = C.nearM * C.nearM
-    const nearArr = this.mesh.instanceMatrix.array
-    const cardArr = this.cards.instanceMatrix.array
+    const now = getPropClock()
+    const fade = this.cardReady && dissolvesOn()
+    const rungs = new Map()
     let n = 0, c = 0
+    const put = (near, mats, i, t0, arriving) => {
+      const mesh = near ? this.mesh : this.cards
+      const k = near ? n++ : c++
+      if (k === C.capacity) throw new Error(`SeaweedScatter: more than ${C.capacity} clumps ${near ? 'near her' : 'on cards'}`)
+      mesh.instanceMatrix.array.set(mats.subarray(i * 16, i * 16 + 16), 16 * k)
+      if (t0 === null) setPropSolidAt(mesh, k)
+      else setPropFadeTimerAt(mesh, k, t0, arriving)
+    }
     for (const t of this.tiles.values()) {
       t.sites.forEach((s, i) => {
         const dx = s.x - x, dz = s.z - z
-        if (dx * dx + dz * dz <= near2) {
-          if (n === C.capacity) throw new Error(`SeaweedScatter: more than ${C.capacity} clumps near her`)
-          nearArr.set(t.mats.subarray(i * 16, i * 16 + 16), 16 * n++)
-        } else if (this.cardReady) {
-          if (c === C.capacity) throw new Error(`SeaweedScatter: more than ${C.capacity} clumps on cards`)
-          cardArr.set(t.mats.subarray(i * 16, i * 16 + 16), 16 * c++)
+        const near = dx * dx + dz * dz <= near2
+        rungs.set(s, near)
+        const was = this.rungs.get(s)
+        // A clump turning back mid-dissolve restarts from now; the stipple jumps once, as the surface LODs' do.
+        if (fade && was !== undefined && was !== near) this.fading.set(s, now)
+        let t0 = this.fading.get(s) ?? null
+        if (t0 !== null && !(now - t0 >= 0 && now - t0 <= PROP_FADE_SECONDS)) {
+          this.fading.delete(s)
+          t0 = null
         }
+        if (near || this.cardReady) put(near, t.mats, i, t0, true)
+        if (t0 !== null) put(!near, t.mats, i, t0, false)
       })
     }
+    for (const s of this.fading.keys()) if (!rungs.has(s)) this.fading.delete(s)
+    this.rungs = rungs
     this.mesh.count = n
     this.mesh.visible = n > 0
     this.mesh.instanceMatrix.needsUpdate = true

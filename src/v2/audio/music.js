@@ -32,6 +32,7 @@ export const POOLS = {
   'leafkin-glade': ['Caverns 1.mp3', 'Caverns 2.mp3', 'Caverns 3.mp3', 'Caverns 4.mp3', 'OH - Swamp - Soft raindrops.mp3'],
   'snow-day': ['OH - Snow - White Silence 1.mp3', 'OH - Snow - White Silence 2.mp3'],
   'snow-night': ['The Ship Awaits - bonechill, snow and swamp.mp3'],
+  underwater: ['20261014-th-nocturnal-pulse.mp3'],
 }
 export const songUrl = (pool, song) => `music/${pool}/${POOLS[pool][song]}`
 
@@ -50,9 +51,14 @@ export const INDOOR_TAU = 0.3
 /** The settings panel's Music row, in the order a press steps through: a multiplier on LEVEL. */
 export const MUSIC_VOLUMES = [{ name: 'On', gain: 1 }, { name: '50%', gain: 0.5 }, { name: 'Off', gain: 0 }]
 
-/** The pool for where she is: a cave over everything, then the glade room, a town's ground, above the snowline, else the forest; day by `day` (dayness >= 0.5). */
-export function poolFor({ cave, glade, town, aboveSnow, day }) {
+/** Metres above the ground or water past which no song plays. */
+export const ALOFT_M = 40
+
+/** The pool for where she is, or null for none: under water over everything, then a cave, ALOFT_M up (`aloft`, metres) none, then the glade room, a town's ground, above the snowline, else the forest; day by `day` (dayness >= 0.5). */
+export function poolFor({ underwater, cave, aloft, glade, town, aboveSnow, day }) {
+  if (underwater) return 'underwater'
   if (cave) return 'caverns'
+  if (aloft > ALOFT_M) return null
   if (glade) return 'leafkin-glade'
   const half = day ? 'day' : 'night'
   if (town) return `human-town-${half}`
@@ -161,13 +167,13 @@ export class Music {
   }
 
   /**
-   * Once a frame: `dt` seconds, `pool` a POOLS key for where she is (poolFor),
+   * Once a frame: `dt` seconds, `pool` a POOLS key for where she is or null for none (poolFor),
    * `indoors` whether she is in a house, `seconds` the room's world clock and
    * `lead` the room owner's musicFromWire() (null when she is the owner, or it is
    * unknown).
    */
   update(dt, { pool, indoors, seconds, lead }) {
-    if (!(pool in POOLS)) throw new Error(`Music.update: no pool ${pool}`)
+    if (pool !== null && !(pool in POOLS)) throw new Error(`Music.update: no pool ${pool}`)
     this.pool = pool
     const now = this.engine.ctx.currentTime
     if (indoors !== this.indoors) {
@@ -207,7 +213,7 @@ export class Music {
       this.heard = null
       this.silence = this._rollPause()
     }
-    if (this.playing !== null) return
+    if (this.playing !== null || pool === null) return
     this.silence -= dt
     if (this.silence <= 0) this._start(pool, Math.floor(this.random() * POOLS[pool].length), seconds, 0)
   }

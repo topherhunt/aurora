@@ -17,7 +17,7 @@
 // under the ambience. That needs ears.
 
 import fs from 'node:fs'
-import { Music, POOLS, PAUSE_S, LEVEL, MUSIC_VOLUMES, FADE_OUT_S, FADE_IN_S, LATE_S, INDOOR_GAIN, INDOOR_LP, OPEN_LP, poolFor, musicFromWire } from '../src/v2/audio/music.js'
+import { Music, POOLS, ALOFT_M, PAUSE_S, LEVEL, MUSIC_VOLUMES, FADE_OUT_S, FADE_IN_S, LATE_S, INDOOR_GAIN, INDOOR_LP, OPEN_LP, poolFor, musicFromWire } from '../src/v2/audio/music.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -40,14 +40,16 @@ console.log('pools')
 // --- where she is ------------------------------------------------------------------
 console.log('poolFor')
 {
-  const at = (o) => poolFor({ cave: false, glade: false, town: false, aboveSnow: false, day: true, ...o })
+  const at = (o) => poolFor({ underwater: false, cave: false, aloft: 0, glade: false, town: false, aboveSnow: false, day: true, ...o })
   check(at({}) === 'forest-day' && at({ day: false }) === 'forest-night', 'the wild below the snow is the forest, by day and by night')
   check(at({ aboveSnow: true }) === 'snow-day' && at({ aboveSnow: true, day: false }) === 'snow-night', 'above the snowline is the snow, by day and by night')
   check(at({ town: true }) === 'human-town-day' && at({ town: true, day: false }) === 'human-town-night', 'a town is the town, by day and by night')
   check(at({ town: true, aboveSnow: true }) === 'human-town-day', 'a town above the snowline is still the town')
   check(at({ glade: true }) === 'leafkin-glade' && at({ glade: true, day: false }) === 'leafkin-glade', 'the glade at any hour')
   check(at({ cave: true, day: false }) === 'caverns' && at({ cave: true, glade: true, town: true }) === 'caverns', 'a cave at any hour, over everything')
-  for (const o of [{}, { day: false }, { aboveSnow: true }, { town: true, day: false }, { glade: true }, { cave: true }]) if (!(at(o) in POOLS)) check(false, `${at(o)} is a pool`)
+  check(at({ underwater: true, day: false }) === 'underwater' && at({ underwater: true, cave: true, town: true, glade: true }) === 'underwater', 'under water at any hour, over everything')
+  check(at({ aloft: ALOFT_M + 1 }) === null && at({ aloft: ALOFT_M + 1, town: true, day: false }) === null && at({ aloft: ALOFT_M - 1 }) === 'forest-day', `more than ${ALOFT_M} m up there is no pool, below it the ground's`)
+  for (const o of [{}, { day: false }, { aboveSnow: true }, { town: true, day: false }, { glade: true }, { cave: true }, { underwater: true }]) if (!(at(o) in POOLS)) check(false, `${at(o)} is a pool`)
 }
 
 
@@ -240,6 +242,19 @@ console.log('following the owner')
   for (let i = 0; i < 100; i++) e.step('snow-day', false, { pool: 'snow-day', song: -1, startS: 0 })
   const t = e.until('snow-night', PAUSE_S[1] + 1, false, { pool: 'snow-day', song: -1, startS: 0 })
   check(t !== null && t >= PAUSE_S[0], 'out of the owner\'s pool she runs her own, after a fresh silence', `${t?.toFixed(1)} s`)
+}
+
+console.log('no pool')
+{
+  // Aloft: the song fades as for any pool change, and none starts however long she stays up.
+  const m = make(9)
+  m.until('forest-day', PAUSE_S[1] + 1)
+  const own = m.music.playing.track
+  m.step(null)
+  check(m.music.playing === null && m.music.fading.some((f) => f.track === own) && m.music.wire() === null, 'with no pool the song fades out and the wire carries none')
+  check(m.until(null, PAUSE_S[1] * 2) === null, 'with no pool no song starts, however long she stays')
+  const t = m.until('forest-day', PAUSE_S[1] + 1)
+  check(t !== null && t >= PAUSE_S[0], 'back on the ground a song comes after a fresh silence', `${t?.toFixed(1)} s`)
 }
 
 console.log(failures === 0 ? '\nall music checks pass' : `\n${failures} music check(s) FAILED`)

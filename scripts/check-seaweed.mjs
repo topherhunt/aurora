@@ -7,6 +7,7 @@
 import THREE from '../src/three-instance.js'
 import { weedSites, densityAt, SeaweedScatter, SEAWEED_SCATTER as C } from '../src/v2/render/seaweed-scatter.js'
 import { seaweedGeometry } from '../src/v2/render/seaweed.js'
+import { PROP_FADE_SECONDS, setDissolves, setPropClock } from '../src/material.js'
 
 let failures = 0
 function check(ok, title, detail = '') {
@@ -94,6 +95,8 @@ check(meshes.length === 2 && meshes.every((o) => o.isInstancedMesh) && new Set(k
 check(sw.mesh.count > 0 && sw.cards.count === 0 && !sw.cards.visible, 'before the card is baked only the near clumps are drawn', `${sw.mesh.count} near, ${sw.cards.count} cards`)
 sw.cardReady = true
 sw.splitAt = null
+// The rungs first as hard cuts; the dissolve between them is checked on its own below.
+setDissolves(false)
 
 const m0 = new THREE.Matrix4()
 const drawn = (mesh) => {
@@ -137,6 +140,20 @@ sw.place(0.6, 0.6, 0)
 check(sw.mesh.instanceMatrix.version === version, `moving less than ${C.splitM} m re-sorts nothing`)
 sw.place(1.6, 0.6, 0)
 check(sw.mesh.instanceMatrix.version > version, `moving ${C.splitM} m re-sorts the rungs`)
+
+// A clump crossing NEAR_M is drawn on both rungs for PROP_FADE_SECONDS, stamped in on the one and out on the other, then on its new rung alone.
+setDissolves(true)
+setPropClock(100)
+const before = sw.rungs
+sw.place(-2, 0, 0)
+const after = sw.rungs
+const crossers = [...after].filter(([s, near]) => before.has(s) && before.get(s) !== near).length
+const slots = (mesh) => [...mesh.geometry.getAttribute('aPropFade').array.subarray(0, mesh.count)]
+const stamped = [...slots(sw.mesh), ...slots(sw.cards)].filter((v) => v < 0).length
+check(crossers > 0 && sw.mesh.count + sw.cards.count === after.size + crossers && stamped === 2 * crossers, 'a clump crossing the near line dithers out of one rung as it dithers into the other', `${crossers} crossing, ${stamped} stamped of ${sw.mesh.count + sw.cards.count} drawn`)
+setPropClock(100 + PROP_FADE_SECONDS + 0.01)
+sw.place(-2, 0, 0)
+check(sw.mesh.count + sw.cards.count === after.size && [...slots(sw.mesh), ...slots(sw.cards)].every((v) => v === 1), 'once the dissolve is done each clump is on one rung, solid', `${sw.mesh.count + sw.cards.count} drawn of ${after.size}`)
 sw.place(800, 800, 0)
 check(sw.mesh.count === 0 && sw.cards.count === 0 && !sw.mesh.visible && !sw.cards.visible, 'far from any water both layers are empty and hidden', `${sw.mesh.count} + ${sw.cards.count} instances`)
 sw.dispose()
