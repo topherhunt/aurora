@@ -3,7 +3,7 @@ import THREE from '../../three-instance.js'
 import { POST } from '../../props/palisade.js'
 import { LAYER } from '../../textures.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { PLANK, SCAFFOLD, SIDES, bayPoint, frameOf, inHatch, ladderSpots, levelY, postsAt } from '../layers/scaffold.js'
+import { PLANK, SCAFFOLD, SIDES, bayPoint, frameOf, inHatch, ladderSpots, levelY, postsAt, sidePoint } from '../layers/scaffold.js'
 
 const N = SCAFFOLD.bays
 const B = SCAFFOLD.bay
@@ -101,8 +101,15 @@ export function scaffoldSpans(sc, ground, x, z, g, postR, put) {
   if (inside && !inHatch(sc, PLANK, i, j, a, b)) put(plank - PLANK_THICK, plank, false)
 }
 
-/** Maze scaffold `sc`'s fixtures standing on `ground`, each handed to `put(kind, matrix)`: a plank deck per bay (the hatch bays' cut) and each ladder. */
-export function poseScaffold(sc, ground, put) {
+/** The rope's places: `coil` [x, z] on the plank, `hang` [x, z] out past the plank's edge where it falls, `top` the plank's height, `bottom` the ground at `hang`. */
+export function scaffoldRope(sc, ground) {
+  const { i, j, d } = sc.rope
+  const coil = sidePoint(sc, i, j, d, SCAFFOLD.ropeIn, [0, 0]), hang = sidePoint(sc, i, j, d, -SCAFFOLD.ropeOut, [0, 0])
+  return { coil, hang, top: levelY(sc, ground, PLANK), bottom: ground(hang[0], hang[1]) }
+}
+
+/** Maze scaffold `sc`'s fixtures standing on `ground`, each handed to `put(kind, matrix)`: a plank deck per bay (the hatch bays' cut), each ladder, and the rope's coil or, once dropped (`ropeDown`), its hanging length. */
+export function poseScaffold(sc, ground, put, ropeDown) {
   const plank = levelY(sc, ground, PLANK)
   const yawOf = (dx, dz) => _q.setFromAxisAngle(_up, Math.atan2(-dz, dx))
   const hatches = new Map(sc.ladders.filter((ld) => ld.l === SCAFFOLD.floors).map((ld) => [ld.i * N + ld.j, ld]))
@@ -121,6 +128,9 @@ export function poseScaffold(sc, ground, put) {
     _q.setFromAxisAngle(_up, Math.atan2(-l.uz, l.ux) + Math.PI / 2)
     put('rungs', _m.compose(_p.set(l.px, l.bottom, l.pz), _q, _s.set(1, (l.top + OVER - l.bottom) / (SCAFFOLD.rise + OVER), 1)))
   }
+  const r = scaffoldRope(sc, ground)
+  if (!ropeDown) put('coils', _m.makeTranslation(r.coil[0], plank, r.coil[1]))
+  else put('ropes', _m.compose(_p.set(r.hang[0], r.bottom, r.hang[1]), _q.identity(), _s.set(1, r.top + 0.15 - r.bottom, 1)))
 }
 
 /** One geometry of every net in `scaffolds` (their `sc`s) standing on `ground`: floors a bay at a time with the hatches' holes left out, and each wall; `{ geometry, count }` with `count` the quads, or count 0 and no geometry. */

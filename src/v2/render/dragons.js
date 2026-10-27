@@ -259,6 +259,7 @@ export const LAND_SHORT = 15
 export const AGGRO_LAND_S = 20
 export const SPOT_S = 1.2
 export const CHARGE_MPS = 4
+const _aim = [0, 0]
 export const BITE_M = 5
 export const HURT_M = 6
 export const BITE_HP = 30
@@ -395,8 +396,9 @@ export class Dragons {
    * @param roosts    Roosts: sites(), siteAt(tx, tz)
    * @param wildlife  Wildlife: roster, spawnAt, poseAt, kill, carry, drop; its `hunter` is set here (strikeOn)
    * @param cards     LitterCards: the shared pool the card rung draws in
+   * @param labyrinths layers/labyrinths.js Labyrinths (labyrinthAt, reaches, aimOf), or null in a world without: a dragon on foot keeps to their paths
    */
-  constructor(scene, field, { seed = 1, ground = field, roosts, wildlife, water, harm, fright, cards, asset = null } = {}) {
+  constructor(scene, field, { seed = 1, ground = field, roosts, wildlife, water, harm, fright, cards, labyrinths = null, asset = null } = {}) {
     if (!field || typeof field.heightAt !== 'function' || typeof field.heightAndSlopeAt !== 'function') throw new Error('Dragons needs a height field with heightAt and heightAndSlopeAt')
     if (!ground || typeof ground.heightAt !== 'function') throw new Error('Dragons needs a ground with heightAt')
     if (!roosts || typeof roosts.sites !== 'function' || typeof roosts.siteAt !== 'function') throw new Error('Dragons needs the Roosts, for sites and siteAt')
@@ -408,6 +410,7 @@ export class Dragons {
     if (!cards) throw new Error('Dragons needs the shared LitterCards pool, for its cards')
     this.harm = harm
     this.fright = fright
+    this.labyrinths = labyrinths
     // Whether an encounter is eyed: a field so a gate can load the dice. Rolled on the quarry's own client only, which then owes the room the chase.
     this.random = Math.random
     this.quarry = NO_QUARRY
@@ -729,8 +732,9 @@ export class Dragons {
   // The plan: a chapter of phrases, every duration and end pose closed-form.
   // -------------------------------------------------------------------------
 
-  /** The ground at (x, z) as a spot to alight on, or null: under SPOT_SLOPE_DEG, dry, and SPOT_AWAY nest radii from home. */
+  /** The ground at (x, z) as a spot to alight on, or null: under SPOT_SLOPE_DEG, dry, SPOT_AWAY nest radii from home, and its walk ring clear of any labyrinth. */
   _spotAt(site, x, z) {
+    if (this.labyrinths !== null && this.labyrinths.reaches(x, z, WALK_RING * site.r)) return null
     const { h, tan } = this.field.heightAndSlopeAt(x, z)
     if (tan > Math.tan((SPOT_SLOPE_DEG * Math.PI) / 180)) return null
     if (this.water.isSubmerged(x, z, h)) return null
@@ -1319,11 +1323,12 @@ export class Dragons {
     this._tread(d, dt, want)
   }
 
-  /** One tick off the score on the ground: speed closing on `want` at STRIDE_ACCEL, the body along its heading, levelling, onto the ground -- or the nest's plane while over the nest. */
+  /** One tick off the score on the ground: speed closing on `want` at STRIDE_ACCEL, the body along its heading (a step onto a labyrinth wall's line not taken), levelling, onto the ground -- or the nest's plane while over the nest. */
   _tread(d, dt, want) {
     d.speed += clamp(want - d.speed, -STRIDE_ACCEL * d.k * dt, STRIDE_ACCEL * d.k * dt)
-    d.x += Math.cos(d.heading) * d.speed * dt
-    d.z -= Math.sin(d.heading) * d.speed * dt
+    const x = d.x + Math.cos(d.heading) * d.speed * dt, z = d.z - Math.sin(d.heading) * d.speed * dt
+    if (this.labyrinths !== null && this.labyrinths.wallAt(x, z)) d.speed = 0
+    else { d.x = x; d.z = z }
     const dest = d.dest
     let floor = this.ground.heightAt(d.x, d.z)
     if (Math.hypot(d.x - dest.x, d.z - dest.z) < dest.r) floor = Math.max(floor, this._floorAt(dest, d.x - dest.x, d.z - dest.z))
@@ -1430,6 +1435,14 @@ export class Dragons {
     else this.fright(id, d.x, d.z)
   }
 
+  /** The bearing a dragon on foot steers for `q` on: straight, or along the paths of the labyrinth she is in or whose ground it is on (Labyrinths.aimOf). */
+  _wayTo(d, q) {
+    const L = this.labyrinths, s = L === null ? null : L.labyrinthAt(q.x, q.z) || (L.reaches(d.x, d.z, 0) ? L.siteAt(d.x, d.z) : null)
+    if (s === null) return bearing(d, q)
+    const [x, z] = L.aimOf(s, d.x, d.z, q.x, q.z, _aim)
+    return Math.atan2(-(z - d.z), x - d.x)
+  }
+
   /**
    * One tick of a chase. A peer's follows its anchors (_trail); this client's
    * gives up -- spurned for SPURN_S -- with the quarry gone or GIVE_UP_M off
@@ -1460,6 +1473,8 @@ export class Dragons {
         const r = Math.max(Math.hypot(d.x - q.x, d.z - q.z), 1e-6)
         live.tx = q.x + ((d.x - q.x) / r) * LAND_SHORT
         live.tz = q.z + ((d.z - q.z) / r) * LAND_SHORT
+        const maze = this.labyrinths === null ? null : this.labyrinths.labyrinthAt(live.tx, live.tz)
+        if (maze !== null) ({ x: live.tx, z: live.tz } = this.labyrinths.entranceOf(maze))
         live.ty = this.ground.heightAt(live.tx, live.tz)
         this._phase(d, 'land', now)
       }
@@ -1477,7 +1492,7 @@ export class Dragons {
           return
         }
       }
-      const sw = swing(d.heading, bearing(d, q))
+      const sw = swing(d.heading, this._wayTo(d, q))
       d.heading += clamp(sw, -WALK_TURN_RATE * TICK_S, WALK_TURN_RATE * TICK_S)
       const reach = EAT_REACH * d.k
       const snout = Math.hypot(q.x - d.x - Math.cos(d.heading) * reach, q.y - d.y, q.z - d.z + Math.sin(d.heading) * reach)

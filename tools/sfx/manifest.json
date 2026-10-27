@@ -4,5 +4,11 @@
   {"id": "combat-sword-slash-3", "prompt": "heavy iron blade cutting hard, a slicing hit followed by a singing metallic ring", "seconds": 1.5},
   {"id": "combat-shield-clang-1", "prompt": "heavy blow landing on an iron-rimmed wooden shield, loud clang with a short metallic ring", "seconds": 1.5},
   {"id": "combat-shield-clang-2", "prompt": "loud metallic clang of a weapon smashing into a steel shield, sharp impact then a ringing metal reverberation", "seconds": 1.5},
-  {"id": "combat-shield-clang-3", "prompt": "powerful strike on a steel-faced shield, a loud bright clang that rings and decays", "seconds": 1.5}
+  {"id": "combat-shield-clang-3", "prompt": "powerful strike on a steel-faced shield, a loud bright clang that rings and decays", "seconds": 1.5},
+  {"id": "npc-human-scream-man-1", "prompt": "a grown man screaming in terror as he runs away, a loud panicked yell", "seconds": 1.8},
+  {"id": "npc-human-scream-man-2", "prompt": "a burly man shrieking in fright, a ragged terrified shout of panic", "seconds": 1.8},
+  {"id": "npc-human-scream-woman-1", "prompt": "a woman screaming in terror as she flees, a loud high panicked scream", "seconds": 1.8},
+  {"id": "npc-human-scream-woman-2", "prompt": "a woman shrieking in fright, a sharp terrified cry of panic", "seconds": 1.8},
+  {"id": "npc-human-scream-child-1", "prompt": "a young child screaming in fright as they run away, a high shrill panicked scream", "seconds": 1.5},
+  {"id": "npc-human-scream-child-2", "prompt": "a small child shrieking in terror, a piercing frightened wail", "seconds": 1.5}
 ]

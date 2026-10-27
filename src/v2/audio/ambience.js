@@ -80,6 +80,13 @@ export const SOUNDS = {
   leafkinScream: 'sounds/npc-leafkin-scream.mp3',
   leafkinWhimper: 'sounds/npc-leafkin-whimper.mp3',
   panting: 'sounds/npc-leafkin-panting.mp3',
+  // A townsperson's scream as it flees a dragon (render/townsfolk.js SCREAMS).
+  humanScreamMan1: 'sounds/npc-human-scream-man-1.mp3',
+  humanScreamMan2: 'sounds/npc-human-scream-man-2.mp3',
+  humanScreamWoman1: 'sounds/npc-human-scream-woman-1.mp3',
+  humanScreamWoman2: 'sounds/npc-human-scream-woman-2.mp3',
+  humanScreamChild1: 'sounds/npc-human-scream-child-1.mp3',
+  humanScreamChild2: 'sounds/npc-human-scream-child-2.mp3',
   // A hob weevil's cry (render/hobs.js).
   hobCry: 'sounds/animal-hob-weevil-cry.mp3',
   // A frost strider's calls (render/striders.js, wild-striders.js), the flutter of its fidget, and its whine.
@@ -215,6 +222,8 @@ export const RULES = {
   villagerVoice: { reach: 10, near: 2, edge: 5, level: 0.8, gain: [0.8, 1.0], walled: true },
   // A green giant's scream as a flare sets it cowering: the leafkin's, slowed (giants.js SCREAM_RATE), heard across the labyrinth and its wood, `echo` of it into the valley echo.
   giantScream: { reach: 80, near: 8, edge: 20, level: 1.0, gain: [0.9, 1.0], echo: 0.5 },
+  // A townsperson's scream fleeing a dragon, heard across the town.
+  humanScream: { reach: 50, near: 4, edge: 15, level: 0.9, gain: [0.85, 1.0] },
   // A hob weevil's cry: at half volume up close, carrying as far as a villager's voice.
   hobCry: { reach: 10, near: 2, edge: 5, level: 0.5, gain: [0.8, 1.0] },
   // A strider's chirp or fidget flutter, heard across a town's rails.

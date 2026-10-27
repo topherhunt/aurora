@@ -179,6 +179,19 @@ export function buildPlinth(half, height) {
   ])
 }
 
+/** A coil of rope on y = 0: three stacked turns `radius` across. */
+export const ROPE = { radius: 0.16, tube: 0.035, hang: 0.02 }
+export function buildRopeCoil() {
+  const parts = []
+  for (let i = 0; i < 3; i++) parts.push([new THREE.TorusGeometry(ROPE.radius, ROPE.tube, 5, 12).rotateX(Math.PI / 2), [0, ROPE.tube + i * ROPE.tube * 1.7, 0], LAYER.TIMBER_BEAM, 1.15])
+  return propGeometry(parts)
+}
+
+/** A rope one metre long hanging from y = 1 to y = 0, to be scaled to its drop. */
+export function buildRopeHang() {
+  return propGeometry([[new THREE.CylinderGeometry(ROPE.hang, ROPE.hang, 1, 5, 1, true), [0, 0.5, 0], LAYER.TIMBER_BEAM, 1.15]])
+}
+
 /** Parts [geometry, offset, layer, shade] into one geometry in the post's attributes, each face's uvProj its own plane's metres over texMetres. Disposes the parts. */
 function propGeometry(parts) {
   const pos = [], nrm = [], uv = [], layer = [], col = []

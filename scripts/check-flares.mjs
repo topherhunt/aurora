@@ -1,7 +1,7 @@
 // Node-side gates for the flare gun (src/v2/flaregun.js) and its flares
 // (src/v2/render/flares.js): the wire format, the flight's ends, the sizes, the
 // aim's clearance, the layer's dedupe, cap, save and room filter, and the
-// window disc's size with the charges.
+// window pie's cut with the charges.
 //
 //   node scripts/check-flares.mjs
 //
@@ -277,18 +277,19 @@ console.log('the gun')
   windows.update(hands)
   check(disc('right').visible && !disc('left').visible, 'the window shows on the hand holding the gun only')
   const r = () => new THREE.Vector3().setFromMatrixScale(disc('right').matrix).x
-  check(near(r(), WINDOW_R), 'full, the disc fills the window', r().toFixed(4))
-  rec.charges = CHARGES / 4
+  const turn = () => disc('right').geometry.parameters.thetaLength / (2 * Math.PI)
+  check(near(r(), WINDOW_R) && near(turn(), 1), 'full, the pie fills the window', `${r().toFixed(4)} ${turn()}`)
+  rec.charges = 3
   rec.hue = 4
   windows.update(hands)
-  check(near(r(), WINDOW_R / 2) && disc('right').material.color.getHex() === new THREE.Color().setHex(PALETTE[4]).getHex(), 'a quarter left, half the radius, in the chosen colour', r().toFixed(4))
+  check(near(r(), WINDOW_R) && near(turn(), 3 / CHARGES) && disc('right').material.color.getHex() === new THREE.Color().setHex(PALETTE[4]).getHex(), 'three left, three tenths of the pie at full radius, in the chosen colour', turn().toFixed(3))
   pressSafety(rec)
   windows.update(hands)
-  check(!disc('right').visible, 'on safe, the disc is gone')
+  check(!disc('right').visible, 'on safe, the pie is gone')
   pressSafety(rec)
   rec.charges = 0
   windows.update(hands)
-  check(!disc('right').visible, 'empty, the disc is gone')
+  check(!disc('right').visible, 'empty, the pie is gone')
 }
 
 console.log('the flash')

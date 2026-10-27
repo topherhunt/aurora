@@ -18,9 +18,11 @@ export const TINT = [0.42, 0.8, 0.32]
 // Giants are laid for the labyrinths within this of her; a region holds one, so few are ever laid.
 export const LAY_M = 160
 export const MAX = 4
-// Ground speeds: on its round, and after her, back to its round or fleeing -- the chase past her 1.45 walk (player.js LOCOMOTION.maxSpeed).
-export const ROUND_SPEED = 1.2
-export const CHASE_SPEED = 2.0
+// Ground speeds: on its round, and after her, back to its round or fleeing -- both under her 1.45 walk (player.js LOCOMOTION.maxSpeed), so
+// she can always outwalk one. Its legs keep the pace of STRIDE times the ground speed: a slow, heavy, sliding gait.
+export const ROUND_SPEED = 0.6
+export const CHASE_SPEED = 1.0
+export const STRIDE = 2
 // It notices her within NOTICE_M inside the quarter circle it faces (NOTICE_HALF either side), and forgets her past FORGET_M.
 export const NOTICE_M = 5
 export const NOTICE_HALF = Math.PI / 4
@@ -129,7 +131,7 @@ export function roundAt(round, seconds, out) {
 
 export class Giants {
   /**
-   * @param labyrinths  layers/labyrinths.js Labyrinths: sitesIn, mazeOf, nodeAt
+   * @param labyrinths  layers/labyrinths.js Labyrinths: sitesIn, mazeOf, nodeAt, pathOf
    * @param opts.walk   heightAt: the bare ground (V2Height), not the WalkSurface, whose posts would stand a giant brushing a wall on top of it
    * @param opts.asset  a loaded asset, for a gate; the world fetches the GLB
    */
@@ -185,8 +187,6 @@ export class Giants {
     this.owed = 0
     // Its scream as it cowers, for the ear: { sound, rule, rate, x, y, z } (voices).
     this.said = []
-    this._parent = new Int32Array(0)
-    this._queue = []
     if (asset) {
       this.setAsset(asset)
       this.ready = Promise.resolve(true)
@@ -390,7 +390,7 @@ export class Giants {
     c.stepStart = start
     c.stepEnd = end
     c.speed = clip === 'walk' ? speed : 0
-    c.rate = clip === 'walk' ? speed / (this.asset.gait.walk * c.k) : clip === 'threaten' ? SWING_RATE : 1
+    c.rate = clip === 'walk' ? (speed * STRIDE) / (this.asset.gait.walk * c.k) : clip === 'threaten' ? SWING_RATE : 1
     c.cycle = this.durations[clip] / c.rate
     c.cue++
   }
@@ -455,22 +455,6 @@ export class Giants {
     return Math.max(0, Math.cos(s))
   }
 
-  /** The nodes from `from` to `to` along the graph, `from` first, into `path`. */
-  _path(m, from, to, path) {
-    const n = m.cells.length + 1
-    if (this._parent.length < n) this._parent = new Int32Array(n)
-    const parent = this._parent.fill(-1, 0, n), queue = this._queue
-    queue.length = 0
-    queue.push(from)
-    parent[from] = from
-    for (let q = 0; q < queue.length && parent[to] < 0; q++) for (const w of m.ways[queue[q]]) if (parent[w.to] < 0) { parent[w.to] = queue[q]; queue.push(w.to) }
-    if (parent[to] < 0) throw new Error(`Giants: no way from node ${from} to ${to} in ${JSON.stringify([m.site.rx, m.site.rz])}`)
-    path.length = 0
-    for (let id = to; id !== from; id = parent[id]) path.push(id)
-    path.push(from)
-    return path.reverse()
-  }
-
   /** One tick toward (tx, tz) at `speed` along the graph: through the next opening on the way to the node holding it; one outside is gone after to the entrance's cell. Stands once there. */
   _go(c, tx, tz, speed, k) {
     const L = this.labyrinths, m = c.m
@@ -482,7 +466,7 @@ export class Giants {
     if (node === -1) {
       [ax, az] = m.cells[inside]
     } else if (node !== goal) {
-      const path = this._path(m, node, goal, _path)
+      const path = L.pathOf(c.site, node, goal, _path)
       const w = m.ways[node].find((v) => v.to === path[1])
       ax = w.x; az = w.z
       if (Math.hypot(ax - c.sx, az - c.sz) < ARRIVE_M) {

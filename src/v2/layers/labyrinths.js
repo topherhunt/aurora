@@ -99,6 +99,12 @@ function regionHash(rx, rz, seed) {
 // The outline's swell at warped bearing `a`: the outer wall stands at rOuter * (1 + swell).
 const swell = (s, a) => LABYRINTH.lobe3 * Math.sin(3 * a + s.p3) + LABYRINTH.lobe5 * Math.sin(5 * a + s.p5)
 const SWELL_MAX = LABYRINTH.lobe3 + LABYRINTH.lobe5
+// pathOf's scratch, and aimOf's.
+let _parent = new Int32Array(0)
+const _queue = [], _path = [], _pts = []
+// aimOf: how many of the way's next points it looks ahead over, and how far its straight line keeps off a wall (the graph's legs keep 0.25 m).
+const AIM_AHEAD = 5, AIM_PAD = 0.25
+const put = (out, x, z) => { out[0] = x; out[1] = z; return out }
 
 /** Whether (x, z) is within `r` of any of `segments`, through their `hash`. */
 function hashedWallAt(h, seg, x, z, r) {
@@ -767,6 +773,61 @@ export class Labyrinths {
       } else if (b.l === a.l) walkTo(bayPoint(sc, b.i, b.j, 0, 0, [0, 0]))
     }
     walkTo(bayPoint(sc, sc.altar.i, sc.altar.j, 0, 0, [0, 0]))
+  }
+
+  /** The nodes of `s`'s graph from `from` to `to`, `from` first, into `path`. */
+  pathOf(s, from, to, path) {
+    const m = this.mazeOf(s), n = m.cells.length + 1
+    if (_parent.length < n) _parent = new Int32Array(n)
+    const parent = _parent.fill(-1, 0, n)
+    _queue.length = 0
+    _queue.push(from)
+    parent[from] = from
+    for (let q = 0; q < _queue.length && parent[to] < 0; q++) for (const w of m.ways[_queue[q]]) if (parent[w.to] < 0) { parent[w.to] = _queue[q]; _queue.push(w.to) }
+    if (parent[to] < 0) throw new Error(`Labyrinths.pathOf: no way from node ${from} to ${to} in ${s.rx},${s.rz}`)
+    path.length = 0
+    for (let id = to; id !== from; id = parent[id]) path.push(id)
+    path.push(from)
+    return path.reverse()
+  }
+
+  /**
+   * Into `out` [x, z]: where a walker at (x, z) bound for (tx, tz) aims next so it keeps to `s`'s paths. The way is laid out as
+   * points -- in from outside by a porch on the gate's line at `s.reach` and the gate (entranceOf), each opening and the next
+   * node's middle (its own first), out the same way -- and the aim is the farthest of the next few in a straight line AIM_PAD
+   * clear of every wall. Outside with none in sight, it steps straight out past `s.reach`, then goes round at the porch's radius.
+   */
+  aimOf(s, x, z, tx, tz, out) {
+    const m = this.mazeOf(s), inside = m.offs[s.rings - 1] + m.entrance
+    const node = this.nodeAt(s, x, z), goal = this.nodeAt(s, tx, tz)
+    const pts = _pts
+    pts.length = 0
+    if (node !== -1 || goal !== -1) {
+      const g = this.entranceOf(s), ox = m.mouth[0] - s.cx, oz = m.mouth[1] - s.cz, k = (s.reach + 1) / Math.hypot(ox, oz)
+      const porch = [s.cx + ox * k, s.cz + oz * k], gate = [g.x, g.z]
+      const from = node === -1 ? inside : node, path = this.pathOf(s, from, goal === -1 ? inside : goal, _path)
+      const mid = (id) => (id === m.cells.length ? m.middle : m.cells[id])
+      pts.push(...(node === -1 ? [porch, gate] : []), mid(from))
+      for (let q = 1; q < path.length; q++) {
+        const w = m.ways[path[q - 1]].find((v) => v.to === path[q])
+        pts.push([w.x, w.z], mid(path[q]))
+      }
+      if (goal === -1) pts.push(gate, porch)
+    }
+    pts.push([tx, tz])
+    for (let q = Math.min(pts.length, AIM_AHEAD) - 1; q >= 0; q--) if (this._clear(x, z, pts[q][0], pts[q][1])) return put(out, pts[q][0], pts[q][1])
+    if (node !== -1) return put(out, pts[0][0], pts[0][1])
+    const a = Math.atan2(z - s.cz, x - s.cx), b = Math.atan2(pts[0][1] - s.cz, pts[0][0] - s.cx)
+    if (Math.hypot(x - s.cx, z - s.cz) < s.reach) return put(out, s.cx + Math.cos(a) * (s.reach + 1), s.cz + Math.sin(a) * (s.reach + 1))
+    const round = a + Math.sign(Math.atan2(Math.sin(b - a), Math.cos(b - a))) * 0.4
+    return put(out, s.cx + Math.cos(round) * (s.reach + 1), s.cz + Math.sin(round) * (s.reach + 1))
+  }
+
+  // Whether the straight line from (x, z) to (tx, tz) keeps AIM_PAD clear of every wall.
+  _clear(x, z, tx, tz) {
+    const n = Math.ceil(Math.hypot(tx - x, tz - z) / 0.2)
+    for (let i = 1; i <= n; i++) if (this.wallAt(x + ((tx - x) * i) / n, z + ((tz - z) * i) / n, AIM_PAD)) return false
+    return true
   }
 
   /** Seconds she is given for `s`'s solved route (routeOf): its walking at CLOCK.walk and its climbing at CLOCK.climb. */

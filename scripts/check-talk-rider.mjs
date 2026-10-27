@@ -20,8 +20,9 @@ function riding(v = 1.25) {
   T.walk = { heightAt: () => 0 }
   T.bond = { grown: new Map() }
   T.lent = new Set()
+  T.dread = []
   const m = { state: 'ridden', active: true, base: 1, key: 'm', held: null, treat: null, x: 0, z: 0, y: 0, px: 0, pz: 0, py: 0, heading: 0, ph: 0, clip: 'walk', speed: v, cue: 3, pose: { x: 0, y: 0, z: 0, heading: 0 } }
-  const c = { body: 0, k: 1, pace: 1, graph: null, x: 0, z: 0, y: 0, px: 0, pz: 0, py: 0, heading: 0, ph: 0, hop: 1, phop: 1, mount: m, job: { kind: 'depart' }, state: 'walk', hidden: false, clip: 'ride', cue: 7, from: -1, speed: v, greet: null, lag: false, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 }, pose: { x: 0, y: 0, z: 0, heading: 0, hop: 1 } }
+  const c = { body: 0, k: 1, pace: 1, graph: null, x: 0, z: 0, y: 0, px: 0, pz: 0, py: 0, heading: 0, ph: 0, hop: 1, phop: 1, mount: m, job: { kind: 'depart' }, state: 'walk', hidden: false, clip: 'ride', cue: 7, from: -1, speed: v, greet: null, lag: false, flee: null, scream: 0, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 }, pose: { x: 0, y: 0, z: 0, heading: 0, hop: 1 } }
   m.rider = c
   T._shove = () => {}
   const sim = { t: 0 }

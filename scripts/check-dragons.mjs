@@ -1342,6 +1342,41 @@ const samePose = (a, b) => a.x === b.x && a.y === b.y && a.z === b.z && a.headin
   d.dispose()
 }
 
+// --- aggro into a labyrinth: she is behind its wall, and the charge goes round by the gap, never through ----
+{
+  const site = homeSite(79)
+  const spot0 = { x: site.x, z: site.z }
+  const WALL_X = spot0.x + 8, GAP_Z = spot0.z + 12, maze = {}
+  // East of WALL_X is the labyrinth, walled but for a 3 m gap at GAP_Z; its way in is the gap's line.
+  const labyrinths = {
+    labyrinthAt: (x) => (x > WALL_X ? maze : null),
+    reaches: (x, z, r) => x > WALL_X - 6 - r,
+    siteAt: () => maze,
+    wallAt: (x, z) => Math.abs(x - WALL_X) < 0.2 && Math.abs(z - GAP_Z) > 1.5,
+    entranceOf: () => ({ x: WALL_X - 1, y: GROUND, z: GAP_Z, heading: 0 }),
+    aimOf: (s, x, z, tx, tz, out) => {
+      if (x > WALL_X === tx > WALL_X) { out[0] = tx; out[1] = tz } else { out[0] = Math.abs(z - GAP_Z) > 0.5 ? WALL_X - Math.sign(WALL_X - tx) : WALL_X + Math.sign(tx - WALL_X); out[1] = GAP_Z }
+      return out
+    },
+  }
+  const d = new Dragons(new THREE.Scene(), flatField(GROUND), { seed: 5, roosts: roostOf([site]), wildlife: makeHerd([]), water: dry, harm: () => {}, fright: () => {}, cards: new LitterCards(4096), labyrinths, asset: makeAsset() })
+  d.plan = restPlan(d)
+  let now = chapterOf(1000, keyOf(site)).start
+  const spot = d._born(site, false).site
+  const her = { x: WALL_X + 6, y: GROUND, z: spot.z, open: false, dead: false }
+  d.update(her.x, her.y + 1.6, her.z, now)
+  const dr = d.byKey.get(keyOf(site))
+  let crossed = 0, through = false
+  for (let i = 0; i < 40 * 60 && dr.live?.phase !== 'chomp'; i++) {
+    const x0 = dr.x
+    now += DT
+    d.update(her.x, her.y + 1.6, her.z, now, [], { her, striders: [] })
+    if (x0 <= WALL_X !== dr.x <= WALL_X) { if (Math.abs(dr.z - GAP_Z) > 1.5) crossed++; else through = true }
+  }
+  check(dr.live !== null && dr.live.phase === 'chomp' && through && crossed === 0, 'she behind a labyrinth\'s wall, it charges round by the gap and chomps her, never stepping through the wall', `phase ${dr.live?.phase}, through ${through}, ${crossed} crossings`)
+  d.dispose()
+}
+
 // --- aggro given up overhead: spotted, she rises straight up out of GIVE_UP_M, and it neither bites nor follows ----
 {
   const site = homeSite(79)

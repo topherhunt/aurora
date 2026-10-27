@@ -2,10 +2,10 @@
 import THREE from '../../three-instance.js'
 import { createPropMaterial } from '../../material.js'
 import { bakeImpostor, bakeImpostorView, impostorCardExtents } from '../../props/impostor.js'
-import { POST, POST_CARD_FRAME, RUNG, TORCH_POLE, buildLadder, buildPalisadePost, buildPlinth, buildTorchPole, buildTowerDeck, tonePostCard } from '../../props/palisade.js'
+import { POST, POST_CARD_FRAME, RUNG, TORCH_POLE, buildLadder, buildPalisadePost, buildPlinth, buildRopeCoil, buildRopeHang, buildTorchPole, buildTowerDeck, tonePostCard } from '../../props/palisade.js'
 import { ALTAR, BEACON, POST_HEIGHT, POST_R, POST_STRIDE, TOWER, altarY } from '../layers/labyrinths.js'
 import { SCAFFOLD } from '../layers/scaffold.js'
-import { OVER, buildHatchDeck, netGeometry, poseScaffold, postTop, scaffoldLadders, scaffoldSpans } from './scaffold-parts.js'
+import { OVER, buildHatchDeck, netGeometry, poseScaffold, postTop, scaffoldLadders, scaffoldRope, scaffoldSpans } from './scaffold-parts.js'
 import { EGG_ROUGHNESS, EGG_TINTS } from './roosts.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { PropArena } from './prop-arena.js'
@@ -29,8 +29,13 @@ const TORCHES = 9
 const FLAME = { height: 0.34, radius: 0.1 }
 // The towers' decks and ladders across the labyrinths in reach.
 const FIXTURES = 24
-// Three scaffolds in reach: a plank deck per bay, the hatch bays among them, and a ladder per floor-to-floor climb.
-const SCAFFOLD_FIXTURES = { scaffoldDecks: 27, hatchDecks: 9, rungs: 36 }
+// Three scaffolds in reach: a plank deck per bay, the hatch bays among them, a ladder per floor-to-floor climb, and the rope's coil or its dropped length.
+const SCAFFOLD_FIXTURES = { scaffoldDecks: 27, hatchDecks: 9, rungs: 36, coils: 3, ropes: 3 }
+// The rope's coil is grabbed this high over the plank, and either it or the dropped rope's top within this radius.
+const ROPE_COIL_Y = 0.1
+const ROPE_GRAB = 0.3
+// A scaffold's key in the dropped-rope set.
+const ropeKey = (site) => `${site.rx},${site.rz}`
 // The nets' texture, tiled over their quads (scripts/gen-rope-net.mjs).
 const NET_PNG = 'gen-props/rope-net.png'
 // The ladder's rails stand this far over the deck, the handhold for stepping off.
@@ -118,11 +123,13 @@ export function fixtureGeometries() {
     scaffoldDecks: buildTowerDeck(SCAFFOLD.bay / 2),
     hatchDecks: buildHatchDeck(SCAFFOLD.bay / 2, SCAFFOLD.hatch, SCAFFOLD.hatchHalf),
     rungs: buildLadder(SCAFFOLD.rise + OVER, TOWER.ladderHalf),
+    coils: buildRopeCoil(),
+    ropes: buildRopeHang(),
   }
 }
 
-/** Maze `m`'s fixtures standing on `ground(x, z)`, each handed to `put(kind, matrix)`: the gate torches' poles, the beacon, each tower's deck and ladder, the scaffold's decks and ladders, and the altar's plinth. */
-export function poseFixtures(m, ground, put) {
+/** Maze `m`'s fixtures standing on `ground(x, z)`, each handed to `put(kind, matrix)`: the gate torches' poles, the beacon, each tower's deck and ladder, the scaffold's decks, ladders and rope (`ropeDown` hangs it), and the altar's plinth. */
+export function poseFixtures(m, ground, put, ropeDown = false) {
   for (const [x, z] of m.torches) put('poles', _m.makeTranslation(x, ground(x, z), z))
   put('beacons', _m.makeTranslation(m.beacon[0], ground(m.beacon[0], m.beacon[1]), m.beacon[1]))
   for (const t of m.towers) {
@@ -134,7 +141,7 @@ export function poseFixtures(m, ground, put) {
     const lx = t.x + t.ux * TOWER.ladderOut, lz = t.z + t.uz * TOWER.ladderOut, lg = ground(lx, lz)
     put('ladders', _m.compose(_p.set(lx, lg, lz), _q, _s.set(1, (g + TOWER.deck + LADDER_OVER - lg) / (TOWER.deck + LADDER_OVER), 1)))
   }
-  if (m.scaffold !== null) poseScaffold(m.scaffold, ground, put)
+  if (m.scaffold !== null) poseScaffold(m.scaffold, ground, put, ropeDown)
   const al = m.altar
   _q.setFromAxisAngle(_up, Math.atan2(-al.uz, al.ux))
   put('plinths', _m.compose(_p.set(al.x, altarY(m, ground), al.z), _q, _s.set(1, 1, 1)))
@@ -218,7 +225,11 @@ export class Palisades {
     this.scaffoldDecks = new THREE.InstancedMesh(geo.scaffoldDecks, this.material, SCAFFOLD_FIXTURES.scaffoldDecks)
     this.hatchDecks = new THREE.InstancedMesh(geo.hatchDecks, this.material, SCAFFOLD_FIXTURES.hatchDecks)
     this.rungs = new THREE.InstancedMesh(geo.rungs, this.material, SCAFFOLD_FIXTURES.rungs)
-    this.fixtures = [this.poles, this.beacons, this.decks, this.ladders, this.plinths, this.eggs, this.scaffoldDecks, this.hatchDecks, this.rungs]
+    this.coils = new THREE.InstancedMesh(geo.coils, this.material, SCAFFOLD_FIXTURES.coils)
+    this.ropes = new THREE.InstancedMesh(geo.ropes, this.material, SCAFFOLD_FIXTURES.ropes)
+    this.fixtures = [this.poles, this.beacons, this.decks, this.ladders, this.plinths, this.eggs, this.scaffoldDecks, this.hatchDecks, this.rungs, this.coils, this.ropes]
+    // Keys of the scaffolds whose rope she has dropped (ropeKey); this world's alone and unsaved.
+    this.ropesDown = new Set()
     // An instanced mesh at count 0 still issues its draw: three skips only an invisible one, so every count here sets `visible` with it.
     for (const f of this.fixtures) {
       f.count = 0
@@ -344,14 +355,14 @@ export class Palisades {
   }
 
   _fixtureMeshes() {
-    return { poles: this.poles, beacons: this.beacons, decks: this.decks, ladders: this.ladders, plinths: this.plinths, scaffoldDecks: this.scaffoldDecks, hatchDecks: this.hatchDecks, rungs: this.rungs }
+    return { poles: this.poles, beacons: this.beacons, decks: this.decks, ladders: this.ladders, plinths: this.plinths, scaffoldDecks: this.scaffoldDecks, hatchDecks: this.hatchDecks, rungs: this.rungs, coils: this.coils, ropes: this.ropes }
   }
 
   // The gate torches, the beacons, the towers' decks and ladders, the scaffolds' decks, ladders and nets and the altars of the labyrinths placed.
   _placeFixtures() {
     this.torches.length = 0
     const meshes = this._fixtureMeshes()
-    const c = { poles: 0, beacons: 0, decks: 0, ladders: 0, plinths: 0, scaffoldDecks: 0, hatchDecks: 0, rungs: 0 }
+    const c = { poles: 0, beacons: 0, decks: 0, ladders: 0, plinths: 0, scaffoldDecks: 0, hatchDecks: 0, rungs: 0, coils: 0, ropes: 0 }
     const ground = (x, z) => this.field.heightAt(x, z)
     const scaffolds = []
     for (const a of this.active.values()) {
@@ -360,7 +371,7 @@ export class Palisades {
       poseFixtures(m, ground, (kind, matrix) => {
         if (c[kind] >= meshes[kind].instanceMatrix.count) throw new Error(`Palisades: more ${kind} in reach than ${meshes[kind].instanceMatrix.count}`)
         meshes[kind].setMatrixAt(c[kind]++, matrix)
-      })
+      }, this.ropesDown.has(ropeKey(a.site)))
       for (const [x, z] of [...m.torches, m.beacon]) {
         const top = x === m.beacon[0] && z === m.beacon[1] ? BEACON.height : TORCH_POLE.height
         this.torches.push({ x, y: ground(x, z) + top, z, phase: (x * 0.37 + z * 0.61) % TAU })
@@ -475,6 +486,32 @@ export class Palisades {
       return { ...l, rung: l.bottom + Math.max(1, Math.round((y - l.bottom) / RUNG)) * RUNG }
     }
     return null
+  }
+
+  /** The placed scaffold whose coil, or dropped rope's top, the ray from `origin` along unit `dir` passes within ROPE_GRAB of inside `maxDist`: `{ site, down }`, or null. */
+  ropeOn(origin, dir, maxDist) {
+    for (const a of this.active.values()) {
+      const m = this.labyrinths.mazeOf(a.site)
+      if (m.scaffold === null) continue
+      const r = scaffoldRope(m.scaffold, (gx, gz) => this.field.heightAt(gx, gz)), down = this.ropesDown.has(ropeKey(a.site))
+      const [x, z] = down ? r.hang : r.coil, y = down ? r.top : r.top + ROPE_COIL_Y
+      const dx = x - origin.x, dy = y - origin.y, dz = z - origin.z
+      const t = Math.min(maxDist, Math.max(0, dx * dir.x + dy * dir.y + dz * dir.z))
+      if (Math.hypot(dx - dir.x * t, dy - dir.y * t, dz - dir.z * t) < ROPE_GRAB) return { site: a.site, down }
+    }
+    return null
+  }
+
+  /** Site's scaffold rope uncoiled down its side, drawn hanging from here on. */
+  dropRope(site) {
+    this.ropesDown.add(ropeKey(site))
+    this._placeFixtures()
+  }
+
+  /** The rope of site's scaffold as `{ x, z, top, bottom }`: where it hangs, the plank's height and the ground. */
+  ropeAt(site) {
+    const r = scaffoldRope(this.labyrinths.mazeOf(site).scaffold, (x, z) => this.field.heightAt(x, z))
+    return { x: r.hang[0], z: r.hang[1], top: r.top, bottom: r.bottom }
   }
 
   /** Whether her feet at `foot` on (x, z) are on a wall's top: then `out` is the unit across that wall. */

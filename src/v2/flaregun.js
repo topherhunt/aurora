@@ -11,7 +11,7 @@ import THREE from '../three-instance.js'
 // picks nothing and takes nothing, and gives nothing back: a dropped gun lies
 // loose until a hand lifts it. It wears its generated mesh (FLAREGUN_GLB).
 // The round window at the back of the lock shows the colour it will fire as a
-// disc, smaller as the charges run down and gone at none or on safe; only on
+// pie, a wedge lost with each charge spent and gone at none or on safe; only on
 // her own held guns. Her own shot flashes her whole view in its colour, washed
 // toward white (ShotFlash).
 // ---------------------------------------------------------------------------
@@ -146,16 +146,17 @@ export function strikeAt(muzzle, dir, depthAt, lift, out) {
 const _m = new THREE.Matrix4()
 const _w = new THREE.Matrix4()
 const _s = new THREE.Vector3()
-// The disc (a CircleGeometry, facing +Z) turned to face out of the window.
+// The pie (a CircleGeometry wedge from 12 o'clock, facing +Z) turned to face out of the window.
 const FACING = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), WINDOW_N)
 
-/** The windows of her held guns: a disc per hand, in the scene the held things are drawn over the frame in. */
+/** The windows of her held guns: a pie per hand, in the scene the held things are drawn over the frame in. */
 export class GunWindows {
   constructor(parent, keys) {
     this.discs = new Map()
-    const geo = new THREE.CircleGeometry(1, 24)
+    // A wedge per charge count, PIES[n] the n/CHARGES of a full turn.
+    this.pies = Array.from({ length: CHARGES + 1 }, (_, n) => new THREE.CircleGeometry(1, Math.max(1, Math.round((24 * n) / CHARGES)), Math.PI / 2, (2 * Math.PI * n) / CHARGES))
     for (const key of keys) {
-      const disc = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }))
+      const disc = new THREE.Mesh(this.pies[CHARGES], new THREE.MeshBasicMaterial({ fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }))
       disc.name = `v2-flaregun-window-${key}`
       disc.matrixAutoUpdate = false
       disc.visible = false
@@ -164,15 +165,15 @@ export class GunWindows {
     }
   }
 
-  /** One frame, after hands.update: each hand's disc on the gun it holds, sized to the charges left, or hidden. */
+  /** One frame, after hands.update: each hand's pie on the gun it holds, cut to the charges left, or hidden. */
   update(hands) {
     for (const [key, disc] of this.discs) {
       const rec = hands.holding(key)
       disc.visible = rec !== null && rec.kind === KIND && rec.armed && rec.charges > 0
       if (!disc.visible) continue
-      const r = WINDOW_R * Math.sqrt(rec.charges / CHARGES)
+      disc.geometry = this.pies[rec.charges]
       hands.heldFrame(key, _m)
-      disc.matrix.multiplyMatrices(_m, _w.compose(WINDOW, FACING, _s.set(r, r, 1)))
+      disc.matrix.multiplyMatrices(_m, _w.compose(WINDOW, FACING, _s.set(WINDOW_R, WINDOW_R, 1)))
       disc.matrixWorldNeedsUpdate = true
       disc.material.color.setHex(PALETTE[rec.hue])
     }

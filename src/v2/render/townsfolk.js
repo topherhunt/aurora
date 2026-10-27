@@ -151,6 +151,8 @@ export const TOWNSFOLK = {
   strider: { spare: 4, guests: 12, fill: [0.3, 0.6], fidget: [32, 120], untie: 2.5, hop: 1, rein: 3, legs: [1, 2], clear: 300, late: 150, slack: 30, walk: 0.85 },
   // Her within `m`: `ignore` of the time they carry on; otherwise they stop, face her and gesture (or just look, `idle`) for `s`, then catch up with themselves at `catchUp` times the pace. Either way `cool` seconds before the same one notices her again.
   greet: { m: 2, ignore: 0.5, s: [2.5, 4], cool: 20, catchUp: 1.5, clips: [['wave', 0.12], ['beckon', 0.08], ['idle', 0.8]] },
+  // A living dragon within `m` m (3D) sends a townsperson afoot running straight away from it until none has been that near for `s` s, then walking back onto its sim (greet.catchUp); it screams as it bolts, not again within `cool` s.
+  dread: { m: 25, s: 4, cool: 10 },
   // Travellers on the roads: drawn within `m` of her, the list re-read every `every` s; one meeting another journey's within `ahead` m steps out to its own side over `ease` s, a walker `person` m wide in the reckoning. Metres a hop up or down rises over the straight line.
   road: { m: 300, every: 0.5, ahead: 6, ease: 1, person: 0.4 },
   leap: 0.4,
@@ -164,9 +166,17 @@ export const TOWNSFOLK = {
   reach: 20,
 }
 
-export const CLIPS = ['idle', 'walk', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', 'gather', 'strike', ...TALKS]
+export const CLIPS = ['idle', 'walk', 'run', 'sit', 'idle-sit', 'wave', 'beckon', 'ride', 'ride-idle', 'gather', 'strike', ...TALKS]
 
 const LOD_TIERS = LOD_RUNGS
+// The scream each body's voice gives as it flees a dragon (ambience.js SOUNDS).
+const VOICE = {
+  blacksmith: 'man', shepherd: 'man', woodcutter: 'man', hunter: 'man', miner: 'man', trapper: 'man', skald: 'man', guard: 'man', jarlsthane: 'man',
+  alchemist: 'woman', innkeeper: 'woman', farmer: 'woman', fisherman: 'woman', herbalist: 'woman', thief: 'woman', healer: 'woman', shieldmaiden: 'woman', battlemage: 'woman',
+  'child-villager-2': 'child',
+}
+const SCREAMS = { man: ['humanScreamMan1', 'humanScreamMan2'], woman: ['humanScreamWoman1', 'humanScreamWoman2'], child: ['humanScreamChild1', 'humanScreamChild2'] }
+for (const b of TRADES.bodies) if (!VOICE[b]) throw new Error(`Townsfolk: ${b} has no scream voice`)
 const STEP_S = 2
 const ROSTER_URL = 'creatures/avatars.json'
 // How far outside a town's wake range the bodies start to download: ~6 MB on the wire, with room for her riding in at a strider's gallop.
@@ -1331,6 +1341,8 @@ export class Townsfolk {
     this.shown = []
     this.ranks = new Array(TOWNSFOLK.bodies.length).fill(0)
     this.greets = 0
+    this.dread = []
+    this.screamed = []
     this.loaded = false
     this.lazy = lazyLoad(() => this.load())
     this.ready = this.lazy.ready
@@ -1363,6 +1375,7 @@ export class Townsfolk {
       if (!right || !left) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]} names no pair of arms -- re-ship it`)
       // Before any puppet is made, so a baked one bakes it.
       asset.clips.push(strikeClip(asset, right, left))
+      if (!(asset.gait.run > 0)) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]} has no run gait`)
       for (const name of CLIPS) if (!asset.clips.some((c) => c.name === name)) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]} has no ${name} clip`)
       const durations = Object.fromEntries(asset.clips.map((c) => [c.name, c.duration]))
       if (!(durations.sit > SIT_CUT[1])) throw new Error(`Townsfolk: ${TOWNSFOLK.bodies[i]}'s sit clip is ${durations.sit} s, cut at ${SIT_CUT}`)
@@ -1405,7 +1418,7 @@ export class Townsfolk {
 
   /** `graph` is its town's (townGraph), null for a traveller off the road. */
   _entity(c, graph = null) {
-    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
+    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, flee: null, scream: 0, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 } })
   }
 
   _wake(i) {
@@ -1453,13 +1466,14 @@ export class Townsfolk {
   }
 
   /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders. */
-  update(feet, head, seconds, dt, t, lures = []) {
+  update(feet, head, seconds, dt, t, lures = [], dread = []) {
     if (!this.loaded) {
       if (this._near(head, seconds)) this.lazy.want()
       return
     }
     this.now = seconds
     this.frame++
+    this.dread = dread
     const [wake, sleep] = TOWNSFOLK.live
     this.towns.forEach((town, i) => {
       const d = Math.hypot(town.x - head.x, town.z - head.z) - town.radius
@@ -1960,6 +1974,7 @@ export class Townsfolk {
     const sx = c.px + (c.x - c.px) * a, sy = c.py + (c.y - c.py) * a, sz = c.pz + (c.z - c.pz) * a
     pose.hop = c.phop + (c.hop - c.phop) * a
     const G = TOWNSFOLK.greet
+    if (this._flee(c, seconds, dt)) return
     if (c.greet === null && !c.lag && !c.hidden && c.job === null && seconds >= c.cool && (c.state === 'walk' || c.state === 'stand' || c.state === 'talk') && Math.hypot(pose.x - feet.x, pose.z - feet.z) < G.m) {
       c.cool = seconds + G.cool
       if (Math.random() >= G.ignore) {
@@ -2043,6 +2058,58 @@ export class Townsfolk {
     pose.cue = c.cue
     pose.from = c.from
     pose.scale = 1
+  }
+
+  /** Its flight from the nearest dragon in `dread` (TOWNSFOLK.dread) posed, whether it is fleeing: `c.lag` held through it, so the talk and the drawing treat it as off its sim and it walks back after. One held in talk with her, riding or indoors does not flee. */
+  _flee(c, seconds, dt) {
+    const D = TOWNSFOLK.dread, pose = c.pose
+    let near = null, best = D.m
+    for (const d of this.dread) {
+      const r = Math.hypot(d.x - pose.x, d.y - pose.y, d.z - pose.z)
+      if (r < best) { best = r; near = d }
+    }
+    if (c.flee === null) {
+      if (near === null || c.hidden || c.saddle !== null || c.hop > 0 || (c.greet !== null && c.greet.until === Infinity)) return false
+      c.greet = null
+      c.lag = true
+      c.flee = { until: 0, hx: 1, hz: 0 }
+      c.gcue++
+      if (seconds >= c.scream) {
+        c.scream = seconds + D.cool
+        const cries = SCREAMS[VOICE[TRADES.bodies[c.body]]]
+        this.screamed.push({ sound: cries[Math.floor(Math.random() * cries.length)], x: pose.x, y: pose.y + c.size * 0.9, z: pose.z })
+      }
+    }
+    const f = c.flee
+    if (near !== null) {
+      const dx = pose.x - near.x, dz = pose.z - near.z, d = Math.hypot(dx, dz)
+      if (d > 1e-3) { f.hx = dx / d; f.hz = dz / d }
+      f.until = seconds + D.s
+    }
+    if (seconds >= f.until) {
+      c.flee = null
+      c.cool = seconds + TOWNSFOLK.greet.cool
+      return false
+    }
+    const v = this.bodies[c.body].gait.run * c.k, m = v * dt
+    pose.x += f.hx * m
+    pose.z += f.hz * m
+    pose.y = this._ground(c, pose.x, pose.z, pose.y)
+    const s = swing(pose.heading, Math.atan2(-f.hz, f.hx))
+    pose.heading += Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * 2 * dt)
+    pose.clip = 'run'
+    pose.speed = v
+    pose.cue = 1e6 + c.gcue * 2
+    pose.from = -1
+    pose.scale = 1 / c.pace
+    return true
+  }
+
+  /** The screams since the last step, each `{ sound, x, y, z }`, drained. */
+  screams(into) {
+    for (const v of this.screamed) into.push(v)
+    this.screamed.length = 0
+    return into
   }
 
   _unsaddle(c) {

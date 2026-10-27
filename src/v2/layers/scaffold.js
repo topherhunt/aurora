@@ -23,6 +23,10 @@ export const SCAFFOLD = {
   exit: 1.1,
   hatch: [0.05, 0.8],
   hatchHalf: 0.35,
+  // The rope's coil stands `ropeIn` inside the plank's edge; its rope hangs `ropeOut` outside, and she goes down it at `ropeSpeed` m/s.
+  ropeIn: 0.35,
+  ropeOut: 0.2,
+  ropeSpeed: 2,
   // Metres over the highest sampled ground that the lowest floor stands above its headroom.
   margin: 0.15,
 }
@@ -195,7 +199,7 @@ function attempt(c, rand) {
   const orient = Math.floor(rand() * 8)
   const row = (i, j) => { const r = orient & 1 ? j : i; return orient & 2 ? N - 1 - r : r }
   const cut = 1
-  const sc = { cx: c.cx, cz: c.cz, ux: c.ux, uz: c.uz, vx: -c.uz, vz: c.ux, floor: [null], walls: [null], ladders: [], altar: null, _base: null }
+  const sc = { cx: c.cx, cz: c.cz, ux: c.ux, uz: c.uz, vx: -c.uz, vz: c.ux, floor: [null], walls: [null], ladders: [], altar: null, rope: null, _base: null }
   for (let l = 1; l <= SCAFFOLD.floors; l++) sc.floor.push(new Uint8Array(N * N).fill(1))
   const bays = []
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) bays.push([i, j])
@@ -285,6 +289,10 @@ function attempt(c, rand) {
   const climbing = reachFrom(edges, (k) => k === 'walk' || k === 'up')
   for (let l = 1; l <= SCAFFOLD.floors; l++) for (const [i, j] of bays) if (sc.floor[l][i * N + j] && !all.has(nodeOf(l, i, j))) return null
   if (!all.has(PLANK_NODE) || climbing.has(PLANK_NODE)) return null
+  // The rope's coil on a plank edge bay without a hatch, rolled last so it moves nothing else.
+  const rope = pickOf(bays.filter((b) => perimeter(b) && !used[PLANK].has(b[0] * N + b[1])))
+  if (rope === null) throw new Error('scaffold: no plank edge bay without a hatch for the rope')
+  sc.rope = { i: rope[0], j: rope[1], d: pickOf(outward(rope)) }
   return sc
 }
 

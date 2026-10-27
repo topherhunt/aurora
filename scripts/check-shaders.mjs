@@ -37,6 +37,10 @@ import { Precip } from '../src/v2/render/precip.js'
 import { Flames } from '../src/v2/render/fire.js'
 import { Flares } from '../src/v2/render/flares.js'
 
+// The stipple rung starts its ground tiles loading; an <img> that never fires
+// leaves them unloaded, which compiling does not need.
+globalThis.document = { createElementNS: () => ({ addEventListener() {}, removeEventListener() {} }) }
+
 const tmp = mkdtempSync(join(tmpdir(), 'glsl-'))
 
 // glslang is a native binary, not something npm can install, and making the
@@ -1277,7 +1281,7 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
     fragmentShader: lib.fragmentShader,
     defines: {},
   }
-  const source = createTerrainMaterial({ atlas: null, axis: true })
+  const source = createTerrainMaterial({ atlas, axis: true })
   const mat = createPlainTerrainMaterial(source)
   mat.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
 
@@ -1338,17 +1342,16 @@ for (const [variant, opts] of TERRAIN_VARIANTS) {
   SHADERS.push([`${sLabel}  vert`, 'vert', builtinPrologue('vert', TERRAIN_DEFINES), sVert])
   SHADERS.push([`${sLabel}  frag`, 'frag', builtinPrologue('frag', TERRAIN_DEFINES), sFrag])
   CROSS_STAGE.push([sLabel, sVert, sFrag])
-  // Exactly the one implicit-LOD fetch on the FLAT face frame and the tilt, and
-  // none of the ladder: a textureGrad appearing here is the cost creeping back
-  // in, a second fetch is the macro layer creeping back in. (dFdx is not
-  // checked: three's own FLAT_SHADED guard carries one in every Lambert.)
+  // Exactly the one stipple fetch on the FLAT face frame and the tilt, the cliff
+  // and forest-floor fetches, and none of the ladder: a second stipple fetch is
+  // the macro layer creeping back in. (The road's cobble is the one textureGrad.)
   if (!sVert.includes('attribute vec4 stipple;')) MISSING_MARKS.push(`${sLabel} vert: attribute vec4 stipple`)
-  for (const mark of ['flat varying vec4 vStipFrame;', 'texture( uStippleMap, auroraStipUv )', 'auroraStippleTilt']) {
+  for (const mark of ['flat varying vec4 vStipFrame;', 'texture( uStippleMap, auroraStipUv )', 'auroraStippleTilt', 'texture( uAtlas,', 'texture( uForestMap,']) {
     if (!sFrag.includes(mark)) MISSING_MARKS.push(`${sLabel} frag: ${mark}`)
   }
   const fetches = sFrag.replace(/\/\/[^\n]*/g, '').match(/texture\( uStippleMap/g)?.length ?? 0
   if (fetches !== 1) MISSING_MARKS.push(`${sLabel} frag: ${fetches} stipple fetches, wants exactly 1`)
-  for (const mark of ['textureGrad', 'auroraDetailK', 'auroraDist', 'uMacroMap', 'uGritArr', 'sampler2DArray']) {
+  for (const mark of ['auroraDetailK', 'auroraDist', 'uMacroMap', 'uGritArr']) {
     if (sFrag.includes(mark)) MISSING_MARKS.push(`${sLabel} frag: emitted ${mark}, should not`)
   }
 }

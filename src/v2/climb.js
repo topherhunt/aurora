@@ -1,5 +1,6 @@
-// Climbing a watchtower's or scaffold's ladder (design/41-palisade-labyrinths.md): on the desktop she walks into it and the walk keys climb; in the headset an empty hand grips a rung and pulls. Either way Player.hold keeps her height until her next walk or teleport, and reaching the top steps her off at the ladder's exit.
+// Climbing a watchtower's or scaffold's ladder (design/41-palisade-labyrinths.md): on the desktop she walks into it and the walk keys climb; in the headset an empty hand grips a rung and pulls. Either way Player.hold keeps her height until her next walk or teleport, and reaching the top steps her off at the ladder's exit. A scaffold's dropped rope lets her down at a steady pace (`rope`).
 import { TOWER } from './layers/labyrinths.js'
+import { SCAFFOLD } from './layers/scaffold.js'
 
 // Metres a second up or down on the keys; how near the ladder's foot she must stand and how square to it she must face (her gaze along it, as a cosine) to start; how near a rung a gripping hand must be.
 export const CLIMB = { speed: 0.9, reach: 0.35, face: 0.5, grip: 0.15 }
@@ -13,6 +14,38 @@ export class Climb {
     this._sign = 1
     this.grips = { left: null, right: null }
     this._last = null
+    this._rope = null
+  }
+
+  /** Onto `rope` (Palisades.ropeAt), hanging off the plank's edge at its top. */
+  startRope(rope) {
+    const p = this.player
+    this.ladder = null
+    this.grips.left = this.grips.right = null
+    this._rope = rope
+    p.rig.position.x = rope.x
+    p.rig.position.z = rope.z
+    p.hold(rope.top)
+  }
+
+  /** The rope's descent, before player.update: she goes down at SCAFFOLD.ropeSpeed with her walk spent, and steps off at the ground; a flight or a teleport lets go. */
+  rope(dt, input) {
+    const r = this._rope
+    if (r === null) return
+    const p = this.player
+    if (!p.held || p.flying) {
+      this._rope = null
+      return
+    }
+    input.move = 0
+    input.strafe = 0
+    const y = p.rig.position.y - SCAFFOLD.ropeSpeed * p.scale * dt
+    if (y > r.bottom) {
+      p.hold(y)
+      return
+    }
+    this._rope = null
+    p.teleportTo(r.x, r.z, r.bottom)
   }
 
   /** The desktop's move, before player.update: walking at a ladder from its foot (facing in) climbs it, from the deck (facing out) climbs down it, and on it `input.move` is spent (zeroed); a strafe lets go, as does backing off its foot. `fx, fz` her gaze's level unit. */

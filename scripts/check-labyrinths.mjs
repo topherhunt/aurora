@@ -183,6 +183,31 @@ check(girths[0] > POST_GIRTH[0] * 0.7 && girths[1] < POST_GIRTH[1] * 1.3, 'every
   check(grazed === 0, `every labyrinth: every leg of the graph ${WAY_PAD} m clear of the walls`, `${grazed}/${legs} grazed`)
 }
 
+// aimOf, a dragon's way on foot: from outside opposite the gate to the middle, and back out to outside a quarter turn round, stepping 0.2 m at its aim, never on a wall's line.
+{
+  const STEP = 0.2, aim = [0, 0]
+  let stuck = 0, walled = 0
+  const walk = (s, x, z, tx, tz) => {
+    for (let n = 0; n < 4000; n++) {
+      if (Math.hypot(tx - x, tz - z) < STEP) return true
+      labyrinths.aimOf(s, x, z, tx, tz, aim)
+      const d = Math.hypot(aim[0] - x, aim[1] - z)
+      x += ((aim[0] - x) / d) * Math.min(STEP, d)
+      z += ((aim[1] - z) / d) * Math.min(STEP, d)
+      if (labyrinths.wallAt(x, z, 0)) { walled++; return true }
+    }
+    stuck++
+    return false
+  }
+  for (const s of sites) {
+    const m = labyrinths.mazeOf(s), a = Math.atan2(m.mouth[1] - s.cz, m.mouth[0] - s.cx), r = s.reach + 3
+    walk(s, s.cx - Math.cos(a) * r, s.cz - Math.sin(a) * r, ...m.middle)
+    walk(s, ...m.middle, s.cx + Math.cos(a + Math.PI / 2) * r, s.cz + Math.sin(a + Math.PI / 2) * r)
+  }
+  check(stuck === 0, 'every labyrinth: aimOf walks in by the gate to the middle and back out', `${stuck} stuck`)
+  check(walled === 0, 'every labyrinth: aimOf\'s way never crosses a wall\'s line', `${walled} walls crossed`)
+}
+
 console.log('\nthe walker in the walls')
 // Palisades' stone answers off the labyrinths and the field alone, so the gate walks the shipped columnAt without the meshes.
 const palisades = Object.assign(Object.create(Palisades.prototype), { labyrinths, field, _ladders: new WeakMap() })

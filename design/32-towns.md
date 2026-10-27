@@ -59,6 +59,8 @@ Townsfolk are cast by their trades (below), one of each body to a town. `townGra
 
 The greeting is this client's alone. When she comes within 2 m of someone walking, standing or talking, half the time they carry on. Otherwise they stop, turn to her, and wave (0.12), beckon (0.08) or just look (0.8) for 2.5-4 s, so about one meeting in ten gets a gesture. They then walk straight back to where the sim has them at 1.5x pace. The cooldown is 20 s either way.
 
+Flight from a dragon is the same kind of overlay (`_flee`, `TOWNSFOLK.dread`). A living dragon within 25 m in 3D, overhead or afoot, sends anyone afoot running straight away from the nearest at its body's run. It runs until no dragon has been that near for 4 s, then walks back onto its sim like a greeter. It screams as it bolts in its body's voice (man, woman or child, two clips each) and not again within 10 s. A rider, one indoors, and one held in talk with her stay put. The run checks no walls, so a flight can pass through a house. `scripts/check-dread.mjs` gates it.
+
 Every town's fire crackles through ambience.js's campfire rule, a loop per town placed at the clearing's centre whether or not the town is awake.
 
 The pool is 2 puppets per body (`TOWNSFOLK.puppets`), plus each live town's hearth mesh and flame. Each body's puppets go to its nearest 2 people who want one. A farther holder fades out to free its puppet.

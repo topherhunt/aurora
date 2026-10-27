@@ -969,7 +969,7 @@ const talkLog = new QuestLog()
 // The labyrinths whose middle she has stood in, by `rx,rz`, saved: their drums are still for good.
 const drumsStilled = new Set()
 const drumsHere = { s: null, near: 0, middle: false }
-// The labyrinth she is in against its clock (timeLimit), `left` of `limit` seconds till she is faded back to its gate; `done` once she stands by its altar, which stops it till she leaves. Unsaved: a load inside starts it afresh.
+// The labyrinth she is in against its clock (timeLimit), `left` of `limit` seconds till she is faded back to its gate; `done` once she stands by its altar or its drums are stilled (drumsStilled, saved), which stops it. Unsaved: a load inside starts it afresh.
 let mazeClock = null
 const MAZE_PRIZE_M = 1.5
 
@@ -977,6 +977,7 @@ function mazeTick(dt, o) {
   const s = palisades !== null && cave === null && indoors === null ? labyrinthAt(o.x, o.z) : null
   if (s === null) { mazeClock = null; return }
   if (mazeClock === null || mazeClock.s.rx !== s.rx || mazeClock.s.rz !== s.rz) { const limit = timeLimit(s); mazeClock = { s, limit, left: limit, done: false } }
+  if (drumsStilled.has(`${s.rx},${s.rz}`)) mazeClock.done = true
   if (mazeClock.done || doorBusy) return
   const m = palisades.labyrinths.mazeOf(s)
   if (Math.hypot(o.x - m.altar.x, o.z - m.altar.z) < MAZE_PRIZE_M && o.y > altarY(m, (x, z) => height.heightAt(x, z)) - 0.5) { mazeClock.done = true; return }
@@ -2406,6 +2407,16 @@ function takeRein(find, key) {
   return true
 }
 
+/** Her empty hand `key` pressed along the ray at a scaffold's rope (Palisades.ropeOn): its coil drops it down the side; the dropped rope's top puts her on it to slide down (Climb.startRope). */
+function pullRope(key, origin, dir) {
+  if (palisades === null || climb === null || player.th !== walk || hands.holding(key) !== null || (wildStriders && wildStriders.riding)) return false
+  const hit = palisades.ropeOn(origin, dir, DESK_CLICK_M * herScale())
+  if (hit === null) return false
+  if (hit.down) climb.startRope(palisades.ropeAt(hit.site))
+  else palisades.dropRope(hit.site)
+  return true
+}
+
 const gunFrame = new THREE.Matrix4()
 const gunMuzzle = new THREE.Vector3()
 const gunAim = new THREE.Vector3()
@@ -3005,6 +3016,11 @@ function buildQuestPanel() {
       const finger = hands.pointOf(key, new THREE.Vector3())
       if (takeRein((layer, tamed) => layer.leadableAt(finger, tamed), key)) return
       if (mountStrider((layer) => layer.mountableAt(finger, handsHead()))) return
+      if (el.components.raycaster) {
+        const rc = el.components.raycaster
+        rc.updateOriginDirection()
+        if (pullRope(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction)) return
+      }
       if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
       else if (holdsFlint(key) && !hands.wouldStow(key, handsHead())) strikeFlint(key)
       else {
@@ -3072,6 +3088,7 @@ function buildQuestPanel() {
     if (bed) { lieDown(bed, false); return }
     if (takeRein((layer, tamed) => layer.leadableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), tamed), 'desk')) return
     if (mountStrider((layer) => layer.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()))) return
+    if (pullRope('desk', raycaster.ray.origin, raycaster.ray.direction)) return
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
     else if (holdsStick('desk') && flintInPack() && !hands.wouldStow('desk', handsHead())) strikeFlint('desk', true)
@@ -3599,6 +3616,8 @@ let roosts = null
 let rowboats = null
 let boats = null
 let dragons = null
+// The living dragons the townsfolk flee, re-listed each frame.
+const dreadTmp = [], dragonTmp = []
 // The grounded dragons a grown pet stag charges (wildlife.js BUTT), refilled each frame.
 const dragonFoes = []
 // Her pace, gaze and trail, which her pets and snowmen keep up with.
@@ -5318,6 +5337,7 @@ async function buildRoom(room, at) {
   window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
   player = new Player(rig, camera, walk, { scale: herScale() })
   climb = palisades ? new Climb(player, palisades) : null
+  window.v2climb = climb // console: `v2climb.startRope(v2palisades.ropeAt(site))`
   netplay.scale = herScale()
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
   // A save before `y` was written lands on the topmost surface.
@@ -5742,7 +5762,7 @@ async function buildRoom(room, at) {
   if (!room.village) {
     walk.addStone(roosts)
     hands.addSource(roosts, 'egg')
-    dragons = new Dragons(scene, height, { seed, ground: walk, roosts, wildlife, water: waterSurfaces, cards: litterCards, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
+    dragons = new Dragons(scene, height, { seed, ground: walk, roosts, wildlife, water: waterSurfaces, cards: litterCards, labyrinths: biome.labyrinths, harm, fright: (key, x, z) => wildStriders.fright(key, x, z) })
     for (const m of dragons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-dragons' })
     dragons.ready.then(() => {
       if (build !== roomBuild) return
@@ -5815,7 +5835,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -8430,6 +8450,7 @@ function tick() {
       if (moveInput.ride) wildStriders.ride(dt, moveInput.ride, player)
       else wildStriders.sit(dt, player)
     } else {
+      if (climb !== null) climb.rope(dt, moveInput)
       if (climb !== null && player.th === walk && !renderer.xr.isPresenting) {
         const yaw = player.headYaw()
         climb.desk(dt, moveInput, Math.sin(yaw), Math.cos(yaw))
@@ -8653,7 +8674,11 @@ function stepOverworld(dt, now) {
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
   if (palisades) palisades.update(headTmp, fireNow())
-  if (townsfolk && questToggles.townsfolk) townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures)
+  if (townsfolk && questToggles.townsfolk) {
+    dreadTmp.length = dragonTmp.length = 0
+    if (dragons) for (const d of dragons.bodies(dragonTmp)) if (d.fell === null) dreadTmp.push(d)
+    townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures, dreadTmp)
+  }
   spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('trees')

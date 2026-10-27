@@ -1,6 +1,7 @@
 import THREE from '../three-instance.js'
 import { LAYER, ROCK_TILE_MEAN, GRASS_TILE_MEAN } from '../textures.js'
 import { GRIT_GRAD_SCALE, GRIT_LAYER, stippleTile, terrainDetailTextures } from './grit-texture.js'
+import { WORLD_SIZE, MAX_DEPTH } from '../v2/config.js'
 
 // ---------------------------------------------------------------------------
 // The terrain material: Lambert + vertex colours + FOUR TEXTURE FETCHES. The
@@ -504,6 +505,8 @@ export function createTerrainMaterial({ atlas = null, lofi: lofiOpt = false, lea
   // the arithmetic promises much, and the ladder above says nothing left inside
   // that block promises much either.
   const stone = atlas && !lofi
+  // Kept whether or not this rung samples it: the stipple rung's cliff does.
+  material.userData.atlas = atlas
 
   const detail = terrainDetailTextures()
 
@@ -1709,27 +1712,45 @@ export const GRAIN_FAR = 16
 export const COBBLE_METRES = 3
 export const COBBLE_NEAR = 130
 export const COBBLE_FAR = 150
-const COBBLE_MEAN = [0.297, 0.269, 0.224]
+const COBBLE_MEAN = [0.293, 0.265, 0.22]
+// The forest floor (FOREST FLOOR block): metres per tile, the eye distance it
+// fades into the stipple over, and the tile's linear mean.
+export const FOREST_FLOOR_METRES = 2
+export const FOREST_FLOOR_NEAR = 30
+export const FOREST_FLOOR_FAR = 45
+const FOREST_FLOOR_MEAN = [0.14, 0.136, 0.076]
+// The cliff wears the boulders' tile (LAYER.ROCK) at this size, on the face's
+// stipple plane. Both photo tiles take their UV from the CHUNK-LOCAL position,
+// which is the world's modulo the tile only while the tile divides the 8 m leaf
+// every chunk origin is a multiple of.
+export const CLIFF_METRES = 4
+const LEAF_METRES = WORLD_SIZE / 2 ** MAX_DEPTH
+for (const m of [FOREST_FLOOR_METRES, CLIFF_METRES]) {
+  if (LEAF_METRES % m !== 0) throw new Error(`terrain-material: a ${m} m tile does not divide the ${LEAF_METRES} m leaf, so chunks would seam`)
+}
 
-// Shared by every stipple material: 0 until the tile has loaded, because an
-// unloaded texture samples black with alpha 1, which reads as solid stone.
+// Each flag is shared by every stipple material: 0 until its tile has loaded,
+// because an unloaded texture samples black.
 const COBBLE_ON = { value: 0 }
-let cobbleCached = null
+const FOREST_ON = { value: 0 }
+const groundTiles = new Map()
 
-// The tile (tmp/cobble bake): sRGB colour, and in alpha 0.5 + 0.5 * the stone
-// mask, kept off zero so the browser's premultiply cannot wipe the dirt's colour.
-function cobbleTile() {
-  if (cobbleCached === null) {
-    cobbleCached = new THREE.TextureLoader().load('/terrain/cobble.webp', () => {
-      COBBLE_ON.value = 1
+// The tiles are cut by tools/props/cut-ground-tiles.mjs: sRGB colour, and in the
+// cobble's alpha 0.5 + 0.5 * its stone mask.
+function groundTile(path, on, anisotropy) {
+  let tex = groundTiles.get(path)
+  if (!tex) {
+    tex = new THREE.TextureLoader().load(path, () => {
+      on.value = 1
     }, undefined, (e) => {
-      throw new Error(`terrain-material: /terrain/cobble.webp failed to load: ${e?.message ?? e}`)
+      throw new Error(`terrain-material: ${path} failed to load: ${e?.message ?? e}`)
     })
-    cobbleCached.colorSpace = THREE.SRGBColorSpace
-    cobbleCached.wrapS = cobbleCached.wrapT = THREE.RepeatWrapping
-    cobbleCached.anisotropy = 4
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+    tex.anisotropy = anisotropy
+    groundTiles.set(path, tex)
   }
-  return cobbleCached
+  return tex
 }
 
 /**
@@ -1737,9 +1758,10 @@ function cobbleTile() {
  *   uGrassTone and uSnowAlbedo. Held BY REFERENCE, so retuning the exposure
  *   retunes this rung with it.
  * @param {boolean} [opts.stipple]  the plain rung plus the STIPPLE block below:
- *   one implicit-LOD fetch of the stipple tile per fragment, on a per-FACE
+ *   one implicit-LOD fetch per fragment of the stipple tile, on a per-FACE
  *   frame the mesher baked into a `stipple` vertex attribute (chunk-mesh-v2
- *   STIPPLE FRAME), and nothing else of the shipping shader's ladder.
+ *   STIPPLE FRAME), or of the cliff or forest-floor photo in its place; two
+ *   only on a face across their seam. Plus the road's cobbles.
  */
 export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
   const src = source?.userData?.uniforms
@@ -1772,9 +1794,19 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
       // Bump only, on the wall planes (1, 2): a cliff's relief is the
       // stipple's to carry, since its mesh is starved of vertices.
       uStippleWallBump: { value: 2.0 },
-      uCobbleMap: { value: cobbleTile() },
+      uCobbleMap: { value: groundTile('/terrain/cobble.webp', COBBLE_ON, 4) },
       uCobbleOn: COBBLE_ON,
+      uForestMap: { value: groundTile('/terrain/forest.webp', FOREST_ON, 1) },
+      uForestOn: FOREST_ON,
+      uAtlas: { value: source.userData.atlas },
+      // How far each photo tile swings the vertex colour, as a fraction of the
+      // tile divided by its mean (0.55 is the shipping shader's uStone).
+      uCliffStone: { value: 0.55 },
+      uForestFloor: { value: 0.8 },
     })
+    if (!source.userData.atlas) {
+      throw new Error('createPlainTerrainMaterial: the stipple rung needs the prop atlas on the terrain material, for the cliff')
+    }
   }
 
   material.onBeforeCompile = (shader) => {
@@ -1793,6 +1825,8 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         varying vec3 vStipPos;
         varying float vStipK;
         varying float vStipSnow;
+        varying float vCliffW;
+        varying float vForestW;
         attribute vec3 road;
         varying vec3 vRoad;
         varying float vRoadFade;` : ''}`)
@@ -1816,7 +1850,13 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         float auroraVertexSnow = smoothstep( 0.30, 0.60, vColor.b );
         vColor.rgb *= mix( vec3( 1.0 ), uGrassTone, auroraGreenBase * ${PLAIN_GRASS_TONE.toFixed(2)} );
         vColor.rgb *= mix( 1.0, uSnowAlbedo, auroraVertexSnow );${stipple ? `
-        vStipSnow = auroraVertexSnow;` : ''}
+        vStipSnow = auroraVertexSnow;
+        // The photo tiles' weights (CLIFF / FOREST FLOOR blocks). The cliff's
+        // is the mesh normal's slope, ~40-46 deg, inside shade()'s 31-52 deg
+        // rock ramp: chunk translations only, so objectNormal is world.
+        vCliffW = smoothstep( 0.78, 0.70, objectNormal.y ) * ( 1.0 - auroraVertexSnow );
+        vForestW = smoothstep( 0.45, 0.6, forest ) * auroraGreenBase * ( 1.0 - auroraVertexSnow )
+          * ( 1.0 - smoothstep( ${FOREST_FLOOR_NEAR.toFixed(1)}, ${FOREST_FLOOR_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );` : ''}
         // After both masks, which a grain-scaled vColor would move.
         vColor.rgb *= 1.0 + grain * uGrain * ( 1.0 - smoothstep( ${GRAIN_NEAR.toFixed(1)}, ${GRAIN_FAR.toFixed(1)}, length( mvPosition.xyz ) ) );
         // THE FOREST TINT LAST, past both exposure stages, so uForestTint IS the
@@ -1851,6 +1891,18 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         varying vec3 vStipPos;
         varying float vStipK;
         varying float vStipSnow;
+        varying float vCliffW;
+        varying float vForestW;
+        uniform sampler2DArray uAtlas;
+        uniform sampler2D uForestMap;
+        uniform float uForestOn;
+        uniform float uCliffStone;
+        uniform float uForestFloor;
+        // A seam weight sharpened by the texel's own lean t (a stone's crown, a
+        // grass tuft), so the edge is ragged rather than a fade. 0 and 1 hold.
+        float auroraRagged( float w, float t ) {
+          return smoothstep( 0.3, 0.7, clamp( w + t * w * ( 1.0 - w ) * 2.0, 0.0, 1.0 ) );
+        }
         uniform sampler2D uCobbleMap;
         uniform float uCobbleOn;
         varying vec3 vRoad;
@@ -1862,33 +1914,57 @@ export function createPlainTerrainMaterial(source, { stipple = false } = {}) {
         //
         // One fetch with the LOD left to the hardware, on a UV that is two
         // selects and a multiply-add from the face frame, into a colour the
-        // vertex stage
-        // already exposed. No derivatives, no distance guard, no
-        // classification. The tile is sized to the face's distance, so the
-        // pattern holds its screen size out to the fog instead of mipping
-        // away.
+        // vertex stage already exposed. The tile is sized to the face's
+        // distance, so the pattern holds its screen size out to the fog
+        // instead of mipping away. The plane, 0 xz / 1 zy / 2 xy, is a select
+        // on a flat value.
         //
         // ZERO MEAN, and it has to stay so: TerrainTint paints every grass
         // clump the colour of the ground under it by replaying the plain chain
         // (see terrain-tint.js), and it knows nothing of this block. The field
         // is 0..1 about 0.5, so a clump sits at the ground's AVERAGE and the
         // stipple swings the ground around it.
-        // The plane, 0 xz / 1 zy / 2 xy, as selects on a flat value: uniform
-        // flow, no branch.
-        vec3 auroraStipD = vStipPos - vStipAnchor;
-        vec2 auroraStipP = vStipFrame.w < 0.5 ? auroraStipD.xz : vStipFrame.w < 1.5 ? auroraStipD.zy : auroraStipD.xy;
-        vec2 auroraStipUv = vStipFrame.yz + vStipK * auroraStipP;
-        vec4 auroraStippleG = texture( uStippleMap, auroraStipUv );
-        float auroraStipGain = mix( 1.0, uStippleSnow, vStipSnow );
-        diffuseColor.rgb *= 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit * auroraStipGain;
-        // .gb are the gradient of the .r this pixel was just coloured by, as
-        // a unit slope in tile units, laid back onto the plane's two world
-        // axes. Not divided by the tile size on purpose -- see uStippleBump.
-        vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0 * auroraStipGain
-          * ( vStipFrame.w < 0.5 ? 1.0 : uStippleWallBump );
-        auroraStippleTilt = vStipFrame.w < 0.5 ? vec3( auroraStipGrad.x, 0.0, auroraStipGrad.y )
-          : vStipFrame.w < 1.5 ? vec3( 0.0, auroraStipGrad.y, auroraStipGrad.x )
-          : vec3( auroraStipGrad, 0.0 );
+        //
+        // ---- CLIFF and FOREST FLOOR: photo tiles in the stipple's place, each
+        // divided by its mean into a field averaging 1 for the same reason. The weights
+        // are per vertex, so a face whose corners agree takes ONE of the three
+        // fetches and only a face across a seam takes two. Each branch's edge
+        // lies where its weight is ~0, so an implicit LOD gone wrong across a
+        // split quad there colours nothing.
+        float auroraCliffW = 0.0;
+        float auroraForestW = 0.0;
+        vec3 auroraTex = vec3( 0.0 );
+        if ( vCliffW > 0.002 ) {
+          vec2 auroraCliffUv = ( vStipFrame.w < 0.5 ? vStipPos.xz : vStipFrame.w < 1.5 ? vStipPos.zy : vStipPos.xy ) * ${(1 / CLIFF_METRES).toFixed(6)};
+          vec3 auroraCliff = texture( uAtlas, vec3( auroraCliffUv, ${LAYER.ROCK}.0 ) ).rgb / vec3( ${ROCK_TILE_MEAN.map((v) => v.toFixed(4)).join(', ')} );
+          auroraCliffW = auroraRagged( vCliffW, dot( auroraCliff, vec3( 0.3333 ) ) - 1.0 );
+          auroraTex += auroraCliffW * mix( vec3( 1.0 ), auroraCliff, uCliffStone );
+        }
+        float auroraOpenW = vForestW * uForestOn * ( 1.0 - auroraCliffW );
+        if ( auroraOpenW > 0.002 ) {
+          vec3 auroraFloor = texture( uForestMap, vStipPos.xz * ${(1 / FOREST_FLOOR_METRES).toFixed(6)} ).rgb / vec3( ${FOREST_FLOOR_MEAN.map((v) => v.toFixed(3)).join(', ')} );
+          auroraForestW = auroraRagged( vForestW * uForestOn, auroraFloor.g - auroraFloor.r ) * ( 1.0 - auroraCliffW );
+          auroraTex += auroraForestW * mix( vec3( 1.0 ), auroraFloor, uForestFloor );
+        }
+        float auroraStipW = 1.0 - auroraCliffW - auroraForestW;
+        auroraStippleTilt = vec3( 0.0 );
+        if ( auroraStipW > 0.002 ) {
+          vec3 auroraStipD = vStipPos - vStipAnchor;
+          vec2 auroraStipP = vStipFrame.w < 0.5 ? auroraStipD.xz : vStipFrame.w < 1.5 ? auroraStipD.zy : auroraStipD.xy;
+          vec2 auroraStipUv = vStipFrame.yz + vStipK * auroraStipP;
+          vec4 auroraStippleG = texture( uStippleMap, auroraStipUv );
+          float auroraStipGain = mix( 1.0, uStippleSnow, vStipSnow );
+          auroraTex += auroraStipW * ( 1.0 + ( auroraStippleG.r - 0.5 ) * uStippleGrit * auroraStipGain );
+          // .gb are the gradient of the .r this pixel was just coloured by, as
+          // a unit slope in tile units, laid back onto the plane's two world
+          // axes. Not divided by the tile size on purpose -- see uStippleBump.
+          vec2 auroraStipGrad = ( auroraStippleG.gb - 0.5 ) * 2.0 * auroraStipGain * auroraStipW
+            * ( vStipFrame.w < 0.5 ? 1.0 : uStippleWallBump );
+          auroraStippleTilt = vStipFrame.w < 0.5 ? vec3( auroraStipGrad.x, 0.0, auroraStipGrad.y )
+            : vStipFrame.w < 1.5 ? vec3( 0.0, auroraStipGrad.y, auroraStipGrad.x )
+            : vec3( auroraStipGrad, 0.0 );
+        }
+        diffuseColor.rgb *= auroraTex;
 
         // ---- THE COBBLES, on the road frame (chunk-mesh-v2 ROAD FRAME): the
         // tile's rows run across the road. The UV's derivatives are taken here,
