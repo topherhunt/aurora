@@ -30,8 +30,8 @@ export const POOLS = {
   'human-town-day': ['02 Clockwork Continent.mp3', 'Salt and Copper - Meridians.mp3', 'The Ship Awaits - 4 - seaspray, victory.mp3'],
   'human-town-night': ['05 Day after Day.mp3', 'The Ship Awaits - 2 - dogs and children, peace.mp3'],
   'leafkin-glade': ['Caverns 1.mp3', 'Caverns 2.mp3', 'Caverns 3.mp3', 'Caverns 4.mp3', 'OH - Swamp - Soft raindrops.mp3'],
-  'snow-day': ['OH - Snow - White Silence 1.mp3', 'OH - Snow - White Silence 2.mp3'],
-  'snow-night': ['The Ship Awaits - bonechill, snow and swamp.mp3'],
+  'snow-day': ['OH - Snow - White Silence 1.mp3', 'OH - Snow - White Silence 2.mp3', 'The Ship Awaits - bonechill, snow and swamp.mp3'],
+  'snow-night': ['Nighttime snowstorm ambience (loop).mp3'],
   underwater: ['20261014-th-nocturnal-pulse.mp3'],
 }
 export const songUrl = (pool, song) => `music/${pool}/${POOLS[pool][song]}`

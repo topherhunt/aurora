@@ -1,12 +1,12 @@
 // Castle collision and portals (design/44-castles.md, Collision): plain data from a layout, built in the worker, and the column
 // spans the walk reads from it. Exterior data is castle-local metres with y from the castle floor; interior data is interior metres
-// (CASTLE.scale). Neither follows the warp, which bends the masonry up to about 0.27 m.
+// (CASTLE.scale across, CASTLE.tall upward). Neither follows the warp, which bends the masonry up to about 0.27 m.
 import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 import { courtProps, roomProps } from './furnish.js'
-import { sectionFrame, edgeNormals, offsetLoop, ROOT } from './shell.js'
+import { sectionFrame, edgeNormals, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
 
-const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, SH = H * S
+const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
 // Collision tops; a banner hangs on its wall and stops nothing.
 const PROP_TOP = { barrel: 0.9, crate: 0.8, sacks: 0.9, bench: 0.47, table: 0.82, longtable: 0.82, stool: 0.47, bed: 0.95, chest: 0.6, rack: 1.9, shelf: 1.8, hay: 0.7, cart: 1.0, well: 2.3, dummy: 1.7, throne: 1.76, brazier: 1.0, woodpile: 0.5, banner: 0 }
@@ -52,7 +52,7 @@ function exteriorSolids(lay) {
     const seen = e.a.out || e.b.out || e.kind === 'bridge'
     if (seen) for (const d of e.doors) if (d.look !== 'barred') {
       const depth = d.y === 0 ? ROOT + 0.05 : 0.05
-      notches.push({ x: d.x, z: d.z, axis: d.axis, side: d.side, hw: d.w / 2, out: depth + 0.6, lo: d.y + 0.06, hi: d.y + d.h })
+      notches.push({ x: d.x, z: d.z, axis: d.axis, side: d.side, hw: d.w / 2, depth, out: depth + 0.6, lo: d.y + 0.06, hi: d.y + d.h })
     }
     if (e.a.kind === 'entry') { const d = e.doors[0]; ramps.push({ x: d.x, z: d.z, axis: d.axis, side: d.side, hw: d.w / 2 }) }
     if (e.flight) {
@@ -80,7 +80,8 @@ function exteriorSolids(lay) {
   return { secs, boxes, ramps, notches }
 }
 
-/** The interior's air: every room's floor-to-ceiling, every door's way through the walls, and what stands in it. */
+/** The interior's air: every room's floor-to-ceiling, every door's way through the walls, every spiral's hole up through the slab
+ * over its high steps, and what stands in it. */
 function interiorSolids(lay) {
   const airs = [], spirals = [], boxes = []
   let storeys = 0
@@ -95,15 +96,20 @@ function interiorSolids(lay) {
     } else airs.push({ k: n.k, rect: [(ex[0] + INSET) * S + WT, (ex[1] + INSET) * S + WT, (ex[2] - INSET) * S - WT, (ex[3] - INSET) * S - WT], lo: y, hi: y + SH - 0.3 })
   }
   for (const e of lay.edges) {
-    if (e.stair) spirals.push({ k: e.stair.k, x: e.stair.x * S, z: e.stair.z * S })
+    if (e.stair) {
+      const { k } = e.stair, x = e.stair.x * S, z = e.stair.z * S, a0 = spiralStart(x, z), Rh = SPIRAL.R + 0.05
+      spirals.push({ k, x, z, a0 })
+      const arc = Array.from({ length: SPIRAL.steps - SPIRAL.hole + 1 }, (_, i) => [x + Math.cos(a0 + (SPIRAL.hole + i) * Math.PI / 8) * Rh, z + Math.sin(a0 + (SPIRAL.hole + i) * Math.PI / 8) * Rh])
+      airs.push({ k, poly: convex([[x, z], ...arc]), lo: k * SH, hi: (k + 1) * SH })
+    }
     for (const d of e.doors) {
       if (d.look === 'barred') continue
       const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w * S / 2
       const inner = e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge'
-      // Between two rooms the way runs through both walls; out of the castle it runs from the room to just past the leaf.
-      const [a0, a1] = inner ? [-(G + WT + 0.05), G + WT + 0.05] : [-d.side * (G + WT + 0.05), -d.side * (G - 0.15)].sort((p, q) => p - q)
+      // Between two rooms the way runs through both walls; out of the castle it runs from the room to the leaves.
+      const [a0, a1] = inner ? [-(G + WT + 0.05), G + WT + 0.05] : [-d.side * (G + WT + 0.05), -d.side * (G - 0.05)].sort((p, q) => p - q)
       const rect = d.axis === 'x' ? [cx + a0, cz - hw, cx + a1, cz + hw] : [cx - hw, cz + a0, cx + hw, cz + a1]
-      airs.push({ k, rect, lo: y, hi: y + d.h * S })
+      airs.push({ k, rect, lo: y, hi: y + d.h * V })
     }
   }
   for (const o of roomProps(lay)) if (PROP_TOP[o.kind] > 0) boxes.push(propBox(o, o.y))
@@ -190,10 +196,13 @@ export function exteriorSpans(ex, x, z) {
     if (u > hw + 0.3) continue
     put(RAMP_DEEP, u <= hw ? top : top - (u - hw))
   }
+  // A door's leaves close its notch: solid behind them, cut out in front.
   const cuts = []
   for (const c of ex.notches) {
     const q = ((c.axis === 'x' ? x - c.x : z - c.z)) * c.side, u = Math.abs(c.axis === 'x' ? z - c.z : x - c.x)
-    if (u <= c.hw && q >= -0.8 && q <= c.out) cuts.push([c.lo, c.hi])
+    if (u > c.hw || q < -0.8 || q > c.out) continue
+    if (q < c.depth) put(-6, c.hi)
+    else cuts.push([c.lo, c.hi])
   }
   return settle(LO, HI, n, cuts)
 }
@@ -217,7 +226,14 @@ export function interiorSpans(it, x, z, ref) {
   }
   LO[n] = top; HI[n++] = FAR
   if (air.length) {
-    for (const s of it.spirals) if (s.k >= k0 && s.k <= k1 && Math.hypot(x - s.x, z - s.z) < 1.05) { LO[n] = s.k * SH; HI[n++] = (s.k + 1) * SH }
+    for (const s of it.spirals) {
+      if (s.k < k0 || s.k > k1) continue
+      const r = Math.hypot(x - s.x, z - s.z), y = s.k * SH, rise = SH / SPIRAL.steps
+      if (r < SPIRAL.post) { LO[n] = y; HI[n++] = y + SH; continue }
+      if (r >= SPIRAL.R) continue
+      const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8))
+      if (j < SPIRAL.steps) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise }
+    }
     for (const b of it.boxes) if (inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
   }
   return settle(LO, HI, n, [])
@@ -254,12 +270,12 @@ function spotNear(spans, x, y, z, r, fx, fz) {
 /** standAt (x, y, z), else the nearest spot round it. */
 const spot = (spans, x, y, z, fx, fz) => standAt(spans, x, y, z) ?? spotNear(spans, x, y, z, 0.5, fx, fz)
 
-/** Every way through the shell: doors between the exterior and the interior (with where each sets her down), the spiral stairs
- * and ladders as blinks, the summit's rope and its chest. Exterior points are local, interior points interior metres. */
+/** Every way through the shell: doors between the exterior and the interior (each its leaves' face either side, and where it sets
+ * her down), ladders as blinks, the summit's rope and its chest. Exterior points are local, interior points interior metres. */
 function portals(lay, ex, it) {
   const exSpans = (x, z) => exteriorSpans(ex, x, z)
   const inSpans = (y) => (x, z) => interiorSpans(it, x, z, y + 0.5)
-  const doors = [], stairs = [], ladders = []
+  const doors = [], ladders = []
   for (const e of lay.edges) {
     const seen = e.a.out || e.b.out || e.kind === 'bridge'
     if (seen) for (const d of e.doors) {
@@ -268,15 +284,11 @@ function portals(lay, ex, it) {
       const iy = k * SH, ix = d.x * S - nx * (G + WT + 0.9), iz = d.z * S - nz * (G + WT + 0.9)
       doors.push({
         hw: d.w / 2,
-        ext: { x: d.x + nx * 0.05, y: d.y, z: d.z + nz * 0.05, nx, nz },
-        int: { x: d.x * S - nx * (G - 0.1), y: iy, z: d.z * S - nz * (G - 0.1), nx, nz },
+        ext: { x: d.x + nx * depth, y: d.y, z: d.z + nz * depth, nx, nz },
+        int: { x: d.x * S - nx * (G - 0.05), y: iy, z: d.z * S - nz * (G - 0.05), nx, nz },
         out: spot(exSpans, d.x + nx * (depth + 1.2), d.y, d.z + nz * (depth + 1.2), nx, nz),
         in: spot(inSpans(iy), ix, iy, iz, -nx, -nz),
       })
-    }
-    if (e.stair) {
-      const { x, z, k } = e.stair, cx = x * S, cz = z * S, lo = k * SH, hi = (k + 1) * SH
-      stairs.push({ k, x: cx, z: cz, up: spotNear(inSpans(hi), cx, hi, cz, 1.9, -cx, -cz), down: spotNear(inSpans(lo), cx, lo, cz, 1.9, -cx, -cz) })
     }
     if (e.ladder) {
       const { x, z, k } = e.ladder, y = (k + 1) * H, lo = k * SH
@@ -284,7 +296,7 @@ function portals(lay, ex, it) {
     }
   }
   const rope = lay.edges.find((e) => e.rope).rope, summit = lay.nodes.find((n) => n.kind === 'summit')
-  return { doors, stairs, ladders, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice() }
+  return { doors, ladders, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice() }
 }
 
 /** A layout's collision and portals, as plain data (structured-clonable, for the worker's reply). */

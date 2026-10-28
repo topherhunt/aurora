@@ -6,6 +6,11 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { ROCK_TILE_MEAN, LAYER } from '../../textures.js'
 import { buildMushroom } from '../../props/mushroom.js'
 import { mushroomVariants, mushroomParams } from '../../props/mushroom-bank.js'
+import { impostorCardExtents } from '../../props/impostor.js'
+import { LOD_DEG, distAt, ladderTier } from './critters.js'
+import { MUSHROOM_STEPS } from './mushrooms.js'
+import { CARD_PUSH, CARD_ROUND } from './rocks.js'
+import { WorldProbe, WORLD_PROBE } from '../../world-probe.js'
 import { taken } from '../taken.js'
 import { KIND as CHALK, RADIUS_M as CHALK_R, SQUASH as CHALK_SQUASH, STONE as CHALK_STONE } from './chalk.js'
 import { ribbons } from '../caves/chalk.js'
@@ -24,7 +29,7 @@ import { buildFern } from '../../props/fern.js'
 import { shipFernParams, FERN_TIERS } from '../../props/fern-bank.js'
 import { buildBladeClump } from '../../props/grass-blades.js'
 import { buildRock, ROCK_TIERS, ROCK_LOD_AT, ROCK_LOD_HYSTERESIS, rockLodSize } from '../../props/rock.js'
-import { rockParams } from '../../props/rock-bank.js'
+import { rockParams, rockCardGeometry, ROCK_IMPOSTOR_LAYERS } from '../../props/rock-bank.js'
 import { buildStickGeometry, LENGTH_M as STICK_M, TINT } from './sticks.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { TORCH as HELD_FLAME } from './wildfire.js'
@@ -107,15 +112,18 @@ varying vec3 vEmit;
 #ifdef MUSH
 attribute float cap;
 #endif
-#if defined(MUSH) || defined(FOLIAGE)
+#if defined(MUSH) || defined(FOLIAGE) || defined(PICTURE)
 attribute vec2 uvProj;
 attribute float texLayer;
 varying vec2 vUv;
 varying float vLayer;
 #endif
-#ifdef CARD
+#if defined(CARD) && !defined(PICTURE)
 attribute vec2 cardUv;
 varying vec2 vUv;
+#endif
+#ifdef ROCKCARD
+attribute vec3 cardBox;
 #endif
 #ifdef WOOD
 varying vec2 vUv;
@@ -135,7 +143,20 @@ void main() {
   vec3 side = normalize(cross(up, cameraPosition - o));
   w = vec4(o + side * (position.x * length(instanceMatrix[0].xyz)) + up * position.y, 1.0);
   n = cross(side, normalize(up));
+#ifndef PICTURE
   vUv = cardUv;
+#endif
+#elif defined(ROCKCARD)
+  // render/rocks.js rockCardMaterial's card: turned to the eye about the world's up at the rock's mid-height, CARD_PUSH of its depth toward her, its normals leaning out to its rim.
+  mat4 cardM = modelMatrix * instanceMatrix;
+  vec3 cardC = (cardM * vec4(0.0, cardBox.y, 0.0, 1.0)).xyz;
+  vec3 cardD = normalize(cameraPosition - cardC);
+  vec3 cardR = cross(vec3(0.0, 1.0, 0.0), cardD);
+  cardR = dot(cardR, cardR) > 1e-8 ? normalize(cardR) : vec3(1.0, 0.0, 0.0);
+  vec3 cardU = cross(cardD, cardR);
+  mat3 cardA = mat3(cardM);
+  w = vec4(cardC + cardD * ${CARD_PUSH.toFixed(3)} * length((cardD * cardA) * cardBox) + cardR * position.x * length((cardR * cardA) * cardBox) + cardU * position.y * length((cardU * cardA) * cardBox), 1.0);
+  n = (cardR * position.x + cardU * position.y) * ${CARD_ROUND.toFixed(3)} + cardD;
 #else
   // The inverse transpose of a rotation times a scale. mat3(instanceMatrix) alone tips a long thin prop's normals toward its axis, and the triplanar stone streaks along it.
   mat3 m = mat3(instanceMatrix);
@@ -146,7 +167,7 @@ void main() {
   // A mushroom's glow is on its cap; the stem is lit faintly from above.
   vEmit = iEmit * mix(0.12, 1.0, cap);
 #endif
-#if defined(MUSH) || defined(FOLIAGE)
+#if defined(MUSH) || defined(FOLIAGE) || defined(PICTURE)
   vUv = uvProj;
   vLayer = texLayer;
 #endif
@@ -173,13 +194,13 @@ varying vec3 vNrm;
 #ifdef INSTANCED
 varying vec3 vEmit;
 #endif
-#if defined(MUSH) || defined(FOLIAGE)
+#if defined(MUSH) || defined(FOLIAGE) || defined(PICTURE)
 precision highp sampler2DArray;
 uniform sampler2DArray uAtlas;
 varying vec2 vUv;
 varying float vLayer;
 #endif
-#ifdef CARD
+#if defined(CARD) && !defined(PICTURE)
 uniform sampler2D uCard;
 varying vec2 vUv;
 #endif
@@ -192,7 +213,10 @@ void main() {
   if (!gl_FrontFacing) n = -n;
 #ifdef STONE
   vec3 albedo = vCol * caveStone(vPos, n);
-#ifdef CARD
+#ifdef ROCKCARD
+  // The boulder's photograph is its silhouette; the stone it wears is the mesh's.
+  if (texture(uAtlas, vec3(vUv, vLayer)).a < 0.5) discard;
+#elif defined(CARD)
   vec4 card = texture2D(uCard, vUv);
   if (card.a < 0.5) discard;
   albedo *= card.r;
@@ -200,6 +224,12 @@ void main() {
 #elif defined(MUSH)
   // The forest's cap and flesh sheets: the glow is scaled by the sheet's own lightness, so fibres, scales and warts read through it instead of one flat tint.
   vec3 tex = texture(uAtlas, vec3(vUv, vLayer)).rgb;
+  vec3 albedo = vCol * tex;
+#elif defined(MUSHCARD)
+  // The forest mushroom's photograph, its lightness only: the cave's caps wear another sheet.
+  vec4 pic = texture(uAtlas, vec3(vUv, vLayer));
+  if (pic.a < 0.5) discard;
+  vec3 tex = vec3(dot(pic.rgb, vec3(0.2126, 0.7152, 0.0722)));
   vec3 albedo = vCol * tex;
 #elif defined(FOLIAGE)
   vec4 leaf = texture(uAtlas, vec3(vUv, vLayer));
@@ -211,7 +241,7 @@ void main() {
   vec3 albedo = vCol;
 #endif
   vec3 c = albedo * max(caveTorch(vPos, n) + vGlow * ${GLOW_GAIN.toFixed(2)}, vec3(uLitFloor));
-#ifdef MUSH
+#if defined(MUSH) || defined(MUSHCARD)
   c += vEmit * (0.2 + 1.6 * dot(tex, vec3(0.2126, 0.7152, 0.0722)));
 #elif defined(INSTANCED)
   c += vEmit;
@@ -228,12 +258,13 @@ void main() {
   vPos = w.xyz;
   gl_Position = projectionMatrix * viewMatrix * w;
 }`
-// The lake's surface (water.js) with a cave for its sky: the lake's ripple layers without the swell, its body tint lit by the torches, its mirror share and its clarity looking down. The reflection is the cave the mirror cube saw, and the torch's glint off the ripple. Opaque from below, as the lake is.
+// The lake's surface (water.js) with a cave for its sky: the lake's ripple layers without the swell, its body tint lit by the torches, its mirror share and its clarity looking down. The reflection is the cave the world probe's two cubes saw, cross-faded, and the torch's glint off the ripple. Opaque from below, as the lake is.
 const WATER_FRAG = /* glsl */ `
 ${COMMON}
 ${RIPPLE_GLSL}
-uniform samplerCube uMirror;
-uniform float uMirrorOn;
+uniform samplerCube uMirrorA;
+uniform samplerCube uMirrorB;
+uniform float uMirrorFade;
 uniform vec3 uTint;
 uniform vec3 uReflTint;
 uniform float uMirrorDown;
@@ -253,7 +284,7 @@ void main() {
   }
   vec3 r = reflect(v, n);
   if (r.y < 0.0) r.y = -r.y;
-  vec3 refl = texture(uMirror, r).rgb * uMirrorOn * uReflTint;
+  vec3 refl = mix(texture(uMirrorA, r).rgb, texture(uMirrorB, r).rgb, uMirrorFade) * uReflTint;
   for (int i = 0; i < 4; i++) {
     float s = uTorch[i].w;
     if (s <= 0.0) continue;
@@ -356,20 +387,30 @@ function cellarDoor() {
   return merged
 }
 
-// The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), capped from the cave sheet, each with a `cap` attribute (1 on the cap) and its built height.
+// The forest's mushroom species at mesh tier `tier` (mushroom-bank.js), capped from the cave sheet, each with a `cap` attribute (1 on the cap) and its built height and spread.
 function mushroomGeometries(tier) {
   return mushroomVariants().map((v, i) => {
     const g = buildMushroom({ ...mushroomParams(v, 0xca7e + i * 101, tier), capLayer: LAYER.MUSHROOM_CAP_CAVE })
     const layer = g.getAttribute('texLayer').array
     g.setAttribute('cap', new THREE.BufferAttribute(Float32Array.from(layer, (l) => (l === LAYER.MUSHROOM_CAP_CAVE ? 1 : 0)), 1))
-    return { geometry: g, height: g.userData.mushroom.height }
+    return { geometry: g, height: g.userData.mushroom.height, spread: g.userData.mushroom.spread }
   })
+}
+
+// A species' far card: a quad standing on its foot, `ext` (impostor.js impostorCardExtents) across and up, showing atlas `layer` top row first.
+function mushroomCard(ext, layer) {
+  const hw = ext.width / 2, g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-hw, 0, 0, hw, 0, 0, hw, ext.height, 0, -hw, ext.height, 0], 3))
+  g.setAttribute('uvProj', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2))
+  g.setAttribute('texLayer', new THREE.Float32BufferAttribute([layer, layer, layer, layer], 1))
+  g.setIndex([0, 1, 2, 0, 2, 3])
+  return g
 }
 
 // Every dripstone is the one seed /gen-stalagmite picked, varied by its row's yaw, lean and scale.
 const DRIP_VARIANTS = 1
 const DRIP_SEED = 150552
-// Past DRIP_NEAR metres a dripstone is its card; the split is redone each time her eye moves DRIP_STEP.
+// Past DRIP_NEAR metres a dripstone is its card; every prop ladder is re-picked each time her eye moves DRIP_STEP or her region changes.
 const DRIP_NEAR = 20
 const DRIP_STEP = 2
 // Texels of each variant's column in the card atlas.
@@ -422,10 +463,8 @@ const tmpE = new THREE.Euler()
 const tmpP = new THREE.Vector3()
 const tmpS = new THREE.Vector3()
 const tmpV = new THREE.Vector3()
-const tmpC = new THREE.Color()
 const rockOut = new Float32Array(ROCK_AT)
-// The water's mirror cube: its face size, and how far from her eye (m) a water vertex may be to be captured over.
-const MIRROR_SIZE = 64
+// How far from her eye (m) a water vertex may be for the probe to capture over it; with none that near it captures nothing.
 const MIRROR_REACH = 30
 
 export class CaveRoom {
@@ -455,17 +494,20 @@ export class CaveRoom {
     this.cards = dripCards()
     this.dripMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', STONE: '', DRIP: '' }, side: THREE.DoubleSide })
     this.cardMaterial = new THREE.ShaderMaterial({ uniforms: { ...this.uniforms, uCard: { value: this.cards.texture } }, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', STONE: '', DRIP: '', CARD: '' }, side: THREE.DoubleSide })
-    this.mirror = new THREE.WebGLCubeRenderTarget(MIRROR_SIZE, { type: THREE.HalfFloatType, generateMipmaps: false, depthBuffer: true })
-    this.mirrorRig = new THREE.CubeCamera(0.1, 80, this.mirror)
-    this.mirrorFace = 0
+    this.rockCardMaterial = new THREE.ShaderMaterial({ uniforms: this.mushUniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', STONE: '', ROCKCARD: '', PICTURE: '' }, side: THREE.DoubleSide })
+    this.mushCardMaterial = new THREE.ShaderMaterial({ uniforms: this.mushUniforms, vertexShader: VERT, fragmentShader: FRAG, defines: { INSTANCED: '', CARD: '', MUSHCARD: '', PICTURE: '' }, side: THREE.DoubleSide })
+    // The water's reflection: the lake's cube (world-probe.js), its own per room so the first capture snaps in rather than fading from the last room's. main.js adds what its world probe hides.
+    this.probe = new WorldProbe()
+    this.probe.setVantage((head, out) => this._vantage(head, out))
     this.waterUniforms = {
-      ...this.uniforms, uMirror: { value: this.mirror.texture }, uMirrorOn: { value: 0 },
+      ...this.uniforms, uMirrorA: { value: this.probe.textureA }, uMirrorB: { value: this.probe.textureB }, uMirrorFade: { value: 0 },
       uChop: { value: WATER.chop }, uFlow: { value: WATER.flow }, uTint: { value: new THREE.Color(WATER.tint) }, uMirrorDown: { value: WATER.mirrorDown },
       uReflTint: { value: new THREE.Color(WATER.reflTint).multiplyScalar(WATER.reflDim) },
       uClarity: { value: new THREE.Vector2(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180)) },
     }
     this.waterMeshes = []
-    this.waterMaterial = new THREE.ShaderMaterial({ uniforms: this.waterUniforms, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: true, side: THREE.DoubleSide })
+    // water.js's lake material: sorted with the other see-through things, seen from above until she is under it.
+    this.waterMaterial = new THREE.ShaderMaterial({ uniforms: this.waterUniforms, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: WATER.clarity > 0, depthWrite: true })
     this.markMaterial = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: MARK_VERT, fragmentShader: MARK_FRAG, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     // The marks laid (drawChalk), and the strokes being drawn (drawLive).
     this.marks = null
@@ -489,9 +531,10 @@ export class CaveRoom {
     this.rock.matrixAutoUpdate = false
     this.group.add(this.rock)
     this.region = plan.graph.nodes[plan.doors[0].node].region
-    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.woodMaterial,this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.mirror, this.rock]
+    this.disposables = [this.material, this.propMaterial, this.rockMaterial, this.woodMaterial,this.mushMaterial, this.foliageMaterial, this.dripMaterial, this.cardMaterial, this.rockCardMaterial, this.mushCardMaterial, this.cards.texture, this.waterMaterial, this.markMaterial, this.probe, this.rock]
     this._props(plan.props)
     this._water(plan.waters)
+    this.probe.exclude(...this.waterMeshes)
     this.mined = new Set()
     this.veins = new VeinLayer(this.group, this.uniforms, COMMON, veinList(plan))
     this.spiders = new CaveSpiders(this.group, this.uniforms, COMMON, plan, oy)
@@ -636,27 +679,11 @@ export class CaveRoom {
     return mesh
   }
 
-  // A mushroom mesh's rows in `shown` regions copied to the front of its buffers, and drawn alone.
-  _packMush(mesh, shown) {
-    const { ranges, src } = mesh.userData, attrs = mesh.geometry.attributes
-    let n = 0
-    for (const [region, [a, b]] of ranges) {
-      if (!shown.has(region)) continue
-      mesh.instanceMatrix.array.set(src.matrix.subarray(a * 16, b * 16), n * 16)
-      for (const k in ROW_ATTRS) attrs[k].array.set(src[k].subarray(a * ROW_ATTRS[k], b * ROW_ATTRS[k]), n * ROW_ATTRS[k])
-      n += b - a
-    }
-    mesh.count = n
-    mesh.visible = n > 0
-    mesh.instanceMatrix.needsUpdate = true
-    for (const k in ROW_ATTRS) attrs[k].needsUpdate = true
-  }
-
-  // Rows (place as _rows) each drawn by one of `geometries` or none, as _repick says: { src, n, meshes }, or null for no rows.
-  _picked(geometries, rows, place) {
-    if (rows.length === 0) { for (const g of geometries) g.dispose(); return null }
-    const meshes = geometries.map((g) => {
-      const mesh = new THREE.InstancedMesh(g, this.rockMaterial, rows.length)
+  // Rows (place as _rows) each drawn by one of `rungs`, [geometry, material] pairs, or none, as _repick says: { src, n, meshes }, or null for no rows.
+  _picked(rungs, rows, place) {
+    if (rows.length === 0) { for (const [g] of rungs) g.dispose(); return null }
+    const meshes = rungs.map(([g, material]) => {
+      const mesh = new THREE.InstancedMesh(g, material, rows.length)
       for (const k in ROW_ATTRS) g.setAttribute(k, new THREE.InstancedBufferAttribute(new Float32Array(rows.length * ROW_ATTRS[k]), ROW_ATTRS[k]))
       mesh.count = 0
       mesh.frustumCulled = false
@@ -689,57 +716,28 @@ export class CaveRoom {
     })
   }
 
-  // The stones at cave-local eye (x, y, z): a boulder on its mesh rung of the rock ladder (a cave is too close for the card), leaving one ROCK_LOD_HYSTERESIS further out than it came in; a pebble kept at full density inside FULL_RADIUS and thinned by rank as FULL_RADIUS / d past it, out to its own reach, as litter.js keeps the overworld's.
-  _pickStones(x, y, z) {
+  // The props at cave-local eye (x, y, z) in `shown` regions, re-picked: a dripstone its model within DRIP_NEAR and its card beyond; a boulder on the rock ladder (props/rock.js), leaving a rung one ROCK_LOD_HYSTERESIS further out than it came in, and gone past CULL_M as the rock round it is; a mushroom on the forest's ladder (render/mushrooms.js); a pebble kept at full density inside FULL_RADIUS and thinned by rank as FULL_RADIUS / d past it, out to its own reach, as litter.js keeps the overworld's.
+  _pick(x, y, z, shown) {
+    for (const set of this.dripSets) this._repick(set, x, y, z, (i, dx, dy, dz) => (dx * dx + dy * dy + dz * dz < DRIP_NEAR * DRIP_NEAR ? 0 : 1))
     this._repick(this.boulderSet, x, y, z, (i, dx, dy, dz) => {
-      const d = Math.hypot(dx, dy, dz) / this.boulderSize[i], cur = this.boulderRung[i]
+      const m = Math.hypot(dx, dy, dz)
+      if (m > CULL_M || !shown.has(this.boulderRegion[i])) return -1
+      const d = m / this.boulderSize[i], cur = this.boulderRung[i]
       let r = 0
-      while (r < ROCK_TIERS.length - 1 && d >= ROCK_LOD_AT[r] * (cur <= r ? 1 + ROCK_LOD_HYSTERESIS : 1)) r++
+      while (r < ROCK_LOD_AT.length && d >= ROCK_LOD_AT[r] * (cur <= r ? 1 + ROCK_LOD_HYSTERESIS : 1)) r++
       return (this.boulderRung[i] = r)
     })
+    for (const set of this.mushSets) {
+      this._repick(set, x, y, z, (i, dx, dy, dz) => {
+        if (!shown.has(set.region[i])) return -1
+        const r = (set.rung[i] = ladderTier(set.base[i], MUSHROOM_STEPS, MUSHROOM_STEPS.length, Math.hypot(dx, dy, dz), set.rung[i]))
+        return r < MUSHROOM_STEPS.length ? r : -1
+      })
+    }
     this._repick(this.pebbleSet, x, y, z, (i, dx, dy, dz) => {
       const d = Math.hypot(dx, dy, dz)
       return d < this.pebbleReach[i] && this.pebbleRank[i] * d < FULL_RADIUS ? 0 : -1
     })
-  }
-
-  // A dripstone kind of one variant: its model within DRIP_NEAR of her eye and its card beyond, the rows split between them by update().
-  _drips(geometry, card, rows, place) {
-    if (rows.length === 0) { geometry.dispose(); card.dispose(); return }
-    const src = this._rows(rows, place)
-    const [near, far] = [[geometry, this.dripMaterial], [card, this.cardMaterial]].map(([g, material]) => {
-      const mesh = new THREE.InstancedMesh(g, material, rows.length)
-      for (const k in ROW_ATTRS) g.setAttribute(k, new THREE.InstancedBufferAttribute(new Float32Array(rows.length * ROW_ATTRS[k]), ROW_ATTRS[k]))
-      mesh.count = 0
-      mesh.frustumCulled = false
-      this.group.add(mesh)
-      this.disposables.push(g)
-      return mesh
-    })
-    this.dripSets.push({ src, n: rows.length, near, far })
-  }
-
-  // Each dripstone row into the model or the card by its distance from cave-local (x, y, z).
-  _splitDrips(x, y, z) {
-    for (const d of this.dripSets) {
-      const fill = [0, 0]
-      for (let i = 0; i < d.n; i++) {
-        const m = d.src.matrix
-        const f = (m[i * 16 + 12] - x) ** 2 + (m[i * 16 + 13] - y) ** 2 + (m[i * 16 + 14] - z) ** 2 < DRIP_NEAR * DRIP_NEAR ? 0 : 1
-        const mesh = f === 0 ? d.near : d.far, j = fill[f]++
-        mesh.instanceMatrix.array.set(m.subarray(i * 16, i * 16 + 16), j * 16)
-        for (const k in ROW_ATTRS) {
-          const s = ROW_ATTRS[k]
-          mesh.geometry.getAttribute(k).array.set(d.src[k].subarray(i * s, i * s + s), j * s)
-        }
-      }
-      for (const [f, mesh] of [d.near, d.far].entries()) {
-        mesh.count = fill[f]
-        mesh.visible = fill[f] > 0
-        mesh.instanceMatrix.needsUpdate = true
-        for (const k in ROW_ATTRS) mesh.geometry.getAttribute(k).needsUpdate = true
-      }
-    }
   }
 
   _props(props) {
@@ -754,21 +752,26 @@ export class CaveRoom {
       const k = 0.92 + 0.16 * t.seed
       return { color: [lit[3] * k, lit[4] * k, lit[5] * k], lit }
     }
-    // The dripstone model in its DRIP_VARIANTS seeds, pointed down for a stalactite and up for a stalagmite.
+    // The dripstone model in its DRIP_VARIANTS seeds, pointed down for a stalactite and up for a stalagmite, its card the far rung.
     this.dripSets = []
+    const drips = (model, card, rows, place) => {
+      const s = this._picked([[model, this.dripMaterial], [card, this.cardMaterial]], rows, place)
+      if (s !== null) this.dripSets.push(s)
+    }
     for (let k = 0; k < DRIP_VARIANTS; k++) {
       const mine = (t) => Math.floor(t.seed * DRIP_VARIANTS) === k
       const model = dripstone(DRIP_SEED + k)
-      this._drips(model, this.cards.quads[k], props.tites.filter(mine), (t) => {
+      drips(model, this.cards.quads[k], props.tites.filter(mine), (t) => {
         set(t.x, t.y + 0.1, t.z, t.seed * 40, Math.PI + lean(t.seed), lean(1 - t.seed), t.r, t.len + 0.1, t.r * (0.8 + 0.4 * t.seed))
         return wall(t)
       })
-      this._drips(model.clone(), this.cards.quads[k].clone(), props.mites.filter(mine), (t) => {
+      drips(model.clone(), this.cards.quads[k].clone(), props.mites.filter(mine), (t) => {
         set(t.x, t.y - 0.05, t.z, t.seed * 40, lean(t.seed), lean(1 - t.seed), t.r * 1.4, t.len + 0.05, t.r * (1.2 + 0.4 * t.seed))
         return wall(t)
       })
     }
-    this.dripEye = null
+    this.pickEye = null
+    this.pickRegion = null
 
     // Ferns and grass: by the mouths, and ferns in the glow of a well-lit chamber.
     const fern = buildFern({ ...shipFernParams(FERN_TIERS[1].segments), seed: 0xfe2 })
@@ -781,22 +784,13 @@ export class CaveRoom {
       return { color: [0.05, 0.09, 0.025], lit: this._rock(g.x, g.y, g.z) }
     }, this.propMaterial)
 
-    // Mushrooms: the forest's species grown large, a glowing cap lit from within. One mesh per tier and species, its rows sorted by region; update() packs her regions' rows to the front (_packMush).
-    const tiers = [mushroomGeometries(0), mushroomGeometries(1)]
-    const groups = new Map()
-    for (const m of props.mush) {
-      const tier = m.h < 1 ? 1 : 0
-      const key = `${tier},${Math.floor(m.seed * tiers[tier].length)}`
-      if (!groups.has(key)) groups.set(key, [])
-      groups.get(key).push(m)
-    }
-    this.mushGroups = []
-    this.mushShown = null
-    for (const [key, rows] of groups) {
-      const [tier, species] = key.split(',').map(Number)
-      const { geometry, height } = tiers[tier][species]
-      rows.sort((a, b) => a.region - b.region)
-      const mesh = this._instanced(geometry.clone(), rows, (m) => {
+    // Mushrooms: the forest's species grown large, a glowing cap lit from within. Each species is one set on the forest's ladder, its two mesh tiers and then its card, each row's rung measured from its span as mushrooms.js measures one.
+    const tiers = [mushroomGeometries(0), mushroomGeometries(1)], variants = mushroomVariants()
+    this.mushSets = []
+    tiers[0].forEach(({ geometry, height, spread }, species) => {
+      const rows = props.mush.filter((m) => Math.floor(m.seed * variants.length) === species)
+      const card = mushroomCard(impostorCardExtents({ width: spread, height }), variants[species].impostorLayer)
+      const s = this._picked([[geometry, this.mushMaterial], [tiers[1][species].geometry, this.mushMaterial], [card, this.mushCardMaterial]], rows, (m) => {
         tmpS.set(...m.up).normalize()
         tmpQ.setFromUnitVectors(tmpP.set(0, 1, 0), tmpS).multiply(tmpQ2.setFromEuler(tmpE.set(m.lean, m.yaw, 0, 'YXZ')))
         tmpP.set(m.x, m.y, m.z).addScaledVector(tmpS, -0.04)
@@ -804,16 +798,14 @@ export class CaveRoom {
         tmpM.compose(tmpP, tmpQ, tmpS.set(k, k, k))
         const lit = this._rock(m.x, m.y, m.z)
         return m.glow ? { color: [0.35, 0.35, 0.35], emit: m.glow.map((c) => c * (m.giant ? 0.9 : 0.7)), lit } : { color: [0.7, 0.7, 0.7], lit }
-      }, this.mushMaterial)
-      const ranges = new Map()
-      rows.forEach((m, i) => { if (ranges.has(m.region)) ranges.get(m.region)[1] = i + 1; else ranges.set(m.region, [i, i + 1]) })
-      const src = { matrix: mesh.instanceMatrix.array.slice() }
-      for (const k in ROW_ATTRS) src[k] = mesh.geometry.attributes[k].array.slice()
-      mesh.userData = { ranges, src }
-      mesh.visible = false
-      this.mushGroups.push(mesh)
-    }
-    for (const t of tiers) for (const s of t) s.geometry.dispose()
+      })
+      if (s === null) return
+      const span = Math.max(height, spread)
+      s.region = Int32Array.from(rows, (m) => m.region)
+      s.base = Float32Array.from(rows, (m) => distAt((span * m.h) / height, LOD_DEG))
+      s.rung = new Int8Array(rows.length).fill(MUSHROOM_STEPS.length)
+      this.mushSets.push(s)
+    })
 
     // Ruins: blocks, a lintel spanning its gap.
     this._instanced(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), props.ruins, (b) => {
@@ -834,16 +826,21 @@ export class CaveRoom {
     const rungs = ROCK_TIERS.map((_, tier) => buildRock({ ...rockParams(), tier }))
     const mm = rungs[0].userData.rock.measured
     const big = props.boulders.filter((b) => 2 * b.r >= BOULDER_FROM)
-    this.boulderSet = this._picked(rungs, big, (b) => {
+    this.boulderSet = this._picked([...rungs.map((g) => [g, this.rockMaterial]), [rockCardGeometry(mm, ROCK_IMPOSTOR_LAYERS.boulder, 'spun'), this.rockCardMaterial]], big, (b) => {
       const k = (2 * b.r) / mm.width
       set(b.x, b.y + 0.3 * b.r - BOULDER_SINK * mm.height * k, b.z, b.yaw, 0, 0, k, k, k)
       return stoneLit(b.x, b.y + 0.3 * b.r, b.z, b.seed)
     })
     this.boulderSize = Float32Array.from(big, (b) => (rockLodSize(mm) * 2 * b.r) / mm.width)
-    this.boulderRung = new Int8Array(big.length).fill(ROCK_TIERS.length - 1)
+    this.boulderRung = new Int8Array(big.length).fill(ROCK_LOD_AT.length)
+    this.boulderRegion = Int32Array.from(big, (b) => {
+      field.at(b.x, b.y + 0.3 * b.r + 0.5, b.z)
+      if (field.owner < 0) throw new Error(`CaveRoom: the boulder at (${b.x.toFixed(1)}, ${b.y.toFixed(1)}, ${b.z.toFixed(1)}) is in no prim's reach`)
+      return field.prims[field.owner].region
+    })
     const pebble = buildPebble(), ph = pebble.userData.rock.measured.height
     const small = [...props.pebbles, ...props.boulders.filter((b) => 2 * b.r < BOULDER_FROM).map((b) => ({ ...b, y: b.y + 0.3 * b.r, s: 2 * b.r }))]
-    this.pebbleSet = this._picked([pebble], small, (p) => {
+    this.pebbleSet = this._picked([[pebble, this.rockMaterial]], small, (p) => {
       const stretch = STRETCH[0] + roll(p.seed, 7.13) * (STRETCH[1] - STRETCH[0]), flat = FLAT[0] + roll(p.seed, 13.7) * (FLAT[1] - FLAT[0])
       const sink = (SINK[0] + roll(p.seed, 29.3) * (SINK[1] - SINK[0])) * ph * p.s * flat
       set(p.x, p.y - sink, p.z, p.yaw, 0, 0, p.s * stretch, p.s * flat, p.s / stretch)
@@ -914,7 +911,6 @@ export class CaveRoom {
         g.setIndex(idx)
       }
       const mesh = new THREE.Mesh(g, this.waterMaterial)
-      mesh.renderOrder = 2
       // Drawn as the rock around it is: with its region, and within CULL_M of her.
       const nodes = this.plan.graph.nodes, e = b.edge === undefined ? null : this.plan.graph.edges[b.edge]
       g.computeBoundingBox()
@@ -995,66 +991,50 @@ export class CaveRoom {
         for (const { id, region } of c.lods[l]) this.rock.setVisibleAt(id, l === lod && shown.has(region))
       }
     }
-    if (region !== this.mushShown) { this.mushShown = region; for (const mesh of this.mushGroups) this._packMush(mesh, shown) }
+    this.waterMaterial.side = submerged ? THREE.BackSide : THREE.FrontSide
     for (const m of this.waterMeshes) {
       const { regions, box } = m.userData
       m.visible = regions.some((r) => shown.has(r)) && (flying || box.distanceToPoint(tmpP.set(eye.x, ly, eye.z)) < CULL_M)
     }
     for (const s of this.skies) s.mesh.visible = shown.has(s.region) && (flying || chunkGap(s, eye.x, ly, eye.z) < CULL_M)
     if (this.flames !== null) this.flames.update(t, [1, 1, 1])
-    const e = this.dripEye
-    if (e === null || (e.x - eye.x) ** 2 + (e.y - ly) ** 2 + (e.z - eye.z) ** 2 > DRIP_STEP * DRIP_STEP) {
-      this.dripEye = { x: eye.x, y: ly, z: eye.z }
-      this._splitDrips(eye.x, ly, eye.z)
-      this._pickStones(eye.x, ly, eye.z)
+    const e = this.pickEye
+    if (e === null || region !== this.pickRegion || (e.x - eye.x) ** 2 + (e.y - ly) ** 2 + (e.z - eye.z) ** 2 > DRIP_STEP * DRIP_STEP) {
+      this.pickEye = { x: eye.x, y: ly, z: eye.z }
+      this.pickRegion = region
+      this._pick(eye.x, ly, eye.z, shown)
     }
   }
 
-  /**
-   * Each frame she is above water, after update(): one face of the cube the water reflects, taken a hand over the water vertex nearest her eye within MIRROR_REACH, re-picked at each full turn so the six faces share a point. The water itself is hidden from it; the torches are not, so the wall she lights shows in the ripple.
-   */
-  reflect(renderer, scene, eye) {
-    const rig = this.mirrorRig
-    if (this.mirrorFace === 0) {
-      const ly = eye.y - this.oy
-      let best = MIRROR_REACH * MIRROR_REACH, at = null, p = null
-      for (const m of this.waterMeshes) {
-        if (!m.visible) continue
-        const q = m.geometry.getAttribute('position').array
-        for (let i = 0; i < q.length; i += 3) {
-          const d = (q[i] - eye.x) ** 2 + (q[i + 1] - ly) ** 2 + (q[i + 2] - eye.z) ** 2
-          if (d < best) { best = d; at = i; p = q }
-        }
+  // The nearest drawn water vertex to world `eye` within MIRROR_REACH, as cave-local { x, y, z }, or null.
+  _nearestWater(eye) {
+    const ly = eye.y - this.oy
+    let best = MIRROR_REACH * MIRROR_REACH, at = null, p = null
+    for (const m of this.waterMeshes) {
+      if (!m.visible) continue
+      const q = m.geometry.getAttribute('position').array
+      for (let i = 0; i < q.length; i += 3) {
+        const d = (q[i] - eye.x) ** 2 + (q[i + 1] - ly) ** 2 + (q[i + 2] - eye.z) ** 2
+        if (d < best) { best = d; at = i; p = q }
       }
-      if (at === null) return
-      const y = p[at + 1] + 0.3
-      if (this.plan.field.at(p[at], y, p[at + 2]) > 0) return
-      rig.position.set(p[at], y + this.oy, p[at + 2])
-      rig.updateMatrixWorld(true)
     }
-    // CubeCamera's six cameras face nowhere until updateCoordinateSystem, which only its own update() calls.
-    if (rig.coordinateSystem !== renderer.coordinateSystem) {
-      rig.coordinateSystem = renderer.coordinateSystem
-      rig.updateCoordinateSystem()
-    }
-    const wasXR = renderer.xr.enabled, prevTarget = renderer.getRenderTarget(), prevBackground = scene.background
-    renderer.getClearColor(tmpC)
-    const prevAlpha = renderer.getClearAlpha()
-    renderer.xr.enabled = false
-    renderer.setClearColor(0x000000, 1)
-    scene.background = null
-    const drawn = this.waterMeshes.filter((m) => m.visible)
-    for (const m of drawn) m.visible = false
-    renderer.setRenderTarget(this.mirror, this.mirrorFace)
-    renderer.clear(true, true, false)
-    renderer.render(scene, rig.children[this.mirrorFace])
-    for (const m of drawn) m.visible = true
-    scene.background = prevBackground
-    renderer.setRenderTarget(prevTarget)
-    renderer.setClearColor(tmpC, prevAlpha)
-    renderer.xr.enabled = wasXR
-    this.mirrorFace = (this.mirrorFace + 1) % 6
-    if (this.mirrorFace === 0) this.waterUniforms.uMirrorOn.value = 1
+    return at === null ? null : { x: p[at], y: p[at + 1], z: p[at + 2] }
+  }
+
+  // The probe's capture point at a re-anchor (WorldProbe.setVantage): WORLD_PROBE.height over the nearest water, refused where that is inside rock.
+  _vantage(head, out) {
+    const w = this._nearestWater(head)
+    if (w === null || this.plan.field.at(w.x, w.y + WORLD_PROBE.height, w.z) > 0) return false
+    out.set(w.x, w.y + WORLD_PROBE.height + this.oy, w.z)
+    return true
+  }
+
+  /** Each frame she is above water, after update() and before the frame is drawn: the lake's world probe stepped (a cube a second, cross-faded), while any water is drawn within MIRROR_REACH. `dt` real seconds, `look` her unit view direction. The water is hidden from it; the torches are not, so the wall she lights shows in the ripple. */
+  reflect(renderer, scene, eye, dt, look) {
+    tmpP.set(eye.x, eye.y - this.oy, eye.z)
+    if (!this.waterMeshes.some((m) => m.visible && m.userData.box.distanceToPoint(tmpP) < MIRROR_REACH)) return
+    this.probe.update(renderer, scene, eye, null, dt, null, look)
+    this.waterUniforms.uMirrorFade.value = this.probe.blend
   }
 
   dispose() {

@@ -4521,12 +4521,12 @@ function closeHouse() {
   indoors = null
 }
 
-/** After the step, by or in a castle: through its door, hatch, stair or onto its rope (Castles.portalAt). True while she is in one. */
-function castleTest(blink) {
+/** After the step, by or in a castle: through its door or hatch, or onto its rope (Castles.portalAt). True while she is in one. */
+function castleTest() {
   if (castles === null || doorBusy || EDITOR_MODE || cave !== null || indoors || player.th !== walk) return inCastle !== null
   const feet = player.originPosition()
   if (inCastle) inCastle.stone.hint = feet.y
-  const act = castles.portalAt(feet, portalFrom, blink)
+  const act = castles.portalAt(feet, portalFrom)
   if (act === null) return inCastle !== null
   if (act.kind === 'rope') {
     const [x, y, z] = act.at
@@ -4535,10 +4535,10 @@ function castleTest(blink) {
   return inCastle !== null
 }
 
-/** Through castle portal `act` under the fade: in or out of its interior, or between its storeys. */
+/** Through castle portal `act` under the fade: in or out of its interior. */
 async function castlePortal(act) {
   doorBusy = true
-  if (ambience && act.kind !== 'move') sound.play('door', { bus: 'near', gain: 0.3 })
+  if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
   makeBlackout()
   ready = false
   await fade(1)
@@ -4644,6 +4644,8 @@ let caveJob = 0
 const caveKeep = new Set()
 const caveHidden = new Set()
 let caveLeadAt = 0
+// The clock at the last stepCave, for the cave probe's dt.
+let caveReflectAt = 0
 // When her sword last cut each cave spider (singe.js recut), keyed system seed and spider id.
 const spiderCuts = new Map()
 let slashesRung = 0
@@ -4689,6 +4691,7 @@ function buildCave(sys, door) {
   const entries = caveEntries(sys, caveSites.mouths, caveSites.cellars)
   const plan = planCave({ seed: sys.seed, entries })
   const room = new CaveRoom(plan, CAVE_OY, lighting, caveStone, caveGrain, propTextures, sky.uniforms)
+  room.probe.exclude(...worldProbe.hidden)
   chalkStones.setRoom(room)
   chalkShown = -1
   const id = ++caveJob
@@ -4877,7 +4880,8 @@ function stepCave(head, t) {
   }
   caveBuild.room.setDay(dayness)
   caveBuild.room.update(head, submerged, t, player.flying)
-  if (questToggles.reflections && !submerged) caveBuild.room.reflect(renderer, scene, head)
+  if (questToggles.reflections && !submerged) caveBuild.room.reflect(renderer, scene, head, Math.min(0.1, Math.max(0, t - caveReflectAt)), camera.getWorldDirection(probeLook))
+  caveReflectAt = t
   stepChalk()
 }
 
@@ -7656,7 +7660,7 @@ function ensureTeleportGfx() {
   )
   arc.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
   arc.frustumCulled = false
-  // After the cave's water (cave-room.js, renderOrder 2): neither writes depth, so drawn first they are painted over even where they pass above it.
+  // After every see-through surface: the water writes depth and these do not, and three sorts see-through things by origin, which says nothing of where the arc passes, so drawn before the water they are painted over even above it.
   ring.renderOrder = arc.renderOrder = 3
   scene.add(ring, arc)
   teleportGfx = { ring, arc }
@@ -7709,7 +7713,7 @@ function fireTeleport() {
 function portalTest() {
   const blink = portalBlink
   portalBlink = false
-  if (caveTest() || houseTest(blink) || castleTest(blink) || indoors || !entrances) return
+  if (caveTest() || houseTest(blink) || castleTest() || indoors || !entrances) return
   const feet = player.originPosition()
   const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
   const step = Math.hypot(sx, sz)

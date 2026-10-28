@@ -552,4 +552,13 @@ export class WorldProbe {
     const t = this.fade
     return t * t * (3 - 2 * t)
   }
+
+  dispose() {
+    this.a.dispose()
+    this.b.dispose()
+    if (this.copier !== null) {
+      this.copier.mesh.geometry.dispose()
+      this.copier.material.dispose()
+    }
+  }
 }

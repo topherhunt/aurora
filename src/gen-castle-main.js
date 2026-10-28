@@ -1,4 +1,4 @@
-// The castle lab (gen-castle.html): one seed's layout as its exterior, or its rooms at CASTLE.scale with storeys cut away, under the
+// The castle lab (gen-castle.html): one seed's layout as its exterior, or its rooms at INNER with storeys cut away, under the
 // path graph drawn on top in the style of pocket-game's v5 lab. Both views share the graph, scaled, so a door outside is the door inside.
 import THREE from './three-instance.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
@@ -49,14 +49,17 @@ const loadTile = (path, metres) => {
 // Shell geometry carries a group per material slot (shell.js SLOTS) with UVs already in each slot's tile metres.
 const stoneMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/castle_stone.webp', UV_METRES) })
 const plankMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/timber_plank.png', UV_METRES) })
-const material = [stoneMat, plankMat]
+const doorMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/door.png', UV_METRES) })
+const material = [stoneMat, plankMat, doorMat]
+// Interior metres per exterior metre on each axis.
+const INNER = new THREE.Vector3(CASTLE.scale, CASTLE.tall, CASTLE.scale)
 // The road's flagstones, 3 m a tile (COBBLE_METRES in terrain-material.js).
 const courtMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/terrain/cobble.webp', 3) })
 const court = new THREE.Mesh(new THREE.BufferGeometry(), courtMat)
 const ghostMat = new THREE.MeshBasicMaterial({ color: 0x9fc6ff, transparent: true, opacity: 0.1, depthWrite: false, wireframe: false })
 const exterior = new THREE.Mesh(new THREE.BufferGeometry(), material)
 const ghost = new THREE.Mesh(exterior.geometry, ghostMat)
-ghost.scale.setScalar(CASTLE.scale)
+ghost.scale.copy(INNER)
 const interior = new THREE.Group()
 const overlay = new THREE.Group()
 scene.add(exterior, ghost, court, interior, overlay)
@@ -105,7 +108,7 @@ function disposeTree(g) {
 /** The graph over whichever view is up: lines along each edge's real route, a ball and a label per node, the route fat on top. */
 function buildOverlay() {
   disposeTree(overlay)
-  overlay.scale.setScalar(inside ? CASTLE.scale : 1)
+  if (inside) overlay.scale.copy(INNER); else overlay.scale.setScalar(1)
   if (!graphOn) return
   const shown = (n) => !n.unused && (!inside || n.k <= cut)
   const step = new Map(routeOn ? lay.route.nodes.map((n, i) => [n, i]) : [])
@@ -228,9 +231,9 @@ function rebuild() {
 
 /** Flip inside/outside, scaling the camera about the castle's centre so the same doorway stays framed. */
 function flip() {
-  const f = inside ? 1 / CASTLE.scale : CASTLE.scale
-  camera.position.multiplyScalar(f)
-  controls.target.multiplyScalar(f)
+  const f = inside ? new THREE.Vector3(1, 1, 1).divide(INNER) : INNER
+  camera.position.multiply(f)
+  controls.target.multiply(f)
   inside = !inside
   applyView()
 }

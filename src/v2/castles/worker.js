@@ -1,5 +1,6 @@
 // Builds one castle off the main thread (design/44-castles.md, Tiers): its layout, the full and mid-distance exteriors, the court,
-// the interior as one mesh, and its collision and portals. Replies { id, seed, full, low, court, interior, solids }.
+// the interior as one mesh, and its collision and portals. Replies { id, seed, full, low, court, interior, solids }, or { id, seed,
+// error } when it throws.
 import { castleLayout } from './layout.js'
 import { courtGeometry, exteriorGeometry, interiorGeometries } from './shell.js'
 import { castleSolids } from './solids.js'
@@ -42,10 +43,16 @@ const buffers = (d) => [d.position.buffer, d.normal.buffer, d.color.buffer, d.uv
 
 self.onmessage = (ev) => {
   const { id, seed } = ev.data
-  const lay = castleLayout(seed)
-  if (!lay.stats.ok) throw new Error(`castle worker: seed ${seed} has no good layout`)
-  const full = exteriorGeometry(lay), low = exteriorGeometry(lay, { full: false }), court = courtGeometry(lay)
-  const interior = shadeInterior(mergeStoreys(interiorGeometries(lay).map((s) => s.geometry)))
-  const solids = castleSolids(lay)
-  self.postMessage({ id, seed, full, low, court, interior, solids }, [full, low, court, interior].flatMap(buffers))
+  let reply
+  try {
+    const lay = castleLayout(seed)
+    if (!lay.stats.ok) throw new Error(`castle worker: seed ${seed} has no good layout`)
+    const full = exteriorGeometry(lay), low = exteriorGeometry(lay, { full: false }), court = courtGeometry(lay)
+    const interior = shadeInterior(mergeStoreys(interiorGeometries(lay).map((s) => s.geometry)))
+    reply = { id, seed, full, low, court, interior, solids: castleSolids(lay) }
+  } catch (e) {
+    self.postMessage({ id, seed, error: e.stack ?? e.message })
+    return
+  }
+  self.postMessage(reply, [reply.full, reply.low, reply.court, reply.interior].flatMap(buffers))
 }

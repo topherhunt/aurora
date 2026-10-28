@@ -1360,12 +1360,12 @@ function blockHull(shape) {
 // How far a card's normals lean out from facing the head at its rim (3 is about
 // 72 deg), so a far rock shades as the mesh's visible hemisphere does; less
 // reads too bright lit from the front and too dark from behind (check-rock-far).
-const CARD_ROUND = 3
+export const CARD_ROUND = 3
 // How far toward the head a card stands, as a share of the rock's ellipsoid
 // depth along the view. At the centre a rock the bed sank into a hill vanishes
 // behind the slope; at the near face a fully buried one shows. check-rock-far
 // holds the hill rows' coverage to the mesh's.
-const CARD_PUSH = 0.65
+export const CARD_PUSH = 0.65
 
 /**
  * The material that draws a 'spun' card (rock-bank.js rockCardGeometry): the

@@ -15,10 +15,12 @@ export const CASTLE_BANDS = { build: 220, drop: 260, mesh: 200, full: 50, low: 5
 export const CASTLE_CARD = { seed: 3, size: 512, bottom: -3 }
 // How far over its site a castle's interior is set down.
 export const CASTLE_RISE = 320
-// Plan metres round a rope, a hatch, a stair's spiral or its hole where each fires, and how near her feet must be to its height. The
-// rope hangs a metre off the lookout's face, past its 1.3 m battlement band, which she cannot step onto: she takes it over the band.
-const ZONE = { rope: 2.2, hatch: 0.6, ladder: 0.7, spiral: 1.6, hole: 0.9, rise: 0.6 }
-const DOOR = { walk: 0.5, edge: 0.2, into: 0.6, blink: 0.5 }
+// Plan metres round a rope, a hatch or a ladder where each fires, and how near her feet must be to its height. The rope hangs a
+// metre off the lookout's face, past its 1.3 m battlement band, which she cannot step onto: she takes it over the band. A door
+// fires within `door` of its leaves' face, which is solid, so touching them is going through.
+const ZONE = { rope: 2.2, hatch: 0.6, ladder: 0.7, door: 0.5, rise: 0.6 }
+// How square to the rope she must walk at it, as the cosine of her step on its way out.
+const ROPE_INTO = 0.6
 
 const loadTile = (path, metres, done) => {
   const t = new THREE.TextureLoader().load(path, done, undefined, () => { throw new Error(`Castles: ${path} failed to load`) })
@@ -36,14 +38,14 @@ export class Castles {
   constructor(scene, sites, { patch }) {
     this.scene = scene
     this.sites = sites
-    let left = 3, loaded
+    let left = 4, loaded
     this.texturesReady = new Promise((resolve) => { loaded = resolve })
     const done = () => { if (--left === 0) loaded() }
-    this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done) }
-    this.material = [patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.stone }), 'v2-castle-stone'), patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.plank }), 'v2-castle-plank')]
+    this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done) }
+    this.material = ['stone', 'plank', 'door'].map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
     this.courtMaterial = patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), 'v2-castle-court')
     // The interior has no sun: drawn unlit, its colours shaded in the worker.
-    this.innerMaterial = [new THREE.MeshBasicMaterial({ vertexColors: true, map: this.maps.stone }), new THREE.MeshBasicMaterial({ vertexColors: true, map: this.maps.plank })]
+    this.innerMaterial = ['stone', 'plank', 'door'].map((k) => new THREE.MeshBasicMaterial({ vertexColors: true, map: this.maps[k] }))
 
     this.cardTexture = new THREE.DataTexture(new Uint8Array(CASTLE_CARD.size * CASTLE_CARD.size * 4), CASTLE_CARD.size, CASTLE_CARD.size, THREE.RGBAFormat, THREE.UnsignedByteType)
     this.cardTexture.colorSpace = THREE.SRGBColorSpace
@@ -62,7 +64,7 @@ export class Castles {
     scene.add(this.cards)
     this.cardFrame = null
     this._baking = false
-    // Site id -> { site, state 'building' | 'ready', group, full, low, solids, shown }.
+    // Site id -> { site, state 'building' | 'ready' | 'failed', group, full, low, solids, shown }.
     this.live = new Map()
     this.worker = null
     this._job = 0
@@ -81,7 +83,7 @@ export class Castles {
     shell.computeBoundingBox()
     const half = Math.max(ext.hx, ext.hz) + 1.5, F = { half, bottom: CASTLE_CARD.bottom, top: shell.boundingBox.max.y + 0.5, size: Math.max(ext.hx, ext.hz) }
     const scene = new THREE.Scene()
-    const mats = [new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.stone }), new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.plank })]
+    const mats = ['stone', 'plank', 'door'].map((k) => new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }))
     const courtMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble })
     scene.add(new THREE.Mesh(shell, mats), new THREE.Mesh(court, courtMat))
     const key = new THREE.DirectionalLight(0xffffff, 1.6)
@@ -179,6 +181,8 @@ export class Castles {
     // Dropped while the worker was at it.
     if (c === undefined) return
     if (d.seed !== c.site.seed) throw new Error(`Castles: job ${d.id} came back as seed ${d.seed}, not ${c.site.seed}`)
+    // A failed castle stays in `live` while near, keeping its card, not rebuilt each frame.
+    if (d.error) { c.state = 'failed'; throw new Error(`Castles: castle ${c.site.id} (seed ${d.seed}) failed to build: ${d.error}`) }
     const s = c.site, group = new THREE.Group()
     group.position.set(s.x, s.y, s.z)
     group.rotation.y = s.yaw
@@ -273,12 +277,11 @@ export class Castles {
   }
 
   /**
-   * After the step, her feet now at `feet` and before it at `from` (world), `blink` when she teleported: the portal she just went
-   * through, as { kind: 'enter' | 'leave' | 'move' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way
-   * out (world) }, or null. Doors and the rope fire walking through or at them; the rest on entering their zone, so an arrival inside
-   * one stays put.
+   * After the step, her feet now at `feet` and before it at `from` (world): the portal she just went through, as { kind: 'enter' |
+   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world) }, or null. The rope fires
+   * walking at it; the rest on entering their zone, so an arrival inside one stays put.
    */
-  portalAt(feet, from, blink) {
+  portalAt(feet, from) {
     const c = this.inside ?? this._at(feet.x, feet.z)?.c
     if (!c) { this._zone = null; return null }
     const s = c.site, P = c.solids.portals, inside = this.inside === c
@@ -287,28 +290,19 @@ export class Castles {
     const sx = lx - fx, sz = lz - fz, step = Math.hypot(sx, sz)
     const world = (p, dy) => { const [wx, wz] = turn(s, p[0], p[2]); return [s.x + wx, dy + p[1], s.z + wz] }
     const face = (u, v) => turn(s, u, v)
-    const through = (p, hw, outward) => {
-      if (Math.abs(ly - p.y) > ZONE.rise) return false
-      const out = (lx - p.x) * p.nx + (lz - p.z) * p.nz, side = Math.abs((lx - p.x) * p.nz - (lz - p.z) * p.nx)
-      if (blink) return Math.hypot(out, side) <= DOOR.blink
-      return side <= hw - DOOR.edge && Math.abs(out) <= DOOR.walk && step > 0 && outward * (sx * p.nx + sz * p.nz) / step >= DOOR.into
-    }
-    for (const d of P.doors) {
-      if (!inside && through(d.ext, d.hw, -1)) return { kind: 'enter', site: s, at: world(d.in, s.y + CASTLE_RISE), face: face(-d.ext.nx, -d.ext.nz), back: world(d.out, s.y) }
-      if (inside && through(d.int, d.hw * CASTLE.scale, 1)) return { kind: 'leave', site: s, at: world(d.out, s.y), face: face(d.ext.nx, d.ext.nz) }
-    }
     // The rope: walking at it off the summit, not merely past it.
     const r = P.rope, ru = r.x - r.from[0], rv = r.z - r.from[1], rl = Math.hypot(ru, rv)
-    if (!inside && Math.hypot(lx - r.x, lz - r.z) < ZONE.rope && Math.abs(ly - r.top) < ZONE.rise && step > 0 && (sx * ru + sz * rv) / (step * rl) >= DOOR.into) return { kind: 'rope', site: s, at: world([r.x, r.top, r.z], s.y), face: face(ru, rv) }
+    if (!inside && Math.hypot(lx - r.x, lz - r.z) < ZONE.rope && Math.abs(ly - r.top) < ZONE.rise && step > 0 && (sx * ru + sz * rv) / (step * rl) >= ROPE_INTO) return { kind: 'rope', site: s, at: world([r.x, r.top, r.z], s.y), face: face(ru, rv) }
     // Zones: the first one her feet are in, by key; it fires only when it was not the one they were in last.
     let zone = null, act = null
     const near = (x, z, r, y) => Math.hypot(lx - x, lz - z) < r && Math.abs(ly - y) < ZONE.rise
+    const atLeaves = (p, hw) => Math.abs(ly - p.y) <= ZONE.rise && Math.abs((lx - p.x) * p.nx + (lz - p.z) * p.nz) <= ZONE.door && Math.abs((lx - p.x) * p.nz - (lz - p.z) * p.nx) <= hw
+    P.doors.forEach((d, i) => {
+      if (zone !== null) return
+      if (!inside && atLeaves(d.ext, d.hw)) { zone = `d${i}`; act = { kind: 'enter', site: s, at: world(d.in, s.y + CASTLE_RISE), face: face(-d.ext.nx, -d.ext.nz), back: world(d.out, s.y) } }
+      if (inside && atLeaves(d.int, d.hw * CASTLE.scale)) { zone = `d${i}`; act = { kind: 'leave', site: s, at: world(d.out, s.y), face: face(d.ext.nx, d.ext.nz) } }
+    })
     if (inside) {
-      P.stairs.forEach((t, i) => {
-        if (zone !== null) return
-        if (near(t.x, t.z, ZONE.spiral, t.down[1])) { zone = `s${i}`; act = { kind: 'move', site: s, at: world(t.up, oy), face: face(-t.x, -t.z) } }
-        else if (near(t.x, t.z, ZONE.hole, t.up[1])) { zone = `h${i}`; act = { kind: 'move', site: s, at: world(t.down, oy), face: face(-t.x, -t.z) } }
-      })
       P.ladders.forEach((l, i) => {
         if (zone === null && near(l.x, l.z, ZONE.ladder, l.down[1])) { zone = `l${i}`; act = { kind: 'leave', site: s, at: world(l.roof, s.y), face: face(-l.hatch[0], -l.hatch[2]) } }
       })
@@ -325,7 +319,7 @@ export class Castles {
   /** After a portal set her down: the zone she now stands in is the one she is in, so it does not fire. */
   arrived(feet) {
     this._zone = undefined
-    this.portalAt(feet, feet, false)
+    this.portalAt(feet, feet)
   }
 
   dispose() {
@@ -360,6 +354,9 @@ export class CastleInteriorStone {
     const n = interiorSpans(this.c.solids.it, lx, lz, this.hint - this.oy + 0.5)
     return this.oy + spanTop(n)
   }
+
+  /** Every top inside is level, so the walk reads a spiral's steps as floor and not the slope across them. */
+  deckAt() { return true }
 }
 
 const _hit = { c: null, lx: 0, lz: 0 }

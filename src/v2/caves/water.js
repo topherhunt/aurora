@@ -215,7 +215,7 @@ const MERGE_CELLS = 32
 // The water's mesh reads every SHORE_STRIDE-th shore sample: its edge lies under the bank, so the 0.25 m grid the flood needs only multiplies the shoreline's triangles.
 const SHORE_STRIDE = 4
 
-/** The water plane over `shore` at `level`, as { position, index }: the open water as merged rectangles, each cell along the shore clipped to where its corners' rise interpolates under 0, on the shore grid thinned by SHORE_STRIDE. The rectangles' sides meet the shore cells in T-junctions, crack-free only because the plane is flat. */
+/** The water plane over `shore` at `level`, as { position, index }: the open water as merged rectangles, each cell along the shore clipped to where its corners' rise interpolates under 0, on the shore grid thinned by SHORE_STRIDE, every triangle wound to face up. The rectangles' sides meet the shore cells in T-junctions, crack-free only because the plane is flat. */
 export function shoreMesh(shore, level) {
   const { x0, z0 } = shore, st = SHORE_STRIDE, cell = shore.cell * st
   const nx = Math.floor((shore.nx - 1) / st) + 1, nz = Math.floor((shore.nz - 1) / st) + 1
@@ -236,7 +236,7 @@ export function shoreMesh(shore, level) {
       for (let v = 0; v < h; v++) used.fill(1, (k + v) * nx + i, (k + v) * nx + i + w)
       const base = pos.length / 3, xa = x0 + i * cell, xb = xa + w * cell, za = z0 + k * cell, zb = za + h * cell
       pos.push(xa, level, za, xb, level, za, xb, level, zb, xa, level, zb)
-      idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+      idx.push(base, base + 2, base + 1, base, base + 3, base + 2)
     }
   }
   const poly = []
@@ -256,7 +256,7 @@ export function shoreMesh(shore, level) {
       }
       const base = pos.length / 3
       for (let j = 0; j < poly.length; j += 2) pos.push(x0 + poly[j] * cell, level, z0 + poly[j + 1] * cell)
-      for (let j = 2; j < poly.length / 2; j++) idx.push(base, base + j - 1, base + j)
+      for (let j = 2; j < poly.length / 2; j++) idx.push(base, base + j, base + j - 1)
     }
   }
   return { position: new Float32Array(pos), index: idx }

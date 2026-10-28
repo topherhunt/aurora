@@ -5,7 +5,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 
-const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale
+const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
 // Footprints [w, d] in metres; the mesher in shell.js draws each kind.
 export const PROP = {
   barrel: [0.7, 0.7], crate: [0.8, 0.8], sacks: [0.9, 0.6], bench: [1.8, 0.45], table: [2.4, 1.0], longtable: [4.2, 1.1], stool: [0.45, 0.45],
@@ -140,17 +140,17 @@ export function roomProps(lay) {
     for (const e of lay.edges) {
       if (e.a !== n && e.b !== n) continue
       for (const d of e.doors) if (Math.abs(d.y - n.k * H) < 0.1) portals.push([d.x * S, d.z * S])
-      // A stair climbs from its foot room and arrives in the one above through its hole; both keep it clear.
-      if (e.stair) portals.push([e.stair.x * S, e.stair.z * S], [e.stair.x * S, e.stair.z * S])
+      // A spiral climbs from its foot room and arrives in the one above through its hole; both keep its disc and a way round it clear.
+      if (e.stair) for (let i = 0; i < 7; i++) portals.push([e.stair.x * S + (i && Math.cos(i * Math.PI / 3) * 1.2), e.stair.z * S + (i && Math.sin(i * Math.PI / 3) * 1.2)])
       if (e.ladder) portals.push([e.ladder.x * S, e.ladder.z * S])
     }
     const centre = role === 'great' ? ['longtable', 'table'] : role === 'solar' ? ['bed'] : role === 'guard' ? ['table'] : null
     const list = []
     if (role === 'great' && n.sec.kind === 'keep' && !throned) {
-      fillRect(rng, r, n.sec.round, portals, ['throne'], n.k * H * S, null, list, 1)
+      fillRect(rng, r, n.sec.round, portals, ['throne'], n.k * H * V, null, list, 1)
       throned = list.length > 0
     }
-    fillRect(rng, r, n.sec.round, portals, WALL_KINDS[role], n.k * H * S, centre, list)
+    fillRect(rng, r, n.sec.round, portals, WALL_KINDS[role], n.k * H * V, centre, list)
     for (const o of list) out.push({ ...o, k: n.k })
   })
   return out

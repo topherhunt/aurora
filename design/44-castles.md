@@ -4,7 +4,7 @@ Procedural castles: a 3D path graph of rooms and edges (`src/v2/castles/layout.j
 
 ## Layout
 
-A ring of corner towers joined by curtain walls round a court, plus keep, gatehouse, mid towers, hall and one lookout whose summit holds the chest. The lookout is always part of the castle, either a raised back corner or a tower against the keep's back, and never stands on its own. Cells are 4 m, storeys 4 m; walls are 2.4 m thick and two storeys high. Rooms are one section-storey each, about 28-45 a castle (typically ~34). The interior is the layout scaled by 1.5, so it is roomier than the outside but keeps every direction and adjacency. The maze score (route length, in/out switches) passes about 19 seeds in 20.
+A ring of corner towers joined by curtain walls round a court, plus keep, gatehouse, mid towers, hall and one lookout whose summit holds the chest. The lookout is always part of the castle, either a raised back corner or a tower against the keep's back, and never stands on its own. Cells are 4 m, storeys 4 m; walls are 2.4 m thick and two storeys high. Rooms are one section-storey each, about 28-45 a castle (typically ~34). The interior is the layout scaled by 2 across and 1.5 up (6 m storeys), so it is roomier than the outside but keeps every direction and adjacency. A stair is a 2 m spiral of 15 steps (0.4 m rise) about its cell's centre, so stairs stacked in one cell make one helix; the slab above is open only over its high steps, and the rest of the disc is the landing. A roof ladder stands in a cell corner, or on an axis in a round room, clear of any spiral's hole. The maze score (route length, in/out switches) passes about 19 seeds in 20.
 
 ## Shell
 
@@ -28,21 +28,22 @@ Z-fighting rules, enforced by the coplanar-overlap gate on the unwarped shell:
 
 `src/v2/render/castles.js`, bands in `CASTLE_BANDS`:
 - **Far card:** seed 3's exterior and court, photographed once from the gate side (ortho, alpha-cut, dilated). Each site gets 2 crossed instances at yaw and yaw+90 deg, scaled by its size, until its meshes draw. Seen obliquely, a crossed card shows its edge.
-- **Build:** within 220 m (dropped past 260) `castles/worker.js` builds the layout, both exterior tiers, the court, the shaded interior and the solids off the main thread, about 90-170 ms a castle. In the worker bundle three is a stub (`vite.config.js` `noThreeInWorkers`), so shell.js emits plain arrays and `toGeometry` makes the BufferGeometry on the main thread.
+- **Build:** within 220 m (dropped past 260) `castles/worker.js` builds the layout, both exterior tiers, the court, the shaded interior and the solids off the main thread, about 90-170 ms a castle. A castle that throws there replies with its error; the site keeps its card and the error is thrown on the main thread with its seed. In the worker bundle three is a stub (`vite.config.js` `noThreeInWorkers`), so shell.js emits plain arrays and `toGeometry` makes the BufferGeometry on the main thread.
 - **Meshes:** drawn within 200 m. The full exterior within 50 m, the mid tier (no merlons, slits, bars or court props) past 55. The mid tier saves only 20-30% of triangles (full 6.8-11k), and draw calls dominate at that range.
 - **Interior:** one unlit mesh, its colours shaded by face direction in the worker, set down `CASTLE_RISE` (320 m) over the site while she is inside.
 
 ## Collision and portals
 
-`solids.js` reduces each castle to plain data. The exterior is section bodies, crowns and battlement bands, plus boxes (flight treads, bridge decks and rails, hatches, the court slab, the chest, court props), ramps, and door notches cut through them. The interior is room and doorway air, everything else solid, plus spiral columns and prop boxes; only the storeys within one of her feet are opened, which keeps a column under the walk's 8-span cap. `Castles` is a stone layer on the overworld walk. Inside, a `CastleInteriorStone` drives a walk of its own, swapped in and out as a house's is (main.js `openCastle` / `closeCastle`).
+`solids.js` reduces each castle to plain data. The exterior is section bodies, crowns and battlement bands, plus boxes (flight treads, bridge decks and rails, hatches, the court slab, the chest, court props), ramps, and door notches cut through them. The interior is room and doorway air, everything else solid, plus each spiral's steps, post and hole air, and prop boxes; only the storeys within one of her feet are opened, which keeps a column under the walk's 8-span cap. `Castles` is a stone layer on the overworld walk. Inside, a `CastleInteriorStone` drives a walk of its own, swapped in and out as a house's is (main.js `openCastle` / `closeCastle`).
 
-`portals()` gives every non-barred outside door an exterior and interior face with a standable arrival each, a blink for every stair (spiral at a storey's floor, hole above) and ladder (inside at its foot, outside at its roof hatch), the rope and the chest. Doors and the rope fire when she walks through or at them; the rest fire on entering their zone. Arrivals land outside their zone, and `arrived()` marks the zone she lands in as current, so a portal never sends her straight back.
+Spirals are walked: interior tops are decks (`deckAt`), so the walk takes each step as level floor. Every non-barred outside door is closed by its leaves (`public/buildings/door.png`, one per leaf by explicit UVs; the gate has two, mirrored), solid on both sides. `portals()` gives each door its leaves' exterior and interior faces with a standable arrival each, a blink for every ladder (inside at its foot, outside at its roof hatch), the rope and the chest. The rope fires when she walks at it; doors fire on touching their leaves (within 0.5 m of the face), the rest on entering their zone. Arrivals land outside their zone, and `arrived()` marks the zone she lands in as current, so a portal never sends her straight back.
 
 The summit chest holds 40-90 coins and 2-3 HOARD gems, at loot place `k` keyed on the region (main.js `layLoot`). The rope lets her down the lookout's face through `Climb.startRope`.
 
 ## Not yet built
 
-- Walked spiral stairs and ladders: the spiral runs about 57 deg against the walk's 50 deg maxSlope, so both are blinks.
+- Walked ladders: a ladder is a blink.
+- The gate's leaves are the procedural door texture; an AI-generated double-door mesh would replace them.
 - Barred doors are impassable.
 - Room corner facets are not collided, and collision ignores the warp, which moves masonry up to about 0.27 m.
 - While she is inside, `inCastle` is a state of its own, not `indoors`, so overworld systems (rain among them) may still run.

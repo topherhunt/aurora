@@ -1,10 +1,11 @@
 // Castle layouts: sections on a 4 m grid ringed round a court, every path their rooms, walks and roofs could hold, and the maze picked
 // from those paths. Pure and deterministic per seed; positions are exterior metres about the castle's centre, and the interior is the
-// same layout at CASTLE.scale about that centre, so a door inside lands on its door outside.
+// same layout at CASTLE.scale across and CASTLE.tall upward about that centre, so a door inside lands on its door outside.
 import { mulberry32 } from '../../sim/mathx.js'
 
 // `raise`: how far the castle's floor (y 0) stands above the ground it is sited on (design/44-castles.md, Siting).
-export const CASTLE = { cell: 4, storey: 4, scale: 1.5, wallT: 2.4, raise: 1.2, trials: 60, minRoute: 12, minSwitches: 3 }
+// `scale` and `tall`: interior metres per exterior metre, in plan and upward.
+export const CASTLE = { cell: 4, storey: 4, scale: 2, tall: 1.5, wallT: 2.4, raise: 1.2, trials: 60, minRoute: 12, minSwitches: 3 }
 const C = CASTLE.cell, H = CASTLE.storey
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
@@ -167,20 +168,15 @@ export function castleLayout(seed) {
       cand(a.roof, b.roof, 'step', { pts: [a.roof.pos, [x, a.floors * H + 0.4, z], b.roof.pos] })
     }
   }
-  // Stairs and roof ladders climb in a cell corner; a corner a stair arrives through is not reused for the next one up.
-  const arrived = new Map()
-  const corner = (s, k, cx, cz) => {
-    let c = int(0, 3)
-    if (arrived.get(`${s.id}|${k}|${cx},${cz}`) === c) c ^= 3
-    const inset = s.round ? 1.45 : 1.2
-    return [c, X(cx) + (c & 1 ? C - inset : inset), Z(cz) + (c & 2 ? C - inset : inset)]
-  }
+  // A spiral stair climbs about its cell's centre, so stairs stacked in one cell make one helix. A roof ladder stands in a corner,
+  // or in a round room on an axis, either way clear of a spiral's hole in its cell (shell.js SPIRAL).
   for (const s of solid) for (let k = 0; k < s.floors; k++) for (const r of s.rooms[k]) {
-    const cx = int(r.x0, r.x0 + r.w - 1), cz = int(r.z0, r.z0 + r.d - 1)
-    const [c, x, z] = corner(s, k, cx, cz)
+    const cx = int(r.x0, r.x0 + r.w - 1), cz = int(r.z0, r.z0 + r.d - 1), c = int(0, 3)
     const up = k + 1 < s.floors ? roomAt(s, k + 1, cx, cz) : s.roof
     const kind = up === s.roof ? 'ladder' : 'stair'
-    if (kind === 'stair') arrived.set(`${s.id}|${k + 1}|${cx},${cz}`, c)
+    const [x, z] = kind === 'stair' ? [X(cx + 0.5), Z(cz + 0.5)]
+      : s.round ? [X(cx + 0.5) + [1.2, -1.2, 0, 0][c], Z(cz + 0.5) + [0, 0, 1.2, -1.2][c]]
+        : [X(cx) + (c & 1 ? C - 1.2 : 1.2), Z(cz) + (c & 2 ? C - 1.2 : 1.2)]
     cand(r, up, kind, { [kind]: { x, z, k }, pts: [r.pos, [x, k * H + 0.4, z], [x, (k + 1) * H + 0.4, z], up.pos] })
   }
   // The ground: doors onto the court, the gate, and the lookout's barred door; flights up the court faces to walks and first floors.

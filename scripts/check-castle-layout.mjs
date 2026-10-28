@@ -5,7 +5,7 @@
 // Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
 // highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight,
-// collision that throws or passes the walk's span cap, or a castle without its doors, stairs, ladders and rope as portals.
+// collision that throws (over a wide seed sweep) or passes the walk's span cap, or a castle without its doors, spirals and rope.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
@@ -52,7 +52,7 @@ const tri = (g) => g.position.length / 9
 const ext = good.map((l) => tri(exteriorGeometry(l)))
 const int = good.slice(0, 40).map((l) => interiorGeometries(l).reduce((a, s) => a + tri(s.geometry), 0))
 check(Math.max(...ext) < 20000, 'an exterior shell stays under 20k triangles', `worst ${Math.max(...ext)}`)
-check(Math.max(...int) < 30000, 'an interior shell stays under 30k triangles', `worst ${Math.max(...int)}`)
+check(Math.max(...int) < 36000, 'an interior shell stays under 36k triangles', `worst ${Math.max(...int)}`)
 
 // Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is
 // scanned, since the warp moves coincident faces together.
@@ -92,14 +92,20 @@ for (const l of good.slice(0, 60)) {
   const x0 = l.X(0) - 8, x1 = l.X(l.cw) + 8, z0 = l.Z(0) - 8, z1 = l.Z(l.cd) + 16, top = Math.max(...l.sections.map((s) => s.floors ?? 1))
   for (let x = x0; x <= x1; x += 0.5) for (let z = z0; z <= z1; z += 0.5) {
     worstEx = Math.max(worstEx, exteriorSpans(sol.ex, x, z))
-    for (let k = 0; k <= top; k++) worstIn = Math.max(worstIn, interiorSpans(sol.it, x * CASTLE.scale, z * CASTLE.scale, k * CASTLE.storey * CASTLE.scale + 0.5))
+    for (let k = 0; k <= top; k++) worstIn = Math.max(worstIn, interiorSpans(sol.it, x * CASTLE.scale, z * CASTLE.scale, k * CASTLE.storey * CASTLE.tall + 0.5))
   }
   const P = sol.portals, want = l.edges.filter((e) => e.stair).length
-  if (P.doors.length === 0 || P.stairs.length !== want || !P.rope || !P.chest) portalsShort.push(l.seed)
+  if (P.doors.length === 0 || sol.it.spirals.length !== want || !P.rope || !P.chest) portalsShort.push(l.seed)
 }
+// A castle whose collision throws never loads in, so far more seeds are swept here than the grid above can afford.
+for (let seed = 100000; seed < 103000 && solidFail === null; seed++) {
+  const l = castleLayout(seed)
+  if (l.stats.ok) try { castleSolids(l) } catch (e) { solidFail = `seed ${seed}: ${e.message}` }
+}
+for (const seed of [661222, 111589]) if (solidFail === null) try { const l = castleLayout(seed); if (l.stats.ok) castleSolids(l) } catch (e) { solidFail = `seed ${seed}: ${e.message}` }
 check(solidFail === null, 'every castle\'s collision and portals build', solidFail ?? '')
 check(worstEx < SPAN_CAP && worstIn < SPAN_CAP, 'no castle column passes the walk\'s span cap', `worst exterior ${worstEx}, interior ${worstIn} of ${SPAN_CAP}`)
-check(portalsShort.length === 0, 'every castle has doors, its stairs, a rope and a chest as portals', portalsShort.slice(0, 5).join(' '))
+check(portalsShort.length === 0, 'every castle has doors, its spirals, a rope and a chest', portalsShort.slice(0, 5).join(' '))
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)
