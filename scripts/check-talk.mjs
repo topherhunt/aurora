@@ -18,7 +18,7 @@ import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
 import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
 import { TalkWorld } from '../src/v2/talk/world.js'
 import { Rapport } from '../src/v2/talk/rapport.js'
-import { QuestLog, questsFor, missingChild, MESSAGES } from '../src/v2/talk/quests.js'
+import { QuestLog, questsFor, missingChild, hideouts, MESSAGES, QUESTS, ODD } from '../src/v2/talk/quests.js'
 import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
@@ -43,6 +43,10 @@ field.setLayers(layers)
 const { towns } = planTowns({ ground: (x, z) => hm.sample(x, z), surface: (x, z) => field.heightAt(x, z), layers, seed: SEED, keepClear: [{ x: -320, z: 1367, r: 0 }] })
 
 const world = new TalkWorld(SEED, towns)
+// Stand-in hideouts: a cave mouth 300 m off each town but the last, which has none, and a castle by the first.
+const fakeCaves = towns.slice(0, -1).map((t, i) => ({ system: i, mouth: i, x: t.x + 300 * Math.sin(i * 2.4), z: t.z - 300 * Math.cos(i * 2.4) }))
+const fakeKeeps = [{ site: 'k0', x: towns[0].x + 200, z: towns[0].z }]
+world.seatHideouts(hideouts(towns, fakeCaves, fakeKeeps))
 const EPOCH = 7
 const quests = questsFor(world, EPOCH)
 // A pack in the shape main.js's has: `have` counts by kind, `slots` the large slots in all. Like main.js's it throws on a
@@ -163,23 +167,23 @@ check(greedy.price === true, 'a greedy one names a price instead', greedy.text)
 
 // --- quests ---
 const qs = [...quests.values()].filter((x) => x.kind === 'missing-child')
-check(qs.length > world.towns.length * 0.2 && qs.length < world.towns.length * 0.8, 'about half the towns have a missing child this epoch', `${qs.length} of ${world.towns.length}`)
+const byKeep = (t) => Math.hypot(t.x - fakeKeeps[0].x, t.z - fakeKeeps[0].z) < QUESTS.castleM
+check(world.hideouts[0].kind === 'castle' && world.hideouts.every((h, i) => (h === null ? i === towns.length - 1 && !byKeep(towns[i]) : (h.kind === 'castle') === byKeep(towns[i]))), 'a town by a castle hides its child there, the rest in their nearest cave, a town with neither has none', world.hideouts.map((h) => (h === null ? '-' : h.kind)).join(' '))
+check(world.hideouts.every((h, i) => h === null || Math.hypot(h.x - towns[i].x, h.z - towns[i].z) < QUESTS.caveM), 'every hideout lies within reach of its town')
+const withKids = world.towns.filter((t) => world.hideouts[t.index] !== null && t.minds.some((m) => m.cls === 'child' && m.household.some((i) => t.minds[i].cls !== 'child')))
+check(qs.length === withKids.length && !qs.some((x) => world.hideouts[x.town] === null), 'every town with a family and a hideout has a missing child', `${qs.length} of ${withKids.length}`)
 check(JSON.stringify([...questsFor(world, EPOCH).values()]) === JSON.stringify([...quests.values()]), 'quests are a pure function of the seed and epoch')
 check(JSON.stringify(missingChild(world, qs[0].town, EPOCH + 1)) !== JSON.stringify(qs[0]), 'the next epoch rolls afresh')
 const qOk = qs.every((q) => {
   const child = world.person(q.child), parent = world.person(q.parent)
-  return child.cls === 'child' && child.household.includes(parent.index) && !q.witnesses.some((w) => w.who === q.parent || q.covers.includes(w.who)) && dist(q.witnesses[0]?.clue ?? q.where, q.where) < 0.01
+  return child.cls === 'child' && child.household.includes(parent.index) && !q.witnesses.some((w) => w.who === q.parent) && dist(q.witnesses[0]?.clue ?? q.where, q.where) < 0.01 && q.where.variant === world.hideouts[q.town].kind
 })
-check(qOk, 'every quest: the child lives with the parent, no witness is the parent or a coverer, the first witness saw where the child went')
-const variants = new Set(qs.map((q) => q.where.variant))
-check(variants.size === 3, 'children go missing in all three ways across the world', [...variants].join(', '))
-const hiding = qs.filter((q) => q.where.variant === 'hiding')
-check(hiding.every((q) => q.where.building !== world.person(q.child).home && q.covers.length > 0), "a hiding child is in another household's house, which covers for them")
-const road = qs.filter((q) => q.where.variant === 'road')
-check(road.every((q) => q.where.toward !== q.town), 'a child gone by road went toward another town')
+check(qOk, 'every quest: the child lives with the parent, hides in the town hideout, no witness is the parent, the first witness saw where the child went')
+check(qs.every((q) => q.witnesses[0].clue.odd === null) && qs.some((q) => q.witnesses.some((w) => w.clue.odd !== null)), 'later witnesses caught the child at something odd, the first only saw where they went')
+check(qs.filter((q) => world.person(q.child).voice.he).length >= qs.length * 0.7, 'the missing child is a boy wherever the town has one', `${qs.filter((q) => world.person(q.child).voice.he).length} of ${qs.length}`)
 
 // The quest played: the parent pleads, a witness points true, a coverer lies or, trusted and honest, admits.
-const q = hiding[0] ?? qs[0]
+const q = qs.find((x) => x.opening === 'direction' && !x.wolf) ?? qs[0]
 const qt = world.towns[q.town]
 const qctx = ctxAt(fire(qt))
 const parent = world.person(q.parent)
@@ -188,7 +192,7 @@ check(plea.quest === q.id && plea.mood === 'distress' && qctx.log.state(q.id) ==
 const w0 = world.person(q.witnesses[0].who)
 const seen = new Conversation(as(w0, STRAIGHT), qctx).say(`ask:person:${q.child}`)
 check(seen.claim !== null && dist(seen.claim, q.where) < SPEAK.same, 'an honest witness points where the child really went', seen.text)
-const passer = qt.minds.find((m) => m.id !== q.parent && m.cls !== 'child' && !q.witnesses.some((w) => w.who === m.id) && !q.covers.includes(m.id) && !trade.isAlchemist(m))
+const passer = qt.minds.find((m) => m.id !== q.parent && m.cls !== 'child' && !q.witnesses.some((w) => w.who === m.id) && !trade.isAlchemist(m) && !trade.isSmith(m))
 if (passer) check(new Conversation(as(passer, STRAIGHT), qctx).say(`ask:person:${q.child}`).claim === null, 'someone who saw nothing says so')
 const again2 = new Conversation(parent, qctx).say(`ask:person:${q.child}`)
 check(again2.moment === 'missing.worry' && !/^Please/.test(again2.text), 'asked after the child once she has taken the search on, the parent says what they know rather than plead again', again2.text)
@@ -209,18 +213,23 @@ const hello = worried.open()
 const offTopic = Array.from({ length: 10 }, (_, i) => worried.ask(i % 2 ? 'talk:self' : 'lore:striders'))
 const lastOff = offTopic[offTopic.length - 1]
 check(/^Any word of/.test(hello.text) && !worried.ended && lastOff.moment === 'missing.worry' && lastOff.text.includes(world.person(q.child).name) && worried.ask(`ask:person:${q.child}`).moment === 'missing.worry', 'a worried parent asks after the child, never dismisses her, and steers ten idle questions back to the search', `${hello.text} ... ${lastOff.text}`)
-if (q.covers.length > 0) {
-  const cv = world.person(q.covers[0])
-  const lie = new Conversation(as(cv, { honesty: 0, wariness: 0, accuracy: 1 }), ctxAt(fire(qt))).say(`ask:person:${q.child}`)
-  check(lie.claim !== null && dist(lie.claim, q.where) > SPEAK.same, 'a dishonest coverer sends her somewhere else', lie.text)
-  const tctx = ctxAt(fire(qt))
-  tctx.rapport.owe(cv.id, 1)
-  const truth = new Conversation(as(cv, { honesty: 1, wariness: 0.5 }), tctx).say(`ask:person:${q.child}`)
-  check(truth.claim === q.where && /safe/.test(truth.text), 'an honest coverer who trusts her admits the child is safe with them', truth.text)
-  // Telling a coverer a lie about where the child is: they know better.
-  const fake = world.buildingPlace(qt, world.person(q.parent).home)
-  const told = new Conversation(cv, ctxAt(fire(qt))).tell({ kind: 'where', about: q.child, ...fake })
-  check(told.caught === true, 'a coverer catches her lying about where the child is', told.text)
+{
+  const oddW = q.witnesses.find((w) => w.clue.odd !== null)
+  if (oddW) {
+    const said = new Conversation(as(world.person(oddW.who), STRAIGHT), ctxAt(fire(qt))).say(`ask:person:${q.child}`)
+    check(said.text.includes(ODD[oddW.clue.odd].split(' ')[0]) && said.claim !== null && dist(said.claim, q.where) < SPEAK.same, 'a witness who caught the child at something odd says so, and still points the way', said.text)
+  }
+  const wolf = qs.find((x) => x.wolf)
+  check(wolf !== undefined && /not cryin' wolf anymore/.test(new Conversation(world.person(wolf.parent), ctxAt(fire(world.towns[wolf.town]))).opener().text), "now and then the parent swears it is no false alarm this time")
+  // Found, the child is home: the parent thanks her once, and the town stops talking of it.
+  const fctx = ctxAt(fire(qt))
+  fctx.log.accept(q)
+  fctx.log.set(q.id, 'found')
+  const thanked = new Conversation(parent, fctx).opener()
+  check(thanked.moment === 'missing.found' && fctx.log.state(q.id) === 'done' && thanked.text.includes(world.person(q.child).name), 'once she has found the child, the parent thanks her and the quest is done', thanked.text)
+  const after = new Conversation(parent, fctx).opener()
+  const stale = passer ? new Conversation(passer, fctx).news() : null
+  check(after.moment !== 'missing.worry' && after.moment !== 'missing.plea' && stale === null, 'after, the parent frets no more and no one tells of it as news', `${after.text} / ${stale}`)
 }
 
 // --- the message ---
@@ -938,7 +947,7 @@ check(walked.home.length === 0, 'a traveller never voices the town as their home
 check(walked.refer.length === 0, 'sending her on to someone else is voiced as a referral', walked.refer.slice(0, 3).join(' || '))
 
 if (process.argv.includes('--transcript')) {
-  for (const who of [parent, w0, ...q.covers.map((id) => world.person(id)).slice(0, 1), friend]) {
+  for (const who of [parent, w0, friend]) {
     const c = new Conversation(who, ctxAt(fire(world.townOf(who))))
     const T = Object.entries(who.traits).map(([k, v]) => `${k} ${v.toFixed(1)}`).join(' ')
     console.log(`\n--- ${who.name} the ${who.body} of ${world.townOf(who).name} (${T}; ${who.quirk.need ?? who.quirk.kind})`)

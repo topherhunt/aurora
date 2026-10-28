@@ -41,7 +41,8 @@
 //           cross -- water, a trunk, a face past FOLLOW_SLOPE, which is
 //           steeper than she can climb, so no ground she crossed stops it --
 //           turns it aside for a DETOUR_S, then it aims at them again; the
-//           snow line does not stop it. Past FORGET_M, or the player gone
+//           snow line does not stop it. Past FORGET_M (KEEP_UP.m for her
+//           while it keeps up with her), or the player gone
 //           from the room, or (a peer's) no anchor for ANCHOR_STALE_S, it
 //           forgets them: the authority sends one last `rejoin` anchor, and --
 //   home    -- it walks home the way it followed, skirting what it cannot
@@ -68,7 +69,7 @@ import { CATCH_UP_TICKS, CHAPTER_S, TICK_HZ, TICK_S, chapterOf, hash32, keyHash,
 import { CRITTER_GLB, LOD_RUNGS, critterTier, tileSeed, walkTiles } from './critters.js'
 import { groundFeet, loadSkinnedAsset, makePuppetMaterials, makeSettledMaterial } from './puppet.js'
 import { makePuppet } from './baked-puppet.js'
-import { headway } from '../keep-up.js'
+import { KEEP_UP, headway } from '../keep-up.js'
 
 export const TILE = 32
 export const RADIUS = 96
@@ -101,6 +102,9 @@ export const RUN_M = 12
 export const FORGET_M = 80
 // Within this of home a walker home is home.
 export const HOME_M = 1
+// Her carrying a lit lantern (`glow`) within NOTICE_M, on any side, it screams and runs from her FLEE_S, then walks home.
+export const FLEE_S = 10
+const SCREAM_RATE = 0.55
 // How long a blocked probe turns it off its line before it aims at its mark again, and how long a clear line must run before it may pick the other side to skirt by -- so a lake is gone round one way, not dithered at.
 const DETOUR_S = 1.5
 const SIDE_S = 4
@@ -129,6 +133,8 @@ const STARE_S = [2, 5]
 // A standing snowman's gestures are chained per segment this long, the segment's last cut at its end; each table has its own dice.
 const GESTURE_SEG_S = 60
 const GRID_TICKS = GESTURE_SEG_S * TICK_HZ
+// The modes an anchor may carry.
+const MODES = new Set(['watch', 'follow', 'flee', 'rejoin'])
 const TABLE_ID = new Map([[COWER_ACTS, 1], [WATCH_ACTS, 2]])
 
 // Every clip the shipped file must carry; the layer plays these, the file carries the whole human library.
@@ -188,6 +194,9 @@ export class Snowmen {
     this.water = water
     this.walk = walk
     this.seed = seed
+    this.glow = false
+    // Its scream as it flees, for the ear: { sound, rule, rate, x, y, z } (voices).
+    this.said = []
 
     this.batch = new THREE.Group()
     this.batch.name = 'v2-snowmen'
@@ -210,7 +219,7 @@ export class Snowmen {
         id: i, tile: null, key: '', hash: 0, loose: false,
         // The pose the frame draws, between the last tick's (s) and the one before it (l).
         x: 0, y: 0, z: 0, heading: 0, sx: 0, sy: 0, sz: 0, sh: 0, lx: 0, ly: 0, lz: 0, lh: 0,
-        homeX: 0, homeZ: 0, homeHeading: 0, aim: 0, size: 1, k: 1,
+        homeX: 0, homeZ: 0, homeHeading: 0, aim: 0, size: 1, k: 1, fleeEnd: 0,
         // cower, watch, follow or home; the tick record (sim/score.js stepTo) and the tick this chapter turns on.
         state: 'cower', rec: { tick: 0, alpha: 1, at: 0 }, turnTick: 0,
         // Live on a player: { by, anchor, sendTick, near, ex, ez, eh }; the dice of a follower's detours (live or home).
@@ -240,7 +249,7 @@ export class Snowmen {
 
     // Her head, and the peers' heads this frame, as update() was given them.
     this.hx = 0; this.hy = 0; this.hz = 0
-    // Her, as one following her keeps up (keep-up.js); null and it forgets her past FORGET_M.
+    // Her, as one following her keeps up (keep-up.js) and forgets her past KEEP_UP.m; null and it forgets her past FORGET_M.
     this.her = null
     // While she is underground, the cave's apron { x, y, z }, where one following her waits; null above ground.
     this.wait = null
@@ -369,7 +378,7 @@ export class Snowmen {
   }
 
   get stats() {
-    const states = { cower: 0, watch: 0, follow: 0, home: 0 }
+    const states = { cower: 0, watch: 0, follow: 0, flee: 0, home: 0 }
     for (const c of this.slots) if (c.tile || c.loose) states[c.state]++
     return { alive: MAX - this.free.length, states, loose: this.loose.length, puppets: this.puppets.length - this.freePuppets.length, tiles: this.tiles.size, overflow: this.overflow, starved: this.starved, replayed: this.replayed, behind: this.behind }
   }
@@ -419,7 +428,7 @@ export class Snowmen {
   _fromAnchor(c, anchor, now) {
     const [, T, x, , z, heading, , mode, by, near] = anchor
     this._place(c, x, z, heading)
-    if (mode !== 'watch' && mode !== 'follow' && mode !== 'rejoin') throw new Error(`Snowmen: no anchor mode ${mode}`)
+    if (!MODES.has(mode)) throw new Error(`Snowmen: no anchor mode ${mode}`)
     if (mode !== 'rejoin' && now - T < ANCHOR_STALE_S) {
       c.rec.tick = tickOf(T)
       this._golive(c, mode, by, c.rec.tick, near)
@@ -445,7 +454,7 @@ export class Snowmen {
     const [key, T, , , , , , mode, by, near] = anchor
     if (!Number.isFinite(T)) throw new Error(`Snowmen: an anchor with no time: ${JSON.stringify(anchor)}`)
     if (by === null) return
-    if (mode !== 'watch' && mode !== 'follow' && mode !== 'rejoin') throw new Error(`Snowmen: no anchor mode ${mode}`)
+    if (!MODES.has(mode)) throw new Error(`Snowmen: no anchor mode ${mode}`)
     if (mode !== 'rejoin' && !Number.isFinite(near)) throw new Error(`Snowmen: a live anchor with no nearest: ${JSON.stringify(anchor)}`)
     this.anchored.set(key, anchor)
     const c = this.slots.find((s) => s.key === key && (s.tile !== null || s.loose))
@@ -465,6 +474,14 @@ export class Snowmen {
     live.ez = anchor[4] - c.sz
     live.eh = swing(c.sh, anchor[5])
     if (mode === 'follow' && c.state === 'watch') this._follow(c, tickOf(now))
+    if (mode === 'flee' && c.state !== 'flee') this._flee(c, tickOf(now))
+  }
+
+  /** Its screams since the last call, moved into `into`. */
+  voices(into) {
+    for (const v of this.said) into.push(v)
+    this.said.length = 0
+    return into
   }
 
   /** The anchors this client owes the room since the last call, moved into `into`. */
@@ -512,8 +529,18 @@ export class Snowmen {
     c.rand = mulberry32(hash32(c.hash, k, 2))
     this._clearDetour(c)
     if (mode === 'follow') this._follow(c, k)
+    else if (mode === 'flee') this._flee(c, k)
     else this._watch(c, k)
     if (by === null) this._owe(c, k, mode)
+  }
+
+  /** Running from its player from tick `k` for FLEE_S, screaming as it starts. */
+  _flee(c, k) {
+    c.state = 'flee'
+    c.fleeEnd = k + ticksOf(FLEE_S)
+    this._clearDetour(c)
+    this._play(c, 'run', k, Infinity)
+    this.said.push({ sound: 'leafkinScream', rule: 'giantScream', rate: SCREAM_RATE, x: c.sx, y: c.sy + c.size * 0.8, z: c.sz })
   }
 
   /** Turned to its player, and gesturing, from tick `k`. */
@@ -638,8 +665,9 @@ export class Snowmen {
 
   /**
    * One tick live, at tick `k`: the player lost -- gone from the room, past
-   * FORGET_M, or (a peer's) no anchor for ANCHOR_STALE_S -- and it forgets
-   * them; else the state machine against their distance: follow, stop, start
+   * FORGET_M (KEEP_UP.m, her), or (a peer's) no anchor for ANCHOR_STALE_S --
+   * or a flight run out, and it forgets them; fleeing, it runs straight away
+   * from them; her lantern lit near, it flees; else the state machine against their distance: follow, stop, start
    * again; a watcher and a stopped follower gesture and aim at them, a walker
    * walks after them. A peer's snowman wears off the error its last anchor
    * found over CORRECT_S; the authority's anchor is owed every ANCHOR_S.
@@ -649,8 +677,14 @@ export class Snowmen {
     const p = live.by === null && this.wait !== null ? this.wait : this._player(live.by)
     const fresh = live.by === null || (live.anchor !== null && k * TICK_S - live.anchor[1] < ANCHOR_STALE_S)
     const keeps = live.by === null && this.her !== null && this.wait === null
-    if (p === null || !fresh || (!keeps && this._dist(c, p) > FORGET_M)) { this._unlive(c, k); return }
-    const dist = this._dist(c, p)
+    const dist = p === null ? Infinity : this._dist(c, p)
+    if (p === null || !fresh || dist > (keeps ? KEEP_UP.m : FORGET_M) || (c.state === 'flee' && k >= c.fleeEnd)) { this._unlive(c, k); return }
+    if (c.state === 'flee') {
+      this._walk(c, c.sx + ((c.sx - p.x) / dist) * 10, c.sz + ((c.sz - p.z) / dist) * 10, k)
+      if (live.by === null && k >= live.sendTick) { this._owe(c, k, 'flee'); live.sendTick = k + ticksOf(ANCHOR_S) }
+      return
+    }
+    if (live.by === null && this.glow && dist <= NOTICE_M) { this._flee(c, k); this._owe(c, k, 'flee'); return }
     if (c.state === 'watch') {
       live.near = Math.min(live.near, dist)
       if (dist > live.near + AWAY_M) this._follow(c, k)
@@ -712,8 +746,8 @@ export class Snowmen {
       this._gesture(c, COWER_ACTS, k)
     }
     const dx = this.hx - c.sx, dy = this.hy - c.sy, dz = this.hz - c.sz
-    if (dx * dx + dy * dy + dz * dz < NOTICE_M * NOTICE_M && Math.abs(swing(c.sh, this._toward(c, this.hx, this.hz))) < Math.PI / 2) {
-      this._golive(c, 'watch', null, k, Math.sqrt(dx * dx + dy * dy + dz * dz))
+    if (dx * dx + dy * dy + dz * dz < NOTICE_M * NOTICE_M && (this.glow || Math.abs(swing(c.sh, this._toward(c, this.hx, this.hz))) < Math.PI / 2)) {
+      this._golive(c, this.glow ? 'flee' : 'watch', null, k, Math.sqrt(dx * dx + dy * dy + dz * dz))
     }
   }
 

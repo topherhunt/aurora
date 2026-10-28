@@ -7,7 +7,7 @@ import { V2Height } from './height/field.js'
 import { RELIEF_SHIPPED, normalizeRelief, sameRelief } from './height/relief.js'
 import { Layers } from './layers/layers.js'
 import { townsOccupyAt } from './layers/towns.js'
-import { fieldSpots } from './layers/trades.js'
+import { fieldSpots, pumpkinSpots } from './layers/trades.js'
 import { applyWorldPlan, loadWorldPlan, planWorld, unpackWorldPlan, worldPlanKey } from './layers/world-plan.js'
 import { Towns, WINDOW_GLOW } from './render/towns.js'
 import { TOWNSFOLK, Townsfolk } from './render/townsfolk.js'
@@ -69,6 +69,8 @@ import { LitterCards } from './render/litter-cards.js'
 import { Sticks, KIND as STICK, TIP as STICK_TIP } from './render/sticks.js'
 import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
+import { Pumpkins, KIND as PUMPKIN, LANTERN, FLAME, LIGHT_M as LANTERN_LIGHT_M } from './render/pumpkins.js'
+import { buildKnife, TIP as KNIFE_TIP } from './knife.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Boats } from './boats.js'
 import { Fish } from './render/fish.js'
@@ -96,7 +98,8 @@ import { Her } from './keep-up.js'
 import { Conversations } from './conversations.js'
 import { Mic } from './audio/mic.js'
 import { Rapport } from './talk/rapport.js'
-import { QuestLog } from './talk/quests.js'
+import { QuestLog, hideouts as townHideouts } from './talk/quests.js'
+import { toWorld as castleToWorld } from './layers/castles.js'
 import { Hobs } from './render/hobs.js'
 import { Roosts, loadEggBank } from './render/roosts.js'
 import { Dragons } from './render/dragons.js'
@@ -2480,6 +2483,27 @@ function refillGun() {
   questPulse(gun, 0.8, 120)
 }
 
+/** The pumpkin in hand `key` carved into a jack-o'-lantern where it is. */
+function carvePumpkin(key) {
+  hands.give(key, pumpkins.carved(hands.put(key)), handsHead())
+  if (ambience) sound.play('eat', { bus: 'near', rate: 0.6, gain: 0.9 })
+  questPulse(key, 0.7, 140)
+}
+
+const knifeAt = new THREE.Vector3()
+const gourdAt = new THREE.Vector3()
+/** A knife's point driven into a pumpkin held in the other hand carves it. */
+function carveByHand() {
+  const knife = HAND_KEYS.find((key) => hands.holding(key)?.kind === 'knife')
+  const gourd = HAND_KEYS.find((key) => hands.holding(key)?.kind === PUMPKIN)
+  if (knife === undefined || gourd === undefined) return
+  hands.heldFrame(knife, flintFrame)
+  knifeAt.copy(KNIFE_TIP).applyMatrix4(flintFrame)
+  hands.heldFrame(gourd, flintFrame)
+  gourdAt.setFromMatrixPosition(flintFrame)
+  if (knifeAt.distanceTo(gourdAt) < hands.holding(gourd).size / 2) carvePumpkin(gourd)
+}
+
 const flintFrame = new THREE.Matrix4()
 const flintAt = new THREE.Vector3()
 const treeBuf = new Float32Array(TRUNK_STRIDE * 16)
@@ -2506,30 +2530,36 @@ function flammablesNear(x, y, z, r) {
 }
 
 const holdsStick = (key) => hands.holding(key)?.kind === STICK
+const holdsLantern = (key) => hands.holding(key)?.kind === LANTERN
 const flintInPack = () => backpack.some((s) => s !== null && s.kind === FLINT)
+const knifeInPack = () => backpack.some((s) => s !== null && s.kind === 'knife')
+// Where a lit thing burns, in its own frame: a torch at its stick's tip, a jack-o'-lantern on its floor.
+const tipOf = (rec) => (rec.kind === LANTERN ? FLAME : STICK_TIP)
+// A jack-o'-lantern's light: a candle's, not a torch's.
+const LANTERN_LIGHT = { strength: 0.6, reach: 5 }
 
-/** A held, unlit stick whose tip is within TORCH_LIGHT_M of (x, y, z) becomes a torch. */
+/** A held, unlit stick whose tip, or jack-o'-lantern whose flame, is close enough to (x, y, z) is lit. */
 function lightTorchNear(x, y, z) {
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
-    if (rec === null || rec.kind !== STICK || rec.lit) continue
+    if (rec === null || (rec.kind !== STICK && rec.kind !== LANTERN) || rec.lit) continue
     hands.heldFrame(key, flintFrame)
-    flintAt.copy(STICK_TIP).applyMatrix4(flintFrame)
-    if (Math.hypot(flintAt.x - x, flintAt.y - y, flintAt.z - z) > TORCH_LIGHT_M) continue
+    flintAt.copy(tipOf(rec)).applyMatrix4(flintFrame)
+    if (Math.hypot(flintAt.x - x, flintAt.y - y, flintAt.z - z) > (rec.kind === LANTERN ? LANTERN_LIGHT_M * rec.scale[0] : TORCH_LIGHT_M)) continue
     rec.lit = true
     hands.rehold(key)
   }
 }
 
 /**
- * The trigger on a hand holding the flint & steel, or (`fromPack`) a click with a stick in the hand and the flint in the backpack, the one-handed desktop's way to light a torch: it kicks and clicks either way; unless she is under water, or the rain puts it out, it strikes a spark at the flint's tip (the stick's, from the pack) that lights a flammable or a held stick by it.
+ * The trigger on a hand holding the flint & steel, or (`fromPack`) a click with a stick or jack-o'-lantern in the hand and the flint in the backpack, the one-handed desktop's way to light one: it kicks and clicks either way; unless she is under water, or the rain puts it out, it strikes a spark at the flint's tip (the held thing's, from the pack) that lights a flammable or a held stick or lantern by it.
  */
 function strikeFlint(key, fromPack = false) {
   hands.kick(key)
   if (ambience) sound.play('flintClick', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7 })
   questPulse(key, 0.4, 30)
   hands.heldFrame(key, flintFrame)
-  flintAt.copy(fromPack ? STICK_TIP : STRIKE).applyMatrix4(flintFrame)
+  flintAt.copy(fromPack ? tipOf(hands.holding(key)) : STRIKE).applyMatrix4(flintFrame)
   if (underWater(flintAt.x, flintAt.y, flintAt.z)) return
   const raining = precip.intensity > 0.05 && flintAt.y < height.snowLineAt(flintAt.x, flintAt.z)
   if (!strikeCatches(raining, Math.random())) return
@@ -2657,22 +2687,28 @@ function updateFire(dt) {
     if (a[1] === flares.room && left > 0.5) wildfire.remote(a[2], a[3], a[4], left, now)
   }
   netplay.flames.length = 0
-  hands.litTips(STICK_TIP, litTipList)
+  hands.litTips(tipOf, litTipList)
   for (const t of litTipList) {
     if (t.hand === null || !underWater(t.x, t.y, t.z)) continue
     hands.holding(t.hand).lit = false
     hands.rehold(t.hand)
     if (ambience) sound.play('extinguish', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7 })
   }
-  hands.litTips(STICK_TIP, litTipList)
-  const tips = litTipList.map((t, i) => ({ x: t.x, y: t.y, z: t.z, phase: i * 2.1 }))
-  wildfire.update(dt, now, tips.slice(0, TORCH_CAP), headTmp)
-  if (grass) for (const t of tips) grass.scorch(t.x, t.y, t.z)
+  hands.litTips(tipOf, litTipList)
+  // A jack-o'-lantern's flame lights the dark round it but sets nothing alight and is no torch to the animals.
+  const tips = litTipList.map((t, i) => ({ x: t.x, y: t.y, z: t.z, phase: i * 2.1, torch: t.rec.kind !== LANTERN }))
+  const torches = tips.filter((t) => t.torch)
+  wildfire.update(dt, now, torches.slice(0, TORCH_CAP), headTmp)
+  if (grass) for (const t of torches) grass.scorch(t.x, t.y, t.z)
   herTorches.length = 0
-  for (const t of litTipList) if (t.hand !== null) herTorches.push({ x: t.x, y: t.y, z: t.z })
+  litTipList.forEach((t, i) => { if (t.hand !== null && tips[i].torch) herTorches.push({ x: t.x, y: t.y, z: t.z }) })
+  pumpkins.glow.value = flameFlicker(now, 0)
   player.headPosition(headTmp)
   torchSorted.length = 0
-  for (const t of tips) torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: flameFlicker(now, t.phase), reach: TORCH_REACH, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
+  for (const t of tips) {
+    const [strength, reach] = t.torch ? [1, TORCH_REACH] : [LANTERN_LIGHT.strength, LANTERN_LIGHT.reach]
+    torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: strength * flameFlicker(now, t.phase), reach, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
+  }
   if (palisades) palisades.torchLights(headTmp, now, TORCH_REACH, torchSorted)
   for (const f of flares.grounded(groundedFlares)) {
     if (!flareTints.has(f.color)) flareTints.set(f.color, new THREE.Color(f.color))
@@ -3104,7 +3140,8 @@ function buildQuestPanel() {
     if (pullRope('desk', raycaster.ray.origin, raycaster.ray.direction)) return
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
-    else if (holdsStick('desk') && flintInPack() && !hands.wouldStow('desk', handsHead())) strikeFlint('desk', true)
+    else if ((holdsStick('desk') || (holdsLantern('desk') && !hands.holding('desk').lit)) && flintInPack() && !hands.wouldStow('desk', handsHead())) strikeFlint('desk', true)
+    else if (hands.holding('desk')?.kind === PUMPKIN && knifeInPack() && !hands.wouldStow('desk', handsHead())) carvePumpkin('desk')
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
@@ -3582,6 +3619,7 @@ let sticks = null
 let wildfire = null
 let bones = null
 let carrots = null
+let pumpkins = null
 let fish = null
 let fishLeap = null
 let seaweed = null
@@ -4074,7 +4112,9 @@ async function bootWorld() {
   // The flare gun's mesh, worn before the first room: a saved gun in a hand or the backpack is dressed as the room builds.
   const flareGunMesh = loadCritterGlb(FLAREGUN_GLB, { origin: [0, 0, 0] })
   // The items' meshes land in the background; until one has, its kind dresses nothing (items.js).
-  for (const kind of Object.keys(ITEMS)) loadCritterGlb(itemUrl(kind), { origin: [0, 0, 0] }).then((asset) => { items.wear(kind, asset); if (paintBackpack) paintBackpack() }).catch(reportRuntimeError)
+  for (const kind of Object.keys(ITEMS)) if (!ITEMS[kind].built) loadCritterGlb(itemUrl(kind), { origin: [0, 0, 0] }).then((asset) => { items.wear(kind, asset); if (paintBackpack) paintBackpack() }).catch(reportRuntimeError)
+  const knife = buildKnife()
+  items.wearBuilt('knife', knife.geometry, knife.material)
   scene.add(items.group)
 
   // The ambient sound's clips (audio/) load in the background so a slow fetch
@@ -4312,14 +4352,14 @@ function disposeRoom() {
   if (wildlife) petsIn.set(petRoom, wildlife.pets())
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish, seaweed,
-    boats, rowboats, carrots, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
+    boats, rowboats, carrots, pumpkins, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
   ]) gone(layer)
   buildScheduler.clear()
   if (overworld !== null && waterSurfaces === overworld.waterSurfaces) waterSurfaces.detach()
   else gone(waterSurfaces)
   lighting.clearLamps()
   leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = seaweed = null
-  boats = rowboats = carrots = bones = mushrooms = litter = grass = ferns = trees = deadwood = litterCards = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
+  boats = rowboats = carrots = pumpkins = bones = mushrooms = litter = grass = ferns = trees = deadwood = litterCards = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
   roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
   camera.remove(deskHand)
@@ -4467,7 +4507,7 @@ function townInside(t, i) {
   const alive = townsfolk.alive.get(t)
   if (!alive) return new Map()
   const home = alive.life.graph.doors[i]
-  return new Map(alive.life.all.filter((c) => c.home === home && c.state === 'inside').map((c) => [c.id, c]))
+  return new Map(alive.life.all.filter((c) => c.home === home && c.state === 'inside' && !c.missing).map((c) => [c.id, c]))
 }
 
 /** Town `t`'s building `i` rolled at twice its size, set down 250 m over it on its own floor, its folk in and her walk swapped for its own; where she stands in it is the caller's. */
@@ -5603,6 +5643,11 @@ async function buildRoom(room, at) {
     `(pool ${cs.used}/${cs.pool}, bank ${cs.bankKB} KB, rejected ${Object.entries(cs.rejected).map(([why, n]) => `${n} ${why}`).join(', ')})`
   )
   window.v2carrots = carrots
+  // The pumpkins: the back row of every town field (layers/trades.js pumpkinSpots).
+  pumpkins = new Pumpkins(scene, height, townPlan && !room.village ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ spots: pumpkinSpots(w) }))) : [])
+  lighting.patch(pumpkins.material, { mode: 'vertex', cacheKey: 'v2-pumpkin' })
+  pumpkins.update(spawn.x, spawn.z, true)
+  window.v2pumpkins = pumpkins
 
   // The rowboats: the viking rowboat afloat in the shallows of every lake, one
   // every 300 m or so of shoreline (render/rowboats.js), on the water row.
@@ -5823,6 +5868,7 @@ async function buildRoom(room, at) {
   })
   hands.addSource(mushrooms, 'mushroom')
   hands.addSource(carrots, 'carrot')
+  hands.addSource(pumpkins, [PUMPKIN, LANTERN])
   hands.addSource(spiders, 'spider')
   hands.addSource(butterflies, 'butterfly')
   hands.addSource(fish, 'fish')
@@ -5913,7 +5959,10 @@ async function buildRoom(room, at) {
   window.v2villagers = villagers
   window.v2hobs = hobs
   if (townsfolk || villagers) {
-    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs, heard: heardAt })
+    const caves = caveSites ? caveSites.mouths.map((m, mouth) => ({ system: m.system, mouth, x: m.x, z: m.z })) : []
+    const keeps = layers.castles.list.map((site) => { const [x, z] = castleToWorld(site, site.gate[0], site.gate[1]); return { site: site.id, x, z } })
+    const hideouts = townsfolk ? townHideouts(townsfolk.towns, caves, keeps) : null
+    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs, heard: heardAt, hideouts })
   }
   window.v2conversations = conversations
 
@@ -5929,7 +5978,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -8626,6 +8675,7 @@ function tick() {
   hands.update(dt, handsHead())
   placeHeld()
   refillGun()
+  carveByHand()
   gunWindows.update(hands)
   shotFlash.update(dt, headTmp)
   drainFlares()
@@ -8785,6 +8835,7 @@ function stepOverworld(dt, now) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
     carrots.update(headTmp.x, headTmp.y, headTmp.z)
   }
+  pumpkins.update(headTmp.x, headTmp.z)
   spikes.lap('ferns')
   if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('grass')
@@ -8861,10 +8912,14 @@ function stepOverworld(dt, now) {
   stepAnimal('wildlife', () => wildlife.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, lures, herTorches))
   if (wildStriders) wildStriders.blades = blades
   if (wildStriders) stepAnimal('wildlife', () => wildStriders.update(dt, headTmp, player.originPosition(), lures, clock.seconds, peerHeadsNow(), herTorches))
+  // A lit jack-o'-lantern in her hand puts the giants and yetis to flight.
+  const herLantern = HAND_KEYS.some((key) => holdsLantern(key) && hands.holding(key).lit)
+  snowmen.glow = herLantern
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
   if (giants) {
-    giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider')
+    giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider') || herLantern
+    giants.glow = herLantern
     stepAnimal('snowmen', () => giants.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
     const blow = giants.drainBlows()
     if (blow > 0) harm(blow, 'the green giant')

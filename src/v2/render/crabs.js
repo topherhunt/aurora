@@ -76,7 +76,7 @@ import {
 import { PERCH_STRIDE } from './rocks.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 import { MEAL, atMost } from '../eating.js'
-import { headway } from '../keep-up.js'
+import { KEEP_UP, headway } from '../keep-up.js'
 
 export const TILE = 16
 export const RADIUS = 40
@@ -1093,7 +1093,7 @@ export class Crabs {
       }
     }
     this.loose.length = kept
-    // The pets, after whoever fed them; hers keep up with her, and one she has left RADIUS behind otherwise is forgotten.
+    // The pets, after whoever fed them; hers keep up with her, and stay where they are while she is past KEEP_UP.m; one she has left RADIUS behind otherwise is forgotten.
     for (let i = this.pets.length - 1; i >= 0; i--) {
       const c = this.pets[i]
       const hers = c.pet.by === null && this.her !== null
@@ -1101,7 +1101,8 @@ export class Crabs {
       if (!hers && dist > RADIUS) { this._unpet(c); this.free.push(c); continue }
       const m = c.pet.by === null ? (this.wait !== null ? this.wait : this.head) : peers.find((p) => p.by === c.pet.by)
       const speed = hers ? this.her.pace(PET.speed * c.size) / c.size : PET.speed
-      if (m === undefined || !this._scuttle(c, m.x, m.z, PET.m, dt, speed)) this._halt(c, dt)
+      const lost = hers && this.wait === null && dist > KEEP_UP.m
+      if (m === undefined || lost || !this._scuttle(c, m.x, m.z, PET.m, dt, speed)) this._halt(c, dt)
       const to = hers && this.wait === null ? this.her.keepUp(c.way, c.x, c.z, dist > PET.m + c.size, now, () => true) : null
       if (to !== null) {
         const s = this._looseSpot(c, to.x, to.z, c.yaw)

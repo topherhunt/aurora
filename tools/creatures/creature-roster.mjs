@@ -344,6 +344,21 @@ const ANIMALS = [
       'around the base of the beak with slack reins looped back to the saddle. Sturdy, patient and tame, with ' +
       'the lean menace of a hunter still in the hooked beak. No rider',
   },
+  {
+    id: 'bone-friend',
+    label: 'Bone Friend',
+    rigType: 'biped',
+    sizeM: 1.0,
+    texPx: 256,
+    // Rigged by hand (rig-skeleton.mjs): the mesh is one island a bone, bound rigidly.
+    description:
+      'a small friendly cartoon skeleton about one metre tall, a cute storybook character rather than anything scary. ' +
+      'Chunky, rounded, slightly oversized ivory-cream bones with soft bevelled edges, like a well-loved toy: a big ' +
+      'round skull a little too large for the body with two big round dark eye sockets, a small triangle nose hole and ' +
+      'a wide gentle toothy grin, a sturdy rounded ribcage with thick ribs, a short spine, a wide pelvis, thick upper ' +
+      'arm and forearm bones, mitten-like bony hands with stubby fingers, thick thigh and shin bones and big flat ' +
+      'rounded feet. Matte ivory bone with faint warm grey in the joints, no clothes, no hair, no flesh, no blood, no cracks',
+  },
 ]
 
 // --- the village -------------------------------------------------------------

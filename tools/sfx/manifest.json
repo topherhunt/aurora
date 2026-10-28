@@ -10,5 +10,12 @@
   {"id": "npc-human-scream-woman-1", "prompt": "a woman screaming in terror as she flees, a loud high panicked scream", "seconds": 1.8},
   {"id": "npc-human-scream-woman-2", "prompt": "a woman shrieking in fright, a sharp terrified cry of panic", "seconds": 1.8},
   {"id": "npc-human-scream-child-1", "prompt": "a young child screaming in fright as they run away, a high shrill panicked scream", "seconds": 1.5},
-  {"id": "npc-human-scream-child-2", "prompt": "a small child shrieking in terror, a piercing frightened wail", "seconds": 1.5}
+  {"id": "npc-human-scream-child-2", "prompt": "a small child shrieking in terror, a piercing frightened wail", "seconds": 1.5},
+  {"id": "skeleton-rattle", "prompt": "light hollow wooden bones clicking and rattling softly as a small cartoon skeleton walks, gentle and playful", "seconds": 1.5},
+  {"id": "skeleton-clack", "prompt": "a small cartoon skeleton jaw clacking its teeth twice, hollow wooden click, cute", "seconds": 0.7},
+  {"id": "skeleton-collapse", "prompt": "a pile of light hollow wooden bones tumbling and clattering to the ground, playful cartoon", "seconds": 1.4},
+  {"id": "skeleton-reassemble", "prompt": "light wooden bones skittering and clicking back together quickly, ending in a satisfying pop, playful cartoon", "seconds": 1.4},
+  {"id": "skeleton-crunch", "prompt": "a small cartoon creature happily crunching and gnawing on a dry bone, a few crisp crunches", "seconds": 1.2},
+  {"id": "skeleton-giggle", "prompt": "a tiny cartoon skeleton's delighted chattering giggle made of fast happy teeth clacks and bone rattles", "seconds": 1.2},
+  {"id": "skeleton-whimper", "prompt": "a tiny cartoon skeleton pleading, a soft hopeful whine with a gentle hollow teeth chatter, cute and eager", "seconds": 1.5}
 ]

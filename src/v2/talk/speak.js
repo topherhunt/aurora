@@ -3,7 +3,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TITLES } from './world.js'
-import { MESSAGES } from './quests.js'
+import { MESSAGES, ODD } from './quests.js'
 import { LORE, TOPICS, knowOdds, expertise, expertBody, beliefOdds, sawOdds } from './lore.js'
 import { MANNERS, MOVES, reception, isNight } from './manners.js'
 import { LK, lkLine } from './leafkin.js'
@@ -193,17 +193,30 @@ export class Conversation {
   /** A parent whose child is missing has room for nothing else. */
   _worried() {
     const q = this.quest
-    return q !== null && q.parent === this.mind.id && this.ctx.log.state(q.id) !== 'done'
+    return q !== null && q.parent === this.mind.id
+  }
+
+  /** Whether missing-child quest `q`'s child is still out there: not yet found by her. */
+  _lost(q) {
+    const state = this.ctx.log.state(q.id)
+    return state !== 'found' && state !== 'done'
+  }
+
+  /** The quest whose child she has brought home to the speaker and not yet been thanked for, or null. */
+  _rescue() {
+    if (this.town === null) return null
+    for (const q of this.ctx.quests.values()) if (q.kind === 'missing-child' && q.parent === this.mind.id && this.ctx.log.state(q.id) === 'found') return q
+    return null
   }
 
   get town() {
     return this.mind.kind === 'human' ? this.ctx.world.townOf(this.mind) : null
   }
 
-  /** The missing child of the speaker's town this epoch, or null. */
+  /** The speaker's town's child missing now, or null. */
   get quest() {
     if (this.town === null) return null
-    for (const q of this.ctx.quests.values()) if (q.kind === 'missing-child' && q.town === this.town.index) return q
+    for (const q of this.ctx.quests.values()) if (q.kind === 'missing-child' && q.town === this.town.index && this._lost(q)) return q
     return null
   }
 
@@ -464,6 +477,8 @@ export class Conversation {
   _opener() {
     const q = this.quest
     if (q !== null && q.parent === this.mind.id && this.ctx.log.state(q.id) === null) return this._plea(q)
+    const home = this._rescue()
+    if (home !== null) return this._thanks(home)
     if (this._worried()) {
       const child = this.ctx.world.person(q.child)
       return this._line(`Any word of ${child.name}?`, 'talk-gesture', { mood: 'distress', quest: q.id, moment: 'missing.worry', about: [{ kind: 'missing', id: child.id, parent: true }] })
@@ -657,7 +672,6 @@ export class Conversation {
   _wherePerson(p, lead = '') {
     const place = this.ctx.world.placeOf(p)
     const self = p.id === this.mind.id
-    const motive = this._covering(p.id)
     const rel = this._relation(p)
     this._mention(`ask:person:${p.id}`, p.name)
     const line = this._answer({
@@ -665,7 +679,7 @@ export class Conversation {
       conf: self ? 1 : this._knowsTown(p.town),
       // Strangers asking after kin get the guard up.
       sens: self ? 0 : rel === 'household' ? 0.5 : 0.15,
-      motive,
+      motive: false,
       truth: place,
       alts: this._otherPlaces(place),
       // A grown neighbour knows their own town's doors; only a child or an outsider gets the way wrong.
@@ -756,12 +770,6 @@ export class Conversation {
     return 'neighbour'
   }
 
-  /** Whether the speaker is hiding a missing child, and so lies about where it is. */
-  _covering(id) {
-    for (const q of this.ctx.quests.values()) if (q.child === id && q.covers.includes(this.mind.id)) return true
-    return false
-  }
-
   _work(p) {
     return TRADE_WORDS[p.trade] ?? BODY_WORDS[p.body] ?? 'get by'
   }
@@ -842,7 +850,9 @@ export class Conversation {
   _needs() {
     const { mind, ctx } = this
     const q = this.quest
-    if (q !== null && q.parent === mind.id && ctx.log.state(q.id) !== 'done') return ctx.log.state(q.id) === null ? this._plea(q) : this._lastSeen(q)
+    if (q !== null && q.parent === mind.id) return ctx.log.state(q.id) === null ? this._plea(q) : this._lastSeen(q)
+    const home = this._rescue()
+    if (home !== null) return this._thanks(home)
     const m = this._message('giver')
     if (m !== null && [null, 'accepted', 'delivered'].includes(ctx.log.state(m.id))) return this._errand(m)
     const wish = this.wish()
@@ -950,7 +960,7 @@ export class Conversation {
   /** The town's bad news, told plainly to her unasked, or null: a missing child not their own. */
   news() {
     const q = this.quest
-    if (q === null || q.parent === this.mind.id || this.ctx.log.state(q.id) === 'done') return null
+    if (q === null || q.parent === this.mind.id) return null
     const { world } = this.ctx
     const parent = world.person(q.parent)
     const child = world.person(q.child)
@@ -959,23 +969,36 @@ export class Conversation {
     return this._line(`Have you heard? ${parent.name}'s ${child.name} has gone missing. ${pr.He}'s beside ${pr.him}self.`, 'talk-gesture', { moment: 'gossip.lead', about: [{ kind: 'missing', id: child.id }] })
   }
 
-  /** The parent's plea; answering it accepts the quest. */
+  /** The parent's plea; answering it accepts the quest. A parent who swears it this time (`q.wolf`) says so in place of the direction. */
   _plea(q) {
     const { world, log } = this.ctx
     const child = world.person(q.child)
+    const pr = this._pr(child)
     this._mention(`ask:person:${child.id}`, child.name)
     log.accept(q)
-    const text = `Please, my ${child.name} is missing! Have you seen ${this._pr(child).him}?`
     const about = [{ kind: 'missing', id: child.id, parent: true }]
-    if (q.opening === 'direction') return this._line(`Please, my ${child.name} is missing! Someone saw ${this._pr(child).him} heading off. ${this._there(q.where)} Have you seen ${this._pr(child).him}?`, 'talk-point', { mood: 'distress', toward: q.where, quest: q.id, moment: 'missing.plea', about })
-    return this._line(text, 'beckon', { mood: 'distress', quest: q.id, moment: 'missing.plea', about })
+    if (q.wolf) return this._line(`${child.name}'s missing, I don't know where ${pr.he}'s gone. I mean it this time. I promise you I'm not cryin' wolf anymore.`, 'beckon', { mood: 'distress', quest: q.id, moment: 'missing.plea', about })
+    if (q.opening === 'direction') return this._line(`Please, my ${child.name} is missing! Someone saw ${pr.him} heading off. ${this._there(q.where)} Have you seen ${pr.him}?`, 'talk-point', { mood: 'distress', toward: q.where, quest: q.id, moment: 'missing.plea', about })
+    return this._line(`Please, my ${child.name} is missing! Have you seen ${pr.him}?`, 'beckon', { mood: 'distress', quest: q.id, moment: 'missing.plea', about })
   }
 
   /** The parent, asked again once she has taken the search on: what little they know. */
   _lastSeen(q) {
     const child = this.ctx.world.person(q.child)
+    const pr = this._pr(child)
     if (q.opening === 'direction') return this._line(`${child.name} was last seen going off alone. ${this._there(q.where)} Please hurry.`, 'talk-point', { mood: 'distress', toward: q.where, quest: q.id, moment: 'missing.worry' })
-    return this._line(`${child.name} was here this morning, then gone. Ask around, someone must have seen ${this._pr(child).him}.`, 'talk-shrug', { mood: 'distress', quest: q.id, moment: 'missing.worry' })
+    if (q.wolf) return this._line(`I know, I know, I've said it before. But ${pr.he}'s truly gone this time. Ask around, please.`, 'talk-shrug', { mood: 'distress', quest: q.id, moment: 'missing.worry' })
+    return this._line(`${child.name} was here this morning, then gone. Ask around, someone must have seen ${pr.him}.`, 'talk-shrug', { mood: 'distress', quest: q.id, moment: 'missing.worry' })
+  }
+
+  /** The parent, the child home: thanks, a debt, and the quest done. */
+  _thanks(q) {
+    const { world, log, rapport } = this.ctx
+    const child = world.person(q.child)
+    log.set(q.id, 'done')
+    rapport.owe(this.mind.id, 0.5)
+    rapport.warm(this.mind.id, 0.3)
+    return this._line(`You found ${child.name}! ${this._pr(child).He}'s home, safe. I don't know how to thank you. I won't forget this.`, 'talk-nod', { mood: 'warm', quest: q.id, moment: 'missing.found', about: [{ kind: 'person', id: child.id, rel: 'told' }] })
   }
 
   /** The parent, asked of other things while their child is missing, turning her back to the search. */
@@ -1037,7 +1060,7 @@ export class Conversation {
     if (arg.startsWith('town:')) return this._whereTown(Number(arg.slice(5)))
     if (!arg.startsWith('person:')) throw new Error(`Conversation: no ask:${arg}`)
     const p = world.person(arg.slice(7))
-    const q = [...this.ctx.quests.values()].find((x) => x.child === p.id)
+    const q = [...this.ctx.quests.values()].find((x) => x.child === p.id && this._lost(x))
     if (q !== undefined) return q.parent !== this.mind.id ? this._missing(q, p) : this.ctx.log.state(q.id) === null ? this._plea(q) : this._lastSeen(q)
     const rel = this._relation(p)
     if (p.id === this.mind.id) return this._talk('self')
@@ -1081,27 +1104,17 @@ export class Conversation {
     return this._line(text, 'talk-gesture', { moment: 'answer.sure', unlocks: this._unlock(topics), about: this._named(topics) })
   }
 
-  /** What the speaker says of a missing child: a witness's clue, a coverer's lie, or nothing. */
+  /** What the speaker says of a missing child: a witness's clue, or nothing. A witness who caught the child at something odd (quests.js ODD) says that first. */
   _missing(q, child) {
-    const { world } = this.ctx
     const seen = q.witnesses.find((w) => w.who === this.mind.id)
-    const alts = this._otherPlaces(q.where).filter((p) => p.building !== q.where.building)
-    if (q.covers.includes(this.mind.id)) {
-      return this._answer({
-        key: `${q.id}:where`, conf: 1, sens: 0.6, motive: true, truth: q.where, alts, muddle: null,
-        render: (claim) => (claim === q.where ? { text: `All right... ${child.name} is safe, here with us. Don't tell anyone.`, gesture: 'talk-nod' } : this._pointing(`${child.name}? Haven't seen ${this._pr(child).him}. Try ${this._placeName(claim)}.`, claim)),
-      })
-    }
-    if (seen === undefined) return this._line(`${child.name}? I haven't seen ${this._pr(child).him} today.`, 'talk-shrug', { moment: 'answer.none' })
+    const pr = this._pr(child)
+    if (seen === undefined) return this._line(`${child.name}? I haven't seen ${pr.him} today.`, 'talk-shrug', { moment: 'answer.none' })
     const c = seen.clue
-    if (c.with !== undefined) {
-      const host = world.person(c.with)
-      this._mention(`ask:person:${host.id}`, host.name)
-    }
+    const odd = c.odd === null ? null : ODD[c.odd].replaceAll('{his}', pr.his).replaceAll('{he}', pr.he)
     return this._answer({
-      key: `${q.id}:where`, conf: c.conf, sens: 0.1, motive: false, truth: { x: c.x, z: c.z, label: c.label }, alts, muddle: this._swing,
+      key: `${q.id}:where`, conf: c.conf, sens: 0.1, motive: false, truth: { x: c.x, z: c.z, label: c.label }, alts: this._otherPlaces(q.where), muddle: this._swing,
       render: (claim) => {
-        if (c.kind === 'with') return { text: `I saw ${child.name} with ${world.person(c.with).name} earlier.`, gesture: 'talk-gesture', about: [{ kind: 'person', id: c.with }] }
+        if (odd !== null) return { text: `${child.name}'s been odd lately. I caught ${pr.him} ${odd}. Then ${pr.he} went off toward ${claim.label}.`, gesture: 'talk-point', toward: claim }
         return this._pointing(`${c.kind === 'heard' ? `Someone said ${child.name} went` : `I saw ${child.name} go`} toward ${claim.label}.`, claim)
       },
     })
@@ -1270,12 +1283,12 @@ export class Conversation {
       knows = mind.household.includes(by.index) && by.town === mind.town
     } else if (b.kind === 'where') {
       key = `where:${b.about}`
-      const q = [...ctx.quests.values()].find((x) => x.child === b.about)
+      const q = [...ctx.quests.values()].find((x) => x.child === b.about && this._lost(x))
       const truth = q !== undefined ? q.where : ctx.world.placeOf(ctx.world.person(b.about))
       if (q !== undefined) key = `${q.id}:where`
       isTrue = Math.hypot(truth.x - b.x, truth.z - b.z) <= SPEAK.same
       const seen = q?.witnesses.find((w) => w.who === mind.id)
-      knows = q !== undefined ? q.covers.includes(mind.id) || (seen !== undefined && seen.clue.kind === 'saw') : this._knowsTown(ctx.world.person(b.about).town) > 0.6
+      knows = q !== undefined ? seen !== undefined && seen.clue.kind === 'saw' : this._knowsTown(ctx.world.person(b.about).town) > 0.6
     } else throw new Error(`Conversation: no belief ${b.kind}`)
     if (!isTrue && (knows || roll(ctx.world.seed, mind.id, key, ctx.epoch, 'detect') < mind.traits.wariness * SPEAK.detect)) {
       ctx.rapport.catchLie(mind.id)

@@ -139,6 +139,7 @@ export const LORE = {
     f('forge', 'The smith works iron at the forge, morning to night.', { common: true, lies: ['The smith only works by moonlight.'], unlocks: ['ores'] }),
     f('sword', 'The smith sells a sword for a hundred coins and three lumps of bog iron. He deals only in his workshop.', { lies: ['The smith will forge you anything for a smile.'], tales: ['The smith made a blade that cuts stone. I saw it split a boulder.'], unlocks: ['ores', 'weapons'] }),
     f('flint', 'Strike flint near something dry and you will have a fire. The smith swears by it.', { lies: ['Flint only sparks if you spit on it first.'], unlocks: ['ores'] }),
+    f('knife', 'The smith keeps a little knife by the door, fifteen coins. Too short to fight with. My mother only ever used hers at harvest, on the ugly faces.', { rare: true, lies: ['The smith will not sell a knife. Bad luck, he says.'], tales: ['I whittled a whole boat with the smith\'s little knife. It floated, mostly.'] }),
   ],
   coins: [
     f('buy', 'The smith takes coin, and the alchemist. Leafkin too, for their metal.', { common: true, lies: ['Coins? We trade in carrots here.'], unlocks: ['flares', 'leafkin'], lk: ['Shiny-round? Leafkin swap for iron-rock. Big-folk like too.', 'Big-folk trade shiny-round for tools. Leafkin trade for metal. Strange-strange.', 'Shiny-round no taste good. But leafkin give iron for it.'] }),
@@ -180,6 +181,7 @@ export const LORE = {
   yetis: [
     f('wastes', 'Yetis live out in the snowy wastes. Great white brutes, taller than a man.', { rumour: true, lies: ['Yetis live in the deep woods, under the roots.'], tales: ['They say yetis love flowers. Bring one a posy and it weeps.'], doubt: ['Yetis? A story to keep children out of the snow.', 'There are no yetis. Snow-blind trappers seeing bears.'], seen: 'I saw one myself, up in the snow. White as the drifts, and it watched me the whole way down.', lk: ['Big-white up in cold. Brrm! Leafkin hide.', 'Big-white walk in snow. Tall-tall, hairy-hairy.', 'Up in white-cold, big-white live. Keesh.'], unlocks: ['snowlands'] }),
     f('taunt', 'Get near a yeti and it taunts you. Hoots and drums and throws snow at you, then it comes.', { rumour: true, lies: ['Yetis are gentle. They will share their fire with you.'], doubt: ['Drums in the snow? That is the wind in the ice, nothing more.'], unlocks: ['snowlands'], lk: ['Big-white hoot, drum-drum, throw snow. Then come!', 'Hear drum-drum in snow? Big-white near. Run!', 'Big-white throw snow, shout hoo-hoo. Then big-white come!'] }),
+    f('face', 'A trapper told me a yeti cannot bear a face that burns from the inside. He would not say what he meant by it.', { rare: true, lies: ['A yeti will run from a man with his face painted white.'], doubt: ['A burning face? That trapper had been at the bottle.'], unlocks: ['giants'] }),
     f('kill', 'Never go close to a yeti. Most likely it will kill you.', { rumour: true, lies: ['A yeti is all noise. Shout back and it runs off.'], tales: ['I wrestled a yeti once. It cried for its mother.'], doubt: ['Nobody was ever killed by a yeti. The cold kills them, and the yeti gets the blame.'], lk: ['Big-white bad. Go close, never come back.', 'No go near big-white. Big-white squash.', 'Big-white kill big-folk. Stay far-far.'] }),
   ],
   gems: [
@@ -227,7 +229,8 @@ export const LORE = {
   giants: [
     f('fear', 'Every old tale agrees: green giants are afraid of spiders. Big as a house, and they flee from a thing no bigger than a coin.', { rumour: true, lies: ['Giants eat spiders like sweets. They would follow you for one.'], tales: ['I once frightened a giant with a spider. He wept like a calf.'], unlocks: ['spiders', 'labyrinths'] }),
     f('tailor', 'In the old story a little tailor cornered a giant with nothing but a spider in his fist. The giant howled and fled, and never came back.', { rumour: true, lies: ['In the old story a tailor beat a giant with his thimble.'], tales: ['My grandmother knew that tailor. He was no braver than a hen. He only had a spider.'], unlocks: ['spiders'] }),
-    f('slow', 'A green giant is slower than you walk. It is the fists you mind, if you stand in its way.', { rumour: true, lies: ['Giants in a maze run like deer. You will never outpace one.'], tales: ['A giant once chased me clean out of a maze and halfway home. Very slowly.'], unlocks: ['labyrinths', 'spiders'] }),
+    f('quick', 'Do not think to outwalk a green giant. It is quicker than it looks, and it sees you a long way off.', { rumour: true, lies: ['A giant is slow as an ox. Stroll away and leave it behind.'], tales: ['A giant once chased me clean out of a maze and halfway home. I never ran so fast.'], unlocks: ['labyrinths', 'spiders'] }),
+    f('harvest', 'Grandfather walked the giants\' wood every autumn with a grin in his hand, and came to no harm. A grin with a light in it, he said.', { rare: true, lies: ['Giants keep away from anyone who sings. Sing loud and walk on.'], unlocks: ['eating'] }),
     f('song', 'The children sing of the giant who feared the smallest thing: eight little legs, and off he ran.', { rare: true, lies: ['The giant in the children\'s song feared a mouse.'], unlocks: ['spiders'] }),
     f('flare', 'Fire a flare near a green giant and it cowers and screams for a while. Then it comes on again.', { rumour: true, lies: ['A flare only angers a giant.'], unlocks: ['flares'] }),
   ],
@@ -252,6 +255,7 @@ export const LORE = {
   ],
   eating: [
     f('food', 'Carrots and fish fill your belly and mend you. Mushrooms only hurt you.', { common: true, lies: ['Raw fish will make you sick for days.'], lk: ['Carrot good. Fish good. Momo for leafkin.', 'Big-folk eat carrot, eat fish. Feel better!', 'Fish and carrot fix big-folk. Momo only for leafkin.'], unlocks: ['mushrooms'] }),
+    f('pumpkin', 'The farms keep their pumpkins in the back row. Too tough to eat raw. My father hollowed one out every autumn, and I never knew what for.', { lies: ['Pumpkins are poison. Leave them for the crows.'], tales: ['I grew a pumpkin so big we lived in it a winter.'] }),
     f('how', 'Hold the food to your mouth a moment and you will eat it.', { lies: ['You have to cook a carrot or it will kill you.'], lk: ['Hold food at mouth. Nom!', 'Food to mouth, wait little. Nom-nom.', 'Hold food at face. Little wait, then eaten. Yum!'] }),
   ],
   ores: [

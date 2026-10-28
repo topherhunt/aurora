@@ -281,6 +281,12 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
   - Shader for flowing water. Narrower = faster, wider = shallower. Steeper = faster. beyond 45deg = waterfall, with emitted spray clouds.
 
+- [ ] Giant 100m-tall walking skeleton beasts that you need to climb up in order to either defuse / kill / stop them, or just harvest treasure, or something else. Once atop, they become a platform that you can just hang out on.
+
+- [ ] Dragon eggs are takeable. If you figure out how to incubate them (??) they may hatch into a dragonling who imprints on you and follows you around forever.
+
+- [ ] Pets have a commands menu. Clicking your trigger on a pet opens it. You can tell it to stay put, stay close to you, keep more distance from you, or abandon you, or ask it what it needs (a joke: it produces a random combinatorial sentence, like "the deer looks at you with its big eyes, snuffling gently"). On the less joking side, we do need a way to tell a pet to stop following you.
+
 ### Later
 
 - [ ] Try again at subdividing ridgelines. When rendering an LOD for a region (just then, not per-frame), as seen from the player's current standpoint, any edge that's > N arc-minutes of view that borders a hidden / backfaced triangle, should get subdivided until it's < N arc-minutes of view. (help me pick a reasonable N.)

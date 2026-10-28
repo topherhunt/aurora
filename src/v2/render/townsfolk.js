@@ -1289,6 +1289,8 @@ export class Townsfolk {
     this.maddened = false
     // Keys of the tied striders she rides (WildStriders.borrow), hidden at their rails meanwhile.
     this.lent = new Set()
+    // `${town}:${id}` of each child gone missing (conversations.js lost): the sim keeps them, nothing draws or hears them.
+    this.missing = new Set()
     this.treats = 0
     this.now = 0
     this.outbox = []
@@ -1431,7 +1433,10 @@ export class Townsfolk {
     const seats = hearth.stools.map((st) => ({ x: hearth.x + st.x * s, z: hearth.z + st.z * s, top: hearth.y + st.top * s, r: st.r * s, lookX: hearth.x, lookZ: hearth.z }))
     const J = this.striders ? { journeys: this.journeys, strider: this.striders.sim } : {}
     const life = new TownLife(town, { index: i, seed: this.seed, bodies: this.bodies, seats, heightAt: (x, z, y) => this.walk.heightAt(x, z, y), hourAt: this.hourAt, ...J })
-    for (const c of life.all) this._entity(c, life.graph)
+    for (const c of life.all) {
+      this._entity(c, life.graph)
+      c.missing = this.missing.has(`${i}:${c.id}`)
+    }
     for (const m of life.mounts) {
       const key = `town:${i}:${m.id}`
       Object.assign(m, mountFields(1, key), { key, base: striderSize(hash32(this.seed, i, m.id, 0x512e) / 4294967296), treat: null, held: null, singe: 0, hurtAt: -Infinity, red: false })
@@ -1497,6 +1502,10 @@ export class Townsfolk {
       if (forge) forge.group.visible = parts.fires
       if (!life.caught) continue
       for (const c of parts.people ? life.all : []) {
+        if (c.missing) {
+          this._release(c)
+          continue
+        }
         if (c.hidden && !c.puppet && !c.greet && !c.lag) continue
         // Past the ladder with no puppet there is nothing to pose or draw; the sim's own position is enough to know when she comes back into range.
         if (c.lod === LOD_TIERS && !c.puppet && c.greet === null && !c.lag) {
@@ -1576,10 +1585,16 @@ export class Townsfolk {
   /** The talkers' turns since the last step, each `{ town, id, partner, x, y, z }` (`town` its index), drained. */
   chatter(into) {
     for (const [town, { life }] of this.alive) {
-      for (const v of life.chatter) into.push({ town, ...v })
+      for (const v of life.chatter) if (!life.all[v.id].missing && !life.all[v.partner].missing) into.push({ town, ...v })
       life.chatter.length = 0
     }
     return into
+  }
+
+  /** The children missing now, as `${town}:${id}` keys; each alive town's people marked to match. */
+  setMissing(keys) {
+    this.missing = keys
+    for (const [t, { life }] of this.alive) for (const c of life.all) c.missing = keys.has(`${t}:${c.id}`)
   }
 
   /** `c` held in a conversation with her from `seconds`: stopped where it is drawn and turned to her until release(), its sim going on without it; a rider stays in its saddle (`saddle`), its strider stopped and turned with it. */

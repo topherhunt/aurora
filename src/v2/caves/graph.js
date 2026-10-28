@@ -27,9 +27,8 @@ export const DROP_MIN = 2.2
 const DROP_MAX = 9
 // Headroom a drop's passage keeps above its lip, inside the chamber it opens onto.
 const DROP_ROOM = 3.0
-// How far a river's channel is cut below its passage's floor, and how far under the floor line its water stands.
+// How far a river's channel is cut below its passage's floor; its water stands under its banks (water.js `stream`).
 export const RIVER_DEPTH = 0.6
-export const RIVER_FREEBOARD = 0.15
 // Steepest flank of a sump's dip: a swimmer stands up out of it and climbs on.
 const SUMP_GRADE = 0.75
 // A drowned passage: out of a pool at least DROWN_DISH deep, DROWN_H high with its roof DROWN_ROOF under the surface until it is DROWN_OUT of the cavern's radius out, under the dry rim; it swims up at DROWN_RISE to the surface, then walks.

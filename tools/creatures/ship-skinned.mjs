@@ -174,7 +174,7 @@ export function shipSkinned(id, { plan, gaits, key, generator }) {
   if (!(meta.sizeM > 0)) throw new Error(`${id}: no sizeM -- the world has no size to draw it at`)
   const map = readRigMap(id)
   if (planOf(map) !== plan) throw new Error(`${id}: body plan ${planOf(map)}, which ${generator} does not carry`)
-  const clips = clipNames(plan)
+  const clips = clipNames(plan, id)
 
   const base = readRig(id, clips[0])
   const prim = base.json.meshes[0].primitives[0]

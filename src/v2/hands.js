@@ -147,6 +147,9 @@ export const OVER_CAP = 3
 export const UNPLACED_Y = -1e4
 // What a source's instanced attribute holds when the record does not say: the arena's fade slot is "never fade", the rest rest.
 const ATTR_DEFAULT = { aPropFade: 1 }
+// `aLit` is drawn from rec.lit each frame, since lighting it changes the record in place.
+const LIT = [1]
+const UNLIT = [0]
 // The studio: where the camera looks from (a unit direction, front and a little above), the sky, ground and sun of its lights, and how much room the frame leaves round the thing.
 const STUDIO_VIEW = new THREE.Vector3(0.35, 0.55, 1).normalize()
 const STUDIO_SKY = 0xffffff
@@ -309,16 +312,16 @@ export class Hands {
   }
 
   /**
-   * Every lit thing in the room -- hers in a hand, loose, a peer's -- as `{ rec, x, y, z, hand, id }`, the point `tip` (in the thing's own
-   * frame, at unit scale) carried to the world; `hand` is the key of one she holds, `id` the netId of a loose one or the peer's id.
+   * Every lit thing in the room -- hers in a hand, loose, a peer's -- as `{ rec, x, y, z, hand, id }`, the point `tipOf(rec)` (in the thing's
+   * own frame, at unit scale) carried to the world; `hand` is the key of one she holds, `id` the netId of a loose one or the peer's id.
    */
-  litTips(tip, out) {
+  litTips(tipOf, out) {
     out.length = 0
     const at = (item, k, extra) => {
       _c.copy(item.off).multiplyScalar(k).applyQuaternion(item.q)
       _p.set(item.x - _c.x, item.y - _c.y, item.z - _c.z)
       _s.fromArray(item.rec.scale).multiplyScalar(k)
-      _v.copy(tip).multiply(_s).applyQuaternion(item.q).add(_p)
+      _v.copy(tipOf(item.rec)).multiply(_s).applyQuaternion(item.q).add(_p)
       out.push({ rec: item.rec, x: _v.x, y: _v.y, z: _v.z, hand: null, id: null, ...extra })
     }
     for (const hand of this.hands.values()) if (hand.held?.rec.lit) at(hand.held, this._drawn(hand), { hand: hand.key })
@@ -1318,7 +1321,7 @@ export class Hands {
       _s.fromArray(item.rec.scale).multiplyScalar(k)
       _m.compose(_p, item.q, _s).toArray(mat, n * 16)
       for (const { name, attr, size } of instanced) {
-        const values = item.attrs[name]
+        const values = name === 'aLit' ? (item.rec.lit ? LIT : UNLIT) : item.attrs[name]
         for (let i = 0; i < size; i++) attr.array[n * size + i] = values[i]
       }
       if (col) {

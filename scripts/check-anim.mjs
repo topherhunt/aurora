@@ -748,7 +748,7 @@ console.log('\nrigged creatures on disk')
     // does not exist -- or at a handle group that does not -- changes nothing
     // and says nothing. The animal reads as untuned and the map looks tuned.
     const map = readRigMap(id)
-    const known = new Set(clipNames(planOf(map)))
+    const known = new Set(clipNames(planOf(map), id))
     const stray = Object.entries(map.clipTweaks ?? {}).flatMap(([clip, tweak]) => [
       ...(known.has(clip) ? [] : [`no clip "${clip}"`]),
       ...Object.keys(tweak.scale ?? {}).filter((g) => !GROUPS.has(g)).map((g) => `${clip}.scale has no group "${g}"`),
@@ -759,14 +759,14 @@ console.log('\nrigged creatures on disk')
     // agree on the hand-off pose, but a `scale` or `limits` tweak on one and not
     // the other moves that pose on this body alone, and the seam pops on the
     // animal while every shared spec still checks out.
-    const drift = clipNames(planOf(map)).flatMap((name) => {
+    const drift = clipNames(planOf(map), id).flatMap((name) => {
       const to = readSpec(name, planOf(map)).chainsTo
       const mine = (map.clipTweaks ?? {})[name], theirs = (map.clipTweaks ?? {})[to]
       return !to || samePose(mine, theirs) ? [] : [`${name} ${stable(mine)} but ${to} ${stable(theirs)}`]
     })
     check(drift.length === 0, `${id} tunes chained clips alike`, drift.join('; '))
 
-    for (const name of clipNames(planOf(map))) {
+    for (const name of clipNames(planOf(map), id)) {
       const { spec, stats } = buildClip(id, name)
       // A pose clip may deliberately reposition a foot -- a sit scoots the hind
       // paws forward as the animal folds -- so its feet are allowed to travel.

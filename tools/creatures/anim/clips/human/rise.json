@@ -1,0 +1,39 @@
+{
+  "kind": "pose",
+  "note": "Up off the knee from kneel's pose: the hands drop, the body rises over the front foot and the right foot steps back under to the stance. One way only, the end of kneel and beg.",
+  "cast": ["bone-friend"],
+  "loops": false,
+  "samples": 24,
+  "crouch": 0.045,
+  "limits": {"hipLimit": 1.7, "fold": 2.6},
+  "keys": [
+    {
+      "t": 0.0,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.05},
+        "head": {"pitch": -0.3},
+        "arms": {"both": {"raise": 1.0, "spread": -0.3, "twist": 1.0, "elbow": 1.7, "wristPitch": -0.3, "curl": 0.5}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 0.3,
+      "pose": {
+        "root": {"lift": -0.1, "fore": -0.03},
+        "head": {"pitch": -0.1},
+        "arms": {"both": {"raise": 0.4, "spread": 0.0, "twist": 0.3, "elbow": 0.6}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 0.55,
+      "pose": {
+        "root": {"lift": -0.04, "fore": -0.02},
+        "arms": {"both": {"raise": 0.1, "spread": 0.05, "elbow": 0.3}},
+        "legs": {"legRight": {"fore": -0.2, "lift": 0.1}, "legLeft": {"fore": 0}}
+      }
+    },
+    {"t": 0.8, "pose": {"arms": {"both": {"elbow": 0.15, "spread": 0.05}}}}
+  ]
+}

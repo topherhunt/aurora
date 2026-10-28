@@ -9,7 +9,7 @@ import { MAX_TRAVEL_S } from './avatar-rig.js'
 import { solverStub, tintFor } from './baked-puppet.js'
 import { EAT } from '../eating.js'
 import { FELL, SINGE, recut, redAt, reddened, touches } from '../singe.js'
-import { headway } from '../keep-up.js'
+import { KEEP_UP, headway } from '../keep-up.js'
 
 // The overworld's unsaddled frost striders and her ride on one (DESIGN.md §32 "Wild striders"). A calm one is closed form on the room clock; a live one is its player's client's, anchored to the room as `ws:<key>` (creature-net.js).
 
@@ -760,8 +760,10 @@ export class WildStriders {
         const keeps = mine && m.state === 'follow' && this.her !== null && this.wait === null
         if (mine && !keeps && d > F.lose) { this._enter(m, 'calm'); return }
         if (mine && m.state === 'follow' && this._offered(m, lures)) { this._enter(m, 'eat'); return }
-        if (d > F.walk) m.moving = true
-        else if (d < F.stand) m.moving = false
+        // Her past KEEP_UP.m, it has lost her and grazes where it stands until she comes back.
+        const lost = keeps && d > KEEP_UP.m
+        if (d > F.walk && !lost) m.moving = true
+        else if (d < F.stand || lost) m.moving = false
         if (m.moving) {
           const own = (d > F.run ? this.runV : this.walkV) * p.size
           const v = keeps ? this.her.pace(own) : own

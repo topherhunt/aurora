@@ -21,8 +21,8 @@ export const TRADES = {
   smithy: { w: 7, d: 5, post: 2.5, rise: 1.5, over: 0.45, range: 1.0, tries: 240 },
   // A second farm with chance `two`. The farmhouse rings the town `out` m past the buildings.
   farm: { two: 0.6, out: 4, keep: 16 },
-  // The field: a w x d quad rolled square, trapezoid or cut-corner, its ground falling at most `range`; carrot rows `row` apart on the crests of furrows `furrow` m high either way (layers/fields.js), `inset` in from the fence, carrots in two staggered lines `pair` m either side of the crest, `step` apart along each, grown to `grow` of full size; fence posts at most `post` apart, rails at `rails` m, the gate `gate` m wide.
-  field: { w: [9, 13], d: [7, 10], jitter: 1.0, range: 2.5, row: 1.4, furrow: 0.09, inset: 0.6, pair: 0.16, step: 0.5, grow: [0.35, 1.05], post: 2.2, rails: [0.45, 0.85], gate: 1.4, gap: 1.0 },
+  // The field: a w x d quad rolled square, trapezoid or cut-corner, its ground falling at most `range`; carrot rows `row` apart on the crests of furrows `furrow` m high either way (layers/fields.js), `inset` in from the fence, carrots in two staggered lines `pair` m either side of the crest, `step` apart along each, grown to `grow` of full size, except a field of three rows or more gives its last row to pumpkins `gourd` m apart; fence posts at most `post` apart, rails at `rails` m, the gate `gate` m wide.
+  field: { w: [9, 13], d: [7, 10], jitter: 1.0, range: 2.5, row: 1.4, furrow: 0.09, inset: 0.6, pair: 0.16, step: 0.5, grow: [0.35, 1.05], gourd: 1.1, post: 2.2, rails: [0.45, 0.85], gate: 1.4, gap: 1.0 },
   shed: { w: 3.2, d: 2.4, range: 0.8 },
   // The chopping stump `stump` m out from the pile's middle, the woodcutter `stand` m further out.
   woodpile: { w: 2.6, d: 1.0, stump: 1.4, stand: 0.65 },
@@ -179,16 +179,32 @@ const hash01 = (x, z) => {
   return v - Math.floor(v)
 }
 
+// A field's pumpkin row: its last, when it has three or more.
+const gourdRows = (w) => (w.rows.length >= 3 ? 1 : 0)
+
 /** A field's carrots as world `[x, z, grow]`: two staggered lines along each row's crest, `grow` the fraction of full size. */
 export function fieldSpots(w) {
   const F = TRADES.field
   const out = []
-  for (const r of w.rows) {
+  for (const r of w.rows.slice(0, w.rows.length - gourdRows(w))) {
     for (const [dz, x0] of [[-F.pair, r.x0], [F.pair, r.x0 + F.step / 2]]) {
       for (let x = x0 + F.step / 4; x < r.x1; x += F.step) {
         const [wx, wz] = toWorld(w.x, w.z, w.yaw, x, r.z + dz)
         out.push([wx, wz, F.grow[0] + hash01(wx, wz) * (F.grow[1] - F.grow[0])])
       }
+    }
+  }
+  return out
+}
+
+/** A field's pumpkins as world `[x, z, grow]`: one every `gourd` m along its pumpkin row's crest. */
+export function pumpkinSpots(w) {
+  const F = TRADES.field
+  const out = []
+  for (const r of w.rows.slice(w.rows.length - gourdRows(w))) {
+    for (let x = r.x0 + F.gourd / 2; x < r.x1; x += F.gourd) {
+      const [wx, wz] = toWorld(w.x, w.z, w.yaw, x, r.z)
+      out.push([wx, wz, F.grow[0] + hash01(wz, wx) * (F.grow[1] - F.grow[0])])
     }
   }
   return out

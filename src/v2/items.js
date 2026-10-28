@@ -1,7 +1,7 @@
 import THREE from '../three-instance.js'
 
 // The valuables and the smith's tools (design/42-valuables.md): one Hands source for every kind in ITEMS, each
-// wearing its shipped mesh (public/gen-props/items/<kind>.glb, the 500-triangle tier). Small kinds stack: a record
+// wearing its shipped mesh (public/gen-props/items/<kind>.glb, the 500-triangle tier), or a `built` one's mesh made in code. Small kinds stack: a record
 // of one carries `count`, a fistful, and the backpack keeps them as counts in its brown row (main.js purse). Loot
 // lying in the world -- a plinth's gem, a roost's hoard, a dead dragon's gems -- is a spot laid here against a
 // place in the loot ledger (loot.js), drawn while the ledger says it is still there.
@@ -21,6 +21,7 @@ export const ITEMS = {
   sword: { name: 'sword', small: false, size: 0.9 },
   shield: { name: 'shield', small: false, size: 0.6 },
   'flare-charges': { name: 'flare charges', small: false, size: 0.2 },
+  knife: { name: 'knife', small: false, size: 0.26, built: true },
 }
 export const SMALL = Object.keys(ITEMS).filter((k) => ITEMS[k].small)
 export const itemUrl = (kind) => `gen-props/items/${kind}.glb`
@@ -61,7 +62,14 @@ export class Items {
     geo.scale(s, s, s)
     geo.computeBoundingBox()
     geo.computeBoundingSphere()
-    this.worn.set(kind, { geometry: geo, material: new THREE.MeshLambertMaterial({ map: asset.map }) })
+    this.wearBuilt(kind, geo, new THREE.MeshLambertMaterial({ map: asset.map }))
+  }
+
+  /** A kind's mesh, already centred and ITEMS[kind].size long. */
+  wearBuilt(kind, geometry, material) {
+    if (!ITEMS[kind]) throw new Error(`Items.wearBuilt: no item ${kind}`)
+    if (this.worn.has(kind)) throw new Error(`Items.wear: ${kind} twice`)
+    this.worn.set(kind, { geometry, material })
     for (const spot of this.spots) if (spot.kind === kind) this._draw(spot)
   }
 

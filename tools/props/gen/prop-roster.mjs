@@ -356,22 +356,6 @@ export const PROPS = [
     styleNote:
       'The wall is one closed unbroken ring of stone all the way round, its outline craggy and jagged along the top.',
   },
-  {
-    id: 'castle-gate-doors',
-    label: 'Castle Gate Doors',
-    category: 'other',
-    // Closes a castle's gate (castles/shell.js doorway, look 'gate': 2.6 m wide, 3.4 m tall), which draws two textured leaves until a pick ships. It stands flat in the opening, so the pick must be a closed slab with its face square to the camera.
-    sizeM: 3.4,
-    aspectRatio: '3:4',
-    description:
-      'a pair of big closed castle gate doors seen straight on, about three and a half metres tall and two and a ' +
-      'half wide, two tall leaves of thick dark oak planks running upright, meeting in the middle, square-topped, ' +
-      'bound across with three broad black forged iron straps ending in curled fleur tips, rows of ' +
-      'heavy domed rivets, a big iron ring pull on each leaf near the middle seam, the wood weathered grey-brown ' +
-      'and scuffed pale at the bottom, iron rust streaking down from the straps',
-    styleNote:
-      'One flat closed slab about a hand thick, both leaves shut and their faces square to the camera.',
-  },
 ]
 
 export const propById = (id) => PROPS.find((p) => p.id === id) ?? null

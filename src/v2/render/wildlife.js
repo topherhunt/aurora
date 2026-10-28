@@ -265,7 +265,7 @@ const LIVE_MODES = new Set(['lure', 'flee', 'tame', 'mad', 'look', 'hunt', 'butt
 export const MAD = { m: EAT.chanterelle.m, reach: 0.7, harm: 5, strikeS: 0.8, idleS: 1.2 }
 // A pet stag grown to `grown` times its wild size charges a grounded dragon within `m` m of it, up and down too (foes) and butts it once from MAD.reach body lengths for `hp`; a dragon that snaps back costs it `snap`. Not again for `againS`.
 export const BUTT = { grown: 2, m: 20, hp: 10, snap: 30, againS: 60 }
-// A pet lost to her (place, a load, another room) waits where it was, wandering its score from there; her within `m` m, it calls and is hers again.
+// A pet lost to her (left past KEEP_UP.m, place, a load, another room) waits where it was, wandering its score from there; her within `m` m, it calls and is hers again.
 export const LOST = { m: 10 }
 export const WAIT = 'wait'
 // Her size (sized) against an animal with a `flee` gait, within FLEE_M: above `look` of her full size it runs; at `look` or under it stops and looks at her for `lookS`, not again for `againS`.
@@ -2366,6 +2366,8 @@ export class Wildlife {
     }
     this._rewait()
     for (let i = this.waits.spawns.length - 1; i >= 0; i--) if (this._found(this.waits.spawns[i], now)) this._unwait(this.waits.spawns[i].key)
+    // Past KEEP_UP.m on the overworld, a pet at her heel loses her and waits where it stands.
+    if (this.cave === null) for (const c of [...this.byKey.values()]) if (this._hers(c) && c.live.mode === 'tame' && Math.hypot(hx - c.sx, hz - c.sz) > KEEP_UP.m) this._lose(c, now)
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
       walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._grow(tx, tz), (t) => this._leave(t))
       this.walkedX = hx

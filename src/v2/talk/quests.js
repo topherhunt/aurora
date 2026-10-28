@@ -2,16 +2,14 @@
 
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
+import { compass } from './world.js'
 
 export const QUESTS = {
   // A quest's life: long enough to ask round a town and walk out to a neighbour.
   epochS: 1800,
-  // A town's odds of a missing child in an epoch.
-  odds: 0.5,
-  // Where a child gone missing may be: [hiding with a friend, gone up a road, lost in the wild], cumulative.
-  where: [0.35, 0.7, 1],
-  // A child lost in the wild is this far from the fire, metres.
-  wild: [120, 350],
+  // A town's child hides in the castle whose gate is within `castleM` of its fire, else in the cave whose mouth is nearest within `caveM`.
+  castleM: 700,
+  caveM: 1200,
   // Witnesses asked round town who saw something.
   witnesses: [2, 4],
   // The parent gives only the child's name with this chance; otherwise a direction too.
@@ -40,60 +38,58 @@ export const epochOf = (seconds) => Math.floor(seconds / QUESTS.epochS)
 
 const pick = (rand, list) => list[(rand() * list.length) | 0]
 
-/** Town `townIndex`'s missing child in `epoch`, or null: `{ id, kind, town, parent, child, where, witnesses, covers, opening }`. `where` is `{ variant, x, z, label, host?, toward? }`; each witness `{ who, clue }` with `clue` `{ kind, conf, x, z, label, with? }`; `covers` the ids who will lie to hide the child. */
+// What a witness caught the child at before they went, each said after "I caught him".
+export const ODD = [
+  'pinching bones out of the soup pot',
+  "talking to someone who wasn't there",
+  'stuffing {his} pockets with chicken bones',
+  'asking how many bones a body has',
+  'sneaking a lantern out after supper',
+  'whistling at the ground like {he} was calling a dog',
+]
+
+/**
+ * Each town's hideout, or null: the castle whose gate is within QUESTS.castleM of its fire, else the cave mouth nearest
+ * within QUESTS.caveM. `caves` `{ system, mouth, x, z }` (the mouth), `castles` `{ site, x, z }` (the gate). Each hideout
+ * is `{ kind: 'cave', system, mouth, x, z, label }` or `{ kind: 'castle', site, x, z, label }`, the label said from town.
+ */
+export function hideouts(towns, caves, castles) {
+  const nearest = (list, x, z, max) => list.reduce((best, p) => {
+    const d = Math.hypot(p.x - x, p.z - z)
+    return d < max && (best === null || d < best.d) ? { p, d } : best
+  }, null)
+  return towns.map((town) => {
+    const keep = nearest(castles, town.x, town.z, QUESTS.castleM)
+    if (keep !== null) return { kind: 'castle', site: keep.p.site, x: keep.p.x, z: keep.p.z, label: 'the old castle' }
+    const mouth = nearest(caves, town.x, town.z, QUESTS.caveM)
+    if (mouth === null) return null
+    return { kind: 'cave', system: mouth.p.system, mouth: mouth.p.mouth, x: mouth.p.x, z: mouth.p.z, label: `the cave to the ${compass(mouth.p.x - town.x, mouth.p.z - town.z)}` }
+  })
+}
+
+/** Town `townIndex`'s missing child in `epoch`, or null when it has no child or no hideout (world.hideouts): `{ id, kind, town, parent, child, where, witnesses, opening }`. `where` is the hideout with `variant` its kind; each witness `{ who, clue }` with `clue` `{ kind, conf, x, z, label, odd }`, `odd` an index into ODD or null. */
 export function missingChild(world, townIndex, epoch) {
   const t = world.towns[townIndex]
+  const hide = world.hideouts[townIndex]
+  if (hide === null) return null
   const rand = mulberry32(hash32(world.seed, SALT, townIndex, epoch))
-  if (rand() >= QUESTS.odds) return null
   const families = t.minds.filter((m) => m.cls === 'child' && m.household.some((i) => t.minds[i].cls !== 'child'))
   if (families.length === 0) return null
-  const child = pick(rand, families)
+  const boys = families.filter((m) => m.voice.he)
+  const child = pick(rand, boys.length > 0 ? boys : families)
   const parent = t.minds[child.household.find((i) => t.minds[i].cls !== 'child')]
-  const inn = t.town.buildings.findIndex((b) => b.trade === 'inn')
-  const fire = { x: t.town.x, z: t.town.z }
+  const where = { variant: hide.kind, ...hide }
 
-  let roll = rand()
-  let where = null
-  let covers = []
-  if (roll < QUESTS.where[0]) {
-    const hosts = child.friends.map((i) => t.minds[i]).filter((m) => m.home !== child.home && m.home !== inn && m.cls !== 'child')
-    if (hosts.length > 0) {
-      const host = pick(rand, hosts)
-      where = { variant: 'hiding', ...world.buildingPlace(t, host.home), host: host.id }
-      covers = t.minds.filter((m) => m.home === host.home && m !== child).map((m) => m.id)
-    } else roll = QUESTS.where[0]
-  }
-  if (where === null && roll < QUESTS.where[1] && t.town.roads.length > 0) {
-    const toward = world.nearestTown(fire.x, fire.z, townIndex)
-    // The road whose far end points most nearly at that town.
-    const aim = Math.atan2(toward.town.x - fire.x, toward.town.z - fire.z)
-    const off = (pts) => {
-      const [x, , z] = pts[pts.length - 1]
-      return Math.abs(Math.atan2(Math.sin(Math.atan2(x - fire.x, z - fire.z) - aim), Math.cos(Math.atan2(x - fire.x, z - fire.z) - aim)))
-    }
-    const road = [...t.town.roads].sort((p, q) => off(p) - off(q))[0]
-    const [x, , z] = road[road.length - 1]
-    where = { variant: 'road', x, z, label: `the road to ${toward.name}`, toward: toward.index }
-  }
-  if (where === null) {
-    const a = rand() * Math.PI * 2
-    const d = QUESTS.wild[0] + rand() * (QUESTS.wild[1] - QUESTS.wild[0])
-    where = { variant: 'wild', x: fire.x + Math.sin(a) * d, z: fire.z - Math.cos(a) * d, label: 'out in the wild' }
-  }
-
-  const seen = { x: where.x, z: where.z, label: where.label }
-  const pool = t.minds.filter((m) => m.cls !== 'child' && m !== parent && !child.household.includes(m.index) && !covers.includes(m.id))
+  const pool = t.minds.filter((m) => m.cls !== 'child' && m !== parent && !child.household.includes(m.index))
   const n = Math.min(pool.length, QUESTS.witnesses[0] + ((rand() * (QUESTS.witnesses[1] - QUESTS.witnesses[0] + 1)) | 0))
+  const odds = ODD.map((_, i) => i)
   const witnesses = []
   for (let k = 0; k < n; k++) {
     const who = pool.splice((rand() * pool.length) | 0, 1)[0]
     const conf = 0.55 + rand() * 0.4
-    // The first saw where the child went; later ones saw whom the child was with or only heard talk.
-    let clue
-    if (k === 0) clue = { kind: 'saw', conf, ...seen }
-    else if (where.variant === 'hiding' && rand() < 0.6) clue = { kind: 'with', conf, ...seen, with: where.host }
-    else clue = { kind: 'heard', conf: conf * 0.7, ...seen }
-    witnesses.push({ who: who.id, clue })
+    // The first saw where the child went; the rest only heard, and most caught the child at something odd first.
+    const odd = k > 0 && rand() < 0.75 ? odds.splice((rand() * odds.length) | 0, 1)[0] : null
+    witnesses.push({ who: who.id, clue: { kind: k === 0 ? 'saw' : 'heard', conf: k === 0 ? conf : conf * 0.7, x: where.x, z: where.z, label: where.label, odd } })
   }
   return {
     id: `child:${t.town.id}:${epoch}`,
@@ -104,8 +100,9 @@ export function missingChild(world, townIndex, epoch) {
     child: child.id,
     where,
     witnesses,
-    covers,
     opening: rand() < QUESTS.nameOnly ? 'name' : 'direction',
+    // Whether the parent swears this time it is no false alarm.
+    wolf: rand() < 0.5,
   }
 }
 

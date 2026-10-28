@@ -30,6 +30,14 @@ export class TalkWorld {
     this.people = new Map()
     for (const t of this.towns) for (const m of t.minds) this.people.set(m.id, m)
     this.seatDeer(null)
+    // Each town's missing-child hideout (quests.js hideouts), none until seated.
+    this.hideouts = this.towns.map(() => null)
+  }
+
+  /** Seats each town's hideout, `list` as quests.js hideouts returns it, one a town. */
+  seatHideouts(list) {
+    if (list.length !== this.towns.length) throw new Error(`TalkWorld: ${list.length} hideouts for ${this.towns.length} towns`)
+    this.hideouts = list
   }
 
   /**

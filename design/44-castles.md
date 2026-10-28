@@ -36,14 +36,13 @@ Z-fighting rules, enforced by the coplanar-overlap gate on the unwarped shell:
 
 `solids.js` reduces each castle to plain data. The exterior is section bodies, crowns and battlement bands, plus boxes (flight treads, bridge decks and rails, hatches, the court slab, the chest, court props), ramps, and door notches cut through them. The interior is room and doorway air, everything else solid, plus each spiral's steps, post and hole air, and prop boxes; only the storeys within one of her feet are opened, which keeps a column under the walk's 8-span cap. `Castles` is a stone layer on the overworld walk. Inside, a `CastleInteriorStone` drives a walk of its own, swapped in and out as a house's is (main.js `openCastle` / `closeCastle`).
 
-Spirals are walked: interior tops are decks (`deckAt`), so the walk takes each step as level floor. Every non-barred outside door is closed by its leaves (`public/buildings/door.png`, one per leaf by explicit UVs; the gate has two, mirrored), solid on both sides. `portals()` gives each door its leaves' exterior and interior faces with a standable arrival each, a blink for every ladder (inside at its foot, outside at its roof hatch), the rope and the chest. The rope fires when she walks at it; doors fire on touching their leaves (within 0.5 m of the face), the rest on entering their zone. Arrivals land outside their zone, and `arrived()` marks the zone she lands in as current, so a portal never sends her straight back.
+Spirals are walked: interior tops are decks (`deckAt`), so the walk takes each step as level floor. Every non-barred outside door is closed by its leaves, solid on both sides: a door's is one quad of `public/buildings/door.png`; the gate's is one arched plane of `public/buildings/castle_gate.png` (FLUX, cropped to the doors, 128 px; `tools/buildings/castle-textures.mjs gen-gate`), its arch rising `GATE_ARCH` of the height to match the picture, with stone spandrels up to the lintel. `portals()` gives each door its leaves' exterior and interior faces with a standable arrival each, a blink for every ladder (inside at its foot, outside at its roof hatch), the rope and the chest. The rope fires when she walks at it; doors fire on touching their leaves (within 0.5 m of the face), the rest on entering their zone. Arrivals land outside their zone, and `arrived()` marks the zone she lands in as current, so a portal never sends her straight back.
 
 The summit chest holds 40-90 coins and 2-3 HOARD gems, at loot place `k` keyed on the region (main.js `layLoot`). The rope lets her down the lookout's face through `Climb.startRope`.
 
 ## Not yet built
 
 - Walked ladders: a ladder is a blink.
-- The gate's leaves are the procedural door texture; an AI-generated double-door mesh would replace them.
 - Barred doors are impassable.
 - Room corner facets are not collided, and collision ignores the warp, which moves masonry up to about 0.27 m.
 - While she is inside, `inCastle` is a state of its own, not `indoors`, so overworld systems (rain among them) may still run.

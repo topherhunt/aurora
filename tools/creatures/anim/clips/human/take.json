@@ -1,0 +1,98 @@
+{
+  "kind": "pose",
+  "note": "Taking a gift from kneel's pose, as gently as anything can be done: both open hands reach out, very slowly, to arm's length and wait there trembling a little; the fingers close, the arms draw the thing in to the chest and cradle it, the head bows to look at it, and the body gets up still cradling, the right foot stepping back under. Hands off to joy.",
+  "cast": ["bone-friend"],
+  "loops": false,
+  "chainsTo": "joy",
+  "samples": 70,
+  "crouch": 0.045,
+  "limits": {"hipLimit": 1.7, "fold": 2.6},
+  "keys": [
+    {
+      "t": 0.0,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.05},
+        "head": {"pitch": -0.3},
+        "arms": {"both": {"raise": 1.0, "spread": -0.3, "twist": 1.0, "elbow": 1.7, "wristPitch": -0.3, "curl": 0.5}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 2.4,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.18},
+        "head": {"pitch": -0.05},
+        "arms": {"both": {"raise": 1.3, "spread": 0.12, "twist": 0.3, "elbow": 0.45, "curl": 0.0}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 2.7,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.18},
+        "head": {"pitch": -0.05},
+        "arms": {"both": {"raise": 1.33, "spread": 0.12, "twist": 0.3, "elbow": 0.42, "curl": 0.05}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 3.0,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.18},
+        "head": {"pitch": -0.05},
+        "arms": {"both": {"raise": 1.3, "spread": 0.12, "twist": 0.3, "elbow": 0.45, "curl": 0.0}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 3.6,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.18},
+        "head": {"pitch": -0.05},
+        "arms": {"both": {"raise": 1.3, "spread": 0.1, "twist": 0.35, "elbow": 0.5, "curl": 0.6}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 4.6,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.0},
+        "head": {"pitch": 0.25},
+        "arms": {"both": {"raise": 0.6, "spread": -0.3, "twist": 0.9, "elbow": 1.4, "curl": 0.6}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 5.4,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.0},
+        "head": {"pitch": 0.25},
+        "arms": {"both": {"raise": 0.6, "spread": -0.3, "twist": 0.9, "elbow": 1.4, "curl": 0.6}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 5.8,
+      "pose": {
+        "root": {"lift": -0.06, "fore": -0.02},
+        "head": {"pitch": 0.2},
+        "arms": {"both": {"raise": 0.6, "spread": -0.3, "twist": 0.9, "elbow": 1.4, "curl": 0.6}},
+        "legs": {"legRight": {"fore": -0.2, "lift": 0.1}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 6.2,
+      "pose": {
+        "head": {"pitch": 0.15},
+        "arms": {"both": {"raise": 0.6, "spread": -0.3, "twist": 0.9, "elbow": 1.4, "curl": 0.6}}
+      }
+    }
+  ]
+}

@@ -1227,7 +1227,7 @@ const differ = (p, q) => {
 // A pet fox at her heel while she walks east at the desktop pace (a run in one) across ground
 // it cannot take as she does. Behind her, out of her sight, it never goes KEEP_UP.stallS past KEEP_UP.near
 // without closing on her while there is ground behind her it may stand on, nor falls past KEEP_UP.m, before it
-// is warped up behind her; in her sight it is never warped.
+// is warped up behind her; in her sight it is never warped. A jump that leaves it past KEEP_UP.m loses her.
 {
   const dt = 1 / 30
   const blocked = (o) => ({
@@ -1264,7 +1264,12 @@ const differ = (p, q) => {
       worst = Math.max(worst, stall)
     }
     const end = Math.hypot(hx - c.sx, o.z - c.sz)
-    check(c.live?.mode === 'tame' && worst <= KEEP_UP.stallS + 2 * TICK_S + dt && far <= KEEP_UP.m + (name === 'a teleport jump' ? 20 : 0) + mps * 2 * TICK_S + 1 && end < 12, `a pet fox keeps up with her at ${mps} m/s over ${name}: never ${KEEP_UP.stallS} s without closing on her, never past ${KEEP_UP.m} m behind for long, at her heel at the end`, `${warps} warps, longest stall ${worst.toFixed(2)} s, furthest ${far.toFixed(1)} m, ${end.toFixed(1)} m off at the end`)
+    if (name === 'a teleport jump') {
+      check(c.live === null && a.lost.has(c.key) && warps === 0 && end > KEEP_UP.m, `a pet fox she jumps ${KEEP_UP.m} m away from loses her: never warped, it waits behind`, `${c.live?.mode ?? 'waiting'}, ${warps} warps, ${end.toFixed(1)} m off at the end`)
+      a.dispose()
+      continue
+    }
+    check(c.live?.mode === 'tame' && worst <= KEEP_UP.stallS + 2 * TICK_S + dt && far <= KEEP_UP.m + mps * 2 * TICK_S + 1 && end < 12, `a pet fox keeps up with her at ${mps} m/s over ${name}: never ${KEEP_UP.stallS} s without closing on her, never past ${KEEP_UP.m} m behind for long, at her heel at the end`, `${warps} warps, longest stall ${worst.toFixed(2)} s, furthest ${far.toFixed(1)} m, ${end.toFixed(1)} m off at the end`)
     a.dispose()
   }
   {
@@ -1328,7 +1333,9 @@ const differ = (p, q) => {
     const a = make(7, { walk: plain, water: noWater })
     a.place(0, 0)
     a.her = new Her()
-    const [fox, hare, stag] = ['fox', 'hare', 'stag'].map((k) => { const c = beside(a, k); a._golive(c, 'tame', null, null, timeOf(a)); return c })
+    // All found before any is tamed: beside() steps the layer at each, and a pet further than KEEP_UP.m from that step would lose her.
+    const [fox, hare, stag] = ['fox', 'hare', 'stag'].map((k) => beside(a, k))
+    for (const c of [fox, hare, stag]) a._golive(c, 'tame', null, null, timeOf(a))
     const apron = { x: fox.sx, y: GROUND, z: fox.sz }
     a._setDown(hare, apron.x, GROUND, apron.z + 1, 0, timeOf(a))
     a._setDown(stag, apron.x - 3, GROUND, apron.z, 0, timeOf(a))

@@ -42,8 +42,10 @@ function planDir(plan) {
   return dir
 }
 
-export const clipNames = (plan = DEFAULT_PLAN) => fs.readdirSync(planDir(plan))
+/** Every clip of `plan`, or with `id` only those it ships: a spec naming a `cast` belongs to those creatures alone. */
+export const clipNames = (plan = DEFAULT_PLAN, id = null) => fs.readdirSync(planDir(plan))
   .filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''))
+  .filter((name) => id === null || (readSpec(name, plan).cast ?? [id]).includes(id))
 
 export function readSpec(name, plan = DEFAULT_PLAN) {
   const file = path.join(planDir(plan), `${name}.json`)
@@ -127,7 +129,7 @@ function main() {
   const view = args.includes('--view') ? args[args.indexOf('--view') + 1] : 'side'
   const wanted = args.filter((a) => !a.startsWith('--') && a !== id && a !== view)
   const plan = planOf(readRigMap(id))
-  const names = wanted.length ? wanted : clipNames(plan)
+  const names = wanted.length ? wanted : clipNames(plan, id)
   console.log(`${id}  body plan: ${plan}`)
 
   for (const name of names) {

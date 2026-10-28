@@ -1,4 +1,4 @@
-// Where each pool's and sump's water actually lies (design/39-caves.md §5): the floor under its planned level flooded from the body's deepest point, and the shoreline as a grid the renderer and the walk both read.
+// Where each pool's, sump's and river's water actually lies (design/39-caves.md §5): the floor under its planned level flooded from the body's deepest point, and the shoreline as a grid the renderer and the walk both read.
 
 // The flood grid pitch, 0.5 m; a lake of more than BIG_LAKE_M radius floods at twice that, since its shoreline is a smaller share of its cells and the flood costs its area.
 const BASE = 0.5
@@ -20,6 +20,7 @@ const DEEP = 14
  * Settles every pool and sump in `graph.pools` against the field: sets `shore` = { x0, z0, nx, nz, cell, s, floor }, s per grid corner being the floor's rise over level + TUCK: negative where the water reaches, the true rise on its shore, 0 in a wall, so the plane runs exactly into a wall corner. A pool a sump's water already covers takes the sump's level and shore null, so the two planes don't fight. Pure in the seed, so the worker and main thread settle the same water.
  */
 export function settleWaters(graph, field) {
+  for (const i of graph.rivers) graph.edges[i].stream = stream(graph.edges[i], field)
   graph.pools = graph.pools.filter((p) => settle(p, graph, field))
   for (const sump of graph.pools) {
     if (sump.edge === undefined) continue
@@ -142,6 +143,145 @@ function refine(sh, field, level, refAt) {
     }
   }
   return { x0: sh.x0, z0: sh.z0, nx: NX, nz: NZ, cell, s, floor }
+}
+
+// A river's lattice: a row every STATION metres along its channel, columns ACROSS apart out to REACH of its passage's half-width.
+const STATION = 0.5
+const ACROSS = 0.33
+const REACH = 0.75
+// A row's water stands BANK_TUCK under the lowest floor at its lattice's sides within BANK_RUN along: the floor's bump only ever lowers it, so a level read off the passage's line would stand the plane's edges in the air. The plane runs on until the floor is BANK_TUCK over it, deeper than a pool's TUCK since a cell this coarse misses the bump's ridges by up to a decimetre. The level climbs at most BANK_STEP a row: the clip interpolates each row's field at its own level, so a steeper step floats the edge between them.
+const BANK_RUN = 0.5
+const BANK_TUCK = 0.12
+const BANK_STEP = 0.1
+
+/**
+ * A river edge's water as rows across its cut channel: { n, nc, x, z, nx, nz, T, level, bed, s }, row r centred at (x, z) with unit normal (nx, nz), columns at t = (2j / (nc - 1) - 1) * T[r] along it, s[r * nc + j] the field at the row's level + BANK_TUCK (negative where the water reaches). The outer columns and both end rows are dry, so every edge of the plane runs under rock.
+ */
+function stream(e, field) {
+  const pts = e.pts
+  let a = pts.findIndex((q) => q.cut > 0) - 1, b = pts.findLastIndex((q) => q.cut > 0) + 1
+  a = Math.max(0, a); b = Math.min(pts.length - 1, b)
+  const s0 = pts[a].s, s1 = pts[b].s
+  const n = Math.max(2, Math.ceil((s1 - s0) / STATION) + 1)
+  let k = a
+  const along = (s) => {
+    while (k > a && pts[k].s > s) k--
+    while (k + 1 < b && pts[k + 1].s < s) k++
+    const p = pts[k], q = pts[k + 1], u = Math.min(1, Math.max(0, (s - p.s) / (q.s - p.s)))
+    return { x: p.x + (q.x - p.x) * u, z: p.z + (q.z - p.z) * u, y: p.y + (q.y - p.y) * u, w: p.w + (q.w - p.w) * u, cut: p.cut + (q.cut - p.cut) * u, ex: q.x - p.x, ez: q.z - p.z }
+  }
+  const x = new Float32Array(n), z = new Float32Array(n), nx = new Float32Array(n), nz = new Float32Array(n)
+  const T = new Float32Array(n), level = new Float32Array(n), bed = new Float32Array(n), bank = new Float32Array(n), ref = new Float32Array(n)
+  let tMax = 0
+  for (let r = 0; r < n; r++) {
+    const q = along(s0 + ((s1 - s0) * r) / (n - 1)), l = Math.hypot(q.ex, q.ez)
+    x[r] = q.x; z[r] = q.z; nx[r] = -q.ez / l; nz[r] = q.ex / l
+    T[r] = REACH * q.w
+    tMax = Math.max(tMax, T[r])
+    ref[r] = q.y + 0.5
+    bank[r] = Infinity
+    for (const t of [-T[r], T[r]]) bank[r] = Math.min(bank[r], riverFloor(field, q.x + nx[r] * t, q.z + nz[r] * t, ref[r]))
+    bed[r] = riverFloor(field, q.x, q.z, ref[r])
+  }
+  const nc = 2 * Math.ceil(tMax / ACROSS) + 1
+  const s = new Float32Array(n * nc)
+  const run = Math.round(BANK_RUN / STATION)
+  for (let r = 0; r < n; r++) {
+    let lo = Infinity
+    for (let i = Math.max(0, r - run); i <= Math.min(n - 1, r + run); i++) lo = Math.min(lo, bank[i])
+    level[r] = lo - BANK_TUCK
+    if (r === 0 || r === n - 1) {
+      for (let j = 0; j < nc; j++) {
+        const t = ((2 * j) / (nc - 1) - 1) * T[r]
+        level[r] = Math.min(level[r], riverFloor(field, x[r] + nx[r] * t, z[r] + nz[r] * t, ref[r]) - BANK_TUCK)
+      }
+    }
+  }
+  for (let r = 1; r < n; r++) level[r] = Math.min(level[r], level[r - 1] + BANK_STEP)
+  for (let r = n - 2; r >= 0; r--) level[r] = Math.min(level[r], level[r + 1] + BANK_STEP)
+  for (let r = 0; r < n; r++) {
+    const end = r === 0 || r === n - 1
+    if (!Number.isFinite(level[r])) throw new Error(`settleWaters: river ${e.i} row ${r} has no floor at its banks`)
+    for (let j = 0; j < nc; j++) {
+      const t = ((2 * j) / (nc - 1) - 1) * T[r]
+      const v = field.at(x[r] + nx[r] * t, level[r] + BANK_TUCK, z[r] + nz[r] * t)
+      s[r * nc + j] = end || j === 0 || j === nc - 1 ? Math.max(1e-3, v) : v
+    }
+  }
+  return { n, nc, x, z, nx, nz, T, level, bed, s }
+}
+
+// The floor under `ref` at (x, z), Infinity where `ref` is in rock (the passage's wall, not a floor under it).
+function riverFloor(field, x, z, ref) {
+  return field.at(x, ref, z) > 0 ? Infinity : floorUnder(field, x, z, ref)
+}
+
+/** Whether (x, z) is over a river's water, and its row: { r, u, level, bed } into `out`, or null. Nearest station segment, then the lattice bilinear across. */
+export function streamAt(st, x, z, out) {
+  let best = Infinity, br = -1, bu = 0
+  for (let r = 0; r + 1 < st.n; r++) {
+    const ex = st.x[r + 1] - st.x[r], ez = st.z[r + 1] - st.z[r]
+    const u = Math.min(1, Math.max(0, ((x - st.x[r]) * ex + (z - st.z[r]) * ez) / (ex * ex + ez * ez)))
+    const d = Math.hypot(x - st.x[r] - u * ex, z - st.z[r] - u * ez)
+    if (d < best) { best = d; br = r; bu = u }
+  }
+  const r = br, u = bu
+  const cx = st.x[r] + (st.x[r + 1] - st.x[r]) * u, cz = st.z[r] + (st.z[r + 1] - st.z[r]) * u
+  const mx = st.nx[r] + (st.nx[r + 1] - st.nx[r]) * u, mz = st.nz[r] + (st.nz[r + 1] - st.nz[r]) * u
+  const T = st.T[r] + (st.T[r + 1] - st.T[r]) * u
+  const jf = (((x - cx) * mx + (z - cz) * mz) / Math.hypot(mx, mz) / T + 1) * 0.5 * (st.nc - 1)
+  if (!(jf >= 0 && jf <= st.nc - 1)) return null
+  const j = Math.min(st.nc - 2, Math.floor(jf)), f = jf - j, s = st.s, c = r * st.nc + j
+  const v = (s[c] * (1 - f) + s[c + 1] * f) * (1 - u) + (s[c + st.nc] * (1 - f) + s[c + st.nc + 1] * f) * u
+  if (!(v < 0)) return null
+  out.r = r; out.u = u
+  out.level = st.level[r] + (st.level[r + 1] - st.level[r]) * u
+  out.bed = Math.min(out.level, st.bed[r] + (st.bed[r + 1] - st.bed[r]) * u)
+  return out
+}
+
+/** A river's water plane, as shoreMesh's { position, index }: each row's run of wet cells merged into one quad, each cell its row crosses the shore in clipped to where its corners' field interpolates under 0, every triangle wound to face up. */
+export function streamMesh(st) {
+  const { n, nc, s } = st
+  const pos = [], idx = []
+  const P = (jf, rf) => {
+    const r = Math.min(n - 2, Math.floor(rf)), u = rf - r, t = (2 * jf) / (nc - 1) - 1
+    const at = (i) => [st.x[i] + st.nx[i] * t * st.T[i], st.z[i] + st.nz[i] * t * st.T[i]]
+    const A = at(r), B = at(r + 1)
+    pos.push(A[0] + (B[0] - A[0]) * u, st.level[r] + (st.level[r + 1] - st.level[r]) * u, A[1] + (B[1] - A[1]) * u)
+  }
+  // A row's normal is its run turned left, so (j, r) -> (j + 1, r) -> (j + 1, r + 1) faces up.
+  const poly = []
+  for (let r = 0; r + 1 < n; r++) {
+    const wet = (j) => s[r * nc + j] < 0 && s[r * nc + j + 1] < 0 && s[(r + 1) * nc + j] < 0 && s[(r + 1) * nc + j + 1] < 0
+    for (let j = 0; j + 1 < nc; j++) {
+      if (wet(j)) {
+        let w = 1
+        while (j + w + 1 < nc && wet(j + w)) w++
+        const base = pos.length / 3
+        P(j, r); P(j + w, r); P(j + w, r + 1); P(j, r + 1)
+        idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+        j += w - 1
+        continue
+      }
+      const cs = [r * nc + j, r * nc + j + 1, (r + 1) * nc + j + 1, (r + 1) * nc + j]
+      if (cs.every((c) => s[c] >= 0)) continue
+      const js = [j, j + 1, j + 1, j], rs = [r, r, r + 1, r + 1]
+      poly.length = 0
+      for (let q = 0; q < 4; q++) {
+        const a = s[cs[q]], b = s[cs[(q + 1) % 4]]
+        if (a < 0) poly.push(js[q], rs[q])
+        if (a < 0 !== b < 0) {
+          const u = a / (a - b)
+          poly.push(js[q] + (js[(q + 1) % 4] - js[q]) * u, rs[q] + (rs[(q + 1) % 4] - rs[q]) * u)
+        }
+      }
+      const base = pos.length / 3
+      for (let q = 0; q < poly.length; q += 2) P(poly[q], poly[q + 1])
+      for (let q = 2; q < poly.length / 2; q++) idx.push(base, base + q - 1, base + q)
+    }
+  }
+  return { position: new Float32Array(pos), index: idx }
 }
 
 function ellipse(n, k) {

@@ -19,7 +19,7 @@ import { veinList } from '../caves/veins.js'
 import { VeinLayer } from './veins.js'
 import { CaveSpiders } from './cave-spiders.js'
 import { CHUNK, LODS, CULL_M, drawnLod, drawnRegions, chunkGap, lightsIn, rockAt, ROCK_AT } from '../caves/mesh.js'
-import { shoreMesh } from '../caves/water.js'
+import { shoreMesh, streamMesh } from '../caves/water.js'
 import { WATER, RIPPLE_GLSL } from '../../water.js'
 import { stalagmite, stalagmiteCard } from '../caves/stalagmite.js'
 import { mouthFlare } from '../caves/field.js'
@@ -880,36 +880,11 @@ export class CaveRoom {
 
   _water(waters) {
     for (const b of waters) {
-      let g
-      if (b.kind !== 'river') {
-        const m = shoreMesh(b.shore, b.level)
-        if (m.index.length === 0) continue
-        g = new THREE.BufferGeometry()
-        g.setAttribute('position', new THREE.BufferAttribute(m.position, 3))
-        g.setIndex(m.index)
-      } else {
-        // A ribbon along the edge's samples where it holds water.
-        const pos = [], idx = []
-        let prev = -1
-        for (let k = 0; k < b.pts.length; k++) {
-          const q = b.pts[k]
-          const level = b.levelOf(q)
-          if (level === null) { prev = -1; continue }
-          const a = b.pts[Math.max(0, k - 1)], c = b.pts[Math.min(b.pts.length - 1, k + 1)]
-          let dx = c.x - a.x, dz = c.z - a.z
-          const l = Math.hypot(dx, dz) || 1
-          dx /= l; dz /= l
-          const w = b.half(q)
-          const i = pos.length / 3
-          pos.push(q.x - dz * w, level, q.z + dx * w, q.x + dz * w, level, q.z - dx * w)
-          if (prev >= 0) idx.push(prev, i, prev + 1, prev + 1, i, i + 1)
-          prev = i
-        }
-        if (idx.length === 0) continue
-        g = new THREE.BufferGeometry()
-        g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-        g.setIndex(idx)
-      }
+      const m = b.kind === 'river' ? streamMesh(b.stream) : shoreMesh(b.shore, b.level)
+      if (m.index.length === 0) continue
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(m.position, 3))
+      g.setIndex(m.index)
       const mesh = new THREE.Mesh(g, this.waterMaterial)
       // Drawn as the rock around it is: with its region, and within CULL_M of her.
       const nodes = this.plan.graph.nodes, e = b.edge === undefined ? null : this.plan.graph.edges[b.edge]

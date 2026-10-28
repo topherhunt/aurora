@@ -5,13 +5,15 @@ import { isNight } from './manners.js'
 
 export const GEMS = ['jade', 'ruby', 'sapphire', 'diamond']
 export const ORES = ['bog-iron', 'lodestone', 'firestone', 'rimesilver']
-export const LARGE = new Set([...ORES, 'egg', 'pickaxe', 'sword', 'shield', 'flare-charges'])
+export const LARGE = new Set([...ORES, 'egg', 'pickaxe', 'sword', 'shield', 'knife', 'flare-charges'])
 
 // Coins a human pays for one. Rimesilver and eggs have no table price (a rare ore, a thief's prize): these are set here.
 export const PRICE = { 'bog-iron': 5, lodestone: 25, firestone: 30, jade: 40, ruby: 60, sapphire: 75, diamond: 100, rimesilver: 200, egg: 150 }
 // What the shops sell, each item's price: the blacksmith's tools (coins and bog iron) and the alchemist's jar of flare charges (coins and a firestone).
-export const SHOP = { sword: { coin: 100, 'bog-iron': 3 }, shield: { coin: 100, 'bog-iron': 3 }, pickaxe: { coin: 50 }, 'flare-charges': { coin: 40, firestone: 1 } }
-const STOCK = { smith: ['sword', 'shield', 'pickaxe'], alchemist: ['flare-charges'] }
+export const SHOP = { sword: { coin: 100, 'bog-iron': 3 }, shield: { coin: 100, 'bog-iron': 3 }, pickaxe: { coin: 50 }, knife: { coin: 15 }, 'flare-charges': { coin: 40, firestone: 1 } }
+const STOCK = { smith: ['sword', 'shield', 'pickaxe', 'knife'], alchemist: ['flare-charges'] }
+// Sold when asked for, but never named in a shop's offer.
+const UNSAID = new Set(['knife'])
 // Deals a trader names aloud when asked what they offer.
 const OFFER_SAID = 3
 // A thief's one stolen gem sells at this times its price.
@@ -20,7 +22,7 @@ const STOLEN = 3
 const NAME = {
   coin: ['coin', 'coins'], jade: ['jade', 'jade'], ruby: ['ruby', 'rubies'], sapphire: ['sapphire', 'sapphires'], diamond: ['diamond', 'diamonds'],
   'bog-iron': ['bog iron', 'bog iron'], lodestone: ['lodestone', 'lodestones'], rimesilver: ['rimesilver', 'rimesilver'], firestone: ['firestone', 'firestone'],
-  egg: ['dragon egg', 'dragon eggs'], pickaxe: ['pickaxe', 'pickaxes'], sword: ['sword', 'swords'], shield: ['shield', 'shields'],
+  egg: ['dragon egg', 'dragon eggs'], pickaxe: ['pickaxe', 'pickaxes'], sword: ['sword', 'swords'], shield: ['shield', 'shields'], knife: ['knife', 'knives'],
   'flare-charges': ['jar of flare charges', 'jars of flare charges'],
 }
 
@@ -217,7 +219,7 @@ export function say(conv, head, arg) {
       return conv._line(conv._pick('shop:elsewhere', late ? ALCH_SHUT : ALCH_AWAY), 'talk-shrug', { moment: 'answer.none', plain: true })
     }
     if (arg === 'offer') {
-      const stock = STOCK[shop].map((item) => `${count(item, 1)} for ${phrase(SHOP[item])}`)
+      const stock = STOCK[shop].filter((item) => !UNSAID.has(item)).map((item) => `${count(item, 1)} for ${phrase(SHOP[item])}`)
       const pool = alch
         ? ['I sell {stock}. It refills a flare gun. I buy gems and firestone too, if you have any.', 'On offer: {stock}. Gems and firestone I buy for coin.', 'Mostly brews, but for you: {stock}. And I take gems and firestone.']
         : ['I make {stock}. And I buy ore: ask me what ores are worth.', 'On offer: {stock}. Bring me ore and I pay coin for that too.', 'Tools, mostly. {stock}. Ore I buy, if you have any.']

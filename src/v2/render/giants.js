@@ -18,15 +18,16 @@ export const TINT = [0.42, 0.8, 0.32]
 // Giants are laid for the labyrinths within this of her; a region holds one, so few are ever laid.
 export const LAY_M = 160
 export const MAX = 4
-// Ground speeds: on its round, and after her, back to its round or fleeing -- both under her 1.45 walk (player.js LOCOMOTION.maxSpeed), so
-// she can always outwalk one. Its legs keep the pace of STRIDE times the ground speed: a slow, heavy, sliding gait.
-export const ROUND_SPEED = 0.6
-export const CHASE_SPEED = 1.0
+// Ground speeds: on its round, and after her, back to its round or fleeing -- the chase beats her 1.45 walk (player.js LOCOMOTION.maxSpeed),
+// so she cannot outwalk one. Its legs keep the pace of STRIDE times the ground speed: a heavy, sliding gait.
+export const ROUND_SPEED = 1.2
+export const CHASE_SPEED = 2.0
 export const STRIDE = 2
-// It notices her within NOTICE_M inside the quarter circle it faces (NOTICE_HALF either side), and forgets her past FORGET_M.
-export const NOTICE_M = 5
+// It notices her within NOTICE_M inside the quarter circle it faces (NOTICE_HALF either side), or from any side while she carries a lit
+// lantern (`glow`), and forgets her past FORGET_M.
+export const NOTICE_M = 10
 export const NOTICE_HALF = Math.PI / 4
-export const FORGET_M = 10
+export const FORGET_M = 20
 export const ABOVE_M = 4
 // It swings within REACH_M; the blow lands BLOW_AT through the swing if she is still within REACH_M + SLACK_M.
 export const REACH_M = 2.2
@@ -38,7 +39,7 @@ export const SCARE_M = 10
 export const COWER_S = 15
 // The threaten clip's rate, as a swing.
 const SWING_RATE = 1.2
-// Her holding a spider (`dread`), one that notices her, or is after her and within NOTICE_M, bellows and flees FLEE_S to the cell of its maze farthest from her.
+// Her holding a spider or a lit lantern (`dread`), one that notices her, or is after her and within NOTICE_M, bellows and flees FLEE_S to the cell of its maze farthest from her.
 export const FLEE_S = 12
 // The leafkin's scream slowed to a giant's.
 const SCREAM_RATE = 0.4
@@ -181,6 +182,7 @@ export class Giants {
     this.peers = []
     // Whether she holds a spider this frame (main.js).
     this.dread = false
+    this.glow = false
     this.anchored = new Map()
     this.outbox = []
     // HP of the blows landed on her since the last drain.
@@ -550,7 +552,7 @@ export class Giants {
       if (c.clip !== clip) this._play(c, clip, k, ROUND_SPEED)
     }
     const dx = this.hx - c.sx, dz = this.hz - c.sz
-    if (dx * dx + dz * dz < NOTICE_M * NOTICE_M && this.hy - c.sy <= ABOVE_M && Math.abs(swing(c.sh, Math.atan2(-dz, dx))) < NOTICE_HALF) {
+    if (dx * dx + dz * dz < NOTICE_M * NOTICE_M && this.hy - c.sy <= ABOVE_M && (this.glow || Math.abs(swing(c.sh, Math.atan2(-dz, dx))) < NOTICE_HALF)) {
       this._golive(c, null, k)
       if (this.dread) this._dread(c, k)
     }

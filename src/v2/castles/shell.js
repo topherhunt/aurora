@@ -13,9 +13,11 @@ const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
 export const UV_METRES = 4
 // Metres per plank tile (public/buildings/timber_plank.png, textures.js LAYER.TIMBER_PLANK).
 export const PLANK_METRES = 0.72
-// Material slots, as geometry groups: castle stone, planks, then door leaves (public/buildings/door.png once across each, by explicit
-// UVs). Each slot's tile metres.
-const STONE_SLOT = 0, WOOD_SLOT = 1, DOOR_SLOT = 2, SLOTS = [UV_METRES, PLANK_METRES, 1]
+// Material slots, as geometry groups: castle stone, planks, door leaves (public/buildings/door.png once across each) and gates
+// (public/buildings/castle_gate.png once across both leaves), the last two by explicit UVs. Each slot's tile metres.
+const STONE_SLOT = 0, WOOD_SLOT = 1, DOOR_SLOT = 2, GATE_SLOT = 3, SLOTS = [UV_METRES, PLANK_METRES, 1, 1]
+// castle_gate.png's arch rises this fraction of the doors' height, so the gate's arch is drawn to match it.
+const GATE_ARCH = 0.34
 // sRGB hex to linear, as THREE.Color(hex) gives it; three itself is a stub in the castle worker (vite.config.js noThreeInWorkers).
 const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
 const rgb = (hex) => [hex >> 16, (hex >> 8) & 255, hex & 255].map((v) => lin(v / 255))
@@ -318,16 +320,17 @@ function flight(m, f, col, scale = 1) {
   }
 }
 
-/** Door leaves `hw` either side of `base` (its foot's middle) and `h` tall, facing horizontal n: one, or the gate's two with the
- * right one mirrored, so the ring pulls meet in the middle. */
-function leaves(m, base, n, hw, h, double) {
+/** Door leaves `hw` either side of `base` (its foot's middle) and `h` tall, facing horizontal n: a door's one, or a gate's pair
+ * under an arch, its spandrels up to `h` filled in stone tinted `col`. */
+function leaves(m, base, n, hw, h, gate, col) {
   // The viewer's right, looking at the face.
   const r = [n[2], 0, -n[0]], P = (u, y) => [base[0] + r[0] * u, base[1] + y, base[2] + r[2] * u]
-  const one = (u0, u1, uv) => m.quad(P(u0, 0), P(u1, 0), P(u1, h), P(u0, h), LEAF, n, uv)
-  m.with(DOOR_SLOT, () => {
-    if (!double) one(-hw, hw, [[0, 0], [1, 0], [1, 1], [0, 1]])
-    else { one(-hw, 0, [[0, 0], [1, 0], [1, 1], [0, 1]]); one(0, hw, [[1, 0], [0, 0], [0, 1], [1, 1]]) }
-  })
+  if (!gate) return m.with(DOOR_SLOT, () => m.quad(P(-hw, 0), P(hw, 0), P(hw, h), P(-hw, h), LEAF, n, [[0, 0], [1, 0], [1, 1], [0, 1]]))
+  const y0 = h * (1 - GATE_ARCH), arc = Array.from({ length: 9 }, (_, i) => [hw * Math.cos(i * Math.PI / 8), y0 + h * GATE_ARCH * Math.sin(i * Math.PI / 8)])
+  const UV = ([u, y]) => [(u + hw) / (2 * hw), y / h], mid = [0, y0 / 2]
+  const ring = [[-hw, 0], [hw, 0], ...arc]
+  m.with(GATE_SLOT, () => ring.forEach((p, i) => { const q = ring[(i + 1) % ring.length]; m.face([P(...mid), P(...p), P(...q)], n, LEAF, [UV(mid), UV(p), UV(q)]) }))
+  for (let i = 0; i < 8; i++) { const c = i < 4 ? [hw, h] : [-hw, h]; m.face([P(...c), P(...arc[i]), P(...arc[i + 1])], n, col) }
 }
 
 /** A door as its leaves with a stone frame, bars over them when barred. A ground door stands proud of the root crown as a portal,
@@ -336,7 +339,7 @@ function doorway(m, d, col) {
   const depth = d.y === 0 ? ROOT + 0.05 : 0.05, o = d.side * depth, hw = d.w / 2
   const along = (u0, u1, y0, y1, t0, t1) => (d.axis === 'x' ? m.box(d.x + t0, y0, d.z + u0, d.x + t1, y1, d.z + u1, col) : m.box(d.x + u0, y0, d.z + t0, d.x + u1, y1, d.z + t1, col))
   const n = d.axis === 'x' ? [d.side, 0, 0] : [0, 0, d.side]
-  leaves(m, d.axis === 'x' ? [d.x + o, d.y, d.z] : [d.x, d.y, d.z + o], n, hw, d.h, d.look === 'gate')
+  leaves(m, d.axis === 'x' ? [d.x + o, d.y, d.z] : [d.x, d.y, d.z + o], n, hw, d.h, d.look === 'gate', col)
   const t0 = Math.min(-d.side * 0.1, d.side * (depth + 0.13)), t1 = Math.max(-d.side * 0.1, d.side * (depth + 0.13))
   along(-hw - 0.25, -hw, d.y, d.y + d.h + 0.25, t0, t1)
   along(hw, hw + 0.25, d.y, d.y + d.h + 0.25, t0, t1)
@@ -628,7 +631,7 @@ export function interiorGeometries(lay) {
         if (y + d.h * V < wtop) along(-G, G, -hw, hw, y + d.h * V, wtop, m.tint(INNER), m)
       } else {
         const o = -d.side * (G - 0.05), n = d.axis === 'x' ? [-d.side, 0, 0] : [0, 0, -d.side]
-        leaves(m, d.axis === 'x' ? [cx + o, y, cz] : [cx, y, cz + o], n, hw, d.h * V, d.look === 'gate')
+        leaves(m, d.axis === 'x' ? [cx + o, y, cz] : [cx, y, cz + o], n, hw, d.h * V, d.look === 'gate', m.tint(INNER))
       }
     }
   }

@@ -1,0 +1,68 @@
+{
+  "kind": "pose",
+  "note": "Jumping for joy with a treasure: from a cradle it dips, then hops twice with both arms flung up and out in a V and the face turned up, and brings its hands back in to the cradle. Loops from the cradle at the end of take; run-carry is the run that goes with it.",
+  "cast": ["bone-friend"],
+  "chainsTo": "joy",
+  "samples": 40,
+  "crouch": 0.045,
+  "keys": [
+    {
+      "t": 0.0,
+      "pose": {
+        "head": {"pitch": 0.15},
+        "arms": {"both": {"raise": 0.6, "spread": -0.3, "twist": 0.9, "elbow": 1.4, "curl": 0.6}}
+      }
+    },
+    {
+      "t": 0.25,
+      "pose": {
+        "root": {"lift": -0.06},
+        "head": {"pitch": 0.0},
+        "arms": {"both": {"raise": 1.4, "spread": -0.2, "twist": 0.5, "elbow": 1.0, "curl": 0.6}}
+      }
+    },
+    {
+      "t": 0.45,
+      "pose": {
+        "root": {"lift": 0.2},
+        "head": {"pitch": -0.25},
+        "spine": {"pitch": -0.1},
+        "arms": {"both": {"raise": 2.45, "spread": 0.55, "twist": 0.0, "elbow": 0.15, "curl": 0.6}},
+        "legs": {"legLeft": {"lift": 0.2}, "legRight": {"lift": 0.2}}
+      }
+    },
+    {
+      "t": 0.62,
+      "pose": {
+        "root": {"lift": -0.05},
+        "head": {"pitch": -0.2},
+        "arms": {"both": {"raise": 2.2, "spread": 0.5, "twist": 0.0, "elbow": 0.3, "curl": 0.6}}
+      }
+    },
+    {
+      "t": 0.82,
+      "pose": {
+        "root": {"lift": 0.2},
+        "head": {"pitch": -0.25},
+        "spine": {"pitch": -0.1},
+        "arms": {"both": {"raise": 2.45, "spread": 0.55, "twist": 0.0, "elbow": 0.15, "curl": 0.6}},
+        "legs": {"legLeft": {"lift": 0.2}, "legRight": {"lift": 0.2}}
+      }
+    },
+    {
+      "t": 1.0,
+      "pose": {
+        "root": {"lift": -0.05},
+        "head": {"pitch": -0.2},
+        "arms": {"both": {"raise": 2.2, "spread": 0.5, "twist": 0.0, "elbow": 0.3, "curl": 0.6}}
+      }
+    },
+    {
+      "t": 1.4,
+      "pose": {
+        "head": {"pitch": 0.15},
+        "arms": {"both": {"raise": 0.6, "spread": -0.3, "twist": 0.9, "elbow": 1.4, "curl": 0.6}}
+      }
+    }
+  ]
+}

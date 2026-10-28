@@ -38,14 +38,14 @@ export class Castles {
   constructor(scene, sites, { patch }) {
     this.scene = scene
     this.sites = sites
-    let left = 4, loaded
+    let left = 5, loaded
     this.texturesReady = new Promise((resolve) => { loaded = resolve })
     const done = () => { if (--left === 0) loaded() }
-    this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done) }
-    this.material = ['stone', 'plank', 'door'].map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
+    this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done), gate: loadTile('/buildings/castle_gate.png', UV_METRES, done) }
+    this.material = ['stone', 'plank', 'door', 'gate'].map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
     this.courtMaterial = patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), 'v2-castle-court')
     // The interior has no sun: drawn unlit, its colours shaded in the worker.
-    this.innerMaterial = ['stone', 'plank', 'door'].map((k) => new THREE.MeshBasicMaterial({ vertexColors: true, map: this.maps[k] }))
+    this.innerMaterial = ['stone', 'plank', 'door', 'gate'].map((k) => new THREE.MeshBasicMaterial({ vertexColors: true, map: this.maps[k] }))
 
     this.cardTexture = new THREE.DataTexture(new Uint8Array(CASTLE_CARD.size * CASTLE_CARD.size * 4), CASTLE_CARD.size, CASTLE_CARD.size, THREE.RGBAFormat, THREE.UnsignedByteType)
     this.cardTexture.colorSpace = THREE.SRGBColorSpace
@@ -83,7 +83,7 @@ export class Castles {
     shell.computeBoundingBox()
     const half = Math.max(ext.hx, ext.hz) + 1.5, F = { half, bottom: CASTLE_CARD.bottom, top: shell.boundingBox.max.y + 0.5, size: Math.max(ext.hx, ext.hz) }
     const scene = new THREE.Scene()
-    const mats = ['stone', 'plank', 'door'].map((k) => new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }))
+    const mats = ['stone', 'plank', 'door', 'gate'].map((k) => new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }))
     const courtMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble })
     scene.add(new THREE.Mesh(shell, mats), new THREE.Mesh(court, courtMat))
     const key = new THREE.DirectionalLight(0xffffff, 1.6)

@@ -5,8 +5,7 @@
 // A column of rock from over her reach down past her feet is a wall, and heightAt answers it WALL over her, so the swim's bank test and the slope limiter both refuse it. Without that a swimmer would pass straight through a sump's sides, which nothing else checks.
 
 import { WALK } from '../walk.js'
-import { RIVER_FREEBOARD } from './graph.js'
-import { wetAt } from './water.js'
+import { streamAt, wetAt } from './water.js'
 
 const WALL = 1000
 const DEEP = 60
@@ -165,12 +164,13 @@ export class CaveWalk {
     return 0
   }
 
-  /** The water and bed render/fish.js swims in: every body's at any height, since the beds round her are seeded once from wherever she stands, and the surface held under a sump's roof; and its spots (Fish.setSpots), each wet shore corner and river sample with its depth and body. */
+  /** The water and bed render/fish.js swims in: every body's at any height, since the beds round her are seeded once from wherever she stands, and the surface held under a sump's roof; and its spots (Fish.setSpots), each wet shore corner and every fourth wet river row with its depth and body. */
   fishWorld() {
     const spots = []
     for (const [i, b] of this._waters.entries()) {
       if (b.kind === 'river') {
-        for (const q of b.pts) { const level = b.levelOf(q); if (level !== null) spots.push([q.x, q.z, level - q.y + q.cut, i]) }
+        const st = b.stream, mid = (st.nc - 1) / 2
+        for (let r = 0; r < st.n; r += 4) if (st.s[r * st.nc + mid] < 0) spots.push([st.x[r], st.z[r], st.level[r] - st.bed[r], i])
         continue
       }
       const sh = b.shore
@@ -205,7 +205,7 @@ export class CaveWalk {
     return null
   }
 
-  /** The nearest point of any water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null: a pool or sump at a wet node of its shore grid (the nearest on a 1 m lattice, then the nearest round that), a river along its line wherever it carries water. Run every frame for the drip, hence the lattice. */
+  /** The nearest point of any water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null: a pool or sump at a wet node of its shore grid (the nearest on a 1 m lattice, then the nearest round that), a river at each row whose middle is wet. Run every frame for the drip, hence the lattice. */
   nearestWater(x, y, z, reach, out) {
     let best = reach
     let found = false
@@ -232,15 +232,8 @@ export class CaveWalk {
         if (hi >= 0) scan(hi - lattice, hi + lattice, hk - lattice, hk + lattice, 1)
         continue
       }
-      const q = { y: 0, w: 0, cut: 0 }
-      for (let k = 0; k + 1 < b.pts.length; k++) {
-        const a = b.pts[k], c = b.pts[k + 1]
-        const ex = c.x - a.x, ez = c.z - a.z
-        const u = Math.min(1, Math.max(0, ((x - a.x) * ex + (z - a.z) * ez) / (ex * ex + ez * ez)))
-        q.y = a.y + (c.y - a.y) * u; q.w = a.w + (c.w - a.w) * u; q.cut = a.cut + (c.cut - a.cut) * u
-        const level = b.levelOf(q)
-        if (level !== null) take(a.x + u * ex, level + this.oy, a.z + u * ez)
-      }
+      const st = b.stream, mid = (st.nc - 1) / 2
+      for (let r = 0; r < st.n; r++) if (st.s[r * st.nc + mid] < 0) take(st.x[r], st.level[r] + this.oy, st.z[r])
     }
     return found ? out : null
   }
@@ -263,7 +256,7 @@ function crossing(f, x, z, yRock, yAir) {
   return a + ((b - a) * fa) / (fa - fb)
 }
 
-/** Every pool, sump and river as a box and a levelAt(x, z) (null outside its shore), which also leaves the body's bed under the point in `bed`. Pools and sumps read the shore settleWaters left them. Pure; the renderer draws the same list. */
+/** Every pool, sump and river as a box and a levelAt(x, z) (null outside its shore), which also leaves the body's bed under the point in `bed`. Pools and sumps read the shore settleWaters left them, rivers its stream. Pure; the renderer draws the same list. */
 export function waterBodies(graph) {
   const out = []
   for (const p of graph.pools) {
@@ -280,34 +273,18 @@ export function waterBodies(graph) {
       },
     })
   }
-  for (const i of graph.rivers) out.push(alongEdge('river', graph.edges[i], (q) => (q.cut > RIVER_FREEBOARD ? q.y - RIVER_FREEBOARD : null), (q) => 0.55 * q.w))
+  for (const i of graph.rivers) {
+    const st = graph.edges[i].stream, hit = { r: 0, u: 0, level: 0, bed: 0 }
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
+    for (let r = 0; r < st.n; r++) { x0 = Math.min(x0, st.x[r] - st.T[r]); x1 = Math.max(x1, st.x[r] + st.T[r]); z0 = Math.min(z0, st.z[r] - st.T[r]); z1 = Math.max(z1, st.z[r] + st.T[r]) }
+    out.push({
+      kind: 'river', edge: i, stream: st, x0, x1, z0, z1, bed: 0,
+      levelAt(x, z) {
+        if (streamAt(st, x, z, hit) === null) return null
+        this.bed = hit.bed
+        return hit.level
+      },
+    })
+  }
   return out
-}
-
-// A body following an edge's samples: within `half(q)` of the line, at the level `levelOf(q)`, q the line's floor and half-width interpolated at the nearest point.
-function alongEdge(kind, e, levelOf, half) {
-  const pts = e.pts
-  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
-  for (const q of pts) {
-    const w = half(q)
-    x0 = Math.min(x0, q.x - w); x1 = Math.max(x1, q.x + w); z0 = Math.min(z0, q.z - w); z1 = Math.max(z1, q.z + w)
-  }
-  return {
-    kind, edge: e.i, pts, levelOf, half, x0, x1, z0, z1, bed: 0,
-    levelAt(x, z) {
-      let best = Infinity, at = null
-      const q = { y: 0, w: 0, cut: 0 }
-      for (let k = 0; k + 1 < pts.length; k++) {
-        const a = pts[k], b = pts[k + 1]
-        const ex = b.x - a.x, ez = b.z - a.z
-        let u = ((x - a.x) * ex + (z - a.z) * ez) / (ex * ex + ez * ez)
-        u = u < 0 ? 0 : u > 1 ? 1 : u
-        const d = Math.hypot(x - a.x - u * ex, z - a.z - u * ez)
-        if (d < best) { best = d; at = q; q.y = a.y + (b.y - a.y) * u; q.w = a.w + (b.w - a.w) * u; q.cut = a.cut + (b.cut - a.cut) * u }
-      }
-      if (at === null || best > half(at)) return null
-      this.bed = at.y - at.cut
-      return levelOf(at)
-    },
-  }
 }

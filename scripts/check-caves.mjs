@@ -8,6 +8,7 @@ import { planCave, EXIT_R } from '../src/v2/caves/build.js'
 import { DROP_MIN, reliefAt, buildGraph } from '../src/v2/caves/graph.js'
 import { columnAt, MUSH_FOOT } from '../src/v2/caves/props.js'
 import { CaveWalk } from '../src/v2/caves/walk.js'
+import { streamAt } from '../src/v2/caves/water.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { chunkList, meshChunk, drawnSurface, CHUNK, LODS, drawnLod, drawnRegions, chunkGap } from '../src/v2/caves/mesh.js'
 import { mulberry32 } from '../src/sim/mathx.js'
@@ -249,6 +250,23 @@ for (const sys of SYSTEMS) {
   // The drip is placed on water itself, not on the dry corner of a pool's box.
   const dry = walk.waters.filter((b) => b.kind !== 'river').filter((b) => { const q = walk.nearestWater(b.x0, b.level + 1, b.z0, 10, {}); return q !== null && walk.trueWaterAt(q.x, q.z, q.y) === null })
   check(dry.length === 0, `${tag}: nearestWater from a pool's box corner lands on its water`, `${dry.length} on dry ground`)
+  // A river's water ends under rock on every side: on a 0.1 m grid, no dry point beside a wet one has its floor under that water.
+  let riverEdge = 0, riverAir = 0
+  for (const i of graph.rivers) {
+    const st = graph.edges[i].stream, h = {}, G = 0.1
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity
+    for (let r = 0; r < st.n; r++) { x0 = Math.min(x0, st.x[r] - st.T[r]); x1 = Math.max(x1, st.x[r] + st.T[r]); z0 = Math.min(z0, st.z[r] - st.T[r]); z1 = Math.max(z1, st.z[r] + st.T[r]) }
+    const nx = Math.ceil((x1 - x0) / G) + 1, nz = Math.ceil((z1 - z0) / G) + 1, lv = new Float32Array(nx * nz).fill(NaN)
+    for (let k = 0; k < nz; k++) for (let j = 0; j < nx; j++) if (streamAt(st, x0 + j * G, z0 + k * G, h) !== null) lv[k * nx + j] = h.level
+    for (let k = 1; k + 1 < nz; k++) for (let j = 1; j + 1 < nx; j++) {
+      const c = k * nx + j, nb = [c - 1, c + 1, c - nx, c + nx].find((d) => !Number.isNaN(lv[d]))
+      if (!Number.isNaN(lv[c]) || nb === undefined) continue
+      const col = columnAt(field, x0 + j * G, z0 + k * G, lv[nb] + 0.005)
+      riverEdge = Math.max(riverEdge, col === null ? 0 : lv[nb] - col.floor)
+      riverAir += col !== null && lv[nb] - col.floor > 0.03 ? 1 : 0
+    }
+  }
+  check(riverEdge < 0.08, `${tag}: no river's water ends standing over the floor`, `worst edge ${riverEdge.toFixed(2)} m over it, ${riverAir} points over 3 cm`)
 
   // main.js asks the ground under her whichever it is: a query WalkSurface answers that CaveWalk lacks is a TypeError the first time she aims a teleport underground.
   const walkQueries = (C) => Object.getOwnPropertyNames(C.prototype).filter((k) => !['constructor', 'setScale', 'setWater', 'addStone', 'addBody', 'removeBody'].includes(k))

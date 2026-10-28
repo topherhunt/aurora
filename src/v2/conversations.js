@@ -48,9 +48,11 @@ export class Conversations {
    * SoundEngine once it is open and `mic()` her Mic once asked for, else null. `pack` is what she carries (main.js),
    * `roosts` the dragon roosts or null in a village (the deer town stands near one), and `wrongs` the glade she wronged:
    * `{ wronged(): boolean, witness(): villager id or null }`. `heard(p)` puts a point {x, y, z} where her ears hear it, in place.
+   * `hideouts` each town's (quests.js hideouts), or null in a village.
    */
-  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs, heard }) {
+  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs, heard, hideouts }) {
     this.world = new TalkWorld(seed, towns)
+    if (hideouts !== null) this.world.seatHideouts(hideouts)
     this.pack = pack
     this.wrongs = wrongs
     this.heard = heard
@@ -120,11 +122,7 @@ export class Conversations {
 
   /** The talk's view of the moment with `p.mind` (null for chatter, which trades nothing). */
   _ctx(p, mind = null) {
-    const epoch = epochOf(this.now)
-    if (epoch !== this.epoch) {
-      this.epoch = epoch
-      this.quests = questsFor(this.world, epoch)
-    }
+    const epoch = this._refresh()
     const held = this.pack.held()
     const wants = mind !== null && held !== null && trade.wants(mind, held) ? held : null
     const leaf = mind !== null && mind.kind === 'leafkin'
@@ -134,6 +132,46 @@ export class Conversations {
       pack: this.pack, wants, inWorkshop: mind !== null && this._inWorkshop(p, mind), inShop: mind !== null && this._inShop(p, mind), armed: p.kind === 'town' && this.pack.holds('sword'),
       wronged: leaf && this.wrongs.wronged(), witness: leaf && witness !== null ? this.village[witness].id : null,
     }
+  }
+
+  /** The quests live now, rolled afresh each epoch but for a missing child she has taken on and not seen home: that one stays until she has. Returns the epoch. */
+  _refresh() {
+    const epoch = epochOf(this.now)
+    if (epoch === this.epoch) return epoch
+    this.epoch = epoch
+    this.quests = questsFor(this.world, epoch)
+    for (const { quest, state } of this.log.of.values()) {
+      if (quest.kind !== 'missing-child' || state === 'done') continue
+      for (const [id, q] of this.quests) if (q.kind === 'missing-child' && q.town === quest.town) this.quests.delete(id)
+      this.quests.set(quest.id, quest)
+    }
+    return epoch
+  }
+
+  /** The missing children out there now, each `{ quest, child }` (`child` the townsperson's mind). */
+  lost(into = []) {
+    this._refresh()
+    for (const q of this.quests.values()) {
+      if (q.kind !== 'missing-child') continue
+      const state = this.log.state(q.id)
+      if (state !== 'found' && state !== 'done') into.push({ quest: q, child: this.world.person(q.child) })
+    }
+    return into
+  }
+
+  /** Each missing child kept out of their town (Townsfolk.setMissing), told only when the set changes. */
+  _hide() {
+    const keys = new Set(this.lost().map(({ child }) => `${child.town}:${child.index}`))
+    const was = this.townsfolk.missing
+    if (keys.size !== was.size || [...keys].some((k) => !was.has(k))) this.townsfolk.setMissing(keys)
+  }
+
+  /** She has found quest `id`'s child, who goes home; taken on now if she never was asked. */
+  found(id) {
+    const q = this.quests.get(id)
+    if (q === undefined) throw new Error(`Conversations: no quest ${id}`)
+    this.log.accept(q)
+    this.log.set(id, 'found')
   }
 
   /** Whether the smith `mind` stands at his workshop (a smith with none is always in it); false for anyone else. */
@@ -178,7 +216,7 @@ export class Conversations {
     if (this.townsfolk) {
       for (const [t, { life }] of this.townsfolk.alive) {
         for (const c of life.all) {
-          if (!c.puppet || (c.hidden && c.greet === null)) continue
+          if (!c.puppet || c.missing || (c.hidden && c.greet === null)) continue
           const mind = this._townMind(t, c.id)
           if (mind !== null) into.push({ kind: 'town', c, mind, t, res: null })
         }
@@ -191,6 +229,7 @@ export class Conversations {
   /** Once a frame. `head` her eye, `gaze` her look flattened to a unit {x, z}, `scale` hers, `trusts(id)` whether villager `id` trusts her; `room` the house she is in (this.room), `indoors` whether she is somewhere no one talks (a cave). */
   update(dt, { seconds, head, gaze, scale, hour, trusts, indoors, room }) {
     this.now = seconds
+    if (this.townsfolk) this._hide()
     this.hour = hour
     this.trusts = trusts
     this.room = room

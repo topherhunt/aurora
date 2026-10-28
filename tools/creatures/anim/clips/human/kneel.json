@@ -1,0 +1,40 @@
+{
+  "kind": "pose",
+  "note": "Kneel to beg: the right foot steps back and the body sinks onto that knee with the left foot planted ahead, the torso upright, the head tipped up to whoever is standing over it and both hands clasped under the chin. One way only; it hands off to beg, and rise brings it back up. hipLimit and fold are widened for the low kneel.",
+  "cast": ["bone-friend"],
+  "loops": false,
+  "chainsTo": "beg",
+  "samples": 30,
+  "crouch": 0.045,
+  "limits": {"hipLimit": 1.7, "fold": 2.6},
+  "keys": [
+    {"t": 0.0, "pose": {"arms": {"both": {"elbow": 0.15, "spread": 0.05}}}},
+    {
+      "t": 0.3,
+      "pose": {
+        "root": {"lift": -0.05, "fore": -0.02},
+        "arms": {"both": {"raise": 0.5, "spread": -0.1, "twist": 0.5, "elbow": 0.9}},
+        "legs": {"legRight": {"fore": -0.45, "lift": 0.1}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 0.5,
+      "pose": {
+        "root": {"lift": -0.1, "fore": -0.03},
+        "head": {"pitch": -0.15},
+        "arms": {"both": {"raise": 0.8, "spread": -0.25, "twist": 0.8, "elbow": 1.4, "curl": 0.3}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    },
+    {
+      "t": 0.9,
+      "pose": {
+        "root": {"lift": -0.17, "fore": -0.03},
+        "spine": {"pitch": 0.05},
+        "head": {"pitch": -0.3},
+        "arms": {"both": {"raise": 1.0, "spread": -0.3, "twist": 1.0, "elbow": 1.7, "wristPitch": -0.3, "curl": 0.5}},
+        "legs": {"legRight": {"fore": -0.45}, "legLeft": {"fore": 0}}
+      }
+    }
+  ]
+}

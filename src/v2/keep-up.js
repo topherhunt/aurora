@@ -1,5 +1,5 @@
-// A pet or snowman following her keeps up: on her heels it goes as fast as she does, `over` her pace, and one past `m` behind, or `stallS` s further than `near` without closing `moveM` on her, is warped to ground `backM` behind her that she cannot see, from a spot she cannot see either. Unseen is off her gaze by more than `deg`, or past `farM`.
-export const KEEP_UP = { m: 25, near: 6, stallS: 2, moveM: 0.5, over: 1.15, tau: 0.5, jumpM: 3, backM: [4, 6, 3], deg: 70, farM: 80, trail: 60, stillMps: 0.3 }
+// A pet or snowman following her keeps up: on her heels it goes as fast as she does, `over` her pace, and one `stallS` s further than `near` without closing `moveM` on her is warped to ground `backM` behind her that she cannot see, from a spot she cannot see either. Unseen is off her gaze by more than `deg`, or past `farM`. Past `m` she is out of its ken: never warped, and each layer has it give up following and stay where it is.
+export const KEEP_UP = { m: 20, near: 6, stallS: 2, moveM: 0.5, over: 1.15, tau: 0.5, jumpM: 3, backM: [4, 6, 3], deg: 70, farM: 80, trail: 60, stillMps: 0.3 }
 
 /** Her, as her followers keep up with her: her ground speed, her gaze, and the ground she walked since her last jump. One a frame from main.js. */
 export class Her {
@@ -72,7 +72,7 @@ export class Her {
   keepUp(way, x, z, far, now, stands) {
     const d = Math.hypot(x - this.x, z - this.z)
     if (!far || d <= KEEP_UP.near || !(d > way.d - KEEP_UP.moveM)) { way.d = d; way.t = now }
-    if ((d <= KEEP_UP.m && now - way.t <= KEEP_UP.stallS) || this.sees(x, z)) return null
+    if (d > KEEP_UP.m || now - way.t <= KEEP_UP.stallS || this.sees(x, z)) return null
     const to = this.behind(stands)
     if (to === null || Math.hypot(to.x - this.x, to.z - this.z) >= d) return null
     way.d = Math.hypot(to.x - this.x, to.z - this.z)

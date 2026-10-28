@@ -1223,7 +1223,8 @@ export class Frogs {
       if (!hers && dist > RADIUS) { this._unloose(f); continue }
       // Underground, one not under with her takes the apron for her.
       this._in = f.under ? this.cave.walk : null
-      const m = this.cave === null || f.under ? _her.set(hx, hy, hz) : this.cave.apron
+      // Past KEEP_UP.m on the overworld her pet has lost her, and sits where it is until she comes back.
+      const m = this.cave === null || f.under ? (hers && !f.under && dist > KEEP_UP.m ? _her.set(f.x, f.y, f.z) : _her.set(hx, hy, hz)) : this.cave.apron
       this.me.x = m.x; this.me.y = m.y; this.me.z = m.z
       const prev = f.ph
       this._live(f, now)
