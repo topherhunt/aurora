@@ -160,6 +160,11 @@ export class CaveWalk {
     return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
   }
 
+  /** A cave's water carries nothing (WalkSurface.flowAt). */
+  flowAt() {
+    return 0
+  }
+
   /** The water and bed render/fish.js swims in: every body's at any height, since the beds round her are seeded once from wherever she stands, and the surface held under a sump's roof; and its spots (Fish.setSpots), each wet shore corner and river sample with its depth and body. */
   fishWorld() {
     const spots = []
@@ -178,7 +183,6 @@ export class CaveWalk {
         const roof = this.ceilingAt(x, z, this.heightAt(x, z, level) + 0.05)
         return roof === -Infinity ? level : Math.min(level, roof - ROOF_GAP)
       },
-      // A cave's water carries nothing (main.js caveWater too).
       flowAt: () => 0,
     }
     const bed = {

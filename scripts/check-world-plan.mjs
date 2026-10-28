@@ -72,7 +72,7 @@ const baked = JSON.stringify(packShores(layers, field))
 const bootLayers = Layers.deserialize(JSON.parse(JSON.stringify(doc)))
 const bootField = new V2Height({ heightmap: hm, layers: new Layers(), seed: SEED, relief: RELIEF_SHIPPED })
 bootField.setLayers(bootLayers)
-for (const p of [back.townPlan, back.roadPlan, back.trailPlan, back.labyrinthPlan]) bootLayers.addGenerated(p.records)
+for (const p of [back.townPlan, back.roadPlan, back.trailPlan, back.labyrinthPlan, back.castlePlan]) bootLayers.addGenerated(p.records)
 applyWorldPlan(bootLayers, back)
 const traced = JSON.stringify(packShores(bootLayers, bootField))
 check(baked === traced && baked.length > 2, "the baked lake shores are the ones the boot's ground traces", `${Object.keys(JSON.parse(baked)).length} shores, ${(baked.length / 1024).toFixed(0)} KB`)
@@ -98,6 +98,25 @@ check(baked === traced && baked.length > 2, "the baked lake shores are the ones 
     }
   }
   check(trails.length + failed.length === sites.length && trails.length >= sites.length * 0.8 && unmoored === 0 && crossing === 0, "a trail runs from most labyrinths' gates to the roads, through no labyrinth", `${trails.length} trails, no road reaches ${failed.length}, ${trails.filter((t) => t.onto !== 'road').length} join another`)
+}
+
+{
+  // design/44-castles.md, Siting: castles stand on dry hills off every road, labyrinth and town, each with a trail from its ramp's foot.
+  const { sites, trails, records, failed } = back.castlePlan
+  check(sites.length >= 4 && JSON.stringify(bootLayers.castles.list) === JSON.stringify(sites), "the boot holds the plan's castle sites", `${sites.length} castles`)
+  const labs = new BiomeField({ seed: SEED, ground: bootField }).labyrinths
+  let clash = 0, crossing = 0
+  for (const s of sites) {
+    if (labs.reaches(s.x, s.z, s.reach) || back.townPlan.towns.some((t) => Math.hypot(s.x - t.x, s.z - t.z) < t.radius + s.reach)) clash++
+    for (const o of sites) if (o !== s && Math.hypot(s.x - o.x, s.z - o.z) < s.reach + o.reach) clash++
+  }
+  for (const t of trails) {
+    const pts = records.find((r) => r.id === t.record).pts
+    // A trail leaves from the ramp's foot, so only its first few metres may stand on the castle's ground.
+    for (let k = 2; k < pts.length; k++) if (bootLayers.castles.occupiesAt(pts[k][0], pts[k][2], -0.5)) crossing++
+  }
+  check(clash === 0, 'no castle stands on a labyrinth, a town or another castle', `${clash} clashes`)
+  check(trails.length + failed.length === sites.length && trails.length >= sites.length * 0.8 && crossing === 0, "a trail runs from most castles' ramps to the roads, over no castle", `${trails.length} trails, no road reaches ${failed.length}, ${crossing} points on a castle`)
 }
 
 const key = worldPlanKey({ doc, relief: RELIEF_SHIPPED, seed: SEED, spawn: SPAWN })

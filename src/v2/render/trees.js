@@ -2347,6 +2347,7 @@ export class Trees {
     if (this.deadwood && this.deadwood.occupiesAt(x, z, this.unitTrunkRadius[variant] * scale + DEADWOOD_CLEARANCE)) return 0
     // Never inside a labyrinth's palisade or across its gate (layers/labyrinths.js); a village's biome, or none, has none.
     if (this.biome !== null && this.biome.labyrinths &&this.biome.labyrinths.keepOutAt(x, z, this.unitTrunkRadius[variant] * scale)) return 0
+    if (this.biome !== null && this.biome.labyrinths && this.biome.castleAt(x, z, this.unitTrunkRadius[variant] * scale + 1)) return 0
     site.scale = scale
     return keep
   }

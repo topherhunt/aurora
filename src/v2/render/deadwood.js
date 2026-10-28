@@ -836,6 +836,7 @@ export class Deadwood {
       if (river && river.dist < river.halfWidth + PLACEMENT.pathClearance) { rej.path++; continue }
       // Out of a labyrinth's corridors and its gate, a log's length clear (layers/labyrinths.js).
       if (this.biome && this.biome.labyrinths && this.biome.labyrinths.keepOutAt(x, z, LABYRINTH_PAD)) { rej.labyrinth++; continue }
+      if (this.biome && this.biome.labyrinths && this.biome.castleAt(x, z, LABYRINTH_PAD)) { rej.labyrinth++; continue }
 
       const o = plan.n * P
       const scale = this._scaleFor(variant, size)

@@ -39,6 +39,12 @@ export class BiomeField {
     if (typeof seed !== 'number' || !Number.isFinite(seed)) throw new Error(`BiomeField: seed must be a finite number, got ${seed}`)
     this.seed = seed
     this.labyrinths = new Labyrinths({ seed, ground })
+    this.ground = ground
+  }
+
+  /** Whether (x, z) lies within `pad` of a castle or its gate ramp (layers/castles.js). */
+  castleAt(x, z, pad) {
+    return this.ground.layers.castles.occupiesAt(x, z, pad)
   }
 
   /** 0 open meadow .. 1 dense forest at (x, z). */

@@ -18,14 +18,17 @@ export const LINES = {
 
 // The leafkin atom (tools/voice/atoms.js LEAFKIN) each moment is said with.
 export const LEAFKIN_ATOM = {
-  'greet.stranger': 'lk.greet', 'greet.friend': 'lk.greet', 'greet.cold': 'lk.wary', 'greet.morning': 'lk.greet', 'greet.evening': 'lk.greet',
+  'greet.stranger': 'lk.greet', 'greet.friend': 'lk.greet', 'greet.cold': 'lk.wary', 'greet.curt': 'lk.wary', 'greet.shop': 'lk.greet', 'greet.morning': 'lk.greet', 'greet.evening': 'lk.greet',
   'pass.nod': 'lk.nv', 'hail.attention': 'lk.greet',
   'bye.warm': 'lk.bye', 'bye.curt': 'lk.bye',
   'answer.sure': 'lk.sure', 'answer.boast': 'lk.sure', 'answer.hedge': 'lk.hedge', 'answer.nervous': 'lk.hedge', 'answer.unknown': 'lk.unknown', 'answer.again': 'lk.again',
+  'answer.muse': 'lk.sure', 'answer.self': 'lk.sure', 'answer.refer': 'lk.sure', 'answer.spent': 'lk.unknown', 'answer.none': 'lk.unknown',
   'refuse.wary': 'lk.refuse', 'refuse.price': 'lk.price',
   'tell.believe': 'lk.believe', 'tell.caught': 'lk.caught', 'give.thanks': 'lk.thanks', 'give.polite': 'lk.polite',
-  'talk.self': 'lk.happy', 'needs.yes': 'lk.want', 'needs.no': 'lk.content',
+  'talk.self': 'lk.happy', 'talk.home': 'lk.happy', 'needs.yes': 'lk.want', 'needs.no': 'lk.content',
+  'trade.want': 'lk.want', 'trade.offer': 'lk.sure', 'trade.done': 'lk.thanks', 'trade.short': 'lk.price',
   'gossip.lead': 'lk.curious', 'gossip.react': 'lk.happy', 'social.agree': 'lk.sure', 'social.disagree': 'lk.refuse', 'social.curious': 'lk.curious', 'social.surprise': 'lk.nv',
+  'social.welcome': 'lk.happy', 'social.ack': 'lk.sure', 'social.comfort': 'lk.happy', 'social.cut': 'lk.bye', 'small.ask': 'lk.curious', 'small.reply': 'lk.happy',
   'mood.content': 'lk.happy', 'mood.bored': 'lk.nv', 'nv.laugh': 'lk.happy', 'sky.aurora': 'lk.sky', 'observe.marvel': 'lk.sky',
   'fear.uneasy': 'lk.uneasy', 'fear.danger': 'lk.fear', 'missing.plea': 'lk.lost',
 }

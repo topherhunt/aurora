@@ -18,11 +18,32 @@ Z-fighting rules, enforced by the coplanar-overlap gate on the unwarped shell:
 
 ## Siting
 
-The footprint is large: about 30-40 m across, wider than a village house cluster. It must merge fully into the ground. The castle's floor (y 0) stands `CASTLE.raise` (1.2 m) above the sited ground, so uneven terrain meets masonry rather than poking through the court; the gate ramp carries the path down to it. The shell sinks a footing 6 m below the floor, and that depth is necessary, not slack. Siting must:
-- choose hilltops and low summits whose relief under the whole footprint stays within the footing depth (flatten the terrain under the court if needed, as labyrinths do);
-- never let the footprint overhang a cliff or steep drop where the footing or the underside of a section would show;
-- space castles roughly evenly, and give each a trail to the road network like labyrinth gates.
+`src/v2/layers/castles.js` `planCastles`, run in the world-plan boot: at most one castle per 1400 m region (75% of regions), its seed the first of up to 8 rolls that passes the maze score. Candidates every 40 m are ranked by prominence (at least 3 m over a ring 120 m out), clear of labyrinths, towns (radius + 60 m) and their keep-outs; the first with a yaw at which `fitAt` holds wins. `fitAt` asks that the ground under the whole footprint lies within the footing (5.5 m) below the floor, which stands `CASTLE.raise` (1.2 m) over the sited ground, and that the gate ramp's foot meets the ground. Castles shape no ground. Each gets a trail from its gate ramp's foot to the road network, as labyrinth gates do. `CastleSites.occupiesAt` is the footprint keep-out: trees, rocks and deadwood read it through `BiomeField.castleAt`, wildlife through main.js `wildAvoid`.
+
+## Props
+
+`furnish.js` returns records `{ kind, x, y, z, yaw, w, d }`: in the court (wells, carts, hay, woodpiles, barrels, dummies, braziers) and in every room by its role from section kind and storey (store, great hall, barracks, guard, armoury, solar, passage). Every portal keeps a clear disc and every pair of a room's portals a clear lane, so no prop blocks the maze. `shell.js` meshes them in its own palette: court props are baked into the exterior's full tier, room props into the interior. The town interior builders are not reused, since they are drawn with the town-interior ShaderMaterial and baked-light attributes.
+
+## Runtime
+
+`src/v2/render/castles.js`, bands in `CASTLE_BANDS`:
+- **Far card:** seed 3's exterior and court, photographed once from the gate side (ortho, alpha-cut, dilated). Each site gets 2 crossed instances at yaw and yaw+90 deg, scaled by its size, until its meshes draw. Seen obliquely, a crossed card shows its edge.
+- **Build:** within 220 m (dropped past 260) `castles/worker.js` builds the layout, both exterior tiers, the court, the shaded interior and the solids off the main thread, about 90-170 ms a castle. In the worker bundle three is a stub (`vite.config.js` `noThreeInWorkers`), so shell.js emits plain arrays and `toGeometry` makes the BufferGeometry on the main thread.
+- **Meshes:** drawn within 200 m. The full exterior within 50 m, the mid tier (no merlons, slits, bars or court props) past 55. The mid tier saves only 20-30% of triangles (full 6.8-11k), and draw calls dominate at that range.
+- **Interior:** one unlit mesh, its colours shaded by face direction in the worker, set down `CASTLE_RISE` (320 m) over the site while she is inside.
+
+## Collision and portals
+
+`solids.js` reduces each castle to plain data. The exterior is section bodies, crowns and battlement bands, plus boxes (flight treads, bridge decks and rails, hatches, the court slab, the chest, court props), ramps, and door notches cut through them. The interior is room and doorway air, everything else solid, plus spiral columns and prop boxes; only the storeys within one of her feet are opened, which keeps a column under the walk's 8-span cap. `Castles` is a stone layer on the overworld walk. Inside, a `CastleInteriorStone` drives a walk of its own, swapped in and out as a house's is (main.js `openCastle` / `closeCastle`).
+
+`portals()` gives every non-barred outside door an exterior and interior face with a standable arrival each, a blink for every stair (spiral at a storey's floor, hole above) and ladder (inside at its foot, outside at its roof hatch), the rope and the chest. Doors and the rope fire when she walks through or at them; the rest fire on entering their zone. Arrivals land outside their zone, and `arrived()` marks the zone she lands in as current, so a portal never sends her straight back.
+
+The summit chest holds 40-90 coins and 2-3 HOARD gems, at loot place `k` keyed on the region (main.js `layLoot`). The rope lets her down the lookout's face through `Climb.startRope`.
 
 ## Not yet built
 
-Siting and trails, the runtime exterior with LOD, the far card (chosen from preview seeds) dithering into the mesh, the openable chest, furnishing and garrison NPCs, portal-style room visibility inside.
+- Walked spiral stairs and ladders: the spiral runs about 57 deg against the walk's 50 deg maxSlope, so both are blinks.
+- Barred doors are impassable.
+- Room corner facets are not collided, and collision ignores the warp, which moves masonry up to about 0.27 m.
+- While she is inside, `inCastle` is a state of its own, not `indoors`, so overworld systems (rain among them) may still run.
+- Garrison NPCs, an openable chest, portal-style room visibility inside, and the card dithering into the mesh.

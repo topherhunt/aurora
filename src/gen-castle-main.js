@@ -7,7 +7,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { grassTexture } from './preview-stage.js'
 import { CASTLE, castleLayout } from './v2/castles/layout.js'
-import { courtGeometry, exteriorGeometry, interiorGeometries, UV_METRES } from './v2/castles/shell.js'
+import { courtGeometry, exteriorGeometry, interiorGeometries, toGeometry, UV_METRES } from './v2/castles/shell.js'
 
 const EDGE = { door: '#ffffff', gate: '#ffffff', stair: '#3fd0ff', ladder: '#a8ffff', outstair: '#ffd23f', step: '#9be564', bridge: '#ff9d3f', rope: '#ff6fcf', barred: '#ff3b3b' }
 const NODE = { entry: '#ffffff', court: '#9be564', walk: '#ffd23f', roof: '#ff9d3f', summit: '#ffdf00', keep: '#6fa8ff', hall: '#b48cff', gate: '#d0d0d0', tower: '#5fd3c4', lookout: '#ff6f6f' }
@@ -46,7 +46,10 @@ const loadTile = (path, metres) => {
   t.repeat.setScalar(UV_METRES / metres)
   return t
 }
-const material = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/castle_stone.webp', UV_METRES) })
+// Shell geometry carries a group per material slot (shell.js SLOTS) with UVs already in each slot's tile metres.
+const stoneMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/castle_stone.webp', UV_METRES) })
+const plankMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/timber_plank.png', UV_METRES) })
+const material = [stoneMat, plankMat]
 // The road's flagstones, 3 m a tile (COBBLE_METRES in terrain-material.js).
 const courtMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/terrain/cobble.webp', 3) })
 const court = new THREE.Mesh(new THREE.BufferGeometry(), courtMat)
@@ -138,7 +141,7 @@ function buildInterior() {
   disposeTree(interior)
   for (const { k, geometry, low } of interiorGeometries(lay)) {
     for (const [g, isLow] of [[geometry, false], [low, true]]) {
-      const m = new THREE.Mesh(g, material)
+      const m = new THREE.Mesh(toGeometry(g), material)
       m.userData = { k, low: isLow }
       interior.add(m)
     }
@@ -207,9 +210,9 @@ function legend() {
 function rebuild() {
   lay = castleLayout(seed)
   exterior.geometry.dispose()
-  exterior.geometry = ghost.geometry = exteriorGeometry(lay)
+  exterior.geometry = ghost.geometry = toGeometry(exteriorGeometry(lay))
   court.geometry.dispose()
-  court.geometry = courtGeometry(lay)
+  court.geometry = toGeometry(courtGeometry(lay))
   buildInterior()
   const r = Math.max(...lay.sections.flatMap((s) => [[s.x0, s.z0], [s.x0 + s.w, s.z0], [s.x0, s.z0 + s.d], [s.x0 + s.w, s.z0 + s.d]].map(([x, z]) => Math.hypot(lay.X(x), lay.Z(z)))))
   shapeHill(r + 10)
@@ -247,7 +250,7 @@ toggle('ghost', (on) => { ghostOn = on; applyView() })
 toggle('graph', (on) => { graphOn = on; buildOverlay() })
 toggle('labels', (on) => { labelsOn = on; buildOverlay() })
 toggle('route', (on) => { routeOn = on; buildOverlay() })
-toggle('wire', (on) => { material.wireframe = on })
+toggle('wire', (on) => { for (const m of material) m.wireframe = on })
 toggle('spin', (on) => { spin = on })
 addEventListener('keydown', (ev) => {
   if (ev.target instanceof HTMLInputElement) return

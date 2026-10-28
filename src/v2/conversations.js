@@ -274,6 +274,8 @@ export class Conversations {
     if (this.picker === null || this.voices === null && !this._voices()) return
     const was = this.pairs.get(pair)
     const step = chatterStep(mind, this._ctx({ c: { pose: { x, z } } }, mind), was === undefined || this.now - was.time > TALK.pairGap ? null : was.at, { hour: this.hour, r: Math.random(), alt: Math.random() })
+    if (step === null) return
+    if (step.moment === null) { this.pairs.set(pair, { at: step.at, time: this.now }); return }
     const pick = this.picker.pick(mind, step.moment, { now: this.now, tier: 'native', only: step.only })
     if (pick === null) return
     this.pairs.set(pair, { at: step.at, time: this.now })

@@ -201,11 +201,21 @@ export function validate(json) {
     }
   }
 
+  // The castles' sites (castles.js planCastles): generated, so absent from every saved document.
+  if (json.castles !== undefined) {
+    array(json.castles, 'castles')
+    for (let i = 0; i < json.castles.length; i++) {
+      const s = json.castles[i]
+      if (s === null || typeof s !== 'object' || Array.isArray(s)) fail(`castles[${i}]`, 'must be a site object', s)
+      for (const k of ['seed', 'x', 'z', 'y', 'yaw', 'hx', 'hz', 'reach', 'foot']) num(s[k], `castles[${i}].${k}`)
+    }
+  }
+
   return json
 }
 
 // A road the world generates at boot (the towns, layers/towns.js, the roads between them, layers/roads.js, and the cave and labyrinth trails, layers/trails.js) rather than one authored in the editor. It rides every document the terrain workers and the undo stack see, and never one that is saved: the generator puts it back on the next boot, and a saved copy would stack a second one under it.
-export const GENERATED_ID = /^(town|road|trail|lane)\d/
+export const GENERATED_ID = /^(town|road|trail|lane|keep)\d/
 export const isGenerated = (id) => GENERATED_ID.test(id)
 
 // Build the document from a live Layers. Each sub-layer knows its own compact form; this only assembles them, so there is exactly one place that decides what a lake looks like on disk. `authored` drops the generated roads, clefts, fields and labyrinth footprints -- what a save writes.
@@ -221,6 +231,7 @@ export function serialize(layers, { authored = false } = {}) {
   if (!authored && layers.clefts.count > 0) doc.clefts = layers.clefts.toJSON()
   if (!authored && layers.fields.count > 0) doc.fields = layers.fields.toJSON()
   if (!authored && layers.labyrinthSites !== null) doc.labyrinths = layers.labyrinthSites
+  if (!authored && layers.castles.list.length > 0) doc.castles = layers.castles.list
   return doc
 }
 

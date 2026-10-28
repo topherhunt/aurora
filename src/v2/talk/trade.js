@@ -128,7 +128,7 @@ const MISSING = (m) => {
 
 /** The line for a pack refusing `m`. */
 function refusal(conv, m, kind) {
-  const more = { moment: 'refuse.price', plain: true, lacking: m }
+  const more = { moment: 'trade.short', plain: true, lacking: m }
   if (conv.leafkin) return conv._line(m.short.length === 0 ? conv._lk('tradeFull') : conv._lk('tradeShort', { need: list(m.short.map((s) => count(s.kind, s.need))) }), 'talk-shrug', more)
   const pool = kind === 'trade' ? TRADE_FAIL : isAlchemist(conv.mind) ? ALCH_FAIL : SHOP_FAIL
   return conv._line(conv._pick(`${kind}:fail`, pool).replace('{need}', MISSING(m)), 'talk-shrug', more)
@@ -192,16 +192,16 @@ export function opener(conv) {
     const open = ctx.inShop
     const late = !open && isNight(ctx.hour)
     const pool = open ? ALCH_OPEN : late ? ALCH_LATE : ALCH_OUT
-    return conv._line(conv._pick('shop:open', pool), 'talk-gesture', { moment: late ? 'mood.tired' : 'greet.stranger', shop: open ? true : late ? 'late' : 'away', plain: true })
+    return conv._line(conv._pick('shop:open', pool), 'talk-gesture', { moment: open ? 'greet.shop' : late ? 'greet.evening' : 'greet.stranger', shop: open ? true : late ? 'late' : 'away', plain: true })
   }
   if (isSmith(mind)) {
     const open = ctx.inWorkshop
-    return conv._line(conv._pick('shop:open', open ? SHOP_OPEN : SHOP_TIRED), 'talk-gesture', { moment: open ? 'mood.busy' : 'mood.tired', shop: open ? true : 'tired', plain: true })
+    return conv._line(conv._pick('shop:open', open ? SHOP_OPEN : SHOP_TIRED), 'talk-gesture', { moment: open ? 'greet.shop' : 'mood.tired', shop: open ? true : 'tired', plain: true })
   }
   if (ctx.wants === null) return null
   const item = label(ctx.wants)
   const text = conv.leafkin ? conv._lk('tradeWant', { item }) : conv._pick('trade:open', WANT_OPEN).replace('{item}', item)
-  return conv._line(text, 'talk-gesture', { moment: 'needs.yes', plain: true, trade: true })
+  return conv._line(text, 'talk-gesture', { moment: 'trade.want', plain: true, trade: true })
 }
 
 /** Her `topic` of the shop (`shop:buy:<item>`, `shop:offer`) or trade (`trade:offer`, `trade:take:<id>`) answered. */
@@ -212,9 +212,9 @@ export function say(conv, head, arg) {
     if (shop === null) throw new Error(`Conversation: ${mind.id} keeps no shop`)
     const alch = shop === 'alchemist'
     if (!atShop(conv)) {
-      if (!alch) return conv._line(conv._pick('shop:elsewhere', SHOP_ELSEWHERE), 'talk-shrug', { moment: 'mood.tired', plain: true })
+      if (!alch) return conv._line(conv._pick('shop:elsewhere', SHOP_ELSEWHERE), 'talk-shrug', { moment: 'answer.none', plain: true })
       const late = isNight(ctx.hour)
-      return conv._line(conv._pick('shop:elsewhere', late ? ALCH_SHUT : ALCH_AWAY), 'talk-shrug', { moment: late ? 'mood.tired' : 'mood.busy', plain: true })
+      return conv._line(conv._pick('shop:elsewhere', late ? ALCH_SHUT : ALCH_AWAY), 'talk-shrug', { moment: 'answer.none', plain: true })
     }
     if (arg === 'offer') {
       const stock = STOCK[shop].map((item) => `${count(item, 1)} for ${phrase(SHOP[item])}`)
@@ -222,7 +222,7 @@ export function say(conv, head, arg) {
         ? ['I sell {stock}. It refills a flare gun. I buy gems and firestone too, if you have any.', 'On offer: {stock}. Gems and firestone I buy for coin.', 'Mostly brews, but for you: {stock}. And I take gems and firestone.']
         : ['I make {stock}. And I buy ore: ask me what ores are worth.', 'On offer: {stock}. Bring me ore and I pay coin for that too.', 'Tools, mostly. {stock}. Ore I buy, if you have any.']
       const topics = alch ? ['flares'] : ['ores']
-      return conv._line(conv._pick('shop:offer', pool).replace('{stock}', list(stock)), 'talk-gesture', { moment: 'answer.sure', plain: true, unlocks: conv._unlock(topics), about: conv._named(topics) })
+      return conv._line(conv._pick('shop:offer', pool).replace('{stock}', list(stock)), 'talk-gesture', { moment: 'trade.offer', plain: true, unlocks: conv._unlock(topics), about: conv._named(topics) })
     }
     if (!arg.startsWith('buy:')) throw new Error(`Conversation: no shop:${arg}`)
     const item = arg.slice(4)
@@ -231,20 +231,20 @@ export function say(conv, head, arg) {
     const m = swap(ctx.pack, cost, { [item]: 1 })
     if (m !== null) return refusal(conv, m, 'shop')
     ctx.rapport.warm(mind.id, 0.05)
-    return conv._line(conv._pick('shop:done', alch ? ALCH_DONE : SHOP_DONE), 'talk-nod', { mood: 'warm', moment: 'give.thanks', plain: true, sold: { item, paid: cost } })
+    return conv._line(conv._pick('shop:done', alch ? ALCH_DONE : SHOP_DONE), 'talk-nod', { mood: 'warm', moment: 'trade.done', plain: true, sold: { item, paid: cost } })
   }
   if (head === 'trade') {
     if (arg === 'offer') {
       conv.offered = true
       const all = dealsNow(conv)
-      if (all.length === 0) return conv._line(conv.leafkin ? conv._lk('tradeNone') : "I've nothing to trade you.", 'talk-shrug', { moment: 'answer.unknown', plain: true })
+      if (all.length === 0) return conv._line(conv.leafkin ? conv._lk('tradeNone') : "I've nothing to trade you.", 'talk-shrug', { moment: 'answer.none', plain: true })
       // Named aloud: the deals she can make with what she carries, at most OFFER_SAID; the grid holds them all.
       const can = all.filter((d) => Object.entries(d.take).every(([k, n]) => ctx.pack.count(k) >= n))
       const said = (can.length > 0 ? can : all).slice(0, OFFER_SAID)
       const text = conv.leafkin
         ? conv._lk('tradeOffer', { list: list(said.map((d) => `${phrase(d.give)} for ${phrase(d.take)}`)) })
         : conv._pick('trade:offer', can.length > 0 ? ['I would take {items}.', 'For you: {items}.', 'I can do {items}.'] : ['Bring me something. I would give {items}, say.', 'Nothing you have, yet. I would give {items}, say.']).replace('{items}', list(said.map(dealText)))
-      return conv._line(text, 'talk-gesture', { moment: 'answer.sure', plain: true, unlocks: conv._unlock(['gems']), about: conv._named(['gems']), deals: all.map((d) => d.id) })
+      return conv._line(text, 'talk-gesture', { moment: 'trade.offer', plain: true, unlocks: conv._unlock(['gems']), about: conv._named(['gems']), deals: all.map((d) => d.id) })
     }
     if (!arg.startsWith('take:')) throw new Error(`Conversation: no trade:${arg}`)
     const id = arg.slice(5)
@@ -255,7 +255,7 @@ export function say(conv, head, arg) {
     if (id.startsWith('stolen:')) ctx.rapport.get(mind.id).sold.add(id.slice(7))
     ctx.rapport.warm(mind.id, 0.03)
     const text = conv.leafkin ? conv._lk('tradeDone') : conv._pick('trade:done', TRADE_DONE)
-    return conv._line(text, 'talk-nod', { mood: 'warm', moment: 'give.thanks', plain: true, sold: { id, take: deal.take, give: deal.give } })
+    return conv._line(text, 'talk-nod', { mood: 'warm', moment: 'trade.done', plain: true, sold: { id, take: deal.take, give: deal.give } })
   }
   throw new Error(`Conversation: no ${head}:${arg}`)
 }

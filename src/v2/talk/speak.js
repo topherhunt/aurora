@@ -356,7 +356,7 @@ export class Conversation {
   /** `line` with a lead-in and their quirk's aside (words.js, quirks.js), not the same as last time for `topic`. Replies that are not information (refusals, pleas, prices, trade) go bare; kind words and goodbyes take an aside but no lead-in. */
   _dress(topic, line) {
     if (line.plain || line.quest !== undefined || line.price || line.mood === 'distress' || line.mood === 'cold' || line.mood === 'angry') return line
-    if (/^(bye|shop|trade)\b/.test(topic) || ['refuse.wary', 'refuse.price', 'answer.unknown'].includes(line.moment)) return line
+    if (/^(bye|shop|trade)\b/.test(topic) || ['refuse.wary', 'refuse.price', 'answer.unknown', 'answer.none', 'answer.spent'].includes(line.moment)) return line
     const aside = this._aside(topic, line)
     const said = aside === '' ? line.text : `${line.text} ${aside}`
     if (topic.startsWith('nice:')) return { ...line, text: said }
@@ -483,7 +483,7 @@ export class Conversation {
     if (s < -0.2) return this._line('You again.', 'talk-shrug', { mood: 'cold', moment: 'greet.cold' })
     if (s > 0.3) return this._greet(this.mind.quirk.kind === 'bitter' ? "Oh. It's you." : 'Good to see you!', 'wave', { mood: 'warm', moment: 'greet.friend' })
     const tone = this.tone
-    if (tone === 'curt') return this._greet('What is it?', 'talk-shrug', { moment: 'greet.cold' })
+    if (tone === 'curt') return this._greet('What is it?', 'talk-shrug', { moment: 'greet.curt' })
     if (tone === 'cheery') this.ctx.known.add(`person:${this.mind.id}`)
     return this._greet(tone === 'cheery' ? `Well met, stranger! I'm ${this.mind.name}.` : 'Well met, stranger.', 'wave', { moment: 'greet.stranger' })
   }
@@ -497,7 +497,8 @@ export class Conversation {
 
   /** A line: `{ text, gesture, toward, claim, mood, moment, unlocks, about }`, `moment` what its voice clip says (lines.js), `about` what it names for follow-ups (`_followUps`). */
   _line(text, gesture = 'talk-gesture', more = {}) {
-    return { text, gesture, toward: null, claim: null, mood: 'neutral', moment: 'answer.sure', unlocks: [], about: [], ...more }
+    if (more.moment === undefined) throw new Error(`Conversation: no voice moment for "${text}"`)
+    return { text, gesture, toward: null, claim: null, mood: 'neutral', unlocks: [], about: [], ...more }
   }
 
   // --- the pipeline ------------------------------------------------------
@@ -551,13 +552,15 @@ export class Conversation {
   _claim(f, claim, how) {
     const line = f.render(claim, how)
     let text = line.text
+    // A poor liar gives themself away in the voice, so never crows in the words.
+    const nervous = !how.changed && !how.again && how.lie && this.mind.traits.honesty > 0.6
     // Whole sentences around the answer, which may open with a name or a story's first word, so nothing is lowercased.
     if (how.changed) text = (this.leafkin ? this._lk('changed') : 'Or no, wait. ') + text
     else if (how.again) text = (this.leafkin ? this._lk('again') : this._pick('again', ['Like I said. ', 'Same as before. ', 'As I told you. '])) + text
-    else if (how.boast) text = (this.leafkin ? this._lk('boast') : pickBy(roll(this.mind.id, this.ask, 'b'), ['Oh, easy. ', 'Ha! Easy. ', 'Everyone knows this. '])) + text
+    else if (how.boast && !nervous) text = (this.leafkin ? this._lk('boast') : pickBy(roll(this.mind.id, this.ask, 'b'), ['Oh, easy. ', 'Ha! Easy. ', 'Everyone knows this. '])) + text
     else if (how.hedge) text = this.leafkin ? this._lk('hedge') + text : `${text} ${pickBy(roll(this.mind.id, this.ask, 'h'), ['I think.', 'If I remember right.', 'Or so I heard.'])}`
-    // A poor liar gives themself away in the voice.
-    const moment = how.again ? 'answer.again' : how.lie && this.mind.traits.honesty > 0.6 ? 'answer.nervous' : how.boast ? 'answer.boast' : how.hedge ? 'answer.hedge' : 'answer.sure'
+    // The clip says what the words open with: a second thought, a repeat, a stammer, a crow, a doubt.
+    const moment = how.changed ? 'answer.hedge' : how.again ? 'answer.again' : nervous ? 'answer.nervous' : how.boast ? 'answer.boast' : how.hedge ? 'answer.hedge' : 'answer.sure'
     return { ...this._line(text, line.gesture ?? 'talk-gesture', { moment, about: line.about ?? [] }), toward: line.toward ?? null, claim, how, bare: line.text }
   }
 
@@ -677,8 +680,8 @@ export class Conversation {
     if (arg.startsWith('title:')) {
       const title = arg.slice(6)
       const p = world.titled(this.town, title)
-      if (p === null) return this._line(`We've no ${title === 'potionmaster' ? 'potion master' : title} here.`, 'talk-shrug', { moment: 'answer.unknown' })
-      if (p.id === this.mind.id) return this._line(this._pick('where:me', ["That's me. You've found me.", "You're looking at me.", 'Me. That would be me.']), 'talk-nod', { moment: 'answer.sure' })
+      if (p === null) return this._line(`We've no ${title === 'potionmaster' ? 'potion master' : title} here.`, 'talk-shrug', { moment: 'answer.none' })
+      if (p.id === this.mind.id) return this._line(this._pick('where:me', ["That's me. You've found me.", "You're looking at me.", 'Me. That would be me.']), 'talk-nod', { moment: 'answer.self' })
       return this._wherePerson(p, `That's ${p.name}. `)
     }
     if (arg.startsWith('person:')) return this._wherePerson(world.person(arg.slice(7)))
@@ -699,7 +702,7 @@ export class Conversation {
       this._mention(`ask:town:${near.index}`, near.name)
       if (here !== null) {
         const to = { x: near.town.x, z: near.town.z }
-        return this._line(`This is ${here.name}. ${near.name} is the next town over. ${this._there(to)}`, 'talk-point', { toward: to, about: [{ kind: 'town', index: near.index }] })
+        return this._line(`This is ${here.name}. ${near.name} is the next town over. ${this._there(to)}`, 'talk-point', { toward: to, moment: 'answer.sure', about: [{ kind: 'town', index: near.index }] })
       }
       return this._whereTown(near.index, 'Wild country. The nearest town is')
     }
@@ -714,7 +717,7 @@ export class Conversation {
     let smith = world.titled(this.town, 'smith')
     if (smith === null) {
       const other = world.towns.filter((t) => t.index !== this.town.index && world.titled(t, 'smith') !== null).sort((a, b) => Math.hypot(a.town.x - this.town.x, a.town.z - this.town.z) - Math.hypot(b.town.x - this.town.x, b.town.z - this.town.z))[0]
-      if (other === undefined) return this._line(this._pick('gear:none', ['Weapons? No smith that I know of.', 'Gear? I know of nowhere to buy it.', "There's no smith that I've heard of."]), 'talk-shrug', { moment: 'answer.unknown' })
+      if (other === undefined) return this._line(this._pick('gear:none', ['Weapons? No smith that I know of.', 'Gear? I know of nowhere to buy it.', "There's no smith that I've heard of."]), 'talk-shrug', { moment: 'answer.none' })
       return this._whereTown(other.index, 'For weapons and gear, the smith in')
     }
     const line = this._wherePerson(smith, `That's ${this._called(smith)}. `)
@@ -825,7 +828,8 @@ export class Conversation {
         this._mention(`ask:person:${child.id}`, child.name)
         about.push({ kind: 'missing', id: child.id })
       }
-      return this._line(text, 'talk-gesture', { moment: 'talk.town', about })
+      // A traveller tells the town as a fact, not as their home.
+      return this._line(text, 'talk-gesture', { moment: mind.cls === 'travel' ? 'answer.sure' : 'talk.town', about })
     }
     if (arg === 'needs') {
       const line = this._needs()
@@ -879,7 +883,7 @@ export class Conversation {
     const travel = mind.cls === 'travel'
     const say = (pool, moment) => [this._pick(`nice:${move}`, pool), moment]
     if (move === 'greet') return say(high ? ['And a good day to you!', 'Good day to you too!', 'A fine day to you, friend.', 'Well, hello!', 'Good day, and welcome.'] : ['Good day.', 'Day.', 'Aye, good day.', 'Hello.', 'Morning enough.'], 'greet.stranger')
-    if (move === 'thanks') return say(high ? ['Glad to be of use.', 'Happy to help.', 'Any time.', 'It was nothing.', 'You are most welcome.'] : ['Mm.', 'Aye.', 'Think nothing of it.', 'Mm-hm.', 'Hm.'], 'social.agree')
+    if (move === 'thanks') return say(high ? ['Glad to be of use.', 'Happy to help.', 'Any time.', 'It was nothing.', 'You are most welcome.'] : ['Mm.', 'Aye.', 'Think nothing of it.', 'Mm-hm.', 'Hm.'], high ? 'social.welcome' : 'social.ack')
     if (move === 'work') {
       this.heardWork = true
       if (mind.cls === 'child') return say(high ? ['Playing! It is the best day.', 'Playing! Want to join?', 'I play all day. Nobody stops me!', 'Playing, and I am winning.', 'Playing! It is never boring.'] : ['Nothing.', 'Playing.', 'Not much.', 'Just playing.', 'Nothing much.'], 'talk.self')
@@ -888,16 +892,16 @@ export class Conversation {
     }
     if (move === 'life') {
       if (travel) return say(high ? ['I come and go. Here a while, then on down the road.', 'Here a while, then gone again. That is my life.', 'I never stay long. The road calls.', 'A bit of everywhere, really. Never long in one place.', 'Always on the move. I like it that way.'] : ['Not long.', 'Passing through.', 'Not long at all.', 'Just passing.', 'A while.'], 'talk.self')
-      return say(high ? [`All my life. ${this.town.name} is home.`, `Born here. ${this.town.name} is all I know, and I like it.`, `Since I was small. ${this.town.name} is home.`, `Always. I would not live anywhere but ${this.town.name}.`, `A lifetime. ${this.town.name} has been good to me.`] : ['Long enough.', 'A good while.', 'Always, near enough.', 'Years.', 'Long enough to know it.'], 'talk.self')
+      return say(high ? [`All my life. ${this.town.name} is home.`, `Born here. ${this.town.name} is all I know, and I like it.`, `Since I was small. ${this.town.name} is home.`, `Always. I would not live anywhere but ${this.town.name}.`, `A lifetime. ${this.town.name} has been good to me.`] : ['Long enough.', 'A good while.', 'Always, near enough.', 'Years.', 'Long enough to know it.'], 'talk.home')
     }
     if (move === 'town') {
-      if (travel) return say(high ? ["It's a fair place to rest, I'll give it that.", 'A decent place. Good beds, I hear.', 'Friendly enough. I could stay a night.', "Not bad, for a stop on the road.", 'Pleasant. Fair people here.'] : ["It's not my town.", 'Not mine to judge.', 'I only pass through.', "It's a town.", 'Ask a local.'], 'mood.content')
-      return say(high ? [`We're proud of ${this.town.name}.`, `${this.town.name} is the best place there is.`, `We do well here, in ${this.town.name}. Thank you for saying.`, `It's a good town, ${this.town.name}. Good folk.`, `${this.town.name} has its charms, and we love it.`] : ["It's all right.", 'It does.', 'Well enough.', 'It has its faults.', 'Not bad.'], 'mood.content')
+      if (travel) return say(high ? ["It's a fair place to rest, I'll give it that.", 'A decent place. Good beds, I hear.', 'Friendly enough. I could stay a night.', "Not bad, for a stop on the road.", 'Pleasant. Fair people here.'] : ["It's not my town.", 'Not mine to judge.', 'I only pass through.', "It's a town.", 'Ask a local.'], high ? 'mood.content' : 'social.ack')
+      return say(high ? [`We're proud of ${this.town.name}.`, `${this.town.name} is the best place there is.`, `We do well here, in ${this.town.name}. Thank you for saying.`, `It's a good town, ${this.town.name}. Good folk.`, `${this.town.name} has its charms, and we love it.`] : ["It's all right.", 'It does.', 'Well enough.', 'It has its faults.', 'Not bad.'], 'talk.town')
     }
-    if (move === 'craft') return say(high ? ['Ha! Someone noticed.', 'You have a keen eye. Thank you!', 'Kind of you to say. I worked hard on it.', 'Well! That is good to hear.', 'Oh, thank you. It does me good to hear it.'] : ["It's only work.", 'Mm. It does the job.', 'Plain work, that.', 'It will do.', 'Hm. Thanks.'], high ? 'nv.laugh' : 'social.agree')
+    if (move === 'craft') return say(high ? ['Ha! Someone noticed.', 'You have a keen eye. Thank you!', 'Kind of you to say. I worked hard on it.', 'Well! That is good to hear.', 'Oh, thank you. It does me good to hear it.'] : ["It's only work.", 'Mm. It does the job.', 'Plain work, that.', 'It will do.', 'Hm. Thanks.'], high ? 'nv.laugh' : 'social.ack')
     if (move === 'sorry') {
       if (this._worried()) return say(high ? [`Thank you. I just want ${this._sadAbout().name} home.`, `You're kind. All I want is ${this._sadAbout().name} back.`, `Thank you. Every hour without ${this._sadAbout().name} is a year.`, `Bless you. I only want ${this._sadAbout().name} home safe.`, `That means a lot. Please, help me find ${this._sadAbout().name}.`] : ['Mm. Thank you.', 'Thank you.', 'Mm. Thanks.', 'Thank you, truly.', 'I know. Thank you.'], 'give.polite')
-      return say(high ? ['Aye. A hard business.', 'Aye, it is hard. Thank you.', 'It is. A bad time for everyone.', 'Aye. We carry on.', 'A hard business, truly.'] : ['Aye.', 'Mm.', 'Aye, it is.', 'It is.', 'So it is.'], 'social.agree')
+      return say(high ? ['Aye. A hard business.', 'Aye, it is hard. Thank you.', 'It is. A bad time for everyone.', 'Aye. We carry on.', 'A hard business, truly.'] : ['Aye.', 'Mm.', 'Aye, it is.', 'It is.', 'So it is.'], high ? 'social.agree' : 'social.ack')
     }
     if (move === 'leave') return say(high ? ['Kind of you. Go well.', 'Thank you. Safe roads.', 'Go well, then. Come back soon.', 'Of course. Go well.', 'Take care out there.'] : ['Oh, already? Well, go well.', 'Off already? Go well.', 'Right. Go well.', 'Well, mind how you go.', 'Mm. Go well, then.'], 'bye.warm')
     throw new Error(`Conversation: no reply for ${move}`)
@@ -928,10 +932,15 @@ export class Conversation {
   }
 
   /** What they would like of her (WANTS), or null: a kindly sort asks nothing. */
+  get want() {
+    const want = WANTS[this.mind.body]
+    return want === undefined || this.mind.traits.kindness > 0.75 ? null : want
+  }
+
+  /** Their wish told to her, or null. */
   wish() {
-    const { mind } = this
-    const want = WANTS[mind.body]
-    if (want === undefined || mind.traits.kindness > 0.75) return null
+    const want = this.want
+    if (want === null) return null
     const topics = /mushroom/.test(want) ? ['mushrooms'] : []
     const some = want.startsWith('a ') ? want : `some ${want}`
     const text = this.leafkin ? this._lk('want', { want }) : this._pick('wish', [`I could use ${some}, if you come by any.`, `If you come by ${some}, I'd take it off your hands.`, `I'm short of ${some}, if you see any.`])
@@ -1043,9 +1052,10 @@ export class Conversation {
     const where = this._wherePerson(p)
     const about = [{ kind: 'person', id: p.id, rel }]
     if (where.claim === null) return { ...where, text: `${opinion} ${where.text}`, about }
-    // "Like I said" cannot sit mid-line after news of them, so a place said before is just said again.
-    const at = where.how.again ? where.bare : where.text
-    return { ...where, text: `${opinion} ${pr.He} ${third(this._work(p))}. ${at}`, about, how: { ...where.how, again: false } }
+    // "Like I said" or "Oh, easy" cannot sit mid-line after news of them, so the place is said bare and the voice muses.
+    const plain = !where.how.changed && !where.how.hedge && where.moment !== 'answer.nervous'
+    const at = plain ? where.bare : where.text
+    return { ...where, text: `${opinion} ${pr.He} ${third(this._work(p))}. ${at}`, about, how: { ...where.how, again: false, boast: false }, moment: plain ? 'answer.muse' : where.moment }
   }
 
   /** Why the speaker feels as they do about `p`: a story seeded per pair, so it holds. */
@@ -1060,7 +1070,7 @@ export class Conversation {
       neighbour: [`Not really. ${pr.He} nods, I nod, and that's about it.`, `${pr.He} keeps ${pr.his} door shut. Nothing wrong with that.`],
       household: [`${pr.He} lives under my roof. I'd hope I know ${pr.him}.`],
     }[rel])
-    return this._line(`${p.name}? ${text}`, rel === 'rival' ? 'talk-shrug' : 'talk-nod', { moment: rel === 'rival' ? 'nv.sigh' : 'answer.sure', about: [{ kind: 'person', id: p.id, rel: 'told' }] })
+    return this._line(`${p.name}? ${text}`, rel === 'rival' ? 'talk-shrug' : 'talk-nod', { moment: rel === 'rival' ? 'nv.sigh' : 'answer.muse', about: [{ kind: 'person', id: p.id, rel: 'told' }] })
   }
 
   /** Where `item` (a WANTS item) is had. */
@@ -1068,7 +1078,7 @@ export class Conversation {
     const text = this.leafkin ? this._lk(`find ${item}`) : FIND[item]
     if (text === undefined) throw new Error(`Conversation: no find ${item}`)
     const topics = /mushroom/.test(item) ? ['mushrooms'] : []
-    return this._line(text, 'talk-gesture', { unlocks: this._unlock(topics), about: this._named(topics) })
+    return this._line(text, 'talk-gesture', { moment: 'answer.sure', unlocks: this._unlock(topics), about: this._named(topics) })
   }
 
   /** What the speaker says of a missing child: a witness's clue, a coverer's lie, or nothing. */
@@ -1082,7 +1092,7 @@ export class Conversation {
         render: (claim) => (claim === q.where ? { text: `All right... ${child.name} is safe, here with us. Don't tell anyone.`, gesture: 'talk-nod' } : this._pointing(`${child.name}? Haven't seen ${this._pr(child).him}. Try ${this._placeName(claim)}.`, claim)),
       })
     }
-    if (seen === undefined) return this._line(`${child.name}? I haven't seen ${this._pr(child).him} today.`, 'talk-shrug', { moment: 'answer.unknown' })
+    if (seen === undefined) return this._line(`${child.name}? I haven't seen ${this._pr(child).him} today.`, 'talk-shrug', { moment: 'answer.none' })
     const c = seen.clue
     if (c.with !== undefined) {
       const host = world.person(c.with)
@@ -1115,7 +1125,7 @@ export class Conversation {
     let fact = ring.find((f) => !told.has(f.id) && knows(f) && trusts(f))
     if (fact === undefined && ring.some((f) => !told.has(f.id) && knows(f))) return this._holdsBack(topic)
     if (fact === undefined && told.size > 0) {
-      if (!this.leafkin) return this._referred(this._line(this._pick(`lore:${topic}:done`, [`That's all I know of ${TOPICS[topic].label}.`, `I have told you all I know of ${TOPICS[topic].label}.`, `There's nothing more I can say of ${TOPICS[topic].label}.`, `Of ${TOPICS[topic].label}, that is the lot.`, `You have had everything I know of ${TOPICS[topic].label}.`]), 'talk-shrug', { moment: 'answer.unknown' }), topic)
+      if (!this.leafkin) return this._referred(this._line(this._pick(`lore:${topic}:done`, [`That's all I know of ${TOPICS[topic].label}.`, `I have told you all I know of ${TOPICS[topic].label}.`, `There's nothing more I can say of ${TOPICS[topic].label}.`, `Of ${TOPICS[topic].label}, that is the lot.`, `You have had everything I know of ${TOPICS[topic].label}.`]), 'talk-shrug', { moment: 'answer.spent' }), topic)
       told.clear()
       fact = ring.find((f) => knows(f) && trusts(f))
     }
@@ -1224,14 +1234,14 @@ export class Conversation {
     if (!this._helpful()) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
     const label = TOPICS[topic].label
     if (TOPICS[topic].contested && this._belief(topic, topic).doubts) {
-      return this._talesTo(this._line(`Nobody, because there are no ${label}.`, 'talk-shrug', { moment: 'answer.sure' }))
+      return this._talesTo(this._line(`Nobody, because there are no ${label}.`, 'talk-shrug', { moment: 'social.disagree' }))
     }
     const best = this._expertAbout(topic)
     if (expertise(this.mind.body, topic) > 0 && (best.length === 0 || expertise(this.mind.body, topic) >= expertise(this.ctx.world.person(best[0].id).body, topic))) {
-      return this._line(this._pick('who:me', ["You're looking at one. What do you want to know?", 'That would be me. Ask away.']), 'talk-nod', { moment: 'answer.sure', about: [{ kind: 'lore', topic, named: true }] })
+      return this._line(this._pick('who:me', ["You're looking at one. What do you want to know?", 'That would be me. Ask away.']), 'talk-nod', { moment: 'answer.self', about: [{ kind: 'lore', topic, named: true }] })
     }
     const to = this._sentTo(topic)
-    return to === null ? this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' }) : this._line(to.text, 'talk-gesture', { moment: 'answer.sure', about: to.about })
+    return to === null ? this._line(this._dunno(), 'talk-shrug', { moment: 'answer.unknown' }) : this._line(to.text, 'talk-gesture', { moment: 'answer.refer', about: to.about })
   }
 
   /** The one in the speaker's town who knows most of `topic` (lore.js `expertise`), as an `about`, or none. */

@@ -4,11 +4,13 @@
 //
 // Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
-// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, or exterior faces that z-fight.
+// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight,
+// collision that throws or passes the walk's span cap, or a castle without its doors, stairs, ladders and rope as portals.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { exteriorGeometry, interiorGeometries } from '../src/v2/castles/shell.js'
+import { castleSolids, exteriorSpans, interiorSpans, SPAN_CAP } from '../src/v2/castles/solids.js'
 
 let failures = 0
 function check(ok, label, detail = '') {
@@ -46,7 +48,7 @@ check(badDoor.length === 0, 'every room door lies on both rooms\' walls', badDoo
 const ms = good.map((l) => l.stats.ms).sort((a, b) => a - b)
 console.log(`       layout ms: median ${ms[ms.length >> 1].toFixed(1)}, worst ${ms.at(-1).toFixed(1)}`)
 
-const tri = (g) => g.getAttribute('position').count / 3
+const tri = (g) => g.position.length / 9
 const ext = good.map((l) => tri(exteriorGeometry(l)))
 const int = good.slice(0, 40).map((l) => interiorGeometries(l).reduce((a, s) => a + tri(s.geometry), 0))
 check(Math.max(...ext) < 20000, 'an exterior shell stays under 20k triangles', `worst ${Math.max(...ext)}`)
@@ -55,7 +57,7 @@ check(Math.max(...int) < 30000, 'an interior shell stays under 30k triangles', `
 // Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is
 // scanned, since the warp moves coincident faces together.
 function zFights(g) {
-  const p = g.getAttribute('position').array, c = g.getAttribute('color').array, buckets = new Map()
+  const p = g.position, c = g.color, buckets = new Map()
   for (let t = 0; t < p.length / 9; t++) {
     const v = [0, 1, 2].map((i) => [p[t * 9 + i * 3], p[t * 9 + i * 3 + 1], p[t * 9 + i * 3 + 2]])
     const e1 = v[1].map((x, i) => x - v[0][i]), e2 = v[2].map((x, i) => x - v[0][i])
@@ -77,6 +79,27 @@ function zFights(g) {
 }
 const fights = good.slice(0, 30).map((l) => [l.seed, zFights(exteriorGeometry(l, { warp: false }))]).filter(([, h]) => h)
 check(fights.length === 0, 'no two differently coloured exterior faces share a plane', fights.slice(0, 4).map(([s, h]) => `seed ${s}: ${h}`).join(', '))
+
+const lowTri = good.slice(0, 40).map((l, i) => tri(exteriorGeometry(l, { full: false })) / ext[i])
+check(Math.max(...lowTri) < 0.9, 'the mid-distance exterior is lighter than the full one', `worst ${(Math.max(...lowTri) * 100).toFixed(0)}% of full`)
+
+// Collision: castleSolids throws where a portal has nowhere to set her down. Columns are sampled on a 0.5 m grid over each footprint,
+// the interior at every storey.
+let solidFail = null, worstEx = 0, worstIn = 0, portalsShort = []
+for (const l of good.slice(0, 60)) {
+  let sol
+  try { sol = castleSolids(l) } catch (e) { solidFail ??= `seed ${l.seed}: ${e.message}`; continue }
+  const x0 = l.X(0) - 8, x1 = l.X(l.cw) + 8, z0 = l.Z(0) - 8, z1 = l.Z(l.cd) + 16, top = Math.max(...l.sections.map((s) => s.floors ?? 1))
+  for (let x = x0; x <= x1; x += 0.5) for (let z = z0; z <= z1; z += 0.5) {
+    worstEx = Math.max(worstEx, exteriorSpans(sol.ex, x, z))
+    for (let k = 0; k <= top; k++) worstIn = Math.max(worstIn, interiorSpans(sol.it, x * CASTLE.scale, z * CASTLE.scale, k * CASTLE.storey * CASTLE.scale + 0.5))
+  }
+  const P = sol.portals, want = l.edges.filter((e) => e.stair).length
+  if (P.doors.length === 0 || P.stairs.length !== want || !P.rope || !P.chest) portalsShort.push(l.seed)
+}
+check(solidFail === null, 'every castle\'s collision and portals build', solidFail ?? '')
+check(worstEx < SPAN_CAP && worstIn < SPAN_CAP, 'no castle column passes the walk\'s span cap', `worst exterior ${worstEx}, interior ${worstIn} of ${SPAN_CAP}`)
+check(portalsShort.length === 0, 'every castle has doors, its stairs, a rope and a chest as portals', portalsShort.slice(0, 5).join(' '))
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)

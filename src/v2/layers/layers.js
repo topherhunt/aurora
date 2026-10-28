@@ -16,6 +16,7 @@ import { LakeSet, sandPatchAt } from './water-bodies.js'
 import { PathSet } from './paths.js'
 import { CleftSet } from './clefts.js'
 import { FieldSet } from './fields.js'
+import { CastleSites } from './castles.js'
 import { clamp01 } from '../../sim/mathx.js'
 import { WORLD_HALF } from '../config.js'
 
@@ -52,6 +53,7 @@ export class Layers {
     this.fields = new FieldSet(doc.fields === undefined ? [] : doc.fields)
     // The labyrinths' footprints (labyrinths.js siteOf) as the world plan sited them, or null where nothing has: then Labyrinths sites its own.
     this.labyrinthSites = doc.labyrinths === undefined ? null : doc.labyrinths
+    this.castles = new CastleSites(doc.castles === undefined ? [] : doc.castles)
     this.ids = new IdAllocator(doc)
     this.epoch = 0
     this._dirty = null
@@ -267,6 +269,11 @@ export class Layers {
   // The world plan's labyrinth footprints, generated at boot. They shape no ground, so nothing is dirtied; set before any Labyrinths reads them.
   setLabyrinthSites(list) {
     this.labyrinthSites = list
+  }
+
+  // The world plan's castle sites (castles.js), generated at boot; like the labyrinths, they shape no ground.
+  setCastleSites(list) {
+    this.castles = new CastleSites(list)
   }
 
   // The towns' farm fields (fields.js), generated at boot: trades.js fieldRecord each. Replaces any already held.

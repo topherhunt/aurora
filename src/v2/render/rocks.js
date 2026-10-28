@@ -4721,7 +4721,7 @@ export class Rocks {
     const guard = (cfg) => {
       const own = hollows && !cfg.hollow ? clear : keepOut
       if (labyrinths === null || !cfg.blocks) return own
-      return (x, z, r) => labyrinths.reaches(x, z, r) || (own !== null && own(x, z, r))
+      return (x, z, r) => labyrinths.reaches(x, z, r) || biome.castleAt(x, z, r) || (own !== null && own(x, z, r))
     }
     this.field = field
     this.beds = beds.map(cfg => new RockBed(field, water, layers, bank, cfg, { seed, ground, biome, bounds, keepOut: guard(cfg) }))

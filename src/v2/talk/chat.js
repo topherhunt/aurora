@@ -121,26 +121,39 @@ const pick = (r, list) => list[Math.min(list.length - 1, (r * list.length) | 0)]
 
 // Two neighbours' chatter as short exchanges, so each remark is answered in kind. A step is said by the next speaker of
 // the pair: `moment: ids` (the recorded utterances it may be, tools/voice/atoms.js), or a bare moment for any of its
-// lines; ` | ` parts are alternatives. Leafkin atoms carry no words, so theirs are bare moments.
+// lines; ` | ` parts are alternatives. A part marked `warm>` or `cold>` is for a cheery or a curt speaker, who says only
+// those when the step has any, so overheard chatter tells her who will be glad to talk. A `social.cut` or a goodbye
+// ends the pair's talk. Leafkin atoms carry no words, so theirs are bare moments.
 export const EXCHANGES = {
   human: {
-    greet: ['greet.stranger: good-day hey-there well-met', 'greet.stranger: good-day well-met'],
-    morning: ['greet.morning: morning', 'greet.morning: morning up-early'],
-    evening: ['greet.evening: evening', 'greet.evening: evening'],
-    gossip: ['gossip.lead: did-you-hear never-guess', 'gossip.react: go-on really', 'gossip.lead: between-us', 'gossip.react: dont-believe who-told-you truly | social.disagree: nonsense dont-think-so', 'answer.boast: own-eyes', 'nv.laugh: laugh chuckle | social.disagree: bah tsk | observe.marvel: well-ill-be'],
-    cold: ['weather.cold: bitter-cold feel-wind smell-snow', 'social.agree: aye true-enough | weather.cold: brr', 'worry.winter: long-winter stores-last', 'worry.general: hard-times | social.agree: true-enough'],
-    fine: ['weather.fine: fine-day sun-out', 'social.agree: aye | mood.content: cant-complain the-life', 'mood.content: sigh-content hum'],
-    foul: ['weather.foul: rain-again storm-brewing', 'social.agree: aye true-enough', 'weather.foul: get-indoors'],
-    tired: ['mood.tired: long-day back-aches', 'social.agree: aye true-enough | nv.sigh: sigh-long', 'mood.tired: bed-soon', 'bye.warm: get-home-safe go-well'],
-    hungry: ['mood.hungry: eat-a-horse', 'mood.hungry: whats-supper | nv.laugh: chuckle'],
-    aurora: ['sky.aurora: lights-out sky-dancing look-at-sky', 'observe.marvel: never-tired well-ill-be', 'mood.content: sigh-content'],
-    beasts: ['worry.beast: at-the-livestock', 'gossip.react: really truly', 'worry.beast: saw-tracks', 'worry.beast: doors-shut | fear.uneasy: dont-like-this'],
-    leafkin: ['worry.leafkin: little-folk', 'worry.leafkin: fairy-stories | social.disagree: nonsense bah', 'answer.boast: own-eyes', 'nv.laugh: snort | social.disagree: tsk'],
-    bored: ['mood.bored: nothing-happens', 'nv.laugh: chuckle | talk.town: quiet-place | mood.content: cant-complain', 'mood.bored: sigh-long bah'],
-    busy: ['mood.busy: busy-busy no-rest', 'mood.busy: keep-busy | social.agree: aye'],
-    missing: ['gossip.lead: someones-missing', 'gossip.react: truly | social.surprise: by-the-gods', 'worry.general: terrible-business', 'missing.sympathy: poor-soul hard-times'],
-    worried: ['worry.general: i-worry what-will-we-do', 'missing.sympathy: poor-soul hard-times'],
-    dusk: ['observe.dusk: getting-dark', 'social.agree: aye', 'bye.warm: get-home-safe'],
+    greet: ['greet.stranger: good-day hey-there hello-there | warm> greet.friend: good-to-see there-you-are hello-again | cold> greet.curt: hm-hello hm', 'greet.stranger: good-day hey-there hello-there | warm> greet.friend: good-to-see hello-again | cold> greet.curt: hm'],
+    morning: ['greet.morning: morning | warm> greet.morning: morning up-early | cold> greet.curt: hm', 'greet.morning: morning | warm> greet.morning: up-early | cold> greet.curt: hm'],
+    evening: ['greet.evening: evening', 'greet.evening: evening | cold> greet.curt: hm'],
+    small: ['small.ask: how-keeping hows-work hows-family', 'small.reply: getting-by mustnt-grumble this-and-that | warm> small.reply: keeping-well getting-by | cold> small.reply: same-as-ever | cold> social.cut: must-get-on', 'social.agree: good-good mm-hm | warm> nv.laugh: chuckle | warm> social.agree: good-good'],
+    gossip: [
+      'gossip.lead: did-you-hear never-guess | warm> gossip.lead: listen-this never-guess did-you-hear',
+      'gossip.react: go-on really | warm> gossip.react: go-on never really | cold> social.ack: hm is-that-so | cold> social.cut: must-get-on',
+      'gossip.lead: between-us',
+      'gossip.react: truly who-told-you | social.disagree: dont-think-so | warm> gossip.react: no never dont-believe oh-i-know | cold> social.disagree: if-you-say nonsense | cold> social.ack: hm',
+      'answer.boast: own-eyes | social.agree: thats-right',
+      'nv.laugh: laugh chuckle | social.agree: funny-world | warm> gossip.react: youre-terrible go-with-you | warm> nv.laugh: laugh | cold> social.disagree: bah tsk | cold> social.cut: enough-of-that',
+    ],
+    cold: ['weather.cold: bitter-cold feel-wind smell-snow', 'social.agree: aye true-enough | weather.cold: brr | warm> social.agree: isnt-it-just | cold> social.ack: mm', 'worry.winter: long-winter stores-last', 'worry.general: hard-times | social.agree: true-enough | warm> social.comfort: chin-up | warm> small.reply: mustnt-grumble'],
+    fine: ['weather.fine: fine-day sun-out | warm> weather.fine: fine-day look-at-sky sun-out', 'social.agree: aye | mood.content: cant-complain the-life | warm> social.agree: isnt-it-just | cold> social.ack: mm', 'mood.content: sigh-content hum | warm> nv.laugh: chuckle'],
+    foul: ['weather.foul: rain-again storm-brewing', 'social.agree: aye true-enough | cold> nv.sigh: huff', 'weather.foul: get-indoors'],
+    tired: ['mood.tired: long-day back-aches', 'social.agree: aye true-enough | nv.sigh: sigh-long | warm> social.comfort: chin-up', 'mood.tired: bed-soon', 'bye.warm: get-home-safe go-well | cold> social.cut: must-get-on'],
+    hungry: ['mood.hungry: eat-a-horse', 'mood.hungry: whats-supper | nv.laugh: chuckle | cold> social.ack: mm'],
+    aurora: ['sky.aurora: lights-out sky-dancing look-at-sky', 'observe.marvel: never-tired well-ill-be | cold> social.ack: mm', 'mood.content: sigh-content | warm> observe.marvel: look-at-that'],
+    beasts: ['worry.beast: at-the-livestock', 'gossip.react: really truly | cold> social.ack: hm', 'worry.beast: saw-tracks', 'worry.beast: doors-shut | fear.uneasy: dont-like-this | warm> social.comfort: be-all-right'],
+    leafkin: ['worry.leafkin: little-folk', 'worry.leafkin: fairy-stories | social.disagree: nonsense bah | warm> gossip.react: really truly', 'answer.boast: own-eyes', 'nv.laugh: snort | social.disagree: tsk if-you-say | warm> nv.laugh: laugh'],
+    bored: ['mood.bored: nothing-happens', 'nv.laugh: chuckle | talk.town: quiet-place | mood.content: cant-complain | cold> social.ack: mm', 'mood.bored: sigh-long bah'],
+    busy: ['mood.busy: busy-busy no-rest', 'mood.busy: keep-busy | social.agree: aye | cold> social.cut: must-get-on work-to-do'],
+    missing: ['gossip.lead: someones-missing', 'gossip.react: truly | social.surprise: by-the-gods | warm> gossip.react: no', 'worry.general: terrible-business', 'missing.sympathy: poor-soul hard-times | social.comfort: be-all-right'],
+    worried: ['worry.general: i-worry what-will-we-do | nv.sigh: sigh-worried', 'social.comfort: be-all-right chin-up there-there | missing.sympathy: poor-soul | cold> missing.sympathy: hard-times terrible-business'],
+    // One with a want or a message for her says so to a neighbour, so it carries to her.
+    wish: ['needs.yes: one-thing use-a-hand', 'gossip.react: go-on | social.ack: mm-hm | cold> social.ack: hm', 'needs.yes: use-a-hand | nv.sigh: sigh-long'],
+    errand: ['errand.ask: someone-i-trust', 'gossip.react: go-on really | cold> social.ack: hm'],
+    dusk: ['observe.dusk: getting-dark', 'social.agree: aye | warm> social.agree: isnt-it-just', 'bye.warm: get-home-safe go-well'],
   },
   leafkin: {
     greet: ['greet.friend', 'greet.friend'],
@@ -152,46 +165,69 @@ export const EXCHANGES = {
   },
 }
 
-/** Which exchange `mind` turns their pair's chatter to next, at `hour`, `r` a roll, `not` the one just had. */
-function nextExchange(mind, ctx, hour, r, not) {
-  const conv = new Conversation(mind, ctx)
+/** Which exchange `conv`'s speaker turns their pair's chatter to next, or 'hush' for a silence, at `hour`, `r` a roll, `not` the last two they had. */
+function nextExchange(conv, hour, r, not) {
+  const { mind, ctx } = conv
   const night = hour >= 21 || hour < 5
   if (mind.kind === 'leafkin') return weighed([['gossip', 2], ['curious', 1], ['happy', 1.5], ['aurora', night ? 2.5 : 0], ['uneasy', night ? 0.8 : 0.3]], r, not)
-  if (conv._worried()) return 'worried'
+  // A parent whose child is missing talks of nothing else, with silences between.
+  if (conv._worried()) return not.includes('worried') ? 'hush' : 'worried'
   const T = mind.traits
   const q = conv.quest
-  const cheery = conv.tone === 'cheery'
+  const m = conv._message('giver')
+  const tone = conv.tone
+  // The cheery talk and gossip; the curt grumble or say nothing.
+  const talk = { cheery: 1.6, plain: 1, curt: 0.25 }[tone]
+  const grumble = tone === 'curt' ? 1.5 : 1
   const meal = (hour >= 11 && hour < 13) || (hour >= 17 && hour < 19)
   return weighed([
-    ['gossip', 1 + T.chattiness * 2], ['cold', 1], ['fine', hour >= 7 && hour < 18 ? 1 : 0], ['foul', 0.5], ['tired', hour >= 17 || hour < 5 ? 1.5 : 0.3],
-    ['hungry', meal ? 1.2 : 0.2], ['aurora', night ? 2 : 0], ['beasts', 0.4 + T.wariness], ['leafkin', 0.4], ['bored', cheery ? 0.3 : 1], ['busy', 0.5],
+    ['gossip', (1 + T.chattiness * 2) * talk], ['small', 1.2 * talk], ['cold', grumble], ['fine', hour >= 7 && hour < 18 ? 1 : 0], ['foul', 0.5 * grumble], ['tired', (hour >= 17 || hour < 5 ? 1.5 : 0.3) * grumble],
+    ['hungry', meal ? 1.2 : 0.2], ['aurora', night ? 2 : 0], ['beasts', 0.4 + T.wariness], ['leafkin', 0.4], ['bored', tone === 'cheery' ? 0.3 : grumble], ['busy', 0.5 * grumble],
     ['missing', q !== null && ctx.log.state(q.id) !== 'done' ? 3 : 0], ['dusk', hour >= 17 && hour < 21 ? 1.5 : 0],
+    ['wish', conv.want !== null ? 1.2 : 0], ['errand', m !== null && ctx.log.state(m.id) === null ? 1.5 : 0],
+    ['hush', { cheery: 0, plain: 0.5, curt: 2.5 }[tone]],
   ], r, not)
 }
 
+/** The parts of exchange step `step` a speaker in `register` ('warm', 'cold' or null) may say. */
+function voiced(step, register) {
+  const parts = step.split(' | ').map((p) => (/^(warm|cold)> /.test(p) ? [p.slice(0, 4), p.slice(6)] : [null, p]))
+  const theirs = parts.filter(([r]) => r !== null && r === register)
+  return (theirs.length > 0 ? theirs : parts.filter(([r]) => r === null)).map(([, p]) => p)
+}
+
+const REGISTER = { cheery: 'warm', plain: null, curt: 'cold' }
+
 function weighed(weights, r, not) {
-  const live = weights.filter(([k, w]) => w > 0 && k !== not)
+  const live = weights.filter(([k, w]) => w > 0 && !not.includes(k))
   let left = r * live.reduce((s, [, w]) => s + w, 0)
   for (const [k, w] of live) if ((left -= w) < 0) return k
   return live[live.length - 1][0]
 }
 
 /**
- * The next line of a pair's chatter, said by `mind` at `hour`, `r` and `alt` rolls: `at` is where the pair stands (`{ ex, step }`,
+ * The next line of a pair's chatter, said by `mind` at `hour`, `r` and `alt` rolls: `at` is where the pair stands (`{ ex, step, had, done }`,
  * null for a fresh meeting, which opens with a greeting). Returns `{ moment, only, at }`, `only` the utterance ids the
- * line may be (null for any) and `at` where the pair stands after it.
+ * line may be (null for any) and `at` where the pair stands after it; `moment` null for a silence that keeps the pair
+ * talking. Null once the pair has parted.
  */
 export function chatterStep(mind, ctx, at, { hour, r, alt }) {
-  const book = EXCHANGES[mind.kind === 'leafkin' ? 'leafkin' : 'human']
-  let ex = at === null ? (mind.kind === 'leafkin' ? 'greet' : hour >= 5 && hour < 10 ? 'morning' : hour >= 18 ? 'evening' : 'greet') : at.ex
+  if (at !== null && at.done) return null
+  const leafkin = mind.kind === 'leafkin'
+  const book = EXCHANGES[leafkin ? 'leafkin' : 'human']
+  const conv = new Conversation(mind, ctx)
+  let ex = at === null ? (leafkin ? 'greet' : hour >= 5 && hour < 10 ? 'morning' : hour >= 18 ? 'evening' : 'greet') : at.ex
   let step = at === null ? 0 : at.step
+  let had = at === null ? [] : at.had
   if (step >= book[ex].length) {
-    ex = nextExchange(mind, ctx, hour, r, ex)
+    had = [ex, ...had].slice(0, 2)
+    const next = nextExchange(conv, hour, r, had)
+    if (next === 'hush') return { moment: null, only: null, at }
+    ex = next
     step = 0
   }
-  const alts = book[ex][step].split(' | ')
-  const [moment, ids] = pick(alt, alts).split(': ')
-  return { moment, only: ids === undefined ? null : ids.split(' '), at: { ex, step: step + 1 } }
+  const [moment, ids] = pick(alt, voiced(book[ex][step], leafkin ? null : REGISTER[conv.tone])).split(': ')
+  return { moment, only: ids === undefined ? null : ids.split(' '), at: { ex, step: step + 1, had, done: moment === 'social.cut' || moment.startsWith('bye.') } }
 }
 
 /** Whether `mind` would come to her unasked: a plea or an errand to give, or a warm, chatty sort with time on their hands. */

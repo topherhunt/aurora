@@ -6,7 +6,7 @@ import { SCAFFOLD } from './layers/scaffold.js'
 export const CLIMB = { speed: 0.9, reach: 0.35, face: 0.5, grip: 0.15 }
 
 export class Climb {
-  /** `palisades` answers ladderAt and rungAt (render/palisades.js). */
+  /** `palisades` answers ladderAt and rungAt (render/palisades.js); null in a world with only castles, whose ropes alone are climbed. */
   constructor(player, palisades) {
     this.player = player
     this.palisades = palisades
@@ -50,6 +50,7 @@ export class Climb {
 
   /** The desktop's move, before player.update: walking at a ladder from its foot (facing in) climbs it, from the deck (facing out) climbs down it, and on it `input.move` is spent (zeroed); a strafe lets go, as does backing off its foot. `fx, fz` her gaze's level unit. */
   desk(dt, input, fx, fz) {
+    if (this.palisades === null) return
     const p = this.player, o = p.rig.position
     if (this.ladder !== null && !p.held) this.ladder = null
     if (this.ladder === null) {
@@ -86,6 +87,7 @@ export class Climb {
 
   /** A headset hand's grip this frame, its world position `at`: true when a press took a rung, so it drops nothing. While a grip holds, the rig moves against the hand so the hand stays on its rung; the last hand to grip leads. */
   grip(hand, pressed, justPressed, empty, at) {
+    if (this.palisades === null) return false
     const p = this.player
     let took = false
     if (justPressed && empty) {

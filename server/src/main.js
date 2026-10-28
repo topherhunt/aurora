@@ -259,7 +259,7 @@ function applyTrust(room, client, list) {
 const LOOT_CAP = 4096
 const LOOT_BATCH = 64
 function validLoot(t) {
-  return Array.isArray(t) && t.length === 2 && typeof t[0] === 'string' && /^[lrcd][0-9a-z]{1,12}$/.test(t[0]) && Number.isInteger(t[1]) && t[1] >= 0 && t[1] < 4096
+  return Array.isArray(t) && t.length === 2 && typeof t[0] === 'string' && /^[lrcdk][0-9a-z]{1,12}$/.test(t[0]) && Number.isInteger(t[1]) && t[1] >= 0 && t[1] < 4096
 }
 
 function applyLoot(room, client, list) {

@@ -16,6 +16,7 @@ import { Journeys } from './render/journeys.js'
 import { Signposts } from './render/signposts.js'
 import { Bridges } from './render/bridges.js'
 import { Palisades, PALISADE_CARDS } from './render/palisades.js'
+import { Castles } from './render/castles.js'
 import { Climb } from './climb.js'
 import { loadStoneBridge } from '../bridges/stone-bridge.js'
 import { BiomeField } from './layers/biome.js'
@@ -1014,7 +1015,7 @@ function saveGame() {
   // The rig only ever turns about Y (snap turns, recenter), so its quaternion
   // is a yaw and this is exact; rig.rotation's Euler would fold past 90 deg.
   const q = rig.quaternion
-  const back = indoors ? indoors.back : cave ? cave.back : null
+  const back = indoors ? indoors.back : cave ? cave.back : inCastle ? inCastle.back : null
   const doc = {
     // Her feet; in a house, the landing before its door, which the room is built around; in a cave, the apron before the mouth she came in by. `y` keeps a load under an awning from the roof.
     x: back ? back.x : rig.position.x, y: back ? back.y : player.standY, z: back ? back.z : rig.position.z,
@@ -2757,12 +2758,21 @@ function syncTrust() {
 let chalkWelcomes = 0
 let lootWelcomes = 0
 
-// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins (design/42-valuables.md). Bit 0 is the coins.
+// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins.
 const RINGS_MOST = Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)
 const ALTAR_GEMS = ['diamond', 'sapphire', 'ruby']
 const HOARD = ['diamond', 'sapphire', 'ruby', 'firestone']
 
 function layLoot() {
+  if (castles) {
+    for (const s of castles.built()) {
+      const [rx, rz] = s.id.split(',').map(Number), key = (rx + 0x8000) * 0x10000 + (rz + 0x8000)
+      const rand = mulberry32((SEED ^ Math.imul(key, 0xc2b2ae35)) >>> 0)
+      const [x, y, z] = castles.chestOf(s.id), gems = 2 + Math.floor(rand() * 2)
+      items.lay(place('k', key), 0, 'coin', x - 0.2, y, z, 40 + Math.floor(rand() * 51))
+      for (let k = 1; k <= gems; k++) items.lay(place('k', key), k, HOARD[Math.floor(rand() * HOARD.length)], x + 0.1 * k, y, z + (k % 2 ? 0.08 : -0.08))
+    }
+  }
   if (palisades) {
     for (const { site: s } of palisades.active.values()) {
       const key = (s.rx + 0x8000) * 0x10000 + (s.rz + 0x8000)
@@ -3645,8 +3655,11 @@ let baked = null
 let signposts = null
 let bridges = null
 let palisades = null
+// The sited castles (render/castles.js), and while she is in one { site, back, stone, outside }.
+let castles = null
+let inCastle = null
 let giants = null
-// The watchtowers' ladders, while there are palisades and she is on the overworld's walk.
+// The watchtowers' ladders and the scaffolds' and castles' ropes, while there are either and she is on the overworld's walk.
 let climb = null
 let roadLines = null
 // Every laid way and bridge of the road plan as blue line segments 2 m over the road, each used stub carried on to its town's centre, and a dot on each centre, drawn without depth test or fog so the whole web reads from any height.
@@ -4226,6 +4239,7 @@ function bakeImpostors() {
   // bake is per-hearth and not per-atlas; the bridges' picture lives in this room's card pool.
   if (bridges) bridges.bakeCard(renderer)
   if (palisades) palisades.bakeCard(renderer)
+  if (castles) castles.bakeCard(renderer).catch(reportRuntimeError)
   if (hearth) {
     const h = hearth.bakeCard(renderer)
     console.log(`hearth impostor baked: luma ${h.meanLuma.toFixed(3)} cover ${h.coverage.toFixed(3)} ${h.width.toFixed(2)} x ${h.height.toFixed(2)} m`)
@@ -4283,7 +4297,9 @@ function disposeRoom() {
   if (wildStriders) { wildStriders.dispose(); wildStriders = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
-  if (palisades) { palisades.dispose(); palisades = null; climb = null; window.v2palisades = null }
+  if (palisades) { palisades.dispose(); palisades = null; window.v2palisades = null }
+  if (castles) { closeCastle(); castles.dispose(); castles = null; window.v2castles = null }
+  climb = null
   if (giants) { giants.dispose(); giants = null }
   if (roadLines) { roadLines.removeFromParent(); for (const part of roadLines.children) { part.geometry.dispose(); part.material.dispose() } roadLines = null }
   townPlan = null
@@ -4503,6 +4519,62 @@ function closeHouse() {
   if (player) player.setGround(walk)
   peerAvatars.ground(walk)
   indoors = null
+}
+
+/** After the step, by or in a castle: through its door, hatch, stair or onto its rope (Castles.portalAt). True while she is in one. */
+function castleTest(blink) {
+  if (castles === null || doorBusy || EDITOR_MODE || cave !== null || indoors || player.th !== walk) return inCastle !== null
+  const feet = player.originPosition()
+  if (inCastle) inCastle.stone.hint = feet.y
+  const act = castles.portalAt(feet, portalFrom, blink)
+  if (act === null) return inCastle !== null
+  if (act.kind === 'rope') {
+    const [x, y, z] = act.at
+    climb.startRope({ x, z, top: y, bottom: walk.heightAt(x, z, y - 1.5) })
+  } else castlePortal(act).catch(reportRuntimeError)
+  return inCastle !== null
+}
+
+/** Through castle portal `act` under the fade: in or out of its interior, or between its storeys. */
+async function castlePortal(act) {
+  doorBusy = true
+  if (ambience && act.kind !== 'move') sound.play('door', { bus: 'near', gain: 0.3 })
+  makeBlackout()
+  ready = false
+  await fade(1)
+  if (act.kind === 'enter') openCastle(act.site, act.back)
+  else if (act.kind === 'leave') closeCastle()
+  const [x, y, z] = act.at
+  if (inCastle) inCastle.stone.hint = y
+  player.teleportTo(x, z, y)
+  faceAlong(act.face[0], act.face[1])
+  castles.arrived(player.originPosition())
+  ready = true
+  await fade(0)
+  doorBusy = false
+}
+
+/** Castle `site`'s interior up and her walk swapped for its own; `back` (world) is where a save puts her. */
+function openCastle(site, back) {
+  const stone = castles.openInterior(site)
+  const inner = new WalkSurface(flatField(stone.oy - 1), stone, { trunkAt: () => null }, { scale: herScale() })
+  inner.flyThrough = true
+  inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk }
+  if (sound) sound.setIndoors(true)
+  walk = window.v2walk = inner
+  player.setGround(inner)
+  peerAvatars.ground(inner)
+}
+
+/** The castle's interior down and the overworld walk hers again; nothing when she is not in one. */
+function closeCastle() {
+  if (!inCastle) return
+  castles.closeInterior()
+  if (sound) sound.setIndoors(false)
+  walk = window.v2walk = inCastle.outside
+  if (player) player.setGround(walk)
+  peerAvatars.ground(walk)
+  inCastle = null
 }
 
 /** After the step, in a village or by a town: the house door her feet just went through, in or out. True when one did. */
@@ -5010,27 +5082,29 @@ async function buildRoom(room, at) {
       const t0 = performance.now()
       const file = await (baked ?? loadWorldPlan(WORLD_PLAN_URL))
       baked = null
-      let mouths, trailPlan, labyrinthPlan
+      let mouths, trailPlan, labyrinthPlan, castlePlan
       if (file !== null && file.key === key) {
-        ;({ townPlan, roadPlan, mouths, trailPlan, labyrinthPlan } = unpackWorldPlan(file.plan))
+        ;({ townPlan, roadPlan, mouths, trailPlan, labyrinthPlan, castlePlan } = unpackWorldPlan(file.plan))
         if (file.shores === undefined) throw new Error(`${WORLD_PLAN_URL} carries no lake shores; re-bake it`)
         bakedShores = file.shores
         layers.addGenerated(townPlan.records)
         layers.addGenerated(roadPlan.records)
         layers.addGenerated(trailPlan.records)
         layers.addGenerated(labyrinthPlan.records)
+        layers.addGenerated(castlePlan.records)
       } else {
         console.warn(`[v2] ${file === null ? `no ${WORLD_PLAN_URL}` : `${WORLD_PLAN_URL} was baked against another document or relief`}; laying the towns and roads live`)
-        ;({ townPlan, roadPlan, mouths, trailPlan, labyrinthPlan } = planWorld({ heightmap, ground: (x, z) => heightmap.sample(x, z), field: height, surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
+        ;({ townPlan, roadPlan, mouths, trailPlan, labyrinthPlan, castlePlan } = planWorld({ heightmap, ground: (x, z) => heightmap.sample(x, z), field: height, surface: (x, z) => height.heightAt(x, z), layers, seed, spawn: room.spawn }))
       }
       if (roadPlan.failed.length > 0) console.warn(`[v2] roads: no route for ${roadPlan.failed.join(', ')}`)
       if (trailPlan.failed.length > 0) console.warn(`[v2] trails: no road reaches mouths ${trailPlan.failed.join(', ')}`)
       if (labyrinthPlan.failed.length > 0) console.warn(`[v2] trails: no road reaches the labyrinths in regions ${labyrinthPlan.failed.join(' ')}`)
+      if (castlePlan.failed.length > 0) console.warn(`[v2] trails: no road reaches the castles in regions ${castlePlan.failed.join(' ')}`)
       console.log(
         `[v2] towns ${townPlan.towns.length}, ${townPlan.towns.reduce((n, t) => n + t.buildings.length, 0)} buildings, ` +
-          `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
+          `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${castlePlan.sites.length} castles, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
       )
-      applyWorldPlan(layers, { townPlan, mouths, labyrinthPlan })
+      applyWorldPlan(layers, { townPlan, mouths, labyrinthPlan, castlePlan })
       caveSites = siteCaves(mouths, townPlan)
     }
   }
@@ -5252,6 +5326,11 @@ async function buildRoom(room, at) {
     palisades.update(spawn, fireNow())
     window.v2palisades = palisades // console: `v2palisades.stats`
   }
+  if (layers.castles.list.length) {
+    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
+    castles.update(spawn)
+    window.v2castles = castles // console: `v2castles.stats`
+  }
 
   // Trees. The atlas was built up ahead of the terrain, because the terrain
   // needs it at material-compile time. The card BAKE does wait on the image
@@ -5331,6 +5410,7 @@ async function buildRoom(room, at) {
   }
   if (bridges) walk.addStone(bridges)
   if (palisades) walk.addStone(palisades)
+  if (castles) walk.addStone(castles)
   if (boulders) walk.addStone(boulders)
   // And the shell: its wall stops her and its roof stops her flight, but for the door (render/shell.js).
   if (shell) walk.addStone(shell)
@@ -5345,7 +5425,7 @@ async function buildRoom(room, at) {
   worldProbe.setVantage(probeVantage)
   window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
   player = new Player(rig, camera, walk, { scale: herScale() })
-  climb = palisades ? new Climb(player, palisades) : null
+  climb = palisades || castles ? new Climb(player, palisades) : null
   window.v2climb = climb // console: `v2climb.startRope(v2palisades.ropeAt(site))`
   netplay.scale = herScale()
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
@@ -5623,7 +5703,7 @@ async function buildRoom(room, at) {
   // the small ones only (DESIGN.md §30): no stag, and no dragons below.
   await bootStep('wildlife')
   // Nothing wild spawns by a town's buildings or in a labyrinth (DESIGN.md §41).
-  const wildAvoid = towns || palisades ? (x, z) => (towns !== null && towns.nearBuildingAt(x, z, 20)) || (palisades !== null && palisades.labyrinths.keepOutAt(x, z, 2)) : null
+  const wildAvoid = towns || palisades ? (x, z) => (towns !== null && towns.nearBuildingAt(x, z, 20)) || (palisades !== null && palisades.labyrinths.keepOutAt(x, z, 2)) || layers.castles.occupiesAt(x, z, 2) : null
   wildlife = new Wildlife(scene, height, waterSurfaces, { seed, walk, cards: litterCards, dayness: (s) => clock.daynessAt(s), species: room.village ? ['fox', 'hare'] : null, avoid: wildAvoid, eat: (lure, sp) => hands.eatLure(lure, sp), harm, butt: (key, hp, x, z, now) => dragons.butted(key, hp, x, z, now) })
   wildlife.her = her
   petRoom = roomKey(room.id, room.village ? cameInBy : null)
@@ -7576,6 +7656,8 @@ function ensureTeleportGfx() {
   )
   arc.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
   arc.frustumCulled = false
+  // After the cave's water (cave-room.js, renderOrder 2): neither writes depth, so drawn first they are painted over even where they pass above it.
+  ring.renderOrder = arc.renderOrder = 3
   scene.add(ring, arc)
   teleportGfx = { ring, arc }
   return teleportGfx
@@ -7627,7 +7709,7 @@ function fireTeleport() {
 function portalTest() {
   const blink = portalBlink
   portalBlink = false
-  if (caveTest() || houseTest(blink) || indoors || !entrances) return
+  if (caveTest() || houseTest(blink) || castleTest(blink) || indoors || !entrances) return
   const feet = player.originPosition()
   const sx = feet.x - portalFrom.x, sz = feet.z - portalFrom.z
   const step = Math.hypot(sx, sz)
@@ -8686,6 +8768,7 @@ function stepOverworld(dt, now) {
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
   if (palisades) palisades.update(headTmp, fireNow())
+  if (castles) castles.update(headTmp)
   if (townsfolk && questToggles.townsfolk) {
     dreadTmp.length = dragonTmp.length = 0
     if (dragons) for (const d of dragons.bodies(dragonTmp)) if (d.fell === null) dreadTmp.push(d)

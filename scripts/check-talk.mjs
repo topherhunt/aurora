@@ -574,7 +574,10 @@ check(tiers.every((l, i) => l.includes(['native', 'mixed', 'pidgin'][i])) && lea
 const he = all.find((m) => m.voice.he), she = all.find((m) => !m.voice.he && m.kind === 'human')
 check(he.voice.pack !== she.voice.pack && all.every((m) => Math.abs(m.voice.rate - 1) <= VOICE.rate && Math.abs(m.voice.tilt) <= VOICE.tilt), 'each person speaks with their body\'s voice, shifted a little in pitch and tone of their own')
 const unvoiced = []
-for (const [kind, book] of Object.entries(EXCHANGES)) for (const [ex, steps] of Object.entries(book)) for (const step of steps) for (const alt of step.split(' | ')) {
+for (const [kind, book] of Object.entries(EXCHANGES)) for (const [ex, steps] of Object.entries(book)) for (const step of steps) {
+  if (step.split(' | ').every((alt) => /^(warm|cold)> /.test(alt))) unvoiced.push(`${ex}: ${step} has nothing for a plain speaker`)
+}
+for (const [kind, book] of Object.entries(EXCHANGES)) for (const [ex, steps] of Object.entries(book)) for (const step of steps) for (const alt of step.split(' | ').map((a) => a.replace(/^(warm|cold)> /, ''))) {
   const [moment, ids] = alt.split(': ')
   if (kind === 'leafkin') { if (ids !== undefined || LEAFKIN_ATOM[moment] === undefined) unvoiced.push(`${ex}: ${alt}`); continue }
   const have = new Set((table.human[moment] ?? []).map((l) => l.slice(0, l.indexOf('.'))))
@@ -585,8 +588,10 @@ check(unvoiced.length === 0, 'every chatter exchange step names words recorded f
 const pair = [t0.minds[0], t0.minds[1]]
 const heardSteps = []
 let at = null
-for (let i = 0; i < 14; i++) {
+for (let i = 0; i < 40; i++) {
   const s = chatterStep(pair[i % 2], ctxAt(fire(t0)), at, { hour: 14, r: (i * 0.37) % 1, alt: (i * 0.61) % 1 })
+  if (s === null) break
+  if (s.moment === null) continue
   heardSteps.push(`${s.at.ex}.${s.at.step}`)
   at = s.at
 }
@@ -595,6 +600,28 @@ const inOrder = heardSteps.every((s, i) => {
   return i === 0 ? ex === 'greet' && n === '1' : n === '1' ? heardSteps[i - 1].split('.')[1] === String(EXCHANGES.human[heardSteps[i - 1].split('.')[0]].length) : heardSteps[i - 1] === `${ex}.${n - 1}`
 })
 check(inOrder, 'two neighbours meet with a greeting, then talk each exchange through in order before the next', heardSteps.join(' '))
+// Overheard, the cheery chat and laugh and the curt grunt, cut it short or keep quiet.
+const chatterOf = (tone) => {
+  const ctx = ctxAt(fire(t0))
+  const minds = world.towns.flatMap((t) => t.minds).filter((m) => m.kind === 'human' && new Conversation(m, ctx).tone === tone && !new Conversation(m, ctx)._worried())
+  const heard = { warm: 0, cold: 0, all: 0 }
+  minds.forEach((m, k) => {
+    let at = null
+    for (let i = 0; i < 30; i++) {
+      const s = chatterStep(m, ctx, at, { hour: 14, r: ((k + 1) * 0.618 + i * 0.37) % 1, alt: ((k + 1) * 0.29 + i * 0.61) % 1 })
+      if (s === null) { at = null; continue }
+      heard.all++
+      at = s.at
+      if (s.moment === null || /^(social\.(ack|cut|disagree)|greet\.curt)$/.test(s.moment)) heard.cold++
+      if (/^(gossip|small|nv\.laugh|social\.comfort|greet\.friend)/.test(s.moment ?? '')) heard.warm++
+    }
+  })
+  return { n: minds.length, warm: heard.warm / heard.all, cold: heard.cold / heard.all }
+}
+const cheeryTalk = chatterOf('cheery'), curtTalk = chatterOf('curt')
+check(cheeryTalk.n > 0 && curtTalk.n > 0 && cheeryTalk.warm > curtTalk.warm * 2 && curtTalk.cold > cheeryTalk.cold * 2, 'overheard, a cheery neighbour chats and laughs and a curt one grunts, cuts it short or keeps quiet', JSON.stringify({ cheeryTalk, curtTalk }))
+const parted = chatterStep(t0.minds[0], ctxAt(fire(t0)), { ex: 'tired', step: 4, done: true }, { hour: 22, r: 0.5, alt: 0.5 })
+check(parted === null, 'a pair who have said goodbye say nothing more until they meet afresh')
 const lone = new LinePicker(table, SEED).pick(t0.minds[0], 'gossip.lead', { now: 1e4, force: true, only: ['between-us'] })
 check(lone !== null && lone.line.startsWith('between-us.'), 'a chatter step says only the words it names', lone?.line)
 const formed = Object.entries(table.human).find(([, ls]) => ls.some((l) => l.includes('{')))
@@ -645,14 +672,14 @@ check(trade.SHOP.sword.coin === 100 && trade.SHOP.sword['bog-iron'] === 3 && tra
 for (const [item, have] of [['sword', { coin: 100, 'bog-iron': 3 }], ['shield', { coin: 100, 'bog-iron': 3 }], ['pickaxe', { coin: 50 }]]) {
   const pk = stubPack(have)
   const sold = new Conversation(smith, inShop(pk)).say(`shop:buy:${item}`)
-  check(pk.count(item) === 1 && pk.count('coin') === 0 && pk.count('bog-iron') === 0 && sold.moment === 'give.thanks', `buying a ${item} with the coins and iron it costs hands it over and takes the payment`, JSON.stringify(pk.n))
+  check(pk.count(item) === 1 && pk.count('coin') === 0 && pk.count('bog-iron') === 0 && sold.moment === 'trade.done', `buying a ${item} with the coins and iron it costs hands it over and takes the payment`, JSON.stringify(pk.n))
 }
 const lack = [['no coins', { 'bog-iron': 3 }, /coin/], ['too little iron', { coin: 100, 'bog-iron': 2 }, /iron/]]
 for (const [what, have, word] of lack) {
   const pk = stubPack(have)
   const before = JSON.stringify(pk.n)
   const no = new Conversation(smith, inShop(pk)).say('shop:buy:sword')
-  check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'refuse.price', `a sword sale with ${what} fails, says what is short and leaves the pack as it was`, no.text)
+  check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'trade.short', `a sword sale with ${what} fails, says what is short and leaves the pack as it was`, no.text)
 }
 const full = stubPack({ coin: 50, lodestone: 12 }, 12)
 const fullBefore = JSON.stringify(full.n)
@@ -660,7 +687,7 @@ const noRoom = new Conversation(smith, inShop(full)).say('shop:buy:pickaxe')
 check(JSON.stringify(full.n) === fullBefore && /room|space|slot|full|pack|hands/i.test(noRoom.text), 'a pickaxe sale with every large slot held fails, says there is no room, and changes nothing', noRoom.text)
 const tight = stubPack({ coin: 100, 'bog-iron': 3 }, 3)
 const squeezed = new Conversation(smith, inShop(tight)).say('shop:buy:sword')
-check(tight.count('sword') === 1 && squeezed.moment === 'give.thanks', 'the iron paid frees its slots, so a full pack of exactly the iron still buys a sword', JSON.stringify(tight.n))
+check(tight.count('sword') === 1 && squeezed.moment === 'trade.done', 'the iron paid frees its slots, so a full pack of exactly the iron still buys a sword', JSON.stringify(tight.n))
 const elsewhere = stubPack({ coin: 100, 'bog-iron': 3 })
 const elseBefore = JSON.stringify(elsewhere.n)
 const refused = new Conversation(smith, ctxAt(fire(smithTown), { pack: elsewhere })).say('shop:buy:sword')
@@ -712,7 +739,7 @@ const sold = sellTopic ? sc.say(sellTopic) : null
 check(sold !== null && pk2.count('ruby') === 1 && pk2.count('coin') === trade.PRICE.ruby, 'selling a ruby pays the table price in coins', JSON.stringify(pk2.n))
 const emptyHanded = stubPack({})
 const noGoods = new Conversation(buyer, ctxAt(fire(buyerTown), { pack: emptyHanded })).say('trade:take:sell:ruby')
-check(emptyHanded.count('coin') === 0 && noGoods.moment === 'refuse.price', 'a trade she cannot cover gives nothing and says so', noGoods.text)
+check(emptyHanded.count('coin') === 0 && noGoods.moment === 'trade.short', 'a trade she cannot cover gives nothing and says so', noGoods.text)
 check(trade.buys(smith).every((k) => trade.ORES.includes(k)) && trade.buys(smith).length > 0, 'the blacksmith buys ores and nothing else')
 check(trade.buys(leaf[0]).includes('coin') && trade.buys(leaf[0]).every((k) => trade.GEMS.includes(k) || k === 'coin'), 'leafkin take gems and coin, no ore')
 const lkPack = stubPack({ jade: 1 })
@@ -720,7 +747,7 @@ const lkc = new Conversation(leaf[0], ctxAt({ x: 0, z: 0 }, { pack: lkPack, want
 check(/jade/i.test(lkc.opener().text) && lkc.opener().trade === true, 'a leafkin wanting her jade opens in pidgin about it', lkc.opener().text)
 const lkDeal = lkc.menu().map((c) => c.topic).find((t) => t.startsWith('trade:take:'))
 const lkSaid = lkDeal ? lkc.say(lkDeal) : null
-check(lkSaid !== null && lkSaid.moment === 'give.thanks' && lkPack.count('jade') === 0 && lkPack.count('bog-iron') + lkPack.count('lodestone') > 0, 'a leafkin trade swaps her jade for iron or lodestone', JSON.stringify(lkPack.n))
+check(lkSaid !== null && lkSaid.moment === 'trade.done' && lkPack.count('jade') === 0 && lkPack.count('bog-iron') + lkPack.count('lodestone') > 0, 'a leafkin trade swaps her jade for iron or lodestone', JSON.stringify(lkPack.n))
 
 // Dragon-fighting deer, cave rabbit and fox hearsay.
 const dw = new TalkWorld(SEED, towns)
@@ -774,25 +801,25 @@ const alchOffer = new Conversation(alch, inPotions(stubPack())).say('shop:offer'
 check(/flare charges/.test(alchOffer) && /40 coins/.test(alchOffer) && /firestone/.test(alchOffer), 'asked what he has, the alchemist lists the flare charges and their price', alchOffer)
 const jar = stubPack({ coin: 40, firestone: 1 })
 const jarSold = new Conversation(alch, inPotions(jar)).say('shop:buy:flare-charges')
-check(jar.count('flare-charges') === 1 && jar.count('coin') === 0 && jar.count('firestone') === 0 && jarSold.moment === 'give.thanks' && jarSold.sold.item === 'flare-charges', 'with 40 coins and a firestone she buys a jar of flare charges and pays for it', JSON.stringify(jar.n))
+check(jar.count('flare-charges') === 1 && jar.count('coin') === 0 && jar.count('firestone') === 0 && jarSold.moment === 'trade.done' && jarSold.sold.item === 'flare-charges', 'with 40 coins and a firestone she buys a jar of flare charges and pays for it', JSON.stringify(jar.n))
 for (const [what, have, word] of [['no coins', { firestone: 1 }, /coin/], ['no firestone', { coin: 40 }, /firestone/]]) {
   const pk = stubPack(have), before = JSON.stringify(pk.n)
   const no = new Conversation(alch, inPotions(pk)).say('shop:buy:flare-charges')
-  check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'refuse.price', `a flare-charge sale with ${what} fails, names what she lacks and changes nothing`, no.text)
+  check(JSON.stringify(pk.n) === before && word.test(no.text) && no.moment === 'trade.short', `a flare-charge sale with ${what} fails, names what she lacks and changes nothing`, no.text)
 }
 const jarTight = stubPack({ coin: 40, firestone: 1, lodestone: 11 }, 12)
 const jarSqueezed = new Conversation(alch, inPotions(jarTight)).say('shop:buy:flare-charges')
-check(jarTight.count('flare-charges') === 1 && jarSqueezed.moment === 'give.thanks', 'the firestone paid frees its slot, so a full pack still buys the jar', JSON.stringify(jarTight.n))
+check(jarTight.count('flare-charges') === 1 && jarSqueezed.moment === 'trade.done', 'the firestone paid frees its slot, so a full pack still buys the jar', JSON.stringify(jarTight.n))
 const jarFull = stubPack({ coin: 40, firestone: 2, lodestone: 10 }, 12)
 const jarFullBefore = JSON.stringify(jarFull.n)
 const jarFullSay = new Conversation(alch, inPotions(jarFull)).say('shop:buy:flare-charges')
-check(jarFull.count('flare-charges') === 1 && jarFullSay.moment === 'give.thanks', 'with the firestone paid freeing a slot the jar fits', jarFullBefore)
+check(jarFull.count('flare-charges') === 1 && jarFullSay.moment === 'trade.done', 'with the firestone paid freeing a slot the jar fits', jarFullBefore)
 const awayPack = stubPack({ coin: 40, firestone: 1 }), awayBefore = JSON.stringify(awayPack.n)
 const alchAway = new Conversation(alch, ctxAt(fire(alchTown), { pack: awayPack, hour: 12 })).opener()
 const alchAwayBuy = new Conversation(alch, ctxAt(fire(alchTown), { pack: awayPack, hour: 12 })).say('shop:buy:flare-charges')
 check(alchAway.shop === 'away' && /shop/i.test(alchAway.text) && /shop/i.test(alchAwayBuy.text) && JSON.stringify(awayPack.n) === awayBefore, 'the alchemist out of his shop by day says to come to the shop and will not sell', alchAway.text)
 const alchLate = new Conversation(alch, ctxAt(fire(alchTown), { hour: 2 })).opener()
-check(alchLate.shop === 'late' && alchLate.moment === 'mood.tired' && /shut till morning|opens in the morning|in the morning/i.test(alchLate.text) && !/sleep|yawn/i.test(alchLate.text), 'met in the street at night, the alchemist says the shop opens in the morning, not that they are asleep', alchLate.text)
+check(alchLate.shop === 'late' && alchLate.moment === 'greet.evening' && /shut till morning|opens in the morning|in the morning/i.test(alchLate.text) && !/sleep|yawn/i.test(alchLate.text), 'met in the street at night, the alchemist says the shop opens in the morning, not that they are asleep', alchLate.text)
 const notKeeper = as(alchTown.minds.find((m) => m.kind === 'human' && !trade.isAlchemist(m) && !trade.isSmith(m)), STRAIGHT)
 let keeperThrew = false
 try { new Conversation(notKeeper, inPotions(stubPack())).say('shop:buy:flare-charges') } catch { keeperThrew = true }
@@ -891,14 +918,24 @@ const loreWorst = Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => [x
 const lkWorst = [...Object.entries(LORE).flatMap(([t, fs]) => fs.flatMap((x) => (x.lk ?? []).map((s) => [`${t}.${x.id} lk`, s]))), ...Object.entries(LK).flatMap(([k, v]) => (Array.isArray(v) ? v : []).map((s) => [`LK.${k}`, s]))]
 const longStatic = [...loreWorst, ...lkWorst, ...allQuirkLines().map((s) => ['quirk', s])].filter(([, s]) => captionRows(s) > CAPTION.rows)
 check(longStatic.length === 0, `every lore, leafkin and quirk line fits the caption's ${CAPTION.rows} rows at its longest`, longStatic.slice(0, 40).map(([k, s]) => `${k}: ${s}`).join(' || '))
-const walked = { lines: 0, long: [], odd: [] }
+const walked = { lines: 0, long: [], odd: [], again: [], crow: [], home: [], refer: [] }
 for (const seed of [1, 2, 3]) walkTalks(world, seed, 500, (mind, who, topic, line) => {
   walked.lines++
+  const at = `${who} [${topic}] ${line.moment}: ${line.text}`
   if (captionRows(line.text) > CAPTION.rows) walked.long.push(`${who} [${topic}] ${line.text}`)
   if (!/^[\x20-\x7e]*$/.test(line.text)) walked.odd.push(`${who} [${topic}] ${line.text}`)
+  if (mind.kind === 'leafkin') return
+  if (/Like I said|Same as before|As I told you/.test(line.text) !== (line.moment === 'answer.again')) walked.again.push(at)
+  if (/Easy\. |Everyone knows this|Or no, wait/.test(line.text) && ['answer.nervous', 'answer.sure', 'answer.again'].includes(line.moment)) walked.crow.push(at)
+  if (mind.cls === 'travel' && ['talk.home', 'talk.town'].includes(line.moment)) walked.home.push(at)
+  if (/^who:/.test(topic) && /\bAsk [A-Z]/.test(line.text) && line.moment !== 'answer.refer') walked.refer.push(at)
 })
 check(walked.long.length === 0, `in 1500 random conversations no line runs past the caption's ${CAPTION.rows} rows`, `${walked.long.length} of ${walked.lines}: ${walked.long[0]}`)
 check(walked.odd.length === 0, 'and every line is plain ASCII, the alphabet the caption is measured in', walked.odd[0])
+check(walked.again.length === 0, 'the "like I said" clip plays exactly when the words repeat themselves', walked.again.slice(0, 3).join(' || '))
+check(walked.crow.length === 0, 'a crow or a second thought in the words is never voiced as plain, nervous or a repeat', walked.crow.slice(0, 3).join(' || '))
+check(walked.home.length === 0, 'a traveller never voices the town as their home', walked.home.slice(0, 3).join(' || '))
+check(walked.refer.length === 0, 'sending her on to someone else is voiced as a referral', walked.refer.slice(0, 3).join(' || '))
 
 if (process.argv.includes('--transcript')) {
   for (const who of [parent, w0, ...q.covers.map((id) => world.person(id)).slice(0, 1), friend]) {

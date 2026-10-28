@@ -1,5 +1,5 @@
 // What has been taken from which place (design/42-valuables.md, The loot ledger): `[place, bit]` entries, the place a
-// kind letter and a stable id (`l` labyrinth hash, `r` roost key, `c` cave system seed, `d` a dead dragon), the bit
+// kind letter and a stable id (`l` labyrinth hash, `r` roost key, `c` cave system seed, `d` a dead dragon, `k` castle region key), the bit
 // one thing there. Only the last PLACES places are kept; an evicted place regrows. Saved, told to the room, and
 // taught to every client in it, like trust.js.
 
@@ -7,15 +7,15 @@ export const PLACES = 100
 // server/src/main.js LOOT_BATCH.
 export const BATCH = 64
 
-const PLACE = /^[lrcd][0-9a-z]{1,12}$/
+const PLACE = /^[lrcdk][0-9a-z]{1,12}$/
 
 function valid(t) {
   return Array.isArray(t) && t.length === 2 && typeof t[0] === 'string' && PLACE.test(t[0]) && Number.isInteger(t[1]) && t[1] >= 0 && t[1] < 4096
 }
 
-/** A place's ledger key: `kind` one of l r c d, `id` a non-negative integer. */
+/** A place's ledger key: `kind` one of l r c d k, `id` a non-negative integer. */
 export function place(kind, id) {
-  if (!/^[lrcd]$/.test(kind) || !Number.isInteger(id) || id < 0) throw new Error(`Loot: a place is a kind letter and an id, got ${kind} ${id}`)
+  if (!/^[lrcdk]$/.test(kind) || !Number.isInteger(id) || id < 0) throw new Error(`Loot: a place is a kind letter and an id, got ${kind} ${id}`)
   return kind + id.toString(36)
 }
 
