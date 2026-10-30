@@ -145,6 +145,24 @@ const build = (wet = water) => {
   check(!w.hands.eatLure(lure, 'fox') && w.eatens.length === 1, 'a lure no hand holds is not eaten twice')
 }
 
+// --- the ground geometry -------------------------------------------------------
+{
+  // A record with a coarser `ground` is drawn with it once out of her hand, and with its own geometry in it.
+  const w = build()
+  const ground = geo.clone()
+  const take = w.src.take.bind(w.src)
+  w.src.take = (hit, stowMax) => ({ ...take(hit, stowMax), ground })
+  w.at(0, 0.3, 0)
+  w.hands.press('right', w.head)
+  w.run(0.1)
+  const fine = w.hands.pools.get(geo), coarse = w.hands.pools.get(ground)
+  check(fine.over.mesh.count === 1 && fine.mesh.count === 0 && coarse.mesh.count === 0 && coarse.over.mesh.count === 0, 'held, a thing with a ground geometry is drawn with its own')
+  w.hands.drop('right', w.head)
+  w.run(1)
+  check(fine.over.mesh.count === 0 && fine.mesh.count === 0 && coarse.mesh.count === 1, 'let go, it is drawn with its ground geometry')
+  check(!('ground' in w.hands.pack(w.hands.loose[0].rec)), 'and the packed slot carries no geometry')
+}
+
 // --- the grab ------------------------------------------------------------------
 {
   const w = build()

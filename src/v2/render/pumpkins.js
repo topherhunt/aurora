@@ -257,6 +257,8 @@ export class Pumpkins {
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true })
     this.heldGeometry = buildPumpkinGeometry({ segs: 40, rings: 20 })
     this.lanternGeometry = buildPumpkinGeometry({ segs: 40, rings: 20, flame: true })
+    // Held, the fine ones; let go, the field's own tessellation (hands.js `ground`).
+    this.groundLanternGeometry = buildPumpkinGeometry({ flame: true })
     this.glow = { value: 1 }
     this.carveTex = new THREE.DataArrayTexture(new Uint8Array(CARVE_W * CARVE_H * CARVE_LAYERS), CARVE_W, CARVE_H, CARVE_LAYERS)
     this.carveTex.format = THREE.RedFormat
@@ -446,10 +448,10 @@ export class Pumpkins {
   }
 
   dress(slot) {
-    if (slot.kind === KIND) return { geometry: this.heldGeometry, material: this.material }
+    if (slot.kind === KIND) return { geometry: this.heldGeometry, material: this.material, ground: this.geometry }
     if (slot.kind === LANTERN) {
       decodeCarve(slot.carve)
-      return { geometry: this.lanternGeometry, material: this.lanternMaterial }
+      return { geometry: this.lanternGeometry, material: this.lanternMaterial, ground: this.groundLanternGeometry }
     }
     throw new Error(`Pumpkins.dress: not a pumpkin, ${slot.kind}`)
   }
@@ -513,7 +515,7 @@ export class Pumpkins {
 
   dispose() {
     this.mesh.parent?.remove(this.mesh)
-    for (const g of [this.geometry, this.heldGeometry, this.lanternGeometry]) g.dispose()
+    for (const g of [this.geometry, this.heldGeometry, this.lanternGeometry, this.groundLanternGeometry]) g.dispose()
     this.material.dispose()
     this.lanternMaterial.dispose()
     this.carveTex.dispose()

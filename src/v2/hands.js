@@ -266,8 +266,8 @@ export class Hands {
   /**
    * A bed or a creature layer that can be picked from, and the kind or kinds
    * of record it hands out: pickAt(x, y, z, reach, maxSize) -> hit | null,
-   * take(hit, stowMax) -> record, dress(slot) -> { geometry, material } for a
-   * packed slot of its kind (null while its asset has not landed), and
+   * take(hit, stowMax) -> record, dress(slot) -> { geometry, material, ground? } for a
+   * packed slot of its kind (null while its asset has not landed; `ground`, a coarser geometry it is drawn with once not in her hand), and
    * release(record, x, y, z, head) -> boolean. One with drawn(name, record) gives its
    * instanced values each frame, for a record that changes in place (a lantern lit or carved). One with drawFar(loose, head,
    * far) draws loose things of its kinds that are far from her head its own way each frame, adding them to the Set `far`,
@@ -600,7 +600,7 @@ export class Hands {
   /** The record without its geometry and material, its arrays copied: what the backpack keeps and the save writes. */
   pack(rec) {
     this._checkRecord(rec)
-    const { geometry, material, ...slot } = rec
+    const { geometry, material, ground, ...slot } = rec
     slot.color = rec.color ? Array.from(rec.color) : null
     slot.scale = Array.from(rec.scale)
     slot.attrs = {}
@@ -615,7 +615,7 @@ export class Hands {
     if (!src) throw new Error(`Hands: no source hands out a ${slot.kind}`)
     const dress = src.dress(slot)
     if (dress === null) return null
-    const rec = { ...slot, geometry: dress?.geometry, material: dress?.material }
+    const rec = { ...slot, geometry: dress?.geometry, material: dress?.material, ground: dress?.ground }
     this._checkRecord(rec)
     return rec
   }
@@ -756,6 +756,7 @@ export class Hands {
     if (!Array.isArray(rec.scale) || rec.scale.length !== 3) throw new Error(`Hands: the ${rec.kind} record's scale is not [x, y, z]`)
     if (rec.color !== null && (!Array.isArray(rec.color) || rec.color.length !== 3)) throw new Error(`Hands: the ${rec.kind} record's color is not [r, g, b] or null`)
     if (typeof rec.stowable !== 'boolean') throw new Error(`Hands: the ${rec.kind} record does not say whether it stows`)
+    if (rec.ground !== undefined && !rec.ground.isBufferGeometry) throw new Error(`Hands: the ${rec.kind} record's ground is not a geometry`)
   }
 
   _point(hand) {
@@ -855,9 +856,11 @@ export class Hands {
   /** A held or loose thing: its record, the source it came from, its pool, the instanced values it is drawn with, and its pose -- the centre of its ball and its rotation. */
   _item(rec, src) {
     const pool = this._pool(rec)
+    // Out of her hand it is drawn from the pool of its ground geometry, if it has one (_write).
+    const ground = rec.ground === undefined ? null : this._pool({ ...rec, geometry: rec.ground })
     const attrs = this._attrs(rec, pool.instanced)
     const item = {
-      rec, src, pool, attrs,
+      rec, src, pool, ground, attrs,
       // The ball's centre, its rotation, and the offset from the geometry's origin to its centre, scaled: what the pose is applied to.
       x: 0, y: 0, z: 0, q: new THREE.Quaternion(), off: new THREE.Vector3(pool.centre.x * rec.scale[0], pool.centre.y * rec.scale[1], pool.centre.z * rec.scale[2]),
       // A sitting thing's is from its centre down to its base.
@@ -871,6 +874,7 @@ export class Hands {
       ex: 0, ey: 0, ez: 0, eq: null, eState: null, e: 0,
     }
     pool.items.push(item)
+    if (ground) ground.items.push(item)
     return item
   }
 
@@ -892,6 +896,7 @@ export class Hands {
     const i = item.pool.items.indexOf(item)
     if (i < 0) throw new Error(`Hands: a ${item.rec.kind} is not in its pool`)
     item.pool.items.splice(i, 1)
+    if (item.ground) item.ground.items.splice(item.ground.items.indexOf(item), 1)
   }
 
   _unhold(hand) {
@@ -1358,8 +1363,8 @@ export class Hands {
     const mine = this._mine
     mine.clear()
     for (const hand of this.hands.values()) if (hand.held) mine.set(hand.held, this._drawn(hand))
-    this._fill(pool, pool.over, (item) => mine.get(item))
-    this._fill(pool, pool, (item) => (mine.has(item) || this.far.has(item) ? undefined : 1))
+    this._fill(pool, pool.over, (item) => (item.pool === pool ? mine.get(item) : undefined))
+    this._fill(pool, pool, (item) => (mine.has(item) || this.far.has(item) || pool !== (item.ground ?? item.pool) ? undefined : 1))
   }
 
   /** Writes the pool's items for which `scaleOf(item)` is a number into a layer's mesh, at that draw scale. */

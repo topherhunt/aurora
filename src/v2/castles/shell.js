@@ -8,6 +8,7 @@ import { makeWarp } from '../../buildings/v2/warp.js'
 import { CASTLE } from './layout.js'
 import { courtProps, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonPlan } from './dungeon.js'
+import { castleWindows, faceShade, interiorLight, PANE } from './light.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
 // Metres of mesh per stone tile (public/buildings/castle_stone.webp, about 30 cm courses).
@@ -26,7 +27,7 @@ export const rgb = (hex) => [hex >> 16, (hex >> 8) & 255, hex & 255].map((v) => 
 const STONE = { keep: rgb(0x8d877c), hall: rgb(0x958b7a), gate: rgb(0x8a857d), tower: rgb(0x878580), lookout: rgb(0x7d7d84), wall: rgb(0x8b867e) }
 const BAND = rgb(0x6f6a63), SLATE = rgb(0x3f4652), DARK = rgb(0x15120f), GOLD = rgb(0xc9a33a)
 const FLOOR = { keep: rgb(0x7a5a3a), hall: rgb(0x80603e), gate: rgb(0x6d6a66), tower: rgb(0x6d6a66), lookout: rgb(0x75645f) }
-const INNER = rgb(0xb8b0a2), STEP = rgb(0x8f8a83), FLAG = [1, 1, 1], LEAF = [1, 1, 1]
+const INNER = rgb(0xb8b0a2), STEP = rgb(0x8f8a83), FLAG = [1, 1, 1], LEAF = [1, 1, 1], GLASS_TINT = rgb(0xc8d8e0)
 // A spiral stair (interior metres): 15 steps round a post, each 1/16 turn, the 16th its landing in the storey above. That storey's slab
 // is open over steps `hole` on, where her head would meet it; over the rest it is the landing.
 export const SPIRAL = { R: 2, post: 0.3, steps: 15, hole: 7 }
@@ -38,12 +39,19 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const len = (a) => Math.hypot(...a)
 const norm = (a) => { const l = len(a); return [a[0] / l, a[1] / l, a[2] / l] }
+/** Point (s, t) of the bilinear patch over corners P going round. */
+const bilinear = (P, s, t) => [0, 1, 2].map((i) => (1 - s) * (1 - t) * P[0][i] + s * (1 - t) * P[1][i] + s * t * P[2][i] + (1 - s) * t * P[3][i])
 const warpOf = (seed, s) => makeWarp({ strength: 1, seed, amp: 0.22 * s, scale: 6 * s, amp2: 0.05 * s, scale2: 1.8 * s, leanX: 0, leanZ: 0, leanPow: 1 })
 
 const HEXA_FACES = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
 
 export class Mesher {
-  constructor(seed, warp = null, full = true) { this.bufs = SLOTS.map(() => ({ p: [], n: [], c: [], uv: [] })); this.slot = STONE_SLOT; this.rng = mulberry32(seed); this.warp = warp; this.full = full }
+  /** With `lit` (light.js interiorLight) each vertex carries its light, and a quad is cut into cells of `lit.split(centre, n)` metres; with
+   * `fixed` [fill, torch, window] every face takes that, shaded by which way it faces. */
+  constructor(seed, warp = null, full = true, lit = null) {
+    this.bufs = SLOTS.map(() => ({ p: [], n: [], c: [], uv: [], l: [] })); this.slot = STONE_SLOT; this.rng = mulberry32(seed); this.warp = warp; this.full = full
+    this.lit = lit; this.fixed = null
+  }
   tint(col, j = 0.08) { const f = 1 + (this.rng() - 0.5) * j; return col.map((v) => v * f) }
   /** Draws `fn` into material slot `slot`, unwarped when `straight`. */
   with(slot, fn, straight = false) {
@@ -53,22 +61,39 @@ export class Mesher {
     this.slot = s0; this.warp = w0
   }
   /** A quad a-b-c-d facing the side of normal hint n, with UVs `uv` per corner when given. */
-  quad(a, b, c, d, col, n, uv) { this.face([a, b, c], n, col, uv && [uv[0], uv[1], uv[2]]); this.face([a, c, d], n, col, uv && [uv[0], uv[2], uv[3]]) }
+  quad(a, b, c, d, col, n, uv) {
+    const cell = this.lit && !this.fixed && !uv ? this.lit.split([0, 1, 2].map((i) => (a[i] + c[i]) / 2), norm(n)) : 0
+    const nu = cell && Math.ceil(Math.max(len(sub(b, a)), len(sub(c, d))) / cell), nv = cell && Math.ceil(Math.max(len(sub(d, a)), len(sub(c, b))) / cell)
+    if (nu * nv <= 1) { this.face([a, b, c], n, col, uv && [uv[0], uv[1], uv[2]]); this.face([a, c, d], n, col, uv && [uv[0], uv[2], uv[3]]); return }
+    // Cut for its light: the cells lie on the bilinear surface of the warped corners, so the quad's edges stay where its uncut
+    // neighbours' are.
+    const w = [a, b, c, d].map((p) => (this.warp ? this.warp(p[0], p[1], p[2]) : p)), un = norm(cross(sub(b, a), sub(d, a)))
+    const nr = dot(un, n) < 0 ? un.map((v) => -v) : un, grid = []
+    for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) { const r = bilinear([a, b, c, d], i / nu, j / nv); grid.push([r, bilinear(w, i / nu, j / nv), this.lit.at(r, nr)]) }
+    const G = (i, j) => grid[i * (nv + 1) + j]
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+      const g = [G(i, j), G(i + 1, j), G(i + 1, j + 1), G(i, j + 1)]
+      for (const [x, y, z] of [[0, 1, 2], [0, 2, 3]]) this.face([g[x][0], g[y][0], g[z][0]], n, col, undefined, [g[x][1], g[y][1], g[z][1]], [g[x][2], g[y][2], g[z][2]])
+    }
+  }
   tri(a, b, c, col, away) { this.face([a, b, c], sub(a, away), col) }
   /** One triangle wound to face the side of hint n (each half of a bent quad on its own), its normal taken from the warped corners
-   * and its UVs from the unwarped ones, projected along the main axis in the slot's tile metres (or `uv`). Degenerate triangles are
-   * dropped. */
-  face(raw, n, col, uv) {
+   * and its UVs and light from the unwarped ones, UVs projected along the main axis in the slot's tile metres (or `uv`). `warped`
+   * gives the corners' places in place of the warp, and `light` their light. Degenerate triangles are dropped. */
+  face(raw, n, col, uv, warped, light) {
     let nr = cross(sub(raw[1], raw[0]), sub(raw[2], raw[0]))
     if (len(nr) < 1e-9) return
-    if (dot(nr, n) < 0) { raw = [raw[0], raw[2], raw[1]]; nr = nr.map((v) => -v); if (uv) uv = [uv[0], uv[2], uv[1]] }
-    const w = raw.map((p) => (this.warp ? this.warp(p[0], p[1], p[2]) : p))
+    if (dot(nr, n) < 0) { raw = [raw[0], raw[2], raw[1]]; nr = nr.map((v) => -v); if (uv) uv = [uv[0], uv[2], uv[1]]; if (warped) warped = [warped[0], warped[2], warped[1]]; if (light) light = [light[0], light[2], light[1]] }
+    const w = warped || raw.map((p) => (this.warp ? this.warp(p[0], p[1], p[2]) : p))
     const fn = cross(sub(w[1], w[0]), sub(w[2], w[0]))
     if (len(fn) < 1e-10) return
     const u = norm(fn), ax = Math.abs(nr[0]) > Math.abs(nr[1]) && Math.abs(nr[0]) > Math.abs(nr[2]) ? 0 : Math.abs(nr[1]) > Math.abs(nr[2]) ? 1 : 2
-    const b = this.bufs[this.slot], T = SLOTS[this.slot]
+    const b = this.bufs[this.slot], T = SLOTS[this.slot], fs = this.fixed && faceShade(u), un = this.lit && !this.fixed && norm(nr)
     for (let i = 0; i < 3; i++) {
       b.p.push(...w[i]); b.n.push(...u); b.c.push(...col)
+      if (this.fixed) b.l.push(this.fixed[0] * fs, this.fixed[1] * fs, this.fixed[2] * fs)
+      else if (light) b.l.push(...light[i])
+      else if (this.lit) b.l.push(...this.lit.at(raw[i], un))
       if (uv) b.uv.push(...uv[i])
       else b.uv.push(ax === 0 ? raw[i][2] / T : raw[i][0] / T, ax === 1 ? raw[i][2] / T : raw[i][1] / T)
     }
@@ -93,10 +118,14 @@ export class Mesher {
   }
   /** One mesh as plain arrays (toGeometry makes it a BufferGeometry), a group per material slot in SLOTS order (empty slots keep their empty group). */
   arrays() {
-    const cat = (k) => new Float32Array(this.bufs.flatMap((b) => b[k]))
+    const cat = (k) => { const a = new Float32Array(this.bufs.reduce((n, b) => n + b[k].length, 0)); let o = 0; for (const b of this.bufs) { a.set(b[k], o); o += b[k].length } return a }
     let at = 0
     const groups = this.bufs.map((b, i) => { const g = [at, b.p.length / 3, i]; at += b.p.length / 3; return g })
-    return { position: cat('p'), normal: cat('n'), color: cat('c'), uv: cat('uv'), groups }
+    const out = { position: cat('p'), normal: cat('n'), color: cat('c'), uv: cat('uv'), groups }
+    const lit = this.bufs.reduce((a, b) => a + b.l.length, 0)
+    if (lit && lit !== out.position.length) throw new Error(`castle mesh: light on ${lit / 3} of ${out.position.length / 3} vertices`)
+    if (lit) out.light = cat('l')
+    return out
   }
 }
 
@@ -107,6 +136,7 @@ export function toGeometry(d) {
   g.setAttribute('normal', new THREE.BufferAttribute(d.normal, 3))
   g.setAttribute('color', new THREE.BufferAttribute(d.color, 3))
   g.setAttribute('uv', new THREE.BufferAttribute(d.uv, 2))
+  if (d.light) g.setAttribute('light', new THREE.BufferAttribute(d.light, 3))
   for (const [start, count, slot] of d.groups) g.addGroup(start, count, slot)
   return g
 }
@@ -731,8 +761,8 @@ export const warpedProp = (warp, o) => { const [x, , z] = warp(o.x, o.y, o.z); r
 /** One geometry per storey, so a cut can hide the storeys above it. Interior units are exterior metres times CASTLE.scale. */
 export function interiorGeometries(lay) {
   const { X, Z } = lay
-  const meshers = new Map(), warp = interiorWarp(lay)
-  const at = (k) => { if (!meshers.has(k)) meshers.set(k, new Mesher(lay.seed * 31 + k, warp)); return meshers.get(k) }
+  const meshers = new Map(), warp = interiorWarp(lay), light = interiorLight(lay), flat = { at: light.at, split: () => 0 }
+  const at = (k) => { if (!meshers.has(k)) meshers.set(k, new Mesher(lay.seed * 31 + k, warp, true, k >= 0 ? light : flat)); return meshers.get(k) }
   const SH = H * V, WT = 0.3, INSET = 0.4
   lay.nodes.forEach((n, ni) => {
     if (n.kind !== 'room') return
@@ -836,10 +866,25 @@ export function interiorGeometries(lay) {
     piece(w.lo - 0.15, w.door[0], w.y); piece(w.door[1], w.hi + 0.15, w.y)
     if (!low) piece(w.door[0], w.door[1], w.y + PARTITION.doorH)
   }
+  // Windows: a stone frame standing proud of the wall round a pane the shader lights by the hour, barred when it is big.
+  for (const w of castleWindows(lay)) {
+    const k = Math.round((w.y - 1) / SH), m = at(k), col = m.tint(INNER), r = [-w.nz, 0, w.nx], F = 0.14
+    const P = (u, y, v) => [w.x + r[0] * u - w.nx * v, w.y + y, w.z + r[2] * u - w.nz * v]
+    const slab = (u0, y0, v0, u1, y1, v1, c) => m.hexa([P(u0, y0, v0), P(u1, y0, v0), P(u1, y0, v1), P(u0, y0, v1), P(u0, y1, v0), P(u1, y1, v0), P(u1, y1, v1), P(u0, y1, v1)], c)
+    const hw = w.w / 2
+    slab(-hw - F, -0.12, -0.02, hw + F, 0, 0.18, col); slab(-hw - F, w.h, -0.02, hw + F, w.h + F, 0.12, col)
+    for (const u of [-hw - F, hw]) slab(u, 0, -0.02, u + F, w.h, 0.1, col)
+    const lit = m.lit
+    m.lit = { at: () => [0, 0, PANE], split: () => 0 }
+    m.quad(P(-hw, 0, 0.05), P(hw, 0, 0.05), P(hw, w.h, 0.05), P(-hw, w.h, 0.05), GLASS_TINT, [-w.nx, 0, -w.nz])
+    m.lit = lit
+    if (w.w >= 1) m.with(WOOD_SLOT, () => { slab(-0.03, 0, 0.06, 0.03, w.h, 0.1, IRON); slab(-hw, w.h * 0.55 - 0.03, 0.06, hw, w.h * 0.55 + 0.03, 0.1, IRON) })
+  }
+  // Props take the light of the floor under them, or of the wall they hang on, shaded only by which way each face looks.
   for (const r of roomProps(lay)) {
-    const o = warpedProp(warp, r)
-    prop(at(o.k), o)
-    if (!HIGH.has(o.kind)) prop(at(-1 - o.k), o)
+    const o = warpedProp(warp, r), back = [r.x - Math.sin(r.yaw) * r.d / 2, r.y + 2.2, r.z - Math.cos(r.yaw) * r.d / 2]
+    const sample = r.kind === 'chandelier' ? light.at([r.x, r.y + 3.6, r.z], [0, -1, 0]) : HIGH.has(r.kind) ? light.at(back, [Math.sin(r.yaw), 0, Math.cos(r.yaw)]) : light.at([r.x, r.y, r.z], [0, 1, 0])
+    for (const m of HIGH.has(o.kind) ? [at(o.k)] : [at(o.k), at(-1 - o.k)]) { m.fixed = sample; prop(m, o); m.fixed = null }
   }
   // Negative keys hold each storey's waist-high-wall twin, drawn when that storey is the plan cut.
   return [...meshers.entries()].filter(([k]) => k >= 0).sort((p, q) => p[0] - q[0])
