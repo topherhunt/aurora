@@ -779,8 +779,8 @@ export class Trees {
     this.tierIds.push(new Array(this.variantCount).fill(cardBase))
     this.tierTris.push(new Array(this.variantCount).fill(cards.cardTris))
     this.litterCards = cards
-    // At most clumpMax of any tile's trees wear the clump card, and a fade's ghost may wear one too.
-    const budget = cards.claim('trees', Math.ceil(this.maxInstances * this.clumpMax) + FADE_MAX_INFLIGHT)
+    // A flat forest out to the horizon stands about 7850 clump cards (check-trees) and briefly more in fast flight, and a fade's ghost may wear one more; the clumpMax-per-tile worst case never stands at once.
+    const budget = cards.claim('trees', Math.min(8500, Math.ceil(this.maxInstances * this.clumpMax)) + FADE_MAX_INFLIGHT)
     this.clumpPicture = treeClumpCards(bank).map((c) => Array.from({ length: CLUMP_VARIANTS }, () => (
       cards.addPicture({ kind: 'spun', cx: 0, cy: c.cardHeight / 2, hw: c.cardWidth / 2, hh: c.cardHeight / 2, tilt: CARD_TILT, canopy: true })
     )))

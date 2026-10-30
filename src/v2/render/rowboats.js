@@ -490,7 +490,7 @@ export class Rowboats {
     this.meshMaterial.map = bank.map
     this.materials = [this.meshMaterial]
 
-    const budget = cards.claim('rowboats', Math.min(24, this.maxInstances))
+    const budget = cards.claim('rowboats', Math.min(12, this.maxInstances))
     this.cardPicture = cards.addPicture(bank.card)
     this.batch = new PropArena(
       this.maxInstances,

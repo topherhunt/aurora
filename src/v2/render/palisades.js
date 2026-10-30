@@ -17,9 +17,9 @@ import { LABYRINTH_GLOW, LABYRINTHS_LIVE } from '../hearth-light.js'
 export const PALISADE_BANDS = { lod0: 10, lod1: 28, card: 80, far: 1500 }
 // The labyrinth's card: one typical labyrinth (Labyrinths.typicalSite) photographed `size` px square from `elevation` above the horizon, the gate `gate` radians round from the camera. `count` cards at most stand at once.
 const FAR_CARD = { elevation: (35 * Math.PI) / 180, gate: 0.7, size: 256, count: 40 }
-// Pool ids: three of the largest labyrinths (~2750 posts each, scaffold posts included) at once. The card claim is what can stand in the card band.
+// Pool ids: three of the largest labyrinths (~2750 posts each, scaffold posts included) at once. The card claim: about one largest labyrinth on its cards.
 const POOL = 9000
-export const PALISADE_CARDS = 9000
+export const PALISADE_CARDS = 3000
 const VARIANTS = 4
 const CAPS = [600, 2000]
 // Metres the eye moves before the posts are rebucketed.

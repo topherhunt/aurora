@@ -71,6 +71,7 @@ import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
 import { Pumpkins, KIND as PUMPKIN, LANTERN, FLAME, LIGHT_M as LANTERN_LIGHT_M, SIZE_M as PUMPKIN_SIZE, UNCUT, CARVE_BYTES, cutSweep, rayInto, encodeCarve, decodeCarve } from './render/pumpkins.js'
 import { buildKnife, TIP as KNIFE_TIP, HEEL as KNIFE_HEEL } from './knife.js'
+import { buildKey } from './castle-key.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Boats } from './boats.js'
 import { Fish } from './render/fish.js'
@@ -2949,19 +2950,26 @@ function syncTrust() {
 let chalkWelcomes = 0
 let lootWelcomes = 0
 
-// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins.
+// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins. A castle's dungeon key is its bit 8, its dungeon chest's coins and gem bits 9 and 10, and bit 16 marks its door unlocked.
 const RINGS_MOST = Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)
 const ALTAR_GEMS = ['diamond', 'sapphire', 'ruby']
 const HOARD = ['diamond', 'sapphire', 'ruby', 'firestone']
 
+const DUNGEON_BITS = { key: 8, coins: 9, gem: 10, unlocked: 16 }
+const castleKey = (s) => { const [rx, rz] = s.id.split(',').map(Number); return (rx + 0x8000) * 0x10000 + (rz + 0x8000) }
+
 function layLoot() {
   if (castles) {
     for (const s of castles.built()) {
-      const [rx, rz] = s.id.split(',').map(Number), key = (rx + 0x8000) * 0x10000 + (rz + 0x8000)
+      const key = castleKey(s)
       const rand = mulberry32((SEED ^ Math.imul(key, 0xc2b2ae35)) >>> 0)
       const [x, y, z] = castles.chestOf(s.id), gems = 2 + Math.floor(rand() * 2)
       items.lay(place('k', key), 0, 'coin', x - 0.2, y, z, 40 + Math.floor(rand() * 51))
       for (let k = 1; k <= gems; k++) items.lay(place('k', key), k, HOARD[Math.floor(rand() * HOARD.length)], x + 0.1 * k, y, z + (k % 2 ? 0.08 : -0.08))
+      const [kx, ky, kz] = castles.keyOf(s.id), [dx, dy, dz] = castles.dungeonChestOf(s.id)
+      items.lay(place('k', key), DUNGEON_BITS.key, 'key', kx, ky + 0.01, kz)
+      items.lay(place('k', key), DUNGEON_BITS.coins, 'coin', dx - 0.2, dy, dz, 60 + Math.floor(rand() * 61))
+      items.lay(place('k', key), DUNGEON_BITS.gem, HOARD[Math.floor(rand() * HOARD.length)], dx + 0.15, dy, dz)
     }
   }
   if (palisades) {
@@ -4282,6 +4290,8 @@ async function bootWorld() {
   for (const kind of Object.keys(ITEMS)) if (!ITEMS[kind].built) loadCritterGlb(itemUrl(kind), { origin: [0, 0, 0] }).then((asset) => { items.wear(kind, asset); if (paintBackpack) paintBackpack() }).catch(reportRuntimeError)
   const knife = buildKnife()
   items.wearBuilt('knife', knife.geometry, knife.material)
+  const key = buildKey()
+  items.wearBuilt('key', key.geometry, key.material)
   scene.add(items.group)
 
   // The ambient sound's clips (audio/) load in the background so a slow fetch
@@ -4739,8 +4749,23 @@ function castleTest() {
   if (act.kind === 'rope') {
     const [x, y, z] = act.at
     climb.startRope({ x, z, top: y, bottom: walk.heightAt(x, z, y - 1.5) })
-  } else castlePortal(act).catch(reportRuntimeError)
+  } else if (act.kind === 'locked') tryDungeonDoor(act)
+  else castlePortal(act).catch(reportRuntimeError)
   return inCastle !== null
+}
+
+/** At a castle's locked dungeon door (`act` from Castles.portalAt): open for good if she has its iron key in hand or pack. */
+function tryDungeonDoor(act) {
+  const hasKey = HAND_KEYS.some((k) => hands.holding(k)?.kind === 'key') || backpack.some((s) => s !== null && s.kind === 'key')
+  if (hasKey) {
+    castles.unlock(act.site)
+    loot.take(place('k', castleKey(act.site)), DUNGEON_BITS.unlocked)
+    if (ambience) sound.play('door', { bus: 'near', rate: 0.8, gain: 0.4 })
+    return
+  }
+  if (ambience) sound.play('flintClick', { bus: 'near', rate: 0.5, gain: 0.6 })
+  const [x, y, z] = act.at
+  if (conversations) conversations.say('Locked door', 'It will not budge. Somewhere in the castle there must be a key.', { x, y, z })
 }
 
 /** Through castle portal `act` under the fade: in or out of its interior. */
@@ -4765,6 +4790,7 @@ async function castlePortal(act) {
 /** Castle `site`'s interior up and her walk swapped for its own; `back` (world) is where a save puts her. */
 function openCastle(site, back) {
   const stone = castles.openInterior(site)
+  if (loot.taken(place('k', castleKey(site)), DUNGEON_BITS.unlocked)) castles.unlock(site)
   const inner = new WalkSurface(flatField(stone.oy - 1), stone, { trunkAt: () => null }, { scale: herScale() })
   inner.flyThrough = true
   inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk }

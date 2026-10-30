@@ -22,6 +22,7 @@ export const ITEMS = {
   shield: { name: 'shield', small: false, size: 0.6 },
   'flare-charges': { name: 'flare charges', small: false, size: 0.2 },
   knife: { name: 'knife', small: false, size: 0.26, built: true },
+  key: { name: 'iron key', small: false, size: 0.14, built: true },
 }
 export const SMALL = Object.keys(ITEMS).filter((k) => ITEMS[k].small)
 export const itemUrl = (kind) => `gen-props/items/${kind}.glb`

@@ -609,7 +609,7 @@ export class Deadwood {
 
     // The bank hands its mesh tiers back finest-first and already expanded per variant, so a geometry id is `tier * variantCount + variant`, the arena's own layout. The far tier is one id past them, the one card mesh.
     const cardBase = this.cardTier * this.variantCount
-    const budget = cards.claim('deadwood', Math.min(300, this.maxInstances))
+    const budget = cards.claim('deadwood', Math.min(120, this.maxInstances))
     this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,

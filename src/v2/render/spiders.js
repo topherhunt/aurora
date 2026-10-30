@@ -174,8 +174,8 @@ const WET_STEP = 1 / 16
 // A rock spider re-reads the stone under it every so many frames.
 export const RESEAT_EVERY = 45
 export const MAX = 256
-// The pool instances claimed for the cards: the pool packs only visible ones, so this is bookkeeping for the worst crowd on the card rung at once, not a reservation.
-const CARD_CLAIM = 24
+// Far cards drawn at once (litter-cards.js claim); one past it is refused with a warning.
+const CARD_CLAIM = 16
 // A card-rung spider is stepped every CARD_EVERY frames (wildlife.js does the same): its pose is closed-form in the world second, so the next step lands exactly where every-frame stepping would, and at its distance a stride four frames long is under two pixels.
 const CARD_EVERY = 4
 const HOST_BUF = 64

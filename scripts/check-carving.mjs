@@ -7,6 +7,7 @@
 
 import * as THREE from 'three'
 import { LitterCards } from '../src/v2/render/litter-cards.js'
+import { PropArena } from '../src/v2/render/prop-arena.js'
 import { propCull } from '../src/v2/render/gen-props.js'
 import { Pumpkins, meshReach, CARVE_W, CARVE_H, CARVE_BYTES, CARVE_B64, UNCUT, cellAt, cutSweep, rayInto, encodeCarve, decodeCarve, LANTERN, KIND, SIZE_M } from '../src/v2/render/pumpkins.js'
 
@@ -138,6 +139,10 @@ const v = (x, y, z) => new THREE.Vector3(x, y, z)
   const drawn = p.spots.filter((s) => p.cards.vis[s.id]).length
   check(drawn === 50 && p.cards.budget.refused > 0, 'past its budget of far cards a layer draws no more, and says so', `${drawn} drawn`)
   p.dispose()
+  const lc = new LitterCards(16)
+  let threw = false
+  try { PropArena.over(lc.meshes, 4, 'unbudgeted') } catch { threw = true }
+  check(threw, 'a view over the far cards with no budget is refused at construction')
 }
 
 if (failed) {

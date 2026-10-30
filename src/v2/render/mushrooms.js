@@ -401,7 +401,7 @@ export class Mushrooms {
     this.cardTier = bank.tiers.length
     this.tierCount = this.cardTier + 1
     const cardBase = this.cardTier * this.variantCount
-    const budget = cards.claim('mushrooms', 128)
+    const budget = cards.claim('mushrooms', 64)
     this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,

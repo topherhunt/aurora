@@ -93,8 +93,8 @@ export const ROCK_FRACTION = 0.2
 export const PER_PERCH = 0.5
 const PERCH_CAP = 7
 export const MAX = 160
-// The pool instances claimed for the cards (litter-cards.js claim): bookkeeping for the worst crowd on the card rung at once, not a reservation.
-const CARD_CLAIM = 24
+// Far cards drawn at once (litter-cards.js claim); one past it is refused with a warning.
+const CARD_CLAIM = 128
 // Wet shell: the one roughness the whole crab glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
 export const WET_ROUGHNESS = 0.7
 // A crab's hue: a turn of up to HUE radians either way round the colour wheel (critters.js hueVary), so a rock's crabs run from olive through the shipped brown to red.

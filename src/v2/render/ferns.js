@@ -577,7 +577,7 @@ export class Ferns {
     // THE CARD VIEW, and every fern in the bed owns an id in it for as long as
     // it stands. Everything that addresses a fern by id -- tile.ids, instX/Y/Z,
     // variantAt, the rim -- means an id in HERE. Its picture is the shipped fern's impostor, the card's own extents.
-    const cardBudget = cards.claim('ferns', this.maxInstances)
+    const cardBudget = cards.claim('ferns', Math.min(3500, this.maxInstances))
     card.geometry.computeBoundingBox()
     const box = card.geometry.boundingBox
     // Pitched toward an eye above it the way the tree cards are, so a fern bed seen from a ridge is fronds and not edges.

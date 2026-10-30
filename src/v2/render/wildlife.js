@@ -556,7 +556,7 @@ export class Wildlife {
     this.corpses = []
     // The card rung: ids in the shared pool, enough for every slot plus the dropped kills still dissolving ({ id, p }); the animals holding one.
     const cardIds = this.species.length * MAX + KILL_CARDS
-    const cardBudget = cards.claim('wildlife', Math.min(48, cardIds))
+    const cardBudget = cards.claim('wildlife', Math.min(32, cardIds))
     this.litterCards = cards
     this.cardView = PropArena.over(cards.meshes, cardIds, 'v2-wildlife-card', { budget: cardBudget })
     for (let i = 0; i < cardIds; i++) {

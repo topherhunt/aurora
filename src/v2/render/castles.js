@@ -82,8 +82,6 @@ export class Castles {
     this.worker = null
     this._job = 0
     this.inside = null
-    // Sites whose dungeon door she has unlocked.
-    this.unlocked = new Set()
     this.stats = { built: 0, live: 0, full: 0, low: 0, cards: 0 }
   }
 
@@ -280,11 +278,10 @@ export class Castles {
     return [c.site.x + wx, c.site.y + CASTLE_RISE + y, c.site.z + wz]
   }
 
-  /** Opens the dungeon door of the castle she is in, for good. */
+  /** Opens the dungeon door of the castle she is in until she leaves it; the loot ledger remembers it for main.js. */
   unlock(site) {
     const c = this.inside
-    if (c === null || c.site.id !== site.id) throw new Error(`Castles: unlocking castle ${site.id} from outside it`)
-    this.unlocked.add(site.id)
+    if (c === null || c.site.id !== site.id || c.solids.it.unlocked) throw new Error(`Castles: unlocking castle ${site.id}, not the locked one she is in`)
     c.solids.it.unlocked = true
     c.doorMesh.removeFromParent()
     c.doorMesh.geometry.dispose()
@@ -308,12 +305,9 @@ export class Castles {
     this.scene.add(mesh)
     this.inside = c
     c.innerMesh = mesh
-    c.solids.it.unlocked = this.unlocked.has(site.id)
-    c.doorMesh = null
-    if (!c.solids.it.unlocked) {
-      c.doorMesh = new THREE.Mesh(toGeometry(c.door), this.innerMaterial)
-      mesh.add(c.doorMesh)
-    }
+    c.solids.it.unlocked = false
+    c.doorMesh = new THREE.Mesh(toGeometry(c.door), this.innerMaterial)
+    mesh.add(c.doorMesh)
     c.innerFlames = flamesOf(site, c.innerFlameList, site.y + CASTLE_RISE)
     if (c.innerFlames !== null) this.scene.add(c.innerFlames.group)
     c.innerStone = new CastleInteriorStone(c)
@@ -335,8 +329,8 @@ export class Castles {
 
   /**
    * After the step, her feet now at `feet` and before it at `from` (world): the portal she just went through, as { kind: 'enter' |
-   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world) }, { kind: 'locked', site } at
-   * the dungeon's locked door, or null. The rope fires
+   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world) }, { kind: 'locked', site, at }
+   * at the dungeon's locked door (`at` over it), or null. The rope fires
    * walking at it; the rest on entering their zone, so an arrival inside one stays put.
    */
   portalAt(feet, from) {
@@ -361,7 +355,7 @@ export class Castles {
       if (inside && atLeaves(d.int, d.hw * CASTLE.scale)) { zone = `d${i}`; act = { kind: 'leave', site: s, at: world(d.out, s.y), face: face(d.ext.nx, d.ext.nz) } }
     })
     if (inside) {
-      if (zone === null && !c.solids.it.unlocked && atLeaves(P.dungeon.door, P.dungeon.door.hw)) { zone = 'lock'; act = { kind: 'locked', site: s } }
+      if (zone === null && !c.solids.it.unlocked && atLeaves(P.dungeon.door, P.dungeon.door.hw)) { const d = P.dungeon.door; zone = 'lock'; act = { kind: 'locked', site: s, at: world([d.x, d.y + 2.2, d.z], oy) } }
       P.ladders.forEach((l, i) => {
         if (zone === null && near(l.x, l.z, ZONE.ladder, l.down[1])) { zone = `l${i}`; act = { kind: 'leave', site: s, at: world(l.roof, s.y), face: face(-l.hatch[0], -l.hatch[2]) } }
       })

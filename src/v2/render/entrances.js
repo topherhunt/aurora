@@ -245,7 +245,7 @@ export class Entrances {
     if (RUNGS !== bank.tiers.length + 1) throw new Error(`Entrances: ${bank.tiers.length} mesh tiers and a card are not ${RUNGS} rungs`)
     this.cards = cards
     this.cardTier = bank.tiers.length
-    const budget = cards.claim('entrances', pool)
+    const budget = cards.claim('entrances', Math.min(8, pool))
     this.cardBounds = { halfX: bank.width / 2, halfZ: bank.width / 2, height: MOUTH_HEIGHT_M }
     this.cardPicture = cards.addPicture(cardPicture('fixed', this.cardBounds))
     this.batch = new PropArena(pool, this.tiers, new Array(bank.tiers.length).fill(pool), () => this.material, 'v2-entrances', { cards: cards.meshes, cardBase: this.cardTier, budget })

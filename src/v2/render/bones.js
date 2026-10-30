@@ -246,7 +246,7 @@ export class Bones {
     // Any mesh may hold the whole pool: the variant is rolled per find, so an
     // even split is only the expectation, and the pool is a thousand.
     const cardBase = this.cardTier * this.variantCount
-    const budget = cards.claim('bones', Math.min(600, this.maxInstances))
+    const budget = cards.claim('bones', Math.min(400, this.maxInstances))
     this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,

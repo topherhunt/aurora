@@ -204,6 +204,13 @@ export class Conversations {
     return this.log.state(q.id) !== 'done' || (this.scold !== null && this.scold.ghost === q.id)
   }
 
+  /** `text` on the panel as `name`'s over world point `at` ({ x, y, z }) unless she is talking, for as long as a scold's. */
+  say(name, text, at) {
+    if (this.chat !== null) return
+    this.scold = { c: { pose: at }, until: this.now + TALK.linger + text.split(' ').length / TALK.wordsPerS, ghost: null }
+    this.panel.show(name, text, EMPTY)
+  }
+
   /** Whether the smith `mind` stands at his workshop (a smith with none is always in it); false for anyone else. */
   _inWorkshop(p, mind) {
     if (!trade.isSmith(mind)) return false

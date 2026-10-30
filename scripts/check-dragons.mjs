@@ -662,7 +662,7 @@ console.log('\ndragons')
   })
   check(d.pictures.length === 2 && d.pictures.every((pic) => d.litterCards.mode[pic].x === 2) && ups[0].distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-9 && ups[1].distanceTo(new THREE.Vector3(0, 0, -1)) < 1e-9, 'the card is two fixed pool pictures, the side standing and the top laid flat with its picture\'s up along -Z: the instance matrix is the whole orientation')
   check(bb.max.x >= fly.halfX && bb.min.x <= -fly.halfX && bb.max.z >= fly.halfZ && bb.min.z <= -fly.halfZ && bb.min.y <= fly.minY && bb.max.y >= fly.maxY && bb.min.y < 0, 'the quads bound the fly pose where it hangs, below the body\'s origin as a flying body does', `y ${fmt(bb.min.y)} to ${fmt(bb.max.y)}`)
-  check(d.batch.children.length === 0 && d.litterCards.owners.includes(`dragons:${MAX * 2}`) && Array.from({ length: MAX * 2 }, (_, i) => i).every((i) => !d.cardView.getVisibleAt(i) && d.cardView.layer[i] === d.pictures[i % 2]), 'the batch holds only the puppets it lends out, none yet; two pool ids a slot are claimed, each wearing its view\'s picture and none drawn')
+  check(d.batch.children.length === 0 && d.litterCards.owners.includes(`dragons:${Math.min(16, MAX * 2)}`) && Array.from({ length: MAX * 2 }, (_, i) => i).every((i) => !d.cardView.getVisibleAt(i) && d.cardView.layer[i] === d.pictures[i % 2]), 'the batch holds only the puppets it lends out, none yet; two pool ids a slot are claimed, each wearing its view\'s picture and none drawn')
   check(DRAGON_VIEWS.join(',') === 'side,top', 'the two pictures are the side and the top', DRAGON_VIEWS.join(' '))
   d.dispose()
 }

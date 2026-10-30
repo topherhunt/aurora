@@ -5,12 +5,16 @@
 // Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
 // highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight,
-// collision that throws (over a wide seed sweep) or passes the walk's span cap, or a castle without its doors, spirals and rope.
+// collision that throws (over a wide seed sweep) or passes the walk's span cap, a castle without its doors, spirals and rope, or a
+// dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { exteriorGeometry, interiorGeometries } from '../src/v2/castles/shell.js'
-import { castleSolids, exteriorSpans, interiorSpans, SPAN_CAP } from '../src/v2/castles/solids.js'
+import { castleSolids, exteriorSpans, interiorSpans, SPANS, SPAN_CAP } from '../src/v2/castles/solids.js'
+import { dungeonPlan } from '../src/v2/castles/dungeon.js'
+import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
+import { dungeonProps } from '../src/v2/castles/furnish.js'
 
 let failures = 0
 function check(ok, label, detail = '') {
@@ -106,6 +110,49 @@ for (const seed of [661222, 111589]) if (solidFail === null) try { const l = cas
 check(solidFail === null, 'every castle\'s collision and portals build', solidFail ?? '')
 check(worstEx < SPAN_CAP && worstIn < SPAN_CAP, 'no castle column passes the walk\'s span cap', `worst exterior ${worstEx}, interior ${worstIn} of ${SPAN_CAP}`)
 check(portalsShort.length === 0, 'every castle has doors, its spirals, a rope and a chest', portalsShort.slice(0, 5).join(' '))
+
+// The dungeon, walked on a 0.5 m grid from its foot chamber: a step is a floor within 0.45 m of the last with 1.7 m over it.
+function walkDungeon(l, it) {
+  const g = dungeonPlan(l), seen = new Set(), key = (i, j) => i + ',' + j
+  const floorAt = (x, z, y) => {
+    const n = interiorSpans(it, x, z, -5.5)
+    for (let i = 0; i < n; i++) if (Math.abs(SPANS.HI[i] - y) <= 0.45 && (i + 1 === n || SPANS.LO[i + 1] - SPANS.HI[i] >= 1.7)) return SPANS.HI[i]
+    return null
+  }
+  const { door } = g, start = [door.x - door.side * (door.axis === 'x' ? 1.5 : 0), door.z - door.side * (door.axis === 'z' ? 1.5 : 0)]
+  const queue = [[Math.round(start[0] * 2), Math.round(start[1] * 2), -6]]
+  seen.add(key(queue[0][0], queue[0][1]))
+  while (queue.length) {
+    const [i, j, y] = queue.pop()
+    for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const k = key(i + a, j + b)
+      if (seen.has(k)) continue
+      const f = floorAt((i + a) / 2, (j + b) / 2, y)
+      if (f === null || f > -5) continue
+      seen.add(k)
+      queue.push([i + a, j + b, f])
+    }
+  }
+  const chest = dungeonProps(l).find((o) => o.kind === 'chest'), front = [chest.x + Math.sin(chest.yaw) * 0.8, chest.z + Math.cos(chest.yaw) * 0.8]
+  const reached = [-1, 0, 1].some((a) => [-1, 0, 1].some((b) => seen.has(key(Math.round(front[0] * 2) + a, Math.round(front[1] * 2) + b))))
+  let air = 0
+  for (let c = 0; c < g.W * g.D; c++) if (!Number.isNaN(g.lo[c])) air++
+  return { reached, share: seen.size / 4 / air }
+}
+let dungeonOpen = [], dungeonShut = [], dungeonShare = 1, dungeonTri = 0
+for (const l of good.slice(0, 20)) {
+  const sol = castleSolids(l)
+  sol.it.unlocked = false
+  if (walkDungeon(l, sol.it).reached) dungeonOpen.push(l.seed)
+  sol.it.unlocked = true
+  const w = walkDungeon(l, sol.it)
+  if (!w.reached) dungeonShut.push(l.seed)
+  dungeonShare = Math.min(dungeonShare, w.share)
+  dungeonTri = Math.max(dungeonTri, tri(dungeonGeometry(l).geometry))
+}
+check(dungeonOpen.length === 0, 'a dungeon\'s chest is out of reach while its door is locked', dungeonOpen.slice(0, 5).join(' '))
+check(dungeonShut.length === 0 && dungeonShare > 0.85, 'unlocked, she walks from the stair foot to its chest and most of the maze', `worst ${(dungeonShare * 100).toFixed(0)}% walked ${dungeonShut.slice(0, 5).join(' ')}`)
+check(dungeonTri < 25000, 'a dungeon stays under 25k triangles', `worst ${dungeonTri}`)
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')
 if (failures) process.exit(1)
