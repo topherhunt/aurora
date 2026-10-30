@@ -412,7 +412,7 @@ check(!spiders.cardReady && spiders.cardCount === 0 && spiders.batch.children.le
   const lc = spiders.litterCards
   const ext = critterCardExtents(spiders.bounds)
   check(pic >= 0 && lc.mode[pic].x === 2 && Math.abs(lc.box[pic].z - ext.hx) < 1e-6 && Math.abs(lc.box[pic].w - ext.hz) < 1e-6 && lc.box[pic].y === 0, 'the card is a FIXED picture of the shared pool, as wide as the body and as long, centred on the quad\'s own origin', `picture ${pic}, ${lc.box[pic].z.toFixed(3)} x ${lc.box[pic].w.toFixed(3)}`)
-  check(spiders.cards.layer.every((v) => v === pic) && lc.claimed === 64, 'every slot\'s card instance wears that picture, and the pool was told the 64 a crowd of cards needs', `claimed ${lc.claimed}`)
+  check(spiders.cards.layer.every((v) => v === pic) && lc.claimed === 24, 'every slot\'s card instance wears that picture, and the pool was told the 24 cards a crowd draws at once', `claimed ${lc.claimed}`)
 }
 
 // --- placement -----------------------------------------------------------------

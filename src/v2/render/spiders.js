@@ -175,7 +175,7 @@ const WET_STEP = 1 / 16
 export const RESEAT_EVERY = 45
 export const MAX = 256
 // The pool instances claimed for the cards: the pool packs only visible ones, so this is bookkeeping for the worst crowd on the card rung at once, not a reservation.
-const CARD_CLAIM = 64
+const CARD_CLAIM = 24
 // A card-rung spider is stepped every CARD_EVERY frames (wildlife.js does the same): its pose is closed-form in the world second, so the next step lands exactly where every-frame stepping would, and at its distance a stride four frames long is under two pixels.
 const CARD_EVERY = 4
 const HOST_BUF = 64
@@ -397,12 +397,12 @@ export class Spiders {
     }
     this.counts = new Uint16Array(LOD_TIERS)
     // The far spiders, as instances of the shared litter quad, one per slot (a slot's id is its card's); drawn once the picture is baked, and until then every spider in range is a mesh and the rest are not drawn.
-    cards.claim('spiders', CARD_CLAIM)
+    const cardBudget = cards.claim('spiders', CARD_CLAIM)
     this.litterCards = cards
     this.cardPicture = -1
     this.cardReady = false
     this.cardCount = 0
-    this.cards = PropArena.over(cards.meshes, MAX, 'v2-spiders-card')
+    this.cards = PropArena.over(cards.meshes, MAX, 'v2-spiders-card', { budget: cardBudget })
     for (let i = 0; i < MAX; i++) {
       this.cards.addInstance(0)
       this.cards.setVisibleAt(i, false)

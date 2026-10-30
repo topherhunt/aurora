@@ -401,7 +401,7 @@ export class Mushrooms {
     this.cardTier = bank.tiers.length
     this.tierCount = this.cardTier + 1
     const cardBase = this.cardTier * this.variantCount
-    cards.claim('mushrooms', this.maxInstances)
+    const budget = cards.claim('mushrooms', 128)
     this.cardPicture = bank.cards.map((c) => cards.addPicture(c))
     this.batch = new PropArena(
       this.maxInstances,
@@ -409,7 +409,7 @@ export class Mushrooms {
       this._tierCaps(),
       this.material,
       'v2-mushrooms',
-      { cards: cards.meshes, cardBase }
+      { cards: cards.meshes, cardBase, budget }
     )
     this.tierIds = bank.tiers.map((_, t) =>
       bank.tiers[t].geometries.map((_g, v) => t * this.variantCount + v))

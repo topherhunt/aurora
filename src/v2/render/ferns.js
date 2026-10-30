@@ -577,13 +577,13 @@ export class Ferns {
     // THE CARD VIEW, and every fern in the bed owns an id in it for as long as
     // it stands. Everything that addresses a fern by id -- tile.ids, instX/Y/Z,
     // variantAt, the rim -- means an id in HERE. Its picture is the shipped fern's impostor, the card's own extents.
-    cards.claim('ferns', this.maxInstances)
+    const cardBudget = cards.claim('ferns', this.maxInstances)
     card.geometry.computeBoundingBox()
     const box = card.geometry.boundingBox
     // Pitched toward an eye above it the way the tree cards are, so a fern bed seen from a ridge is fronds and not edges.
     this.cardPicture = cards.addPicture({ kind: 'spun', cx: 0, cy: (box.min.y + box.max.y) / 2, hw: (box.max.x - box.min.x) / 2, hh: (box.max.y - box.min.y) / 2, tilt: CARD_TILT })
     this.litterCards = cards
-    this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-ferns-card')
+    this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-ferns-card', { budget: cardBudget })
 
     // THE MESH RINGS, finest first, each with a pool sized to its OWN disc at
     // the pushed-out band boundary rather than to the bed. That is the whole

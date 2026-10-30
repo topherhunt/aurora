@@ -154,6 +154,8 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   run(w, 0.5, far, clock)
   const b = w.layer.list[0]
   const place = w.layer.place
+  // She comes at it from its far side from the boy, never within foundM of him before 'Finding the boy'.
+  const away = Math.atan2(place.z - w.layer.boy.z, place.x - w.layer.boy.x)
   check(w.layer.list.length === 1 && !b.tame && b.state === 'hide' && b.clip === 'cower', 'the hideout\'s skeleton is shy: cowering at home')
   check(w.layer.lying.length === SKELETON.stash, `${SKELETON.stash} bones lie by it for her to feed it with`)
   check(w.layer.boy !== null && w.layer.boy.clip === 'gather' && Math.hypot(w.layer.boy.x - place.x, w.layer.boy.z - place.z) < 1.5, 'the lost boy crouches by it, playing with its bones')
@@ -175,8 +177,8 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
 
   // Rushing it collapses it; it gets up again where it was.
   const home = { x: b.x, z: b.z }
-  let rushX = place.x + 4.5
-  run(w, 0.6, () => { rushX -= 4 * DT; return { x: rushX, y: 320, z: place.z } }, clock)
+  let rush = 4.5
+  run(w, 0.6, () => { rush -= 4 * DT; return { x: place.x + rush * Math.cos(away), y: 320, z: place.z + rush * Math.sin(away) } }, clock)
   check(b.state === 'pile' || b.state === 'rise', 'she running at a shy one collapses it into a pile', b.state)
   check(w.layer.said.some((v) => v.sound === 'skeletonCollapse'), 'it clatters down')
   check(w.layer.carriers === undefined && w.carriers.length === 0, 'with nothing to drop')
@@ -185,7 +187,7 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   check(w.layer.voices([]).some((v) => v.sound === 'skeletonReassemble'), 'with a rattle of putting itself together')
 
   // A bone held out draws it out; held at its head, it eats and is hers.
-  const stand = { x: place.x + 3, y: 320, z: place.z }
+  const stand = { x: place.x + 3 * Math.cos(away), y: 320, z: place.z + 3 * Math.sin(away) }
   const bone = { kind: 'bone', x: stand.x - 0.4, y: 320 + 0.95, z: stand.z, by: null }
   w.lures.push(bone)
   run(w, 8, () => stand, clock)
@@ -357,6 +359,18 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   for (let i = 0; i < 300; i++) ghost.update(1 / 30, i / 30, her, true)
   const fwd = new THREE.Vector3(1, 0, 0).applyEuler(ghost.mesh.rotation)
   check(ghost.mesh.visible && fwd.z > 0.99, 'shown, it turns to face her', `${fwd.x.toFixed(2)}, ${fwd.z.toFixed(2)}`)
+  ghost.voices([])
+  const heard = []
+  ghost.whisper(10)
+  ghost.voices(heard)
+  check(heard.length === 1 && heard[0].sound === 'ghostWhisper' && heard[0].gain === 1, 'each line it speaks comes with a whisper')
+  const murmurs = []
+  for (let i = 0; i < 60 * 30; i++) { ghost.update(1 / 30, 10 + i / 30, her, true); ghost.voices(murmurs) }
+  check(murmurs.length >= 3 && murmurs.every((v) => v.sound === 'ghostWhisper' && v.gain === GHOST.murmur) && murmurs.length <= 60 / GHOST.murmurS[0], 'near it, it murmurs now and then, softer than it speaks', `${murmurs.length} in a minute`)
+  const far = { x: ghost.at.x, z: ghost.at.z + GHOST.hearM + 1 }
+  const quiet = []
+  for (let i = 0; i < 60 * 30; i++) { ghost.update(1 / 30, 70 + i / 30, far, true); ghost.update(1 / 30, 70 + i / 30, her, false); ghost.voices(quiet) }
+  check(quiet.length === 0, 'far from it, or once it is gone, it is silent', `${quiet.length}`)
   ghost.update(1 / 30, 10, her, false)
   check(!ghost.mesh.visible, 'at rest, it is gone')
   ghost.update(1 / 30, 10, her, true)

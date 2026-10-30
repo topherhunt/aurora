@@ -6,7 +6,8 @@ import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { makeWarp } from '../../buildings/v2/warp.js'
 import { CASTLE } from './layout.js'
-import { courtProps, roomProps } from './furnish.js'
+import { courtProps, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
+import { dungeonPlan } from './dungeon.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
 // Metres of mesh per stone tile (public/buildings/castle_stone.webp, about 30 cm courses).
@@ -15,12 +16,13 @@ export const UV_METRES = 4
 export const PLANK_METRES = 0.72
 // Material slots, as geometry groups: castle stone, planks, door leaves (public/buildings/door.png once across each) and gates
 // (public/buildings/castle_gate.png once across both leaves), the last two by explicit UVs. Each slot's tile metres.
-const STONE_SLOT = 0, WOOD_SLOT = 1, DOOR_SLOT = 2, GATE_SLOT = 3, SLOTS = [UV_METRES, PLANK_METRES, 1, 1]
+export const STONE_SLOT = 0, WOOD_SLOT = 1, DOOR_SLOT = 2, GATE_SLOT = 3
+const SLOTS = [UV_METRES, PLANK_METRES, 1, 1]
 // castle_gate.png's arch rises this fraction of the doors' height, so the gate's arch is drawn to match it.
 const GATE_ARCH = 0.34
 // sRGB hex to linear, as THREE.Color(hex) gives it; three itself is a stub in the castle worker (vite.config.js noThreeInWorkers).
 const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
-const rgb = (hex) => [hex >> 16, (hex >> 8) & 255, hex & 255].map((v) => lin(v / 255))
+export const rgb = (hex) => [hex >> 16, (hex >> 8) & 255, hex & 255].map((v) => lin(v / 255))
 const STONE = { keep: rgb(0x8d877c), hall: rgb(0x958b7a), gate: rgb(0x8a857d), tower: rgb(0x878580), lookout: rgb(0x7d7d84), wall: rgb(0x8b867e) }
 const BAND = rgb(0x6f6a63), SLATE = rgb(0x3f4652), DARK = rgb(0x15120f), GOLD = rgb(0xc9a33a)
 const FLOOR = { keep: rgb(0x7a5a3a), hall: rgb(0x80603e), gate: rgb(0x6d6a66), tower: rgb(0x6d6a66), lookout: rgb(0x75645f) }
@@ -40,7 +42,7 @@ const warpOf = (seed, s) => makeWarp({ strength: 1, seed, amp: 0.22 * s, scale: 
 
 const HEXA_FACES = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
 
-class Mesher {
+export class Mesher {
   constructor(seed, warp = null, full = true) { this.bufs = SLOTS.map(() => ({ p: [], n: [], c: [], uv: [] })); this.slot = STONE_SLOT; this.rng = mulberry32(seed); this.warp = warp; this.full = full }
   tint(col, j = 0.08) { const f = 1 + (this.rng() - 0.5) * j; return col.map((v) => v * f) }
   /** Draws `fn` into material slot `slot`, unwarped when `straight`. */
@@ -322,7 +324,7 @@ function flight(m, f, col, scale = 1) {
 
 /** Door leaves `hw` either side of `base` (its foot's middle) and `h` tall, facing horizontal n: a door's one, or a gate's pair
  * under an arch, its spandrels up to `h` filled in stone tinted `col`. */
-function leaves(m, base, n, hw, h, gate, col) {
+export function leaves(m, base, n, hw, h, gate, col) {
   // The viewer's right, looking at the face.
   const r = [n[2], 0, -n[0]], P = (u, y) => [base[0] + r[0] * u, base[1] + y, base[2] + r[2] * u]
   if (!gate) return m.with(DOOR_SLOT, () => m.quad(P(-hw, 0), P(hw, 0), P(hw, h), P(-hw, h), LEAF, n, [[0, 0], [1, 0], [1, 1], [0, 1]]))
@@ -429,20 +431,26 @@ export function exteriorGeometry(lay, { warp = true, full = true } = {}) {
     m.box(sx - 0.52, sy + 0.2, sz - 0.36, sx + 0.52, sy + 0.8, sz - 0.28, DARKWOOD)
     m.box(sx - 0.53, sy + 0.05, sz - 0.31, sx + 0.53, sy + 0.12, sz + 0.31, GOLD)
   }, true)
-  if (full) for (const o of courtProps(lay)) prop(m, o)
+  if (full) for (const o of [...courtProps(lay), ...roofProps(lay)]) prop(m, o)
   return m.arrays()
 }
 
 // Prop colours multiply the plank or stone texture; cloth and straw ride the planks.
 const PLANK = rgb(0xe6d6bf), DARKWOOD = rgb(0x9c8068), CLOTH = rgb(0xd9cfb8), STRAW = rgb(0xf2d98a), RED = rgb(0xa8342c), IRON = rgb(0x4a4744), EMBER = rgb(0xff9a3c), ROPE = rgb(0xe0c890)
+const BLUE = rgb(0x3a5a9a), GREEN = rgb(0x4f7a3a), CLAY = rgb(0xb06a40), BREAD = rgb(0xd2a060), SAND = rgb(0xd8c49a), WATER = rgb(0x3d6a78), PARCH = rgb(0xead9a8), PEWTER = rgb(0x9a9894)
+// Wall hangings and anything else picked by where it stands, so it is the same in every build.
+const DYES = [RED, BLUE, GREEN]
+const dye = (o) => DYES[Math.abs(Math.floor(o.x * 7.3 + o.z * 13.1)) % 3]
+// Kinds hung high on a wall or from the ceiling, left out of a storey's waist-high cut.
+const HIGH = new Set(['chandelier', 'banner', 'tapestry', 'herbs', 'sconce', 'shields'])
 
 /** A furnish.js prop record drawn from primitives in its own frame: u along its width, v along its depth (its back at -d/2),
  * y up from its floor. Everything is planks but the well's stone. */
-function prop(m, o) {
+export function prop(m, o) {
   const c = Math.cos(o.yaw), s = Math.sin(o.yaw)
   const W = (u, y, v) => [o.x + u * c + v * s, o.y + y, o.z - u * s + v * c]
-  // Nothing is seen from under a prop, so no part draws its bottom.
-  const blk = (u0, y0, v0, u1, y1, v1, col) => m.hexa([W(u0, y0, v0), W(u1, y0, v0), W(u1, y0, v1), W(u0, y0, v1), W(u0, y1, v0), W(u1, y1, v0), W(u1, y1, v1), W(u0, y1, v1)], col, true)
+  // Only what hangs overhead (`under`) draws its bottom.
+  const blk = (u0, y0, v0, u1, y1, v1, col, under = false) => m.hexa([W(u0, y0, v0), W(u1, y0, v0), W(u1, y0, v1), W(u0, y0, v1), W(u0, y1, v0), W(u1, y1, v0), W(u1, y1, v1), W(u0, y1, v1)], col, !under)
   // An n-gon prism of radius r: its sides and the cap at `y1`. Upright about (u, v), or a log lying along u with its axis at (y, v).
   const ring = (P, n, col, cap, out) => {
     for (let i = 0; i < n; i++) m.quad(P(i, 0), P(i + 1, 0), P(i + 1, 1), P(i, 1), col, out(i + 0.5))
@@ -457,8 +465,15 @@ function prop(m, o) {
     ring(P, 6, col, [c, 0, -s], (i) => [Math.sin(ang(i)) * s, Math.cos(ang(i)), Math.sin(ang(i)) * c])
     for (let i = 1; i < 5; i++) m.face([P(0, 0), P(i, 0), P(i + 1, 0)], [-c, 0, s], col)
   }
+  // A disc of radius r facing +v, about (u, y), from v0 to v1, both faces drawn.
+  const drum = (u, y, v0, v1, r, n, col) => {
+    const ang = (i) => i * Math.PI * 2 / n, P = (i, t) => W(u + Math.cos(ang(i)) * r, y + Math.sin(ang(i)) * r, t ? v1 : v0)
+    ring(P, n, col, [s, 0, c], (i) => [Math.cos(ang(i)) * c, Math.sin(ang(i)), -Math.cos(ang(i)) * s])
+    for (let i = 1; i < n - 1; i++) m.face([P(0, 0), P(i, 0), P(i + 1, 0)], [-s, 0, -c], col)
+  }
   const legs = (hw, hd, h, t, col) => { for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) blk(a * hw - t, 0, b * hd - t, a * hw + t, h, b * hd + t, col) }
-  const w = o.w / 2, d = o.d / 2, wood = m.tint(PLANK, 0.16)
+  const w = o.w / 2, d = o.d / 2, wood = m.tint(PLANK, 0.16), stone = m.tint(STONE.wall, 0.1)
+  const masonry = (fn) => m.with(STONE_SLOT, fn)
   m.with(WOOD_SLOT, () => {
     switch (o.kind) {
       case 'barrel': prism(0, 0, 0, 0.9, 0.33, 8, wood); prism(0, 0, 0.2, 0.26, 0.345, 8, IRON); prism(0, 0, 0.64, 0.7, 0.345, 8, IRON); break
@@ -509,6 +524,172 @@ function prop(m, o) {
           log(-w + j, w - 0.04 + j, 0.12 + row * 0.19, -d + 0.14 + (i + row * 0.5) * 0.2, 0.11, m.tint(DARKWOOD, 0.2))
         }
         break
+      case 'hearth':
+        masonry(() => {
+          blk(-w, 0, -d, w, 0.15, d, stone)
+          for (const u of [-w, w - 0.35]) blk(u, 0.15, -d, u + 0.35, 1.3, d, stone)
+          blk(-w - 0.1, 1.3, -d, w + 0.1, 1.5, d + 0.1, stone)
+          blk(-w + 0.2, 1.5, -d, w - 0.2, 3.4, -d + 0.6, stone)
+        })
+        blk(-w + 0.35, 0.15, -d, w - 0.35, 1.3, -d + 0.12, DARK)
+        blk(-0.45, 0.15, -0.25, 0.45, 0.19, 0.25, EMBER)
+        for (const v of [-0.12, 0.12]) log(-0.5 + v, 0.5 + v, 0.26, v, 0.08, DARKWOOD)
+        break
+      case 'oven':
+        masonry(() => { blk(-w, 0, -d, w, 0.9, d, stone); prism(0, -0.05, 0.9, 1.45, 0.55, 8, stone) })
+        blk(-0.3, 0.25, d - 0.01, 0.3, 0.6, d + 0.02, DARK)
+        break
+      case 'cauldron':
+        legs(0.26, 0.26, 0.55, 0.025, IRON)
+        prism(0, 0, 0.2, 0.72, 0.33, 8, IRON); prism(0, 0, 0.72, 0.74, 0.28, 8, GREEN)
+        log(-0.25, 0.25, 0.06, 0, 0.05, DARKWOOD)
+        break
+      case 'bunk':
+        legs(w - 0.03, d - 0.03, 1.9, 0.04, DARKWOOD)
+        for (const y of [0.25, 1.25]) {
+          blk(-w, y, -d, w, y + 0.1, d, DARKWOOD, y > 1)
+          blk(-w + 0.05, y + 0.1, -d + 0.05, w - 0.05, y + 0.25, d - 0.05, m.tint(CLOTH, 0.12))
+          blk(-w + 0.15, y + 0.25, -d + 0.12, w - 0.15, y + 0.33, -d + 0.4, m.tint(CLOTH, 0.05))
+        }
+        break
+      case 'shields':
+        for (const [i, u] of [-0.52, 0, 0.52].entries()) {
+          const col = DYES[(i + Math.abs(Math.floor(o.x))) % 3]
+          blk(u - 0.22, 1.75, -d, u + 0.22, 2.1, -d + 0.06, col); blk(u - 0.15, 1.5, -d, u + 0.15, 1.75, -d + 0.06, col)
+          blk(u - 0.06, 1.8, -d + 0.05, u + 0.06, 1.92, -d + 0.1, GOLD)
+        }
+        break
+      case 'armour':
+        blk(-0.25, 0, -0.2, 0.25, 0.06, 0.2, DARKWOOD); blk(-0.04, 0.06, -0.04, 0.04, 1.45, 0.04, DARKWOOD)
+        blk(-0.2, 0.6, -0.12, 0.2, 0.9, 0.12, m.tint(CLOTH, 0.1)); blk(-0.22, 0.9, -0.13, 0.22, 1.5, 0.13, IRON)
+        blk(-0.3, 1.4, -0.14, 0.3, 1.55, 0.14, IRON); blk(-0.12, 1.55, -0.12, 0.12, 1.85, 0.12, IRON)
+        break
+      case 'arrows':
+        prism(0, 0, 0, 0.6, 0.22, 8, wood)
+        for (let i = 0; i < 7; i++) {
+          const a = i * 2.4, r = 0.05 + (i % 3) * 0.05, u = Math.cos(a) * r, v = Math.sin(a) * r, h = 1.0 + (i % 2) * 0.05
+          blk(u - 0.01, 0.5, v - 0.01, u + 0.01, h, v + 0.01, PLANK); blk(u - 0.02, h, v - 0.02, u + 0.02, h + 0.1, v + 0.02, RED)
+        }
+        break
+      case 'grind':
+        legs(0.32, 0.15, 0.62, 0.03, DARKWOOD)
+        masonry(() => drum(0, 0.75, -0.06, 0.06, 0.3, 10, stone))
+        drum(0, 0.75, -0.3, -0.06, 0.03, 4, IRON); drum(0, 0.75, 0.06, 0.3, 0.03, 4, IRON)
+        break
+      case 'anvil':
+        blk(-0.18, 0, -0.15, 0.18, 0.45, 0.15, DARKWOOD); blk(-0.12, 0.45, -0.08, 0.12, 0.6, 0.08, IRON)
+        blk(-0.3, 0.6, -0.12, 0.28, 0.75, 0.12, IRON); blk(0.27, 0.64, -0.06, 0.38, 0.73, 0.06, IRON)
+        break
+      case 'dais': masonry(() => blk(-w, 0, -d, w, 0.3, d, stone)); blk(-w + 0.2, 0.3, -d + 0.2, w - 0.2, 0.32, d - 0.2, RED); break
+      case 'carpet':
+        blk(-w + 0.05, 0, -d + 0.02, w - 0.05, 0.03, d - 0.02, RED)
+        for (const u of [-w, w - 0.12]) blk(u, 0, -d + 0.03, u + 0.12, 0.035, d - 0.03, GOLD)
+        break
+      case 'tapestry':
+        blk(-w - 0.05, 3.4, -d - 0.05, w + 0.05, 3.46, -d + 0.06, DARKWOOD, true)
+        blk(-w, 1.2, -d + 0.01, w, 3.4, -d + 0.04, m.tint(dye(o), 0.1), true)
+        blk(-w + 0.1, 1.3, -d + 0.035, w - 0.1, 1.36, -d + 0.05, GOLD); blk(-0.3, 2.0, -d + 0.035, 0.3, 2.8, -d + 0.05, GOLD)
+        break
+      case 'chandelier':
+        for (const v of [-0.46, 0.46]) blk(-0.5, 3.6, v - 0.04, 0.5, 3.66, v + 0.04, IRON, true)
+        for (const u of [-0.46, 0.46]) blk(u - 0.04, 3.61, -0.44, u + 0.04, 3.65, 0.44, IRON, true)
+        blk(-0.48, 3.62, -0.02, 0.48, 3.68, 0.02, IRON, true); blk(-0.02, 3.63, -0.48, 0.02, 3.69, 0.48, IRON, true)
+        blk(-0.02, 3.69, -0.02, 0.02, H * V - 0.25, 0.02, IRON)
+        for (const [u, v] of [[-0.45, -0.45], [0.45, -0.45], [0.45, 0.45], [-0.45, 0.45]]) prism(u, v, 3.66, 3.88, 0.03, 4, CLOTH)
+        break
+      case 'fourposter': {
+        const cloth = m.tint(dye(o), 0.08)
+        legs(w - 0.03, d - 0.03, 2.24, 0.05, DARKWOOD)
+        blk(-w, 0.2, -d, w, 0.4, d, DARKWOOD); blk(-w, 0.4, -d, w, 1.3, -d + 0.08, DARKWOOD)
+        blk(-w + 0.05, 0.4, -d + 0.05, w - 0.05, 0.6, d - 0.05, m.tint(CLOTH, 0.05)); blk(-w + 0.04, 0.45, -d + 0.6, w - 0.04, 0.62, d - 0.04, cloth)
+        blk(-w + 0.15, 0.6, -d + 0.12, w - 0.15, 0.72, -d + 0.42, m.tint(CLOTH, 0.05))
+        blk(-w - 0.04, 2.2, -d - 0.04, w + 0.04, 2.3, d + 0.04, cloth, true)
+        break
+      }
+      case 'wardrobe':
+        blk(-w, 0, -d, w, 1.95, d, DARKWOOD); blk(-w - 0.04, 1.92, -d + 0.01, w + 0.04, 2.0, d + 0.04, DARKWOOD)
+        blk(-0.015, 0.1, d - 0.01, 0.015, 1.85, d + 0.015, IRON)
+        for (const u of [-0.08, 0.05]) blk(u, 0.9, d - 0.01, u + 0.03, 1.1, d + 0.03, GOLD)
+        break
+      case 'desk':
+        blk(-w, 0.72, -d, w, 0.8, d, wood); legs(w - 0.08, d - 0.08, 0.72, 0.04, DARKWOOD)
+        blk(w - 0.45, 0.45, -d + 0.05, w - 0.05, 0.72, d - 0.05, DARKWOOD)
+        break
+      case 'rug': blk(-w, 0, -d, w, 0.02, d, m.tint(dye(o), 0.1)); blk(-w + 0.15, 0, -d + 0.15, w - 0.15, 0.025, d - 0.15, GOLD); blk(-w + 0.3, 0, -d + 0.3, w - 0.3, 0.03, d - 0.3, m.tint(dye(o), 0.2)); break
+      case 'altar':
+        masonry(() => blk(-w, 0, -d, w, 0.95, d, stone))
+        blk(-w - 0.02, 0.95, -d - 0.02, w + 0.02, 1.0, d + 0.02, CLOTH); blk(-0.25, 0.55, d - 0.01, 0.25, 1.01, d + 0.03, RED)
+        blk(-0.1, 1.0, -d + 0.1, 0.1, 1.3, -d + 0.16, GOLD)
+        for (const u of [-0.55, 0.55]) prism(u, 0, 1.0, 1.28, 0.03, 4, CLOTH)
+        break
+      case 'maptable':
+        blk(-w, 0.75, -d, w, 0.83, d, wood); legs(w - 0.12, d - 0.12, 0.75, 0.05, DARKWOOD)
+        blk(-w + 0.2, 0.83, -d + 0.15, w - 0.2, 0.835, d - 0.15, PARCH)
+        break
+      case 'cot':
+        blk(-w, 0.3, -d, w, 0.38, d, wood); legs(w - 0.05, d - 0.05, 0.3, 0.03, DARKWOOD)
+        blk(-w + 0.04, 0.38, -d + 0.04, w - 0.04, 0.5, d - 0.04, m.tint(CLOTH, 0.12))
+        break
+      case 'workbench':
+        blk(-w, 0.82, -d, w, 0.9, d, wood); legs(w - 0.08, d - 0.08, 0.82, 0.05, DARKWOOD)
+        blk(-w + 0.1, 0.2, -d + 0.1, w - 0.1, 0.25, d - 0.1, DARKWOOD)
+        blk(-w + 0.1, 0.9, -0.1, -w + 0.3, 1.05, 0.1, IRON); blk(0.1, 0.9, -0.25, 0.9, 0.95, 0.0, m.tint(PLANK, 0.1))
+        break
+      case 'bucket': prism(0, 0, 0, 0.4, 0.18, 8, wood); prism(0, 0, 0.28, 0.31, 0.19, 8, IRON); prism(0, 0, 0.4, 0.405, 0.15, 8, WATER); break
+      case 'basket': prism(0, 0, 0, 0.35, 0.24, 8, m.tint(STRAW, 0.1)); prism(0, 0, 0.35, 0.45, 0.2, 6, BREAD); break
+      case 'candles':
+        prism(0, 0, 0, 0.05, 0.15, 6, IRON); blk(-0.02, 0.05, -0.02, 0.02, 1.2, 0.02, IRON)
+        prism(0, 0, 1.2, 1.23, 0.08, 6, IRON); prism(0, 0, 1.23, 1.35, 0.03, 4, CLOTH)
+        break
+      case 'cask':
+        for (const u of [-w + 0.1, w - 0.2]) blk(u, 0, -d + 0.05, u + 0.1, 0.3, d - 0.05, DARKWOOD)
+        log(-w + 0.05, w - 0.05, 0.45, 0, 0.4, wood)
+        for (const u of [-w + 0.2, w - 0.26]) log(u, u + 0.06, 0.45, 0, 0.41, IRON)
+        blk(w - 0.06, 0.25, -0.03, w + 0.04, 0.31, 0.03, DARKWOOD)
+        break
+      case 'herbs':
+        blk(-w, 2.4, -d - 0.05, w, 2.45, -d + 0.06, DARKWOOD, true)
+        for (let u = -w + 0.18; u < w - 0.1; u += 0.36) blk(u - 0.08, 1.95 + (u * 5 % 0.1), -d + 0.02, u + 0.08, 2.4, -d + 0.15, m.tint(GREEN, 0.3), true)
+        break
+      case 'sconce':
+        blk(-0.04, 2.0, -d - 0.06, 0.04, 2.08, 0.06, IRON, true); prism(0, 0.08, 2.05, 2.2, 0.06, 6, IRON)
+        blk(-0.025, 2.2, 0.055, 0.025, 2.3, 0.105, DARKWOOD)
+        break
+      case 'target':
+        for (const u of [-0.5, 0.42]) blk(u, 0, -0.05, u + 0.08, 1.4, 0.05, DARKWOOD)
+        drum(0, 1.0, -0.1, 0.1, 0.55, 10, m.tint(STRAW, 0.1)); drum(0, 1.0, 0.09, 0.12, 0.35, 10, RED); drum(0, 1.0, 0.11, 0.14, 0.15, 8, GOLD)
+        break
+      case 'pell': blk(-0.2, 0, -0.2, 0.2, 0.1, 0.2, DARKWOOD); prism(0, 0, 0.1, 1.6, 0.1, 6, DARKWOOD); prism(0, 0, 0.9, 1.1, 0.11, 6, ROPE); break
+      case 'yard': blk(-w, 0, -d, w, 0.02, d, SAND); break
+      case 'forge':
+        masonry(() => {
+          blk(-w, 0, -d, w, 0.8, d, stone)
+          blk(-0.95, 0.8, -d, 0.25, 2.3, -d + 0.35, stone); blk(-0.65, 2.3, -d, -0.05, 3.8, -d + 0.3, stone)
+        })
+        blk(-0.75, 0.8, -0.55, 0.05, 0.84, 0.15, EMBER); blk(0.4, 0.8, -0.3, 0.95, 0.95, 0.3, DARKWOOD)
+        break
+      case 'trough':
+        for (const u of [-w, w - 0.06]) blk(u, 0, -d, u + 0.06, 0.6, d, wood)
+        for (const v of [-d, d - 0.06]) blk(-w + 0.06, 0, v, w - 0.06, 0.6, v + 0.06, wood)
+        blk(-w + 0.06, 0, -d + 0.06, w - 0.06, 0.48, d - 0.06, WATER)
+        break
+      case 'block': prism(0, 0, 0, 0.5, 0.28, 8, DARKWOOD); blk(0.02, 0.45, -0.03, 0.07, 0.85, 0.03, m.tint(PLANK, 0.1)); blk(-0.04, 0.48, -0.12, 0.08, 0.56, 0.0, IRON); break
+      case 'bowrack':
+        for (const u of [-w + 0.01, w - 0.09]) blk(u, 0, -d, u + 0.08, 1.5, -d + 0.08, DARKWOOD)
+        for (const y of [0.25, 1.2]) blk(-w + 0.09, y, -d, w - 0.09, y + 0.05, -d + 0.08, DARKWOOD)
+        for (let u = -w + 0.3; u < w - 0.2; u += 0.3) blk(u - 0.015, 0.3, -d + 0.1, u + 0.015, 1.45, -d + 0.13, DARKWOOD)
+        break
+      case 'stones':
+        masonry(() => {
+          for (const [u, v, y0, y1, r, n] of [[-0.2, -0.15, 0, 0.3, 0.22, 6], [0.2, 0.05, 0, 0.25, 0.2, 5], [-0.05, 0.22, 0, 0.22, 0.18, 5], [0, 0, 0.25, 0.45, 0.17, 5]]) prism(u, v, y0, y1, r, n, m.tint(STONE.wall, 0.2))
+        })
+        break
+      case 'jug': prism(0, 0, 0, 0.22, 0.08, 6, CLAY); prism(0, 0, 0.22, 0.28, 0.05, 6, CLAY); break
+      case 'bowl': prism(0, 0, 0, 0.07, 0.12, 6, DARKWOOD); break
+      case 'loaf': blk(-w, 0, -d, w, 0.1, d, BREAD); break
+      case 'cup': prism(0, 0, 0, 0.1, 0.045, 5, PEWTER); break
+      case 'candle': prism(0, 0, 0, 0.17, 0.025, 4, CLOTH); break
+      case 'book': blk(-w, 0, -d, w, 0.05, d, dye(o)); break
       default: throw new Error(`castle prop: no mesh for '${o.kind}'`)
     }
   }, true)
@@ -528,10 +709,29 @@ function minusHole([x0, z0, x1, z1], cx, cz, h) {
   return [[x0, z0, x1, hz0], [x0, hz1, x1, z1], [x0, hz0, hx0, hz1], [hx1, hz0, x1, hz1]].filter(([a, b, c, d]) => c - a > 0.01 && d - b > 0.01)
 }
 
+/** A spiral stair's steps and post about interior (cx, cz), climbing one storey from y. */
+export function spiralSteps(m, cx, cz, y) {
+  const SH = H * V, a0 = spiralStart(cx, cz), { R, post, steps } = SPIRAL, rise = SH / steps
+  const P = (ang, rad, yy) => [cx + Math.cos(ang) * rad, yy, cz + Math.sin(ang) * rad]
+  for (let i = 0; i < steps; i++) {
+    const a = a0 + i * Math.PI / 8, b = a + Math.PI / 8, y0 = y + i * rise, y1 = y0 + rise
+    m.hexa([P(a, post, y0), P(a, R, y0), P(b, R, y0), P(b, post, y0), P(a, post, y1), P(a, R, y1), P(b, R, y1), P(b, post, y1)], m.tint(STEP))
+  }
+  m.box(cx - post, y, cz - post, cx + post, y + SH, cz + post, m.tint(STEP))
+}
+
+/** The interior's warp. It bends walls across but leaves every height true, so floors stay level under the props and the walk. */
+export function interiorWarp(lay) {
+  const w = warpOf(lay.seed + 1, S * 0.6)
+  return (x, y, z) => { const p = w(x, y, z); return [p[0], y, p[2]] }
+}
+/** Prop record o moved with the walls about it, so what stands against one stays against it. Props themselves are drawn straight. */
+export const warpedProp = (warp, o) => { const [x, , z] = warp(o.x, o.y, o.z); return { ...o, x, z } }
+
 /** One geometry per storey, so a cut can hide the storeys above it. Interior units are exterior metres times CASTLE.scale. */
 export function interiorGeometries(lay) {
   const { X, Z } = lay
-  const meshers = new Map(), warp = warpOf(lay.seed + 1, S * 0.6)
+  const meshers = new Map(), warp = interiorWarp(lay)
   const at = (k) => { if (!meshers.has(k)) meshers.set(k, new Mesher(lay.seed * 31 + k, warp)); return meshers.get(k) }
   const SH = H * V, WT = 0.3, INSET = 0.4
   lay.nodes.forEach((n, ni) => {
@@ -542,7 +742,8 @@ export function interiorGeometries(lay) {
       const ex = [X(n.x0), Z(n.z0), X(n.x0 + n.w), Z(n.z0 + n.d)]
       const [ix0, iz0, ix1, iz1] = [(ex[0] + INSET) * S, (ex[1] + INSET) * S, (ex[2] - INSET) * S, (ex[3] - INSET) * S]
       const mine = lay.edges.filter((e) => e.a === n || e.b === n)
-      const holes = mine.filter((e) => e.stair && e.b === n), Rh = SPIRAL.R + 0.05
+      // The dungeon's spiral comes up into its ground room through a hole as any other does.
+      const holes = [...mine.filter((e) => e.stair && e.b === n), ...(dungeonPlan(lay).stair.node === n ? [{ stair: dungeonPlan(lay).stair }] : [])], Rh = SPIRAL.R + 0.05
       const slab = holes.reduce((rects, e) => rects.flatMap((r) => minusHole(r, e.stair.x * S, e.stair.z * S, Rh)), [[ix0, iz0, ix1, iz1]])
       const floor = m.tint(FLOOR[n.sec.kind])
       for (const [a, b, c, d] of slab) m.box(a, y - 0.3, b, c, y, d, floor, true)
@@ -600,15 +801,7 @@ export function interiorGeometries(lay) {
         }
       }
       for (const e of mine) {
-        if (e.stair && e.a === n) {
-          const cx = e.stair.x * S, cz = e.stair.z * S, a0 = spiralStart(cx, cz), { R, post, steps } = SPIRAL, rise = SH / steps
-          const P = (ang, rad, yy) => [cx + Math.cos(ang) * rad, yy, cz + Math.sin(ang) * rad]
-          for (let i = 0; i < steps; i++) {
-            const a = a0 + i * Math.PI / 8, b = a + Math.PI / 8, y0 = y + i * rise, y1 = y0 + rise
-            m.hexa([P(a, post, y0), P(a, R, y0), P(b, R, y0), P(b, post, y0), P(a, post, y1), P(a, R, y1), P(b, R, y1), P(b, post, y1)], m.tint(STEP))
-          }
-          m.box(cx - post, y, cz - post, cx + post, y + SH, cz + post, m.tint(STEP))
-        }
+        if (e.stair && e.a === n) spiralSteps(m, e.stair.x * S, e.stair.z * S, y)
         if (e.ladder) m.with(WOOD_SLOT, () => {
           const lx = e.ladder.x * S, lz = e.ladder.z * S
           for (const o of [-0.3, 0.3]) m.box(lx + o - 0.04, y, lz - 0.04, lx + o + 0.04, y + SH, lz + 0.04, DARKWOOD)
@@ -626,7 +819,7 @@ export function interiorGeometries(lay) {
     for (const m of [at(k), at(-1 - k)]) {
       const wtop = m === at(k) ? top : y + 1.4
       if (e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge') {
-        along(-G, G, -hw - WT, hw + WT, y - 0.3, y, m.tint(FLOOR.gate), m)
+        along(-G, G, -hw - WT, hw + WT, y - 0.3, y + 0.01, m.tint(FLOOR.gate), m)
         for (const sgn of [-1, 1]) along(-G, G, sgn > 0 ? hw : -hw - WT, sgn > 0 ? hw + WT : -hw, y, wtop, m.tint(INNER), m)
         if (y + d.h * V < wtop) along(-G, G, -hw, hw, y + d.h * V, wtop, m.tint(INNER), m)
       } else {
@@ -635,7 +828,19 @@ export function interiorGeometries(lay) {
       }
     }
   }
-  for (const o of roomProps(lay)) for (const m of [at(o.k), at(-1 - o.k)]) prop(m, o)
+  // Partitions, stone through to the slab above, open under a lintel at their doorway; the cut twin's stop at waist height.
+  const PT = PARTITION.t / 2
+  for (const w of roomPlan(lay).walls) for (const [m, low] of [[at(w.k), false], [at(-1 - w.k), true]]) {
+    const top = w.y + (low ? 1.42 : SH - 0.2), col = m.tint(INNER)
+    const piece = (u0, u1, y0) => (w.axis === 'x' ? m.box(w.at - PT, y0, u0, w.at + PT, top, u1, col, y0 > w.y) : m.box(u0, y0, w.at - PT, u1, top, w.at + PT, col, y0 > w.y))
+    piece(w.lo - 0.15, w.door[0], w.y); piece(w.door[1], w.hi + 0.15, w.y)
+    if (!low) piece(w.door[0], w.door[1], w.y + PARTITION.doorH)
+  }
+  for (const r of roomProps(lay)) {
+    const o = warpedProp(warp, r)
+    prop(at(o.k), o)
+    if (!HIGH.has(o.kind)) prop(at(-1 - o.k), o)
+  }
   // Negative keys hold each storey's waist-high-wall twin, drawn when that storey is the plan cut.
   return [...meshers.entries()].filter(([k]) => k >= 0).sort((p, q) => p[0] - q[0])
     .map(([k, m]) => ({ k, geometry: m.arrays(), low: meshers.get(-1 - k).arrays() }))

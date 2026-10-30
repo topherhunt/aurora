@@ -69,7 +69,7 @@ import { LitterCards } from './render/litter-cards.js'
 import { Sticks, KIND as STICK, TIP as STICK_TIP } from './render/sticks.js'
 import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
-import { Pumpkins, KIND as PUMPKIN, LANTERN, FLAME, LIGHT_M as LANTERN_LIGHT_M, SIZE_M as PUMPKIN_SIZE, CARVE_BYTES, cutSweep, rayInto, encodeCarve, decodeCarve } from './render/pumpkins.js'
+import { Pumpkins, KIND as PUMPKIN, LANTERN, FLAME, LIGHT_M as LANTERN_LIGHT_M, SIZE_M as PUMPKIN_SIZE, UNCUT, CARVE_BYTES, cutSweep, rayInto, encodeCarve, decodeCarve } from './render/pumpkins.js'
 import { buildKnife, TIP as KNIFE_TIP, HEEL as KNIFE_HEEL } from './knife.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Boats } from './boats.js'
@@ -953,11 +953,15 @@ const BACKPACK_PHOTO_COLS = 5
 const SAVE_KEY = 'v2.save.2'
 const hasSave = () => localStorage.getItem(SAVE_KEY) !== null
 const readSave = () => { const raw = localStorage.getItem(SAVE_KEY); return raw === null ? null : migrateSave(JSON.parse(raw)) }
-/** An older save brought up to this one: one from before the purse gets its 8 large slots padded to 12, an empty purse and no loot; flares from before they could strike ground all rest in the sky. */
+/** An older save brought up to this one: one from before the purse gets its 8 large slots padded to 12, an empty purse and no loot; one from before carving has no lanterns left about, and its jack-o'-lanterns uncut; flares from before they could strike ground all rest in the sky. */
 function migrateSave(doc) {
   if (doc.purse === undefined) {
     if (doc.backpack.length !== 8) throw new Error(`v2: a save with no purse has ${doc.backpack.length} slots, not 8`)
     doc = { ...doc, backpack: [...doc.backpack, null, null, null, null], purse: Object.fromEntries(SMALL.map((k) => [k, 0])), loot: [] }
+  }
+  if (doc.lanterns === undefined) {
+    const uncut = (slot) => (slot !== null && slot.kind === LANTERN ? { ...slot, carve: UNCUT } : slot)
+    doc = { ...doc, backpack: doc.backpack.map(uncut), held: Object.fromEntries(Object.entries(doc.held ?? {}).map(([k, slot]) => [k, uncut(slot)])), lanterns: {} }
   }
   if (doc.flares === undefined) return doc
   return { ...doc, flares: doc.flares.map((a) => (a.length === 10 ? [...a, REST_M] : a)) }
@@ -1018,6 +1022,8 @@ const drumsAt = { x: 0, y: 0, z: 0, near: 0 }
 // Her pets in every room but this one (wildlife.js LOST), by petRoom, saved; and this room's name there.
 const petsIn = new Map()
 let petRoom = null
+// The jack-o'-lanterns left about every room but this one, by petRoom, saved: [netId, slot, pose] as hands.place takes them.
+const lanternsIn = new Map()
 // Her voice as the hail (audio/mic.js), asked for on the first gesture once the sound is open.
 let talkMic = null
 const talkGaze = new THREE.Vector3()
@@ -1056,6 +1062,7 @@ function saveGame() {
     drumsStilled: [...drumsStilled],
     boneFriends: [...boneFriends],
     pets: { ...Object.fromEntries(petsIn), ...(wildlife ? { [petRoom]: wildlife.pets() } : {}) },
+    lanterns: { ...Object.fromEntries(lanternsIn), ...(hands ? { [petRoom]: roomLanterns() } : {}) },
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
   for (const key of HAND_KEYS) {
@@ -1101,6 +1108,25 @@ function applySave(doc) {
   if (doc.boneFriends !== undefined) for (const k of doc.boneFriends) boneFriends.add(k)
   // A save from before pets were kept has none.
   restorePets(doc.pets ?? {})
+  restoreLanterns(doc.lanterns)
+}
+
+/** This room's loose jack-o'-lanterns, as the save keeps them. */
+function roomLanterns() {
+  return hands.loose.filter((i) => i.rec.kind === LANTERN).map((i) => [i.netId, hands.pack(i.rec), [i.x, i.y, i.z, i.q.x, i.q.y, i.q.z, i.q.w]])
+}
+
+/** The lanterns a save left about, by petRoom: this room's set down where they were, the rest kept for their rooms. */
+function restoreLanterns(lanterns) {
+  lanternsIn.clear()
+  for (const [k, list] of Object.entries(lanterns)) lanternsIn.set(k, list)
+  if (hands) placeLanterns()
+}
+
+/** This room's saved lanterns back on the ground. */
+function placeLanterns() {
+  for (const [id, slot, pose] of lanternsIn.get(petRoom) ?? []) hands.place(id, slot, pose)
+  lanternsIn.delete(petRoom)
 }
 
 /** Her pets as a save has them, by petRoom: this room's waiting where they were, the rest kept for their rooms. */
@@ -1206,6 +1232,7 @@ function newGame() {
   drumsStilled.clear()
   boneFriends.clear()
   restorePets({})
+  restoreLanterns({})
   giveFlareGun()
   giveFlint()
   paintBackpack()
@@ -4490,6 +4517,7 @@ function disposeRoom() {
   if (caveMouths) { caveMouths.dispose(); caveMouths = null }
   items.clear()
   if (wildlife) petsIn.set(petRoom, wildlife.pets())
+  if (hands) lanternsIn.set(petRoom, roomLanterns())
   for (const layer of [
     leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, skeletons, wisps, treats, castleGhost, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish, seaweed,
     boats, rowboats, carrots, pumpkins, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
@@ -5518,7 +5546,7 @@ async function buildRoom(room, at) {
   }
   if (layers.castles.list.length) {
     castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
-    castles.update(spawn)
+    castles.update(spawn, fireNow(), lampNight())
     window.v2castles = castles // console: `v2castles.stats`
   }
 
@@ -5792,9 +5820,9 @@ async function buildRoom(room, at) {
   )
   window.v2carrots = carrots
   // The pumpkins: the back row of every town field (layers/trades.js pumpkinSpots).
-  pumpkins = new Pumpkins(scene, height, townPlan && !room.village ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ spots: pumpkinSpots(w) }))) : [])
+  pumpkins = new Pumpkins(scene, (x, z) => height.heightAt(x, z), townPlan && !room.village ? townPlan.towns.flatMap((t) => t.works.filter((w) => w.kind === 'field').map((w) => ({ spots: pumpkinSpots(w) }))) : [], litterCards)
   lighting.patch(pumpkins.material, { mode: 'vertex', cacheKey: 'v2-pumpkin' })
-  pumpkins.update(spawn.x, spawn.z, true)
+  pumpkins.bakeCards(renderer)
   window.v2pumpkins = pumpkins
 
   // The rowboats: the viking rowboat afloat in the shallows of every lake, one
@@ -6017,6 +6045,7 @@ async function buildRoom(room, at) {
   hands.addSource(mushrooms, 'mushroom')
   hands.addSource(carrots, 'carrot')
   hands.addSource(pumpkins, [PUMPKIN, LANTERN])
+  placeLanterns()
   hands.addSource(spiders, 'spider')
   hands.addSource(butterflies, 'butterfly')
   hands.addSource(fish, 'fish')
@@ -6137,7 +6166,7 @@ async function buildRoom(room, at) {
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
       herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, { layer: skeletons, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, { layer: skeletons, rule: 'villagerVoice' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, { layer: skeletons, rule: 'villagerVoice' }, { layer: castleGhost, rule: 'villagerVoice', bus: 'near' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -8985,7 +9014,7 @@ function stepOverworld(dt, now) {
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
   if (palisades) palisades.update(headTmp, fireNow())
-  if (castles) castles.update(headTmp)
+  if (castles) castles.update(headTmp, fireNow(), lampNight())
   if (townsfolk && questToggles.townsfolk) {
     dreadTmp.length = dragonTmp.length = 0
     if (dragons) for (const d of dragons.bodies(dragonTmp)) if (d.fell === null) dreadTmp.push(d)
@@ -8999,7 +9028,7 @@ function stepOverworld(dt, now) {
     ferns.update(headTmp.x, headTmp.y, headTmp.z)
     carrots.update(headTmp.x, headTmp.y, headTmp.z)
   }
-  pumpkins.update(headTmp.x, headTmp.z)
+  pumpkins.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('ferns')
   if (questToggles.grass) grass.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('grass')
@@ -9087,7 +9116,7 @@ function stepOverworld(dt, now) {
   const wispPlaces = conversations === null ? [] : conversations.world.hideouts.filter((h) => h !== null && !boneFriends.has(placeKey(h))).map((h) => ({ key: placeKey(h), x: h.x, z: h.z }))
   wisps.update(dt, clock.seconds, player.originPosition(), { dayness, outdoors: cave === null && inCastle === null && indoors === null, places: wispPlaces, heightAt: (x, z) => walk.heightAt(x, z) })
   const ghostQuest = inCastle !== null && castleGhost.at !== null && conversations !== null ? conversations.ghostOf(inCastle.site.id) : null
-  castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale()))
+  castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale(), () => castleGhost.whisper(clock.seconds)))
   if (giants) {
     giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider') || herLantern
     giants.glow = herLantern

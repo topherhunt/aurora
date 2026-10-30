@@ -87,6 +87,7 @@ const ROLL_LEAN = 6
 // A thing on the ground is a ball of this fraction of its size, for the contact and the roll.
 const BALL = 0.4
 // A kind whose source says `lies` (a stick) is let go level, lands flat on a ball of this fraction of its size and slides rather than rolls, at this fraction of a roll's speed.
+// One whose source says `sits` (a pumpkin) is let go upright, keeping the yaw it was held at, and stays where its base lands.
 const LIE_BALL = 0.04
 const LIE_SLIDE = 0.3
 // A beached fish: the tail's beats a second and its swing as a fraction of the length at full strength; a jerk of the body every so often, a turn of up to this and a hop of this speed.
@@ -212,13 +213,19 @@ export class Hands {
     this.sources = []
     // kind -> the source that hands it out and dresses it.
     this.byKind = new Map()
-    // The kinds that lie flat on the ground when let go (see LIE_BALL).
+    // The kinds that lie flat on the ground when let go (see LIE_BALL), and that sit where they land.
     this.lying = new Set()
+    this.sitting = new Set()
+    // kind -> how many of it lie loose before the oldest is forgotten, for a kind its source keeps apart from LOOSE_MAX.
+    this.keeps = new Map()
     this.hands = new Map()
     // The things let go of and not taken back, oldest first.
     this.loose = []
     // One pool per source geometry.
     this.pools = new Map()
+    // The sources that draw their far loose things themselves, and those things this frame (addSource drawFar).
+    this.farSources = new Set()
+    this.far = new Set()
     // Scratch for _write: her held items and their hands' draw scale.
     this._mine = new Map()
     // The photographs' scene, lights and camera, and a subject per source geometry; built at the first photograph.
@@ -262,7 +269,10 @@ export class Hands {
    * take(hit, stowMax) -> record, dress(slot) -> { geometry, material } for a
    * packed slot of its kind (null while its asset has not landed), and
    * release(record, x, y, z, head) -> boolean. One with drawn(name, record) gives its
-   * instanced values each frame, for a record that changes in place (a lantern lit or carved).
+   * instanced values each frame, for a record that changes in place (a lantern lit or carved). One with drawFar(loose, head,
+   * far) draws loose things of its kinds that are far from her head its own way each frame, adding them to the Set `far`,
+   * which is then left out of the pools. `keep`, { kind: n }, holds
+   * up to n of that kind loose apart from LOOSE_MAX (the relay keeps the same split, server/src/main.js ROOM_KEEPS).
    */
   addSource(src, kinds) {
     if (typeof src.pickAt !== 'function' || typeof src.take !== 'function' || typeof src.dress !== 'function') throw new Error('Hands.addSource: a source has pickAt(x, y, z, reach, maxSize), take(hit, stowMax) and dress(slot)')
@@ -272,6 +282,13 @@ export class Hands {
     for (const kind of list) {
       this.byKind.set(kind, src)
       if (src.lies === true) this.lying.add(kind)
+      if (src.sits === true) this.sitting.add(kind)
+    }
+    if (typeof src.drawFar === 'function') this.farSources.add(src)
+    for (const [kind, n] of Object.entries(src.keep ?? {})) {
+      // A pool holds LOOSE_MAX of its kind loose (POOL_CAP).
+      if (!list.includes(kind) || !Number.isInteger(n) || n < 1 || n > LOOSE_MAX) throw new Error(`Hands.addSource: keep ${n} of ${kind}`)
+      this.keeps.set(kind, n)
     }
     this.sources.push(src)
   }
@@ -520,9 +537,9 @@ export class Hands {
           item.mine = false
           item.netId = null
           hands.loose.push(item)
+          hands._capLoose(item.rec.kind)
         }
         items.length = holds.length = 0
-        while (hands.loose.length > LOOSE_MAX) hands._forget(hands.loose.shift())
       },
       /** Everything carried gone with the carrier, off into the village. */
       clear() {
@@ -843,7 +860,8 @@ export class Hands {
       rec, src, pool, attrs,
       // The ball's centre, its rotation, and the offset from the geometry's origin to its centre, scaled: what the pose is applied to.
       x: 0, y: 0, z: 0, q: new THREE.Quaternion(), off: new THREE.Vector3(pool.centre.x * rec.scale[0], pool.centre.y * rec.scale[1], pool.centre.z * rec.scale[2]),
-      r: rec.size * (this.lying.has(rec.kind) ? LIE_BALL : BALL),
+      // A sitting thing's is from its centre down to its base.
+      r: this.sitting.has(rec.kind) ? (pool.centre.y - pool.geo.boundingBox.min.y) * rec.scale[1] : rec.size * (this.lying.has(rec.kind) ? LIE_BALL : BALL),
       state: 'held', vx: 0, vy: 0, vz: 0, t: 0, tried: false, jerk: 0,
       // Afloat: the bob's phase, the turn, the drift it is easing toward and how long that heading has left.
       phase: 0, spin: 0, ax: 0, az: 0, tack: 0,
@@ -854,6 +872,20 @@ export class Hands {
     }
     pool.items.push(item)
     return item
+  }
+
+  /** The oldest loose thing past its cap forgotten: a kept kind's own, or LOOSE_MAX of all the rest. */
+  _capLoose(kind) {
+    const cap = this.keeps.get(kind)
+    const counts = (item) => (cap === undefined ? !this.keeps.has(item.rec.kind) : item.rec.kind === kind)
+    let n = 0
+    for (const item of this.loose) if (counts(item)) n++
+    for (let i = 0; n > (cap ?? LOOSE_MAX); i++) {
+      if (!counts(this.loose[i])) continue
+      this._forget(this.loose[i])
+      this.loose.splice(i--, 1)
+      n--
+    }
   }
 
   _forget(item) {
@@ -913,8 +945,8 @@ export class Hands {
     this._emit({ type: 'hold', hand: hand.key, slot: null })
     if (!thrown && this._giveBack(item, cx, cy, cz, head)) return
     item.x = cx; item.y = cy; item.z = cz
-    // Held level; let go level -- or, for a thing that lies, turned flat about the way it pointed.
-    if (this.lying.has(item.rec.kind)) {
+    // Held level; let go level -- or, for a thing that lies or sits, turned flat about the way it pointed.
+    if (this.lying.has(item.rec.kind) || this.sitting.has(item.rec.kind)) {
       _c.set(0, 0, -1).applyQuaternion(item.q)
       item.q.setFromAxisAngle(_axis.set(0, 1, 0), Math.atan2(-_c.x, -_c.z))
     } else item.q.identity()
@@ -927,7 +959,7 @@ export class Hands {
     item.world = this.world
     item.netId = this._looseId()
     this.loose.push(item)
-    while (this.loose.length > LOOSE_MAX) this._forget(this.loose.shift())
+    this._capLoose(item.rec.kind)
     if (item.netId !== null) this._emit(this._looseEvent(item))
   }
 
@@ -989,6 +1021,8 @@ export class Hands {
     }
     this.loose.length = kept
     for (const held of this.peerHeld.values()) for (const entry of held) if (entry && !entry.item) this._dressPeer(entry)
+    this.far.clear()
+    for (const src of this.farSources) src.drawFar(this.loose, head, this.far)
     for (const pool of this.pools.values()) this._write(pool)
   }
 
@@ -1029,6 +1063,12 @@ export class Hands {
       this.thud(item.x, ground, item.z)
       if (item.mine && this._giveBack(item, item.x, ground, item.z, item.head)) { this._settled(item, true); return false }
       item.t = 0
+      if (this.sitting.has(item.rec.kind)) {
+        item.state = 'still'
+        item.vx = item.vy = item.vz = 0
+        this._settled(item)
+        return true
+      }
       if (item.rec.kind === 'fish') {
         // On its side, its nose along its heading, a hand's breadth of body on the ground.
         item.state = 'flap'
@@ -1222,7 +1262,7 @@ export class Hands {
       item.q.set(pose[3], pose[4], pose[5], pose[6])
       item.head = { x: pose[0], y: pose[1], z: pose[2] }
       this.loose.push(item)
-      while (this.loose.length > LOOSE_MAX) this._forget(this.loose.shift())
+      this._capLoose(item.rec.kind)
       if (stateName === 'float') this._float(item)
       else { item.state = stateName; item.t = 0; item.tried = false; item.vx = vel[0]; item.vy = vel[1]; item.vz = vel[2] }
       return true
@@ -1240,6 +1280,22 @@ export class Hands {
     item.eq.set(pose[3], pose[4], pose[5], pose[6])
     item.eState = stateName
     return true
+  }
+
+  /** A saved loose thing back where it lay, still, under its saved room id (null if it never had one), and the room told; one the room already has here is left. */
+  place(id, slot, pose) {
+    if (id !== null && this.loose.some((i) => i.netId === id)) return
+    const rec = this.dressed(slot)
+    if (rec === null) throw new Error(`Hands.place: the ${slot.kind} has no asset yet`)
+    const item = this._item(rec, this.byKind.get(slot.kind))
+    item.netId = id
+    item.world = this.worldOf(pose[1])
+    item.x = pose[0]; item.y = pose[1]; item.z = pose[2]
+    item.q.set(pose[3], pose[4], pose[5], pose[6])
+    item.state = 'still'
+    this.loose.push(item)
+    this._capLoose(item.rec.kind)
+    if (this.tag !== null) this._emit(this._looseEvent(item))
   }
 
   /** A loose thing picked up by a creature (villagers.js): gone here, and from the room if it is known there. */
@@ -1303,7 +1359,7 @@ export class Hands {
     mine.clear()
     for (const hand of this.hands.values()) if (hand.held) mine.set(hand.held, this._drawn(hand))
     this._fill(pool, pool.over, (item) => mine.get(item))
-    this._fill(pool, pool, (item) => (mine.has(item) ? undefined : 1))
+    this._fill(pool, pool, (item) => (mine.has(item) || this.far.has(item) ? undefined : 1))
   }
 
   /** Writes the pool's items for which `scaleOf(item)` is a number into a layer's mesh, at that draw scale. */

@@ -18,6 +18,10 @@ export const GHOST = {
   opacity: 0.5,
   // She is near it within `near` m (times her size), where it speaks.
   near: 3,
+  // Shown and within `hearM` of her, it whispers to itself every `murmurS` seconds, at `murmur` times a spoken line's gain.
+  hearM: 6,
+  murmurS: [8, 20],
+  murmur: 0.5,
 }
 
 export class CastleGhost {
@@ -30,6 +34,20 @@ export class CastleGhost {
     scene.add(this.mesh)
     // Where it drifts in the castle she is in, `{ x, y, z }`, or null.
     this.at = null
+    // Its whispers since the ambience last drained them (voices()), and the next murmur's time on update's clock.
+    this.said = []
+    this.murmurAt = 0
+  }
+
+  /** A whisper with each line it speaks; it murmurs no sooner than `murmurS` after. */
+  whisper(seconds, gain = 1, rate = 1) {
+    this.said.push({ sound: 'ghostWhisper', gain, rate, x: this.at.x, y: this.at.y + GHOST.size * 0.8, z: this.at.z })
+    this.murmurAt = seconds + GHOST.murmurS[0] + Math.random() * (GHOST.murmurS[1] - GHOST.murmurS[0])
+  }
+
+  voices(into) {
+    for (const v of this.said) into.push(v)
+    this.said.length = 0
   }
 
   /** Into castle `site` (floor `oy`): its ghost's room, away from the hiding child's. */
@@ -48,10 +66,12 @@ export class CastleGhost {
     this.mesh.visible = false
   }
 
-  /** Drawn while `shown`, bobbing at `seconds` and turning to `her` ({ x, z }). */
+  /** Drawn while `shown`, bobbing at `seconds`, turning to `her` ({ x, z }) and murmuring while she is within `hearM`. */
   update(dt, seconds, her, shown) {
     this.mesh.visible = shown && this.at !== null
     if (!this.mesh.visible) return
+    if (Math.hypot(her.x - this.at.x, her.z - this.at.z) > GHOST.hearM) this.murmurAt = Math.max(this.murmurAt, seconds + GHOST.murmurS[0])
+    else if (seconds >= this.murmurAt) this.whisper(seconds, GHOST.murmur, 0.85 + 0.2 * Math.random())
     this.mesh.position.set(this.at.x, this.at.y + GHOST.bob * Math.sin(2 * Math.PI * GHOST.bobHz * seconds), this.at.z)
     const want = Math.atan2(-(her.z - this.at.z), her.x - this.at.x)
     const d = Math.atan2(Math.sin(want - this.mesh.rotation.y), Math.cos(want - this.mesh.rotation.y))

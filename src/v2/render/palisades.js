@@ -203,9 +203,8 @@ export class Palisades {
     this.litterCards = cards
     const ext = impostorCardExtents(POST_CARD_FRAME)
     this.cardPicture = cards.addPicture({ kind: 'spun', cx: 0, cy: ext.height / 2 - ext.sink, hw: ext.width / 2, hh: ext.height / 2 })
-    cards.claim('palisades', PALISADE_CARDS)
     this.cardBase = 2 * VARIANTS
-    this.posts = new PropArena(POOL, this.lods.map((geometries) => ({ geometries })), CAPS, this.material, 'v2-palisades', { cards: cards.meshes, cardBase: this.cardBase })
+    this.posts = new PropArena(POOL, this.lods.map((geometries) => ({ geometries })), CAPS, this.material, 'v2-palisades', { cards: cards.meshes, cardBase: this.cardBase, budget: cards.claim('palisades', PALISADE_CARDS) })
     scene.add(this.posts)
     this.cardReady = false
     this._free = []

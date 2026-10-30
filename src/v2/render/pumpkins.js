@@ -1,5 +1,10 @@
 import THREE from '../../three-instance.js'
 import { taken, TOLERANCE_M } from '../taken.js'
+import { propCull } from './gen-props.js'
+import { LOD_DEG, distAt, ladderTier } from './critters.js'
+import { cardPicture } from './litter-cards.js'
+import { PropArena } from './prop-arena.js'
+import { RimFade } from './rim.js'
 
 // ---------------------------------------------------------------------------
 // Pumpkins: a crop on the last row of every town field (layers/trades.js pumpkinSpots), pulled like a carrot (hands.js kind
@@ -28,10 +33,18 @@ export const FLAME = new THREE.Vector3(0, -0.3 * R, 0)
 const FLAME_H = 0.085
 // Within this of FLAME, a spark lights the lantern.
 export const LIGHT_M = R
-// Pumpkins within NEAR_M of her are drawn, redrawn each time she has gone RESEAT_M.
-const NEAR_M = 70
-const RESEAT_M = 5
+const RUNG_MESH = 0
+const RUNG_CARD = 1
+const RUNG_NONE = 2
+// A pumpkin is its mesh while it spans more than LOD_DEG / MESH_ARCS: out to 5 m for the smallest, 10 m for the largest.
+const MESH_ARCS = 5.7
+export const meshReach = (size) => distAt(size, LOD_DEG) * MESH_ARCS
+// Far cards drawn at once, the fields' and the dropped ones' together; ids for the dropped ones.
+const FAR_CARDS = 50
+const LOOSE_CARD_IDS = 64
 
+// Lanterns left loose in a room, the oldest forgotten past this: in the room (hands.js keep, the relay's ROOM_KEEPS) and in the save.
+export const LANTERNS_KEPT = 20
 export const CARVE_W = 128
 export const CARVE_H = 64
 export const CARVE_BYTES = (CARVE_W * CARVE_H) / 8
@@ -233,10 +246,12 @@ function buildLanternMaterial(glow, carve) {
 
 /**
  * The pumpkins on the fields and the Hands source for both kinds. `plots` is `[{ spots: [[x, z, grow]] }]` (main.js); each
- * spot grows one, sat on `ground(x, z)`. Drawn as one instanced mesh of those within NEAR_M of her.
+ * spot grows one, sat on `ground(x, z)`. A field pumpkin is the instanced mesh out to meshReach, a shared litter card
+ * (`cards`, litter-cards.js) beyond, dissolved out at propCull; a dropped one the same card (drawFar).
  */
 export class Pumpkins {
-  constructor(scene, ground, plots) {
+  constructor(scene, ground, plots, cards) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Pumpkins: needs the LitterCards its far card is drawn by')
     this.ground = ground
     this.geometry = buildPumpkinGeometry()
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true })
@@ -255,43 +270,96 @@ export class Pumpkins {
     this.overflow = 0
     this.lanternMaterial = buildLanternMaterial(this.glow, this.carveTex)
     this.materials = [this.material]
-    // [x, y, z, scale, yaw, r, g, b] per spot.
     this.spots = []
     for (const plot of plots) {
       for (const [x, z, grow] of plot.spots) {
         const h = Math.sin(x * 91.7 + z * 47.3) * 43758.5453
         const u = h - Math.floor(h)
         const scale = 0.55 + 0.6 * grow
-        this.spots.push({ x, z, y: ground(x, z) + R * SQUASH * scale * 0.85, scale, yaw: u * Math.PI * 2, tint: 0.85 + 0.3 * u, gone: taken.has(KIND, x, z) })
+        this.spots.push({ id: this.spots.length, x, z, y: ground(x, z) + R * SQUASH * scale * 0.85, scale, yaw: u * Math.PI * 2, tint: 0.85 + 0.3 * u, gone: taken.has(KIND, x, z) })
       }
     }
-    this.mesh = new THREE.InstancedMesh(this.geometry, this.material, Math.max(1, this.spots.length))
+    const n = Math.max(1, this.spots.length)
+    this.mesh = new THREE.InstancedMesh(this.geometry, this.material, n)
     this.mesh.name = 'v2-pumpkins'
     this.mesh.count = 0
     this.mesh.frustumCulled = false
-    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, this.spots.length) * 3), 3)
+    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3)
     scene.add(this.mesh)
     this.shown = []
-    this.cx = Infinity
-    this.cz = Infinity
     this._m = new THREE.Matrix4()
     this._q = new THREE.Quaternion()
     this._v = new THREE.Vector3()
     this._s = new THREE.Vector3()
+    this._c = new THREE.Color()
     this._up = new THREE.Vector3(0, 1, 0)
+
+    // The card's picture is the pumpkin stood on its base at y = 0 (bakeCards).
+    const box = this.geometry.boundingBox
+    this.cardBase = box.min.y
+    this.cardBounds = { halfX: Math.max(-box.min.x, box.max.x), halfZ: Math.max(-box.min.z, box.max.z), height: box.max.y - box.min.y }
+    const budget = cards.claim('pumpkins', FAR_CARDS)
+    this.litterCards = cards
+    this.cardPicture = cards.addPicture(cardPicture('spun', this.cardBounds))
+    this.cards = PropArena.over(cards.meshes, n, 'v2-pumpkins-card', { budget })
+    this.looseCards = PropArena.over(cards.meshes, LOOSE_CARD_IDS, 'v2-pumpkins-loose-card', { budget })
+    for (let i = 0; i < LOOSE_CARD_IDS; i++) {
+      this.looseCards.addInstance(0)
+      this.looseCards.setLayerShiftAt(i, this.cardPicture)
+    }
+    this.looseShown = 0
+    this.looseRung = new WeakMap()
+    this.rim = new RimFade(this.cards, n, () => {})
+    this.instX = new Float32Array(n)
+    this.instY = new Float32Array(n)
+    this.instZ = new Float32Array(n)
+    this.rungAt = new Uint8Array(n).fill(RUNG_CARD)
+    // One rim tile of every pumpkin still on the fields: a room's few hundred at most.
+    this.tile = { tx: 0, tz: 0, ids: new Int32Array(n), n: 0 }
+    for (const s of this.spots) {
+      if (this.cards.addInstance(0) !== s.id) throw new Error('Pumpkins: the card view and the spots disagree on ids')
+      this.cards.setLayerShiftAt(s.id, this.cardPicture)
+      this.cards.setVisibleAt(s.id, false)
+      this.cards.setMatrixAt(s.id, this._m.compose(this._v.set(s.x, s.y + this.cardBase * s.scale, s.z), this._q.setFromAxisAngle(this._up, s.yaw), this._s.setScalar(s.scale)))
+      this.cards.setColorAt(s.id, this._c.setScalar(s.tint))
+      this.instX[s.id] = s.x; this.instY[s.id] = s.y; this.instZ[s.id] = s.z
+      if (s.gone) continue
+      this.rim.place(s.id, propCull(SIZE_M * s.scale))
+      this.tile.ids[this.tile.n++] = s.id
+    }
+    this.meshDirty = true
     this.size = SIZE_M
+    // For hands.js: let go, one sits where it lands; the lanterns dropped about the room are kept apart from other loose things.
+    this.sits = true
+    this.keep = { [LANTERN]: LANTERNS_KEPT }
   }
 
-  /** The instances redrawn when she has gone RESEAT_M since the last, or `force`. */
-  update(x, z, force = false) {
+  /** Each frame: sweep the rim, put each pumpkin on its rung for the eye at (x, y, z), and redraw the mesh when a rung changed. */
+  update(x, y, z) {
     this.frame++
-    if (!force && Math.hypot(x - this.cx, z - this.cz) < RESEAT_M) return
-    this.cx = x
-    this.cz = z
+    const tile = this.tile
+    this.rim.beginFrame(x, y, z)
+    this.rim.sweepTile(tile, this.instX, this.instY, this.instZ, x, y, z)
+    for (let k = 0; k < tile.n; k++) {
+      const i = tile.ids[k]
+      const s = this.spots[i]
+      const hidden = this.rim.isHidden(i)
+      const rung = hidden ? RUNG_CARD : ladderTier(meshReach(SIZE_M * s.scale), [1], 1, Math.hypot(s.x - x, s.y - y, s.z - z), this.rungAt[i])
+      if (rung === RUNG_MESH) {
+        if (this.cards.vis[i]) this.cards.setVisibleAt(i, false)
+      } else if (this.rungAt[i] !== RUNG_CARD && !hidden) {
+        this.cards.setVisibleAt(i, true)
+      }
+      if (rung !== this.rungAt[i]) this.meshDirty = true
+      this.rungAt[i] = rung
+    }
+    if (!this.meshDirty) return
+    this.meshDirty = false
     this.shown.length = 0
     const col = this.mesh.instanceColor.array
-    for (const s of this.spots) {
-      if (s.gone || Math.hypot(s.x - x, s.z - z) > NEAR_M) continue
+    for (let k = 0; k < tile.n; k++) {
+      const s = this.spots[tile.ids[k]]
+      if (this.rungAt[s.id] !== RUNG_MESH) continue
       const n = this.shown.length
       this._m.compose(this._v.set(s.x, s.y, s.z), this._q.setFromAxisAngle(this._up, s.yaw), this._s.setScalar(s.scale))
       this.mesh.setMatrixAt(n, this._m)
@@ -303,10 +371,10 @@ export class Pumpkins {
     this.mesh.instanceColor.needsUpdate = true
   }
 
-  /** The drawn pumpkin nearest (x, y, z) within `reach` of its belly: `{ dist, spot, size }`, or null. For hands.js. */
+  /** The field pumpkin nearest (x, y, z) within `reach` of its belly: `{ dist, spot, size }`, or null. For hands.js. */
   pickAt(x, y, z, reach) {
     let best = null
-    for (const spot of this.shown) {
+    for (const spot of this.spots) {
       if (spot.gone) continue
       const dist = Math.max(0, Math.hypot(spot.x - x, spot.y - y, spot.z - z) - R * spot.scale)
       if (dist < reach && (best === null || dist < best.dist)) best = { dist, spot, size: SIZE_M * spot.scale }
@@ -318,9 +386,8 @@ export class Pumpkins {
   take(hit) {
     const { spot } = hit
     if (spot.gone) throw new Error('Pumpkins.take: that pumpkin was taken already')
-    spot.gone = true
     taken.add(KIND, spot.x, spot.z)
-    this.update(this.cx, this.cz, true)
+    this._gone(spot)
     return { ...this.slot(KIND, spot.scale, spot.tint), ...this.dress({ kind: KIND }) }
   }
 
@@ -329,9 +396,53 @@ export class Pumpkins {
     if (key !== KIND) return false
     const spot = this.spots.find((s) => !s.gone && Math.abs(s.x - x) < TOLERANCE_M && Math.abs(s.z - z) < TOLERANCE_M)
     if (!spot) return false
-    spot.gone = true
-    this.update(this.cx, this.cz, true)
+    this._gone(spot)
     return true
+  }
+
+  /** Spot `spot` off the field: out of the rim's tile, its card hidden, and the mesh redrawn without it. */
+  _gone(spot) {
+    spot.gone = true
+    const tile = this.tile
+    const k = tile.ids.subarray(0, tile.n).indexOf(spot.id)
+    if (k < 0) throw new Error('Pumpkins: a pumpkin on the field is not in the rim tile')
+    tile.ids[k] = tile.ids[--tile.n]
+    this.cards.setVisibleAt(spot.id, false)
+    this.rim.drop(spot.id)
+    this.rim.releaseTile(tile)
+    this.rungAt[spot.id] = RUNG_CARD
+    this.meshDirty = true
+  }
+
+  /** For hands.js, each frame: a dropped pumpkin or lantern past meshReach is drawn as the field's card, and nothing past propCull; those are added to `far`, which hands leaves undrawn. */
+  drawFar(loose, head, far) {
+    let n = 0
+    for (const item of loose) {
+      if (item.rec.kind !== KIND && item.rec.kind !== LANTERN) continue
+      const size = item.rec.size
+      const near = meshReach(size)
+      const rung = ladderTier(near, [1, propCull(size) / near], 2, Math.hypot(item.x - head.x, item.y - head.y, item.z - head.z), this.looseRung.get(item) ?? RUNG_MESH)
+      this.looseRung.set(item, rung)
+      if (rung === RUNG_MESH) continue
+      far.add(item)
+      if (rung === RUNG_NONE || n === LOOSE_CARD_IDS) continue
+      const scale = item.rec.scale[0]
+      this._m.compose(this._v.set(item.x, item.y - (this.cardBounds.height / 2) * scale, item.z), item.q, this._s.setScalar(scale))
+      this.looseCards.setMatrixAt(n, this._m)
+      this.looseCards.setColorAt(n, this._c.fromArray(item.rec.color))
+      if (this.looseCards.setVisibleAt(n, true)) n++
+    }
+    for (let i = n; i < this.looseShown; i++) this.looseCards.setVisibleAt(i, false)
+    this.looseShown = n
+  }
+
+  /** Photograph the field pumpkin, unlit, into its card's picture. */
+  bakeCards(renderer) {
+    const geometry = this.geometry.clone().translate(0, -this.cardBase, 0)
+    const material = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false })
+    this.litterCards.bake(renderer, this.cardPicture, new THREE.Mesh(geometry, material), null, this.cardBounds, 'spun')
+    geometry.dispose()
+    material.dispose()
   }
 
   dress(slot) {
@@ -391,9 +502,14 @@ export class Pumpkins {
     return { ...slot, kind: LANTERN, name: "jack-o'-lantern", lit: false, carve }
   }
 
-  setShown(shown) { this.mesh.visible = shown }
+  /** Draw the fields' pumpkins or none; the far cards are shared instances, so the mesh's `visible` alone would leave them. */
+  setShown(shown) {
+    this.mesh.visible = shown
+    this.cards.setShown(shown)
+    this.looseCards.setShown(shown)
+  }
 
-  get stats() { return { spots: this.spots.length, shown: this.shown.length, taken: this.spots.filter((s) => s.gone).length, carvings: this.layers.size, overflow: this.overflow } }
+  get stats() { return { spots: this.spots.length, shown: this.shown.length, cards: this.tile.ids.subarray(0, this.tile.n).reduce((a, i) => a + this.cards.vis[i], 0), taken: this.spots.filter((s) => s.gone).length, carvings: this.layers.size, overflow: this.overflow } }
 
   dispose() {
     this.mesh.parent?.remove(this.mesh)

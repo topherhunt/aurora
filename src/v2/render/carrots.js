@@ -315,10 +315,10 @@ export class Carrots {
       halfZ: Math.max(Math.abs(box.min.z), Math.abs(box.max.z)),
       height: box.max.y + this.cardDrop,
     }
-    cards.claim('carrots', this.maxInstances)
+    const cardBudget = cards.claim('carrots', Math.min(400, this.maxInstances))
     this.litterCards = cards
     this.cardPicture = cards.addPicture(cardPicture('spun', this.cardBounds))
-    this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-carrots-card')
+    this.cards = PropArena.over(cards.meshes, this.maxInstances, 'v2-carrots-card', { budget: cardBudget })
 
     this.free = new Int32Array(this.maxInstances)
     this.freeCount = this.maxInstances

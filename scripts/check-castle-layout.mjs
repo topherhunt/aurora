@@ -52,7 +52,7 @@ const tri = (g) => g.position.length / 9
 const ext = good.map((l) => tri(exteriorGeometry(l)))
 const int = good.slice(0, 40).map((l) => interiorGeometries(l).reduce((a, s) => a + tri(s.geometry), 0))
 check(Math.max(...ext) < 20000, 'an exterior shell stays under 20k triangles', `worst ${Math.max(...ext)}`)
-check(Math.max(...int) < 36000, 'an interior shell stays under 36k triangles', `worst ${Math.max(...int)}`)
+check(Math.max(...int) < 60000, 'an interior shell stays under 60k triangles', `worst ${Math.max(...int)}`)
 
 // Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is
 // scanned, since the warp moves coincident faces together.
@@ -92,9 +92,9 @@ for (const l of good.slice(0, 60)) {
   const x0 = l.X(0) - 8, x1 = l.X(l.cw) + 8, z0 = l.Z(0) - 8, z1 = l.Z(l.cd) + 16, top = Math.max(...l.sections.map((s) => s.floors ?? 1))
   for (let x = x0; x <= x1; x += 0.5) for (let z = z0; z <= z1; z += 0.5) {
     worstEx = Math.max(worstEx, exteriorSpans(sol.ex, x, z))
-    for (let k = 0; k <= top; k++) worstIn = Math.max(worstIn, interiorSpans(sol.it, x * CASTLE.scale, z * CASTLE.scale, k * CASTLE.storey * CASTLE.tall + 0.5))
+    for (let k = -1; k <= top; k++) worstIn = Math.max(worstIn, interiorSpans(sol.it, x * CASTLE.scale, z * CASTLE.scale, k * CASTLE.storey * CASTLE.tall + 0.5))
   }
-  const P = sol.portals, want = l.edges.filter((e) => e.stair).length
+  const P = sol.portals, want = l.edges.filter((e) => e.stair).length + 1
   if (P.doors.length === 0 || sol.it.spirals.length !== want || !P.rope || !P.chest) portalsShort.push(l.seed)
 }
 // A castle whose collision throws never loads in, so far more seeds are swept here than the grid above can afford.

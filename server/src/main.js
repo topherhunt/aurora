@@ -345,6 +345,8 @@ const SLOT_MAX_JSON = 512
 const CARVE_B64 = 1368
 const SLOT_MAX_ATTRS = 8
 const ROOM_LOOSE_CAP = 24
+// Kinds held loose apart from ROOM_LOOSE_CAP, up to their own count (v2 hands.js keep): the room's jack-o'-lanterns.
+const ROOM_KEEPS = { 'jack-o-lantern': 20 }
 const ROOM_GONE_CAP = 64
 const TAKEN_CAP = 4096
 const TAKEN_TRIM = 1024
@@ -394,12 +396,16 @@ function applyThing(room, client, message, now) {
   } else if (message.type === 'loose') {
     // An id the room has forgotten stays forgotten: a thing settling with its owner after a peer lifted it is not put back.
     if (!room.loose.has(message.id) && room.gone.some(([id]) => id === message.id)) return
-    if (!room.loose.has(message.id) && room.loose.size >= ROOM_LOOSE_CAP) {
-      // Full: the thing lying there longest is forgotten.
-      let oldest = null
-      for (const [id, l] of room.loose) if (oldest === null || l.at < room.loose.get(oldest).at) oldest = id
-      forgetLoose(room, oldest, rev)
+    // Full: the thing of its class lying there longest is forgotten, a kept kind's own or the rest's.
+    const cap = ROOM_KEEPS[message.slot.kind]
+    const counts = (l) => (cap === undefined ? !(l.slot.kind in ROOM_KEEPS) : l.slot.kind === message.slot.kind)
+    let n = 0, oldest = null
+    for (const [id, l] of room.loose) {
+      if (!counts(l)) continue
+      n++
+      if (oldest === null || l.at < room.loose.get(oldest).at) oldest = id
     }
+    if (!room.loose.has(message.id) && n >= (cap ?? ROOM_LOOSE_CAP)) forgetLoose(room, oldest, rev)
     const was = room.loose.get(message.id)
     room.loose.set(message.id, { slot: message.slot, pose: message.pose, vel: message.vel, state: message.state, by: client.id, rev, at: was ? was.at : now })
   } else if (message.type === 'lift') {

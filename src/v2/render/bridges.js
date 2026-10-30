@@ -41,8 +41,7 @@ export class Bridges {
     this.lay = new THREE.Matrix4().makeTranslation(0, this.lods[2].boundingBox.max.y, 0).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2))
     this.litterCards = cards
     this.cardPicture = cards.addPicture({ kind: 'fixed', cx: 0, cy: 0, hw: ext.width / 2, hh: ext.depth / 2 })
-    cards.claim('bridges', this.items.length)
-    this.cards = PropArena.over(cards.meshes, this.items.length, 'v2-bridges-card')
+    this.cards = PropArena.over(cards.meshes, this.items.length, 'v2-bridges-card', { budget: cards.claim('bridges', this.items.length) })
     this.cardReady = false
     for (const it of this.items) {
       it.card = this.cards.addInstance(0)

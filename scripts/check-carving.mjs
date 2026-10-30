@@ -6,7 +6,9 @@
 // wall; a mask that does not survive the trip through a slot; two lanterns drawn from one layer.
 
 import * as THREE from 'three'
-import { Pumpkins, CARVE_W, CARVE_H, CARVE_BYTES, CARVE_B64, UNCUT, cellAt, cutSweep, rayInto, encodeCarve, decodeCarve, LANTERN, KIND, SIZE_M } from '../src/v2/render/pumpkins.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
+import { propCull } from '../src/v2/render/gen-props.js'
+import { Pumpkins, meshReach, CARVE_W, CARVE_H, CARVE_BYTES, CARVE_B64, UNCUT, cellAt, cutSweep, rayInto, encodeCarve, decodeCarve, LANTERN, KIND, SIZE_M } from '../src/v2/render/pumpkins.js'
 
 const R = SIZE_M / 2
 let failed = 0
@@ -66,7 +68,7 @@ const v = (x, y, z) => new THREE.Vector3(x, y, z)
 
 {
   const scene = new THREE.Scene()
-  const p = new Pumpkins(scene, () => 0, [])
+  const p = new Pumpkins(scene, () => 0, [], new LitterCards(64))
   const whole = p.slot(KIND, 0.9, 1.1)
   const cut = new Uint8Array(CARVE_BYTES)
   cut[100] = 0b101
@@ -79,7 +81,7 @@ const v = (x, y, z) => new THREE.Vector3(x, y, z)
   check(p.drawn('aLit', { lit: true })[0] === 1 && p.drawn('aLit', { lit: false })[0] === 0, 'a lantern draws its flame from rec.lit')
 
   // Layers: a mask each, the same mask the same layer, loaded where the shader reads it.
-  p.update(0, 0, true)
+  p.update(0, 0, 0)
   const masks = Array.from({ length: 32 }, (_, i) => { const b = new Uint8Array(CARVE_BYTES); b[i] = 1; return encodeCarve(b) })
   const layers = masks.slice(0, 31).map((m) => p.layerOf(m))
   check(new Set(layers).size === 31 && !layers.includes(0) && p.layerOf(masks[3]) === layers[3], '31 masks drawn at once have a layer each, and keep it')
@@ -87,10 +89,54 @@ const v = (x, y, z) => new THREE.Vector3(x, y, z)
   const texel = (layer, i) => data[layer * CARVE_W * CARVE_H + i]
   check(texel(layers[5], 40) === 255 && texel(layers[5], 41) === 0 && texel(layers[5], 0) === 0, "a layer holds its mask's cells", `bit 40 of mask 5`)
   check(p.layerOf(masks[31]) === 0 && p.stats.overflow === 1, 'a 32nd drawn the same frame is drawn uncut, and counted')
-  p.update(0, 0)
+  p.update(0, 0, 0)
   for (const m of masks.slice(1, 31)) p.layerOf(m)
   const reused = p.layerOf(masks[31])
   check(reused === layers[0] && texel(reused, 248) === 255 && texel(reused, 0) === 0, 'next frame it takes the layer of the mask least lately drawn, reloaded')
+  p.dispose()
+}
+
+{
+  // Three pumpkins of scale 1 on flat ground at 2, 20 and 40 m: inside the mesh's rung, on the card's, past the cull.
+  const p = new Pumpkins(new THREE.Scene(), () => 0, [{ spots: [[2, 0, 0.75], [20, 0, 0.75], [40, 0, 0.75]] }], new LitterCards(64))
+  const [near, mid, far] = p.spots
+  const meshR = meshReach(SIZE_M)
+  const cull = propCull(SIZE_M)
+  check(meshReach(SIZE_M * 0.55) >= 5 && meshReach(SIZE_M * 1.15) <= 11 && meshR > 2 && meshR < 18 && cull > 20 && cull < 40, 'the mesh holds from 5 m for the smallest to 10 m for the largest, and the rungs fall between the three', `scale 1: mesh to ${meshR.toFixed(1)} m, card to ${cull.toFixed(1)} m`)
+  for (let f = 0; f < 8; f++) p.update(0, 0, 0)
+  const vis = (s) => p.cards.vis[s.id]
+  check(p.shown.length === 1 && p.shown[0] === near && !vis(near), 'the near pumpkin is its mesh and not its card')
+  check(vis(mid) && !vis(far), 'the middle one is its card, and the far one nothing')
+  check(p.pickAt(20, mid.y, 0, 0.5)?.spot === mid, 'a pumpkin on its card can still be taken')
+  for (let f = 0; f < 8; f++) p.update(19, 0, 0)
+  check(p.shown.length === 1 && p.shown[0] === mid && !vis(mid) && vis(near), 'walking to the middle one swaps the two')
+  p.take(p.pickAt(20, mid.y, 0, 0.5))
+  for (let f = 0; f < 8; f++) p.update(19, 0, 0)
+  check(p.shown.length === 0 && !vis(mid) && p.tile.n === 2, 'a taken pumpkin is neither mesh nor card')
+
+  // Dropped ones: near, the hands' mesh; far, the field's card; past the cull, nothing.
+  const head = { x: 0, y: 0, z: 0 }
+  const lantern = (x) => ({ rec: p.slot(LANTERN), x, y: 0.15, z: 0, q: new THREE.Quaternion() })
+  const loose = [lantern(1), lantern(15), lantern(60), { rec: { kind: 'carrot' }, x: 15, y: 0, z: 0 }]
+  const far2 = new Set()
+  p.drawFar(loose, head, far2)
+  check(!far2.has(loose[0]) && far2.has(loose[1]) && far2.has(loose[2]) && !far2.has(loose[3]), 'a dropped lantern past the mesh is left to the pumpkins, and a carrot is not theirs')
+  check(p.looseShown === 1 && p.looseCards.vis[0] === 1, 'only the one inside the cull wears a card')
+  far2.clear()
+  p.drawFar([], head, far2)
+  check(p.looseShown === 0 && p.looseCards.vis[0] === 0, 'a card is put away when its lantern is gone')
+  p.setShown(false)
+  check(!vis(near) && !p.mesh.visible, 'setShown(false) hides the cards and the mesh alike')
+  p.dispose()
+}
+
+{
+  // Seventy pumpkins all on their cards: fifty drawn, the rest refused, and nothing thrown.
+  const spots = Array.from({ length: 70 }, (_, i) => [15 * Math.cos(i * 0.09), 15 * Math.sin(i * 0.09), 0.75])
+  const p = new Pumpkins(new THREE.Scene(), () => 0, [{ spots }], new LitterCards(256))
+  for (let f = 0; f < 8; f++) p.update(0, 0, 0)
+  const drawn = p.spots.filter((s) => p.cards.vis[s.id]).length
+  check(drawn === 50 && p.cards.budget.refused > 0, 'past its budget of far cards a layer draws no more, and says so', `${drawn} drawn`)
   p.dispose()
 }
 

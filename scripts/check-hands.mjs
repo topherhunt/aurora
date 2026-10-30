@@ -725,6 +725,63 @@ const build = (wet = water) => {
   check(w.hands.stats.taken === LOOSE_MAX + 5 && w.hands.stats.dropped === LOOSE_MAX + 5, 'the counts kept every take and drop')
 }
 
+// --- a kind that sits, kept apart from the loose cap ----------------------------------
+{
+  const gourdGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3).translate(0, 0.15, 0)
+  class Gourds extends Source {
+    constructor(things) { super(things); this.sits = true; this.keep = { gourd: 3 } }
+    dress(slot) { return { geometry: gourdGeo, material } }
+    take(hit, stowMax) { return { ...super.take(hit, stowMax), geometry: gourdGeo, attrs: {}, scale: [1, 1, 1] } }
+  }
+  let over = false
+  try { new Hands(new THREE.Scene(), { walk, water, haptic() {}, stow() {}, thud() {}, splash() {}, douse() {}, eaten() {} }).addSource({ ...new Gourds([]), pickAt() {}, take() {}, dress() {}, keep: { gourd: LOOSE_MAX + 1 } }, 'gourd') } catch { over = true }
+  check(over, 'a source keeping more of a kind loose than LOOSE_MAX throws')
+
+  const w = build()
+  const gourds = new Gourds([])
+  w.hands.addSource(gourds, 'gourd')
+  w.src.things = []
+  for (let i = 0; i < LOOSE_MAX; i++) w.src.things.push(thing('mushroom', -10 - i, 0, 0, 0.2))
+  for (let i = 0; i < 5; i++) gourds.things.push(thing('gourd', 5 + i, -SLOPE * (5 + i), 0, 0.3))
+  // On the slope, held turned 0.7 rad and tipped: let go, it lands upright at that yaw, where it fell, and stays.
+  w.at(5, -SLOPE * 5 + 0.3, 0)
+  w.hands.press('right', w.head)
+  w.node.rotation.set(0.5, 0.7, 0, 'YXZ')
+  w.node.updateMatrixWorld(true)
+  w.run(0.05)
+  w.hands.drop('right', w.head)
+  const g = w.hands.loose[0]
+  const x0 = g.x
+  w.run(3)
+  const yaw = 2 * Math.atan2(g.q.y, g.q.w)
+  check(g.state === 'still' && Math.abs(g.x - x0) < 1e-6 && Math.abs(g.y - (groundAt(g.x) + 0.15)) < 1e-6, 'a sitting thing let go on a slope stays where its base lands', `x ${x0.toFixed(3)} -> ${g.x.toFixed(3)}, y ${g.y.toFixed(3)}`)
+  check(Math.abs(g.q.x) < 1e-6 && Math.abs(g.q.z) < 1e-6 && Math.abs(yaw - 0.7) < 1e-3, 'it sits upright at the yaw it was held at', `yaw ${yaw.toFixed(3)}`)
+  w.node.rotation.set(0, 0, 0)
+  for (let i = 1; i < 5; i++) {
+    w.at(5 + i, -SLOPE * (5 + i) + 0.3, 0)
+    w.hands.press('right', w.head)
+    w.hands.drop('right', w.head)
+  }
+  for (let i = 0; i < LOOSE_MAX; i++) {
+    w.at(-10 - i, 0.3, 0)
+    w.hands.press('right', w.head)
+    w.hands.drop('right', w.head)
+  }
+  const kept = w.hands.loose.filter((i) => i.rec.kind === 'gourd')
+  check(kept.length === 3 && w.hands.loose.length === LOOSE_MAX + 3 && Math.abs(kept[0].x - 7) < 0.01, 'a kept kind holds its own count loose, the oldest forgotten, and LOOSE_MAX others beside it', `${kept.length} kept of ${w.hands.loose.length}`)
+
+  // Put back as saved: still, under its id, the room told; the same id again is no second one.
+  const heard = []
+  w.hands.tag = 'abcdef01'
+  w.hands.sync = (e) => heard.push(e)
+  const slot = w.hands.pack(kept[2].rec)
+  w.hands.place('0123abcd-7', slot, [1, 2, 3, 0, 0, 0, 1])
+  w.hands.place('0123abcd-7', slot, [1, 2, 3, 0, 0, 0, 1])
+  const placed = w.hands.loose.filter((i) => i.netId === '0123abcd-7')
+  check(placed.length === 1 && placed[0].state === 'still' && placed[0].y === 2 && heard.length === 1 && heard[0].type === 'loose' && heard[0].state === 0, 'a placed thing lies still under its saved id, told to the room once', `${placed.length} placed, ${heard.length} heard`)
+  check(w.hands.loose.filter((i) => i.rec.kind === 'gourd').length === 3 && !w.hands.loose.includes(kept[0]), 'placing one past the cap forgets the oldest of its kind')
+}
+
 // --- the room hears of her hands ---------------------------------------------------
 {
   const w = build()

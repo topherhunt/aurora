@@ -17,5 +17,6 @@
   {"id": "skeleton-reassemble", "prompt": "light wooden bones skittering and clicking back together quickly, ending in a satisfying pop, playful cartoon", "seconds": 1.4},
   {"id": "skeleton-crunch", "prompt": "a small cartoon creature happily crunching and gnawing on a dry bone, a few crisp crunches", "seconds": 1.2},
   {"id": "skeleton-giggle", "prompt": "a tiny cartoon skeleton's delighted chattering giggle made of fast happy teeth clacks and bone rattles", "seconds": 1.2},
-  {"id": "skeleton-whimper", "prompt": "a tiny cartoon skeleton pleading, a soft hopeful whine with a gentle hollow teeth chatter, cute and eager", "seconds": 1.5}
+  {"id": "skeleton-whimper", "prompt": "a tiny cartoon skeleton pleading, a soft hopeful whine with a gentle hollow teeth chatter, cute and eager", "seconds": 1.5},
+  {"id": "ghost-whisper", "prompt": "a raspy breathy wraith whisper, an old ghost murmuring unintelligible words in a dry airy voice, eerie but gentle and sad, not scary", "seconds": 2.5}
 ]

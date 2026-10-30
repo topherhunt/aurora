@@ -306,8 +306,9 @@ export class PropArena extends THREE.Group {
    *                      built with `layerShift`: the instance's picture is
    *                      `setLayerShiftAt`, and it rides in the view's shadow
    *                      across every tier change.
+   * @param opts.budget   the LitterCards.claim this view draws the shared cards under; required over them.
    */
-  constructor(maxInstances, tiers, caps, material, name, { layerShift = false, shared = null, cards = null, cardBase = NO_CARDS } = {}) {
+  constructor(maxInstances, tiers, caps, material, name, { layerShift = false, shared = null, cards = null, cardBase = NO_CARDS, budget = null } = {}) {
     super()
     this.name = name
     this.frustumCulled = false
@@ -322,6 +323,9 @@ export class PropArena extends THREE.Group {
     if (cards && !cards.layerShift) throw new Error(`${name}: the card set must be built with layerShift`)
     this.cards = cards
     this.cardBase = cards ? cardBase : NO_CARDS
+    this.cardSet = [cards, this.shared].find((set) => set?.budgeted) ?? null
+    if ((this.cardSet === null) !== (budget === null)) throw new Error(`${name}: a view draws the shared cards under a budget (LitterCards.claim), and only those`)
+    this.budget = budget
     this.meshes = this.shared.meshes
     this.capAt = this.shared.capAt
     this.variantCount = this.shared.variantCount
@@ -374,12 +378,33 @@ export class PropArena extends THREE.Group {
   setGeometryIdAt(instanceId, geometryId) {
     const from = this.geoAt[instanceId]
     if (from === geometryId) return true
-    const to = this._setFor(geometryId)
-    if (this.vis[instanceId] && !to._room(this._localOf(geometryId))) return false
-    if (this.slot[instanceId] >= 0) this._setFor(from)._free(this, instanceId)
+    if (this.vis[instanceId] && !this._fits(geometryId)) return false
+    if (this.slot[instanceId] >= 0) this._free(from, instanceId)
     this.geoAt[instanceId] = geometryId
-    if (this.vis[instanceId]) to._alloc(this, instanceId)
+    if (this.vis[instanceId]) this._alloc(geometryId, instanceId)
     return true
+  }
+
+  /** Whether one more instance of geometry `g` can be shown: room in its mesh and, for a shared card, in this view's budget, refused with a warning past it. */
+  _fits(g) {
+    const set = this._setFor(g)
+    if (set === this.cardSet && this.budget.drawn >= this.budget.n) {
+      if (this.budget.refused++ === 0) reportWarning(`${this.name}: ${this.budget.owner} draws at most ${this.budget.n} far cards; showing no more`)
+      return false
+    }
+    return set._room(this._localOf(g))
+  }
+
+  _alloc(g, instanceId) {
+    const set = this._setFor(g)
+    if (set === this.cardSet) this.budget.drawn++
+    set._alloc(this, instanceId)
+  }
+
+  _free(g, instanceId) {
+    const set = this._setFor(g)
+    if (set === this.cardSet) this.budget.drawn--
+    set._free(this, instanceId)
   }
 
   /** Show or hide. A show into a full mesh leaves the instance hidden and returns false. While the arena is not shown (`setShown`) every instance stays hidden and the ask is kept. */
@@ -409,12 +434,12 @@ export class PropArena extends THREE.Group {
     if (this.vis[instanceId] === want) return true
     const g = this.geoAt[instanceId]
     if (want) {
-      if (g >= 0 && !this._setFor(g)._room(this._localOf(g))) return false
+      if (g >= 0 && !this._fits(g)) return false
       this.vis[instanceId] = 1
-      if (g >= 0) this._setFor(g)._alloc(this, instanceId)
+      if (g >= 0) this._alloc(g, instanceId)
     } else {
       this.vis[instanceId] = 0
-      if (this.slot[instanceId] >= 0) this._setFor(g)._free(this, instanceId)
+      if (this.slot[instanceId] >= 0) this._free(g, instanceId)
     }
     return true
   }

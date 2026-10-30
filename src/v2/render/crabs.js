@@ -94,7 +94,7 @@ export const PER_PERCH = 0.5
 const PERCH_CAP = 7
 export const MAX = 160
 // The pool instances claimed for the cards (litter-cards.js claim): bookkeeping for the worst crowd on the card rung at once, not a reservation.
-const CARD_CLAIM = 96
+const CARD_CLAIM = 24
 // Wet shell: the one roughness the whole crab glints at (critters.js's glint), set by eye near the mean of the Tripo map it replaces.
 export const WET_ROUGHNESS = 0.7
 // A crab's hue: a turn of up to HUE radians either way round the colour wheel (critters.js hueVary), so a rock's crabs run from olive through the shipped brown to red.
@@ -222,12 +222,12 @@ export class Crabs {
     this.anim = null
     this.hue = makeHueAttribute(this.mesh, MAX)
     // The far crabs, one litter-card instance per slot (a slot's id is its card's); drawn once the picture is baked, and until then every crab is the mesh.
-    cards.claim('crabs', CARD_CLAIM)
+    const cardBudget = cards.claim('crabs', CARD_CLAIM)
     this.litterCards = cards
     this.cardPicture = -1
     this.cardReady = false
     this.cardCount = 0
-    this.cards = PropArena.over(cards.meshes, MAX, 'v2-crabs-card')
+    this.cards = PropArena.over(cards.meshes, MAX, 'v2-crabs-card', { budget: cardBudget })
     for (let i = 0; i < MAX; i++) {
       this.cards.addInstance(0)
       this.cards.setVisibleAt(i, false)

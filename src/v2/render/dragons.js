@@ -484,8 +484,7 @@ export class Dragons {
     this.fading = []
     this.lures = NO_LURES
     this.litterCards = cards
-    cards.claim('dragons', MAX * DRAGON_VIEWS.length)
-    this.cardView = PropArena.over(cards.meshes, MAX * DRAGON_VIEWS.length, 'v2-dragons-card')
+    this.cardView = PropArena.over(cards.meshes, MAX * DRAGON_VIEWS.length, 'v2-dragons-card', { budget: cards.claim('dragons', MAX * DRAGON_VIEWS.length) })
     for (let i = 0; i < MAX * DRAGON_VIEWS.length; i++) {
       this.cardView.addInstance(0)
       this.cardView.setVisibleAt(i, false)

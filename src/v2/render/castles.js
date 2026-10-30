@@ -6,6 +6,7 @@ import { castleLayout, CASTLE } from '../castles/layout.js'
 import { courtGeometry, exteriorGeometry, toGeometry, UV_METRES } from '../castles/shell.js'
 import { exteriorSpans, interiorSpans, SPANS } from '../castles/solids.js'
 import { castleExtents, toLocal } from '../layers/castles.js'
+import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { downsample, flipY, dilate, SUPERSAMPLE } from '../../props/impostor.js'
 
 // Metres from the site: built within `build`, dropped past `drop`; its meshes drawn within `mesh` (the card past it), the full
@@ -32,6 +33,18 @@ const loadTile = (path, metres, done) => {
 }
 // Castle-local direction to world (layers/castles.js toWorld's turn).
 const turn = (s, u, v) => [u * Math.cos(s.yaw) + v * Math.sin(s.yaw), -u * Math.sin(s.yaw) + v * Math.cos(s.yaw)]
+
+// TriFlames draws in world coordinates: castle-local flames (x, y, z, height, radius) turned and set down at foot height `y0`.
+function flamesOf(site, list, y0) {
+  const n = list.length / 5
+  if (n === 0) return null
+  const f = new TriFlames(n, TRI_TORCH, { seed: site.seed % 97 + 1 })
+  for (let i = 0; i < n; i++) {
+    const [x, y, z, height, radius] = list.subarray(i * 5, i * 5 + 5), [wx, wz] = turn(site, x, z)
+    f.place(i, site.x + wx, y0 + y, site.z + wz, { height, radius })
+  }
+  return f
+}
 
 export class Castles {
   /** `sites` layers/castles.js CastleSites.list; `patch(material, cacheKey)` lighting.js's vertex patch. */
@@ -69,6 +82,8 @@ export class Castles {
     this.worker = null
     this._job = 0
     this.inside = null
+    // Sites whose dungeon door she has unlocked.
+    this.unlocked = new Set()
     this.stats = { built: 0, live: 0, full: 0, low: 0, cards: 0 }
   }
 
@@ -141,8 +156,8 @@ export class Castles {
     this.stats.cards = n
   }
 
-  /** Once a frame: build and drop castles by the eye, and pick each one's tier. */
-  update(eye) {
+  /** Once a frame: build and drop castles by the eye, pick each one's tier, and run the flames, the court's and roofs' lit by `night` (0 by day to 1). */
+  update(eye, t, night) {
     const B = CASTLE_BANDS
     let cards = false
     for (const s of this.sites) {
@@ -158,7 +173,12 @@ export class Castles {
       const full = d < B.full ? true : d > B.low ? false : c.full.visible
       c.full.visible = full
       c.low.visible = !full
+      if (c.flames !== null) {
+        c.flames.update(t, [night, night, night])
+        c.flames.mesh.visible &&= shown && full && night > 0.05
+      }
     }
+    if (this.inside !== null && this.inside.innerFlames !== null) this.inside.innerFlames.update(t, [1, 1, 1])
     if (cards) this._placeCards()
     this.stats.live = this.live.size
     this.stats.full = [...this.live.values()].filter((c) => c.state === 'ready' && c.shown && c.full.visible).length
@@ -196,7 +216,11 @@ export class Castles {
     this.scene.add(group)
     c.group = group
     c.interior = d.interior
+    c.door = d.door
     c.solids = d.solids
+    c.flames = flamesOf(s, d.flames.exterior, s.y)
+    if (c.flames !== null) this.scene.add(c.flames.group)
+    c.innerFlameList = d.flames.interior
     c.state = 'ready'
     this.stats.built++
   }
@@ -206,6 +230,7 @@ export class Castles {
     if (c.state !== 'ready') return
     c.group.removeFromParent()
     for (const m of [c.full, c.low, c.court]) m.geometry.dispose()
+    if (c.flames !== null) { c.flames.group.removeFromParent(); c.flames.dispose() }
   }
 
   /** The built castle whose footprint holds world (x, z), with (x, z) in its local metres; null where there is none. */
@@ -244,6 +269,28 @@ export class Castles {
     return [c.site.x + wx, c.site.y + y + 0.2, c.site.z + wz]
   }
 
+  /** The dungeon key's and dungeon chest's spots in built castle site `id`'s interior, world [x, y, z] while it is drawn at
+   * CASTLE_RISE; null until built. */
+  keyOf(id) { return this._inner(id, 'key') }
+  dungeonChestOf(id) { return this._inner(id, 'chest') }
+  _inner(id, what) {
+    const c = this.live.get(id)
+    if (c === undefined || c.state !== 'ready') return null
+    const [x, y, z] = c.solids.portals.dungeon[what], [wx, wz] = turn(c.site, x, z)
+    return [c.site.x + wx, c.site.y + CASTLE_RISE + y, c.site.z + wz]
+  }
+
+  /** Opens the dungeon door of the castle she is in, for good. */
+  unlock(site) {
+    const c = this.inside
+    if (c === null || c.site.id !== site.id) throw new Error(`Castles: unlocking castle ${site.id} from outside it`)
+    this.unlocked.add(site.id)
+    c.solids.it.unlocked = true
+    c.doorMesh.removeFromParent()
+    c.doorMesh.geometry.dispose()
+    c.doorMesh = null
+  }
+
   /** Built castles, for the chests' loot. */
   *built() {
     for (const c of this.live.values()) if (c.state === 'ready') yield c.site
@@ -261,6 +308,14 @@ export class Castles {
     this.scene.add(mesh)
     this.inside = c
     c.innerMesh = mesh
+    c.solids.it.unlocked = this.unlocked.has(site.id)
+    c.doorMesh = null
+    if (!c.solids.it.unlocked) {
+      c.doorMesh = new THREE.Mesh(toGeometry(c.door), this.innerMaterial)
+      mesh.add(c.doorMesh)
+    }
+    c.innerFlames = flamesOf(site, c.innerFlameList, site.y + CASTLE_RISE)
+    if (c.innerFlames !== null) this.scene.add(c.innerFlames.group)
     c.innerStone = new CastleInteriorStone(c)
     this._zone = null
     return c.innerStone
@@ -271,14 +326,17 @@ export class Castles {
     if (c === null) return
     c.innerMesh.removeFromParent()
     c.innerMesh.geometry.dispose()
-    c.innerMesh = c.innerStone = null
+    if (c.doorMesh !== null) c.doorMesh.geometry.dispose()
+    if (c.innerFlames !== null) { c.innerFlames.group.removeFromParent(); c.innerFlames.dispose() }
+    c.innerMesh = c.innerStone = c.innerFlames = c.doorMesh = null
     this.inside = null
     this._zone = null
   }
 
   /**
    * After the step, her feet now at `feet` and before it at `from` (world): the portal she just went through, as { kind: 'enter' |
-   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world) }, or null. The rope fires
+   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world) }, { kind: 'locked', site } at
+   * the dungeon's locked door, or null. The rope fires
    * walking at it; the rest on entering their zone, so an arrival inside one stays put.
    */
   portalAt(feet, from) {
@@ -303,6 +361,7 @@ export class Castles {
       if (inside && atLeaves(d.int, d.hw * CASTLE.scale)) { zone = `d${i}`; act = { kind: 'leave', site: s, at: world(d.out, s.y), face: face(d.ext.nx, d.ext.nz) } }
     })
     if (inside) {
+      if (zone === null && !c.solids.it.unlocked && atLeaves(P.dungeon.door, P.dungeon.door.hw)) { zone = 'lock'; act = { kind: 'locked', site: s } }
       P.ladders.forEach((l, i) => {
         if (zone === null && near(l.x, l.z, ZONE.ladder, l.down[1])) { zone = `l${i}`; act = { kind: 'leave', site: s, at: world(l.roof, s.y), face: face(-l.hatch[0], -l.hatch[2]) } }
       })

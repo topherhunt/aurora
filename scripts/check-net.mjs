@@ -252,6 +252,13 @@ try {
   first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-j1', slot: lantern, pose: pose7, vel: [0, 0, 0], state: 0 }))
   const carved = await nextThings(second, (t) => t.loose)
   if (carved.loose.length !== 1 || carved.loose[0][0] !== 'deadbeef-j1' || !same(carved.loose[0][1], lantern)) throw new Error(`a carved lantern should cross the relay whole, and a bad mask not at all: ${JSON.stringify(carved.loose).slice(0, 200)}`)
+  if (carved.gone) throw new Error(`a lantern on a full ground should forget nothing else: ${JSON.stringify(carved.gone)}`)
+  // Lanterns are kept apart, 20 of them: the twenty-first forgets the oldest lantern and nothing else.
+  for (let i = 2; i <= 21; i++) first.send(JSON.stringify({ version: 1, type: 'loose', id: `deadbeef-j${i.toString(36)}`, slot: lantern, pose: pose7, vel: [0, 0, 0], state: 0 }))
+  const lanternsGone = []
+  const lanternsUntil = Date.now() + 1500
+  while (!lanternsGone.includes('deadbeef-j1') && Date.now() < lanternsUntil) lanternsGone.push(...((await nextThings(second, () => true, 1500)).gone ?? []))
+  if (!same(lanternsGone, ['deadbeef-j1'])) throw new Error(`the twenty-first lantern should forget the oldest lantern alone, got ${JSON.stringify(lanternsGone)}`)
   // The creatures someone is interacting with: an anchor reaches the other
   // client once with its sender's id on it, a second for the same key replaces
   // the first, a malformed one is dropped, a lured set rides the same block, a

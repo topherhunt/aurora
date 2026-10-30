@@ -1,8 +1,10 @@
 // Builds one castle off the main thread (design/44-castles.md, Tiers): its layout, the full and mid-distance exteriors, the court,
-// the interior as one mesh, and its collision and portals. Replies { id, seed, full, low, court, interior, solids }, or { id, seed,
-// error } when it throws.
+// the interior and dungeon as one mesh, the dungeon's door, its collision and portals, and its props' flames. Replies { id, seed,
+// full, low, court, interior, door, solids, flames: { exterior, interior } }, or { id, seed, error } when it throws.
 import { castleLayout } from './layout.js'
-import { courtGeometry, exteriorGeometry, interiorGeometries } from './shell.js'
+import { courtGeometry, exteriorGeometry, interiorGeometries, interiorWarp, warpedProp } from './shell.js'
+import { courtProps, dungeonProps, propFlames, roofProps, roomProps } from './furnish.js'
+import { dungeonGeometry } from './dungeon-mesh.js'
 import { castleSolids } from './solids.js'
 
 // The interior is drawn unlit (render/castles.js): each face's colour is shaded here by which way it faces.
@@ -48,11 +50,14 @@ self.onmessage = (ev) => {
     const lay = castleLayout(seed)
     if (!lay.stats.ok) throw new Error(`castle worker: seed ${seed} has no good layout`)
     const full = exteriorGeometry(lay), low = exteriorGeometry(lay, { full: false }), court = courtGeometry(lay)
-    const interior = shadeInterior(mergeStoreys(interiorGeometries(lay).map((s) => s.geometry)))
-    reply = { id, seed, full, low, court, interior, solids: castleSolids(lay) }
+    const dungeon = dungeonGeometry(lay)
+    const interior = shadeInterior(mergeStoreys([dungeon.geometry, ...interiorGeometries(lay).map((s) => s.geometry)])), door = shadeInterior(dungeon.door)
+    const warp = interiorWarp(lay), inner = [...roomProps(lay), ...dungeonProps(lay)].map((o) => warpedProp(warp, o))
+    const flames = { exterior: new Float32Array(propFlames([...courtProps(lay), ...roofProps(lay)])), interior: new Float32Array(propFlames(inner)) }
+    reply = { id, seed, full, low, court, interior, door, solids: castleSolids(lay), flames }
   } catch (e) {
     self.postMessage({ id, seed, error: e.stack ?? e.message })
     return
   }
-  self.postMessage(reply, [reply.full, reply.low, reply.court, reply.interior].flatMap(buffers))
+  self.postMessage(reply, [...[reply.full, reply.low, reply.court, reply.interior, reply.door].flatMap(buffers), reply.flames.exterior.buffer, reply.flames.interior.buffer])
 }

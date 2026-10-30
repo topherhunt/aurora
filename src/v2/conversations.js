@@ -186,10 +186,10 @@ export class Conversations {
 
   /**
    * Once a frame in its castle: ghost quest `q`'s ghost floating `at` ({ x, y, z }, its feet) speaks (talk/ghost.js) on the
-   * panel as she comes within `near` m of it, once each time she comes. Returns whether it is still there to be drawn:
-   * until it is at rest and its last line has been read.
+   * panel as she comes within `near` m of it, once each time she comes, calling `spoke()` as it does. Returns whether it
+   * is still there to be drawn: until it is at rest and its last line has been read.
    */
-  haunt(q, at, head, near) {
+  haunt(q, at, head, near, spoke) {
     const d = Math.hypot(at.x - head.x, at.z - head.z)
     if (d > 1.5 * near) this.haunting = null
     else if (d < near && this.haunting !== q.id && this.chat === null) {
@@ -198,6 +198,7 @@ export class Conversations {
       if (line !== null) {
         this.scold = { c: { pose: at }, until: this.now + TALK.linger + line.text.split(' ').length / TALK.wordsPerS, ghost: q.id }
         this.panel.show(q.ghost.name, line.text, EMPTY)
+        spoke()
       }
     }
     return this.log.state(q.id) !== 'done' || (this.scold !== null && this.scold.ghost === q.id)

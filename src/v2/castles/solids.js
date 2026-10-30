@@ -3,13 +3,21 @@
 // (CASTLE.scale across, CASTLE.tall upward). Neither follows the warp, which bends the masonry up to about 0.27 m.
 import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
-import { courtProps, roomProps } from './furnish.js'
-import { sectionFrame, edgeNormals, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
+import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
+import { dungeonCell, dungeonPlan } from './dungeon.js'
+import { sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
-// Collision tops; a banner hangs on its wall and stops nothing.
-const PROP_TOP = { barrel: 0.9, crate: 0.8, sacks: 0.9, bench: 0.47, table: 0.82, longtable: 0.82, stool: 0.47, bed: 0.95, chest: 0.6, rack: 1.9, shelf: 1.8, hay: 0.7, cart: 1.0, well: 2.3, dummy: 1.7, throne: 1.76, brazier: 1.0, woodpile: 0.5, banner: 0 }
+// Collision tops; 0 for what hangs on a wall, lies on the floor or stands on a table, which stops nothing.
+const PROP_TOP = {
+  barrel: 0.9, crate: 0.8, sacks: 0.9, bench: 0.47, table: 0.82, longtable: 0.82, stool: 0.47, bed: 0.95, chest: 0.6, rack: 1.9, shelf: 1.8,
+  hay: 0.7, cart: 1.0, well: 2.3, dummy: 1.7, throne: 1.76, brazier: 1.0, woodpile: 0.5, banner: 0,
+  hearth: 1.5, oven: 1.5, cauldron: 0.8, herbs: 0, cask: 0.85, bucket: 0.4, basket: 0.45, bunk: 1.9, shields: 0, armour: 1.85, arrows: 1.1,
+  grind: 1.05, anvil: 0.75, dais: 0.3, carpet: 0, tapestry: 0, chandelier: 0, fourposter: 0.95, wardrobe: 2.0, desk: 0.8, rug: 0, altar: 1.0,
+  maptable: 0.83, cot: 0.5, workbench: 0.9, candles: 1.2, sconce: 0, target: 1.6, pell: 1.6, yard: 0, forge: 2.3, trough: 0.6, block: 0.5,
+  bowrack: 1.5, stones: 0.45, jug: 0, bowl: 0, loaf: 0, cup: 0, candle: 0, book: 0,
+}
 // A parapet's band reaches past the merlons, so her reach (1.2 m) never finds its top; within STEP_GAP of where a step crosses it
 // only the 0.6 m wall under the merlons stands, which she steps over.
 const BAND = 1.3, STEP_BAND = 0.6, STEP_GAP = 0.9
@@ -21,6 +29,7 @@ export const SPAN_CAP = 8
 const FAR = 1e3
 
 const box = (x0, z0, x1, z1, lo, hi) => ({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, c: 1, s: 0, hu: Math.abs(x1 - x0) / 2, hv: Math.abs(z1 - z0) / 2, lo, hi })
+const solid = (o) => { if (!(o.kind in PROP_TOP)) throw new Error(`castle prop: no collision top for '${o.kind}'`); return PROP_TOP[o.kind] > 0 }
 const propBox = (o, y0) => ({ x: o.x, z: o.z, c: Math.cos(o.yaw), s: Math.sin(o.yaw), hu: o.w / 2, hv: o.d / 2, lo: y0, hi: y0 + PROP_TOP[o.kind] })
 /** A convex loop with its outward normals, degenerate edges dropped. */
 const convex = (P) => { const Q = P.filter((p, i) => Math.hypot(p[0] - P[(i + 1) % P.length][0], p[1] - P[(i + 1) % P.length][1]) > 1e-4); return { P: Q, N: edgeNormals(Q) } }
@@ -75,15 +84,15 @@ function exteriorSolids(lay) {
   boxes.push(box(lay.X(0), lay.Z(0), lay.X(lay.cw), lay.Z(lay.cd), -1, 0.05))
   const [sx, sy, sz] = lay.nodes.find((n) => n.kind === 'summit').pos
   boxes.push(box(sx - 0.5, sz - 0.3, sx + 0.5, sz + 0.3, sy - 0.4, sy + 0.2), box(sx - 0.52, sz - 0.36, sx + 0.52, sz - 0.28, sy + 0.2, sy + 0.8))
-  for (const o of courtProps(lay)) if (PROP_TOP[o.kind] > 0) boxes.push(propBox(o, 0))
+  for (const o of [...courtProps(lay), ...roofProps(lay)]) if (solid(o)) boxes.push(propBox(o, o.y))
   for (const p of [...secs.map((q) => q.body.P), ...secs.map((q) => q.T.P)]) for (const q of p) if (!Number.isFinite(q[0] + q[1])) throw new Error(`castle ${lay.seed}: a section loop is not finite`)
   return { secs, boxes, ramps, notches }
 }
 
 /** The interior's air: every room's floor-to-ceiling, every door's way through the walls, every spiral's hole up through the slab
- * over its high steps, and what stands in it. */
+ * over its high steps, and what stands in it; the dungeon's air is its grid (`dungeon`), its door a `lock` box till unlocked. */
 function interiorSolids(lay) {
-  const airs = [], spirals = [], boxes = []
+  const airs = [], spirals = [], boxes = [], g = dungeonPlan(lay)
   let storeys = 0
   for (const n of lay.nodes) {
     if (n.kind !== 'room') continue
@@ -95,7 +104,7 @@ function interiorSolids(lay) {
       airs.push({ k: n.k, poly: convex(offsetLoop(O, edgeNormals(O), -WT)), lo: y, hi: y + SH - 0.3 })
     } else airs.push({ k: n.k, rect: [(ex[0] + INSET) * S + WT, (ex[1] + INSET) * S + WT, (ex[2] - INSET) * S - WT, (ex[3] - INSET) * S - WT], lo: y, hi: y + SH - 0.3 })
   }
-  for (const e of lay.edges) {
+  for (const e of [...lay.edges, { stair: { k: -1, x: g.stair.x, z: g.stair.z }, doors: [] }]) {
     if (e.stair) {
       const { k } = e.stair, x = e.stair.x * S, z = e.stair.z * S, a0 = spiralStart(x, z), Rh = SPIRAL.R + 0.05
       spirals.push({ k, x, z, a0 })
@@ -112,8 +121,16 @@ function interiorSolids(lay) {
       airs.push({ k, rect, lo: y, hi: y + d.h * V })
     }
   }
-  for (const o of roomProps(lay)) if (PROP_TOP[o.kind] > 0) boxes.push(propBox(o, o.y))
-  return { airs, spirals, boxes, storeys }
+  for (const o of [...roomProps(lay), ...dungeonProps(lay)]) if (solid(o)) boxes.push(propBox(o, o.y))
+  const { door } = g, t = 0.1
+  boxes.push({ ...(door.axis === 'x' ? box(door.x - t, door.z - door.hw, door.x + t, door.z + door.hw, door.lo, door.hi) : box(door.x - door.hw, door.z - t, door.x + door.hw, door.z + t, door.lo, door.hi)), lock: true })
+  // Partitions are solid boxes standing in a room's air, open under their lintels.
+  for (const w of roomPlan(lay).walls) {
+    const t = PARTITION.t / 2, top = w.y + SH - 0.3
+    const put = (u0, u1, lo) => boxes.push(w.axis === 'x' ? box(w.at - t, u0, w.at + t, u1, lo, top) : box(u0, w.at - t, u1, w.at + t, lo, top))
+    put(w.lo - 0.15, w.door[0], w.y); put(w.door[1], w.hi + 0.15, w.y); put(w.door[0], w.door[1], w.y + PARTITION.doorH)
+  }
+  return { airs, spirals, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, unlocked: false }
 }
 
 const inBox = (b, x, z) => { const dx = x - b.x, dz = z - b.z; return Math.abs(dx * b.c - dz * b.s) <= b.hu && Math.abs(dx * b.s + dz * b.c) <= b.hv }
@@ -161,7 +178,7 @@ function settle(lo, hi, n, cuts) {
   return m
 }
 
-const LO = new Float64Array(64), HI = new Float64Array(64)
+const LO = new Float64Array(64), HI = new Float64Array(64), CELL = { k: -1, lo: 0, hi: 0 }
 /** The buffers exteriorSpans and interiorSpans leave their spans in, valid until the next call. */
 export const SPANS = { LO, HI }
 const edgeAt = { i: 0 }
@@ -219,6 +236,10 @@ export function interiorSpans(it, x, z, ref) {
     if (a.rect ? x < a.rect[0] || x > a.rect[2] || z < a.rect[1] || z > a.rect[3] : outOf(a.poly, x, z) > 0) continue
     air.push(a)
   }
+  if (k0 <= -1 && k1 >= -1) {
+    const c = dungeonCell(it.dungeon, x, z)
+    if (c >= 0 && !Number.isNaN(it.dungeon.lo[c])) { CELL.lo = it.dungeon.lo[c]; CELL.hi = it.dungeon.hi[c]; air.push(CELL) }
+  }
   air.sort((p, q) => p.lo - q.lo || q.hi - p.hi)
   for (const a of air) {
     if (a.lo > top) { LO[n] = top; HI[n++] = a.lo }
@@ -234,7 +255,7 @@ export function interiorSpans(it, x, z, ref) {
       const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8))
       if (j < SPIRAL.steps) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise }
     }
-    for (const b of it.boxes) if (inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
+    for (const b of it.boxes) if (!(b.lock && it.unlocked) && inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
   }
   return settle(LO, HI, n, [])
 }
@@ -296,7 +317,12 @@ function portals(lay, ex, it) {
     }
   }
   const rope = lay.edges.find((e) => e.rope).rope, summit = lay.nodes.find((n) => n.kind === 'summit')
-  return { doors, ladders, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice() }
+  // The dungeon's door faces the foot chamber she comes to it from; its key and chest lie where the warp moved what they lie on.
+  const { door } = dungeonPlan(lay), warp = interiorWarp(lay), [nx, nz] = door.axis === 'x' ? [-door.side, 0] : [0, -door.side]
+  const at = ([x, y, z]) => { const [wx, , wz] = warp(x, y, z); return [wx, y, wz] }
+  const chest = dungeonProps(lay).find((o) => o.kind === 'chest')
+  const dungeon = { door: { x: door.x, y: door.lo, z: door.z, nx, nz, hw: door.hw }, key: at(keySpot(lay)), chest: at([chest.x, chest.y + PROP_TOP.chest, chest.z]) }
+  return { doors, ladders, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice(), dungeon }
 }
 
 /** A layout's collision and portals, as plain data (structured-clonable, for the worker's reply). */

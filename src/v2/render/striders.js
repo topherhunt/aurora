@@ -214,9 +214,9 @@ export class Striders {
     this.frame = 0
     this.starved = 0
     // The card rung: ids in the shared pool, its pictures (bakeCards; -1 until then, and the rung draws nothing), the mounts holding a card, and the cards dissolving out { id, at }.
-    cards.claim('striders', CARD_IDS)
+    const cardBudget = cards.claim('striders', 16)
     this.litterCards = cards
-    this.cardView = PropArena.over(cards.meshes, CARD_IDS, 'v2-strider-card')
+    this.cardView = PropArena.over(cards.meshes, CARD_IDS, 'v2-strider-card', { budget: cardBudget })
     for (let i = 0; i < CARD_IDS; i++) {
       this.cardView.addInstance(0)
       this.cardView.setVisibleAt(i, false)

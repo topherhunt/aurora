@@ -95,6 +95,8 @@ export const SOUNDS = {
   skeletonCrunch: 'sounds/skeleton-crunch.mp3',
   skeletonGiggle: 'sounds/skeleton-giggle.mp3',
   skeletonWhimper: 'sounds/skeleton-whimper.mp3',
+  // The castle ghost's (render/ghost.js).
+  ghostWhisper: 'sounds/ghost-whisper.mp3',
   // A hob weevil's cry (render/hobs.js).
   hobCry: 'sounds/animal-hob-weevil-cry.mp3',
   // A frost strider's calls (render/striders.js, wild-striders.js), the flutter of its fidget, and its whine.

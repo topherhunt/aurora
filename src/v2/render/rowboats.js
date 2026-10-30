@@ -490,7 +490,7 @@ export class Rowboats {
     this.meshMaterial.map = bank.map
     this.materials = [this.meshMaterial]
 
-    cards.claim('rowboats', this.maxInstances)
+    const budget = cards.claim('rowboats', Math.min(24, this.maxInstances))
     this.cardPicture = cards.addPicture(bank.card)
     this.batch = new PropArena(
       this.maxInstances,
@@ -498,7 +498,7 @@ export class Rowboats {
       new Array(this.cardTier).fill(this.maxInstances),
       () => this.meshMaterial,
       'v2-rowboats',
-      { cards: cards.meshes, cardBase: this.cardTier }
+      { cards: cards.meshes, cardBase: this.cardTier, budget }
     )
     this.tierIds = [...bank.tiers.map((_t, t) => t), this.cardTier]
     this.tierTris = [...bank.tiers.map((t) => t.geometries[0].index.count / 3), cards.cardTris]

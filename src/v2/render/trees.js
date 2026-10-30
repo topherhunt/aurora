@@ -780,7 +780,7 @@ export class Trees {
     this.tierTris.push(new Array(this.variantCount).fill(cards.cardTris))
     this.litterCards = cards
     // At most clumpMax of any tile's trees wear the clump card, and a fade's ghost may wear one too.
-    cards.claim('trees', Math.ceil(this.maxInstances * this.clumpMax) + FADE_MAX_INFLIGHT)
+    const budget = cards.claim('trees', Math.ceil(this.maxInstances * this.clumpMax) + FADE_MAX_INFLIGHT)
     this.clumpPicture = treeClumpCards(bank).map((c) => Array.from({ length: CLUMP_VARIANTS }, () => (
       cards.addPicture({ kind: 'spun', cx: 0, cy: c.cardHeight / 2, hw: c.cardWidth / 2, hh: c.cardHeight / 2, tilt: CARD_TILT, canopy: true })
     )))
@@ -796,7 +796,7 @@ export class Trees {
       this._tierCaps(),
       this.material,
       'v2-trees',
-      { cards: cards.meshes, cardBase }
+      { cards: cards.meshes, cardBase, budget }
     )
 
     // The trunk's world radius WHERE IT MEETS THE GROUND, per variant, at

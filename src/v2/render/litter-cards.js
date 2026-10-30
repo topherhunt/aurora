@@ -124,6 +124,7 @@ export class LitterCards {
     geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]), 3))
     geo.setIndex([0, 1, 2, 0, 2, 3])
     this.meshes = new PropMeshes([{ geometries: [geo] }], [capacity], this.material, 'v2-litter-cards', { layerShift: true })
+    this.meshes.budgeted = true
     this.group = new THREE.Group()
     this.group.name = 'v2-litter-cards'
     for (const mesh of this.meshes.meshes) this.group.add(mesh)
@@ -139,10 +140,12 @@ export class LitterCards {
     return 2
   }
 
-  /** Record `n` instances as `owner`'s worst case. The sum may exceed the capacity -- every layer's pool full at once with all of it far away does not happen -- so a real overflow is reported when the mesh actually fills (PropMeshes._room), not here. */
+  /** `owner`'s budget of `n` cards drawn at once, for the view it draws them through (PropArena `budget`), which refuses one past it and warns. The sum may exceed the capacity, which the mesh enforces on its own (PropMeshes._room). */
   claim(owner, n) {
+    if (!(Number.isInteger(n) && n > 0)) throw new Error(`LitterCards: ${owner} claims ${n} cards, not a positive integer`)
     this.claimed += n
     this.owners.push(`${owner}:${n}`)
+    return { owner, n, drawn: 0, refused: 0 }
   }
 
   /** A new picture slot from `cardPicture`'s answer; returns its index, the value a layer writes with `setLayerShiftAt`. `tilt` pitches a spun card toward an eye above it by that fraction of her elevation (critters.js billboardVertex); `roll` and `turn` are the shares of the roll about its length and the turn about Y toward her an axial card takes (header). `canopy` lights a spun card as a tree card (header). */
