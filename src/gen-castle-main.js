@@ -51,7 +51,8 @@ const stoneMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTi
 const plankMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/timber_plank.png', UV_METRES) })
 const doorMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/door.png', UV_METRES) })
 const gateMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile('/buildings/castle_gate.png', UV_METRES) })
-const material = [stoneMat, plankMat, doorMat, gateMat]
+const lambert = (path) => new THREE.MeshLambertMaterial({ vertexColors: true, map: loadTile(path, UV_METRES) })
+const material = [stoneMat, plankMat, doorMat, gateMat, lambert('/buildings/thatch.png'), lambert('/interiors/window.webp'), lambert('/interiors/linen.webp')]
 // Interior metres per exterior metre on each axis.
 const INNER = new THREE.Vector3(CASTLE.scale, CASTLE.tall, CASTLE.scale)
 // The road's flagstones, 3 m a tile (COBBLE_METRES in terrain-material.js).

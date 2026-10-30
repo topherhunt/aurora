@@ -9,6 +9,7 @@ import { castleExtents, toLocal } from '../layers/castles.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { downsample, flipY, dilate, SUPERSAMPLE } from '../../props/impostor.js'
 import { HELD_TORCH, HELD_TORCH_GLSL, skyThroughGlass } from './interior.js'
+import { leadedTexture } from './town-interior.js'
 import { GLASS } from '../castles/light.js'
 import { TORCHES } from '../../lighting.js'
 import { WorldProbe, WORLD_PROBE } from '../../world-probe.js'
@@ -21,6 +22,8 @@ export const CASTLE_BANDS = { build: 220, drop: 260, mesh: 200, full: 50, low: 5
 export const CASTLE_CARD = { seed: 3, size: 512, bottom: -3 }
 // How far over its site a castle's interior is set down.
 export const CASTLE_RISE = 320
+// The texture of each shell.js material slot.
+export const MAP_KEYS = ['stone', 'plank', 'door', 'gate', 'thatch', 'leaded', 'cloth']
 // Plan metres round a rope, a hatch or a ladder where each fires, and how near her feet must be to its height. The rope hangs a
 // metre off the lookout's face, past its 1.3 m battlement band, which she cannot step onto: she takes it over the band. A door
 // fires within `door` of its leaves' face, which is solid, so touching them is going through.
@@ -48,7 +51,7 @@ void main() {
   vNrm = mat3(modelMatrix) * normal;
   gl_Position = projectionMatrix * viewMatrix * w;
 }`
-// Glass (a window channel past GLASS) shows the sky's light alone and no stone.
+// Glass (a window channel past GLASS) shows its leading lit by the sky alone.
 const INNER_FRAG = /* glsl */ `
 uniform sampler2D map;
 uniform vec3 uFill;
@@ -65,7 +68,7 @@ varying vec3 vNrm;
 ${HELD_TORCH_GLSL}
 void main() {
   vec3 c;
-  if (vLight.z > ${GLASS.toFixed(2)}) c = vCol * (uSky * vLight.z * uWin + 0.06 * uFill);
+  if (vLight.z > ${GLASS.toFixed(2)}) c = texture2D(map, vUv).rgb * vCol * (uSky * vLight.z * uWin + 0.06 * uFill);
   else {
     vec3 lit = uFill * vLight.x + uFire * vLight.y * uFlicker + uSky * vLight.z * uWin;
     lit += heldTorch(vPos, normalize(vNrm)) * vec3(${HELD_TORCH.color.map((v) => v.toFixed(2)).join(', ')});
@@ -150,12 +153,12 @@ function flamesOf(site, list, y0) {
   return f
 }
 
-/** The interior's materials, a slot each for `maps` stone, plank, door and gate, and the dungeon water's, with their shared uniforms:
+/** The interior's materials, a slot each for `maps` in MAP_KEYS (shell.js SLOTS), and the dungeon water's, with their shared uniforms:
  * lit by the bake (castles/light.js), the hour through the windows (uSky) and the held torches in `uTorch` (lighting.js's). */
 export function interiorMaterials(maps, uTorch) {
   const L = INNER_LIGHT
   const innerUniforms = { uFill: { value: new THREE.Color(...L.fill) }, uFire: { value: new THREE.Color(...L.fire) }, uWin: { value: L.win }, uSky: { value: new THREE.Color() }, uFlicker: { value: 1 }, uTorch }
-  const innerMaterial = ['stone', 'plank', 'door', 'gate'].map((k) => new THREE.ShaderMaterial({ uniforms: { ...innerUniforms, map: { value: maps[k] } }, vertexShader: INNER_VERT, fragmentShader: INNER_FRAG, vertexColors: true }))
+  const innerMaterial = MAP_KEYS.map((k) => new THREE.ShaderMaterial({ uniforms: { ...innerUniforms, map: { value: maps[k] } }, vertexShader: INNER_VERT, fragmentShader: INNER_FRAG, vertexColors: true }))
   const waterUniforms = {
     ...innerUniforms, uTime: { value: 0 }, uChop: { value: WATER.chop }, uFlow: { value: WATER.flow }, uMirrorA: { value: null }, uMirrorB: { value: null }, uMirrorFade: { value: 0 },
     uTint: { value: new THREE.Color(WATER.tint) }, uMirrorDown: { value: WATER.mirrorDown }, uReflTint: { value: new THREE.Color(WATER.reflTint).multiplyScalar(WATER.reflDim) },
@@ -174,11 +177,11 @@ export class Castles {
     if (!Array.isArray(probeHidden)) throw new Error('Castles: needs the world probe\'s hidden list')
     this.scene = scene
     this.sites = sites
-    let left = 5, loaded
+    let left = 7, loaded
     this.texturesReady = new Promise((resolve) => { loaded = resolve })
     const done = () => { if (--left === 0) loaded() }
-    this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done), gate: loadTile('/buildings/castle_gate.png', UV_METRES, done) }
-    this.material = ['stone', 'plank', 'door', 'gate'].map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
+    this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done), gate: loadTile('/buildings/castle_gate.png', UV_METRES, done), thatch: loadTile('/buildings/thatch.png', UV_METRES, done), cloth: loadTile('/interiors/linen.webp', UV_METRES, done), leaded: leadedTexture(128, 0x1ead) }
+    this.material = MAP_KEYS.map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
     this.courtMaterial = patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), 'v2-castle-court')
     Object.assign(this, interiorMaterials(this.maps, uTorch))
     this.probeHidden = probeHidden
@@ -219,7 +222,7 @@ export class Castles {
     shell.computeBoundingBox()
     const half = Math.max(ext.hx, ext.hz) + 1.5, F = { half, bottom: CASTLE_CARD.bottom, top: shell.boundingBox.max.y + 0.5, size: Math.max(ext.hx, ext.hz) }
     const scene = new THREE.Scene()
-    const mats = ['stone', 'plank', 'door', 'gate'].map((k) => new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }))
+    const mats = MAP_KEYS.map((k) => new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }))
     const courtMat = new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble })
     scene.add(new THREE.Mesh(shell, mats), new THREE.Mesh(court, courtMat))
     const key = new THREE.DirectionalLight(0xffffff, 1.6)

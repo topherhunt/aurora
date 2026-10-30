@@ -119,7 +119,7 @@ function panelTexture(n, seed) {
 }
 
 /** Diamond quarries in lead cames. */
-function leadedTexture(n, seed) {
+export function leadedTexture(n, seed) {
   const noise = lattice(8, seed)
   return greyTexture(n, (x, y) => {
     const u = x / n, v = y / n, a = (u + v) * 4, b = (u - v) * 4

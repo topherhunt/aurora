@@ -13,12 +13,13 @@ export const PARTITION = { t: 0.4, door: 1.6, doorH: 3 }
 // Footprints [w, d] in metres; the mesher in shell.js draws each kind.
 export const PROP = {
   barrel: [0.7, 0.7], crate: [0.8, 0.8], sacks: [0.9, 0.6], bench: [1.8, 0.45], table: [2.4, 1.0], longtable: [4.2, 1.1], stool: [0.45, 0.45],
-  bed: [1.0, 2.0], chest: [1.0, 0.6], rack: [1.6, 0.4], shelf: [1.4, 0.4], hay: [1.2, 0.8], cart: [1.6, 2.6], well: [1.6, 1.6],
+  bed: [1.0, 2.0], chest: [1.0, 0.6], rack: [1.6, 0.4], shelf: [1.4, 0.4], hay: [1.9, 0.55], cart: [1.6, 2.6], well: [1.6, 1.6],
   dummy: [0.6, 0.6], throne: [1.0, 0.9], brazier: [0.6, 0.6], banner: [1.2, 0.1], woodpile: [1.6, 0.7],
   hearth: [2.2, 0.9], oven: [1.6, 1.2], cauldron: [0.8, 0.8], herbs: [1.4, 0.2], cask: [1.2, 0.9], bucket: [0.4, 0.4], basket: [0.5, 0.5],
   bunk: [1.0, 2.0], shields: [1.6, 0.12], armour: [0.6, 0.5], arrows: [0.6, 0.6], grind: [0.9, 0.6], anvil: [0.7, 0.4],
   dais: [3.6, 2.4], carpet: [1.4, 4], tapestry: [1.8, 0.1], chandelier: [1.2, 1.2], fourposter: [1.6, 2.2], wardrobe: [1.2, 0.6],
   desk: [1.3, 0.7], rug: [2.4, 1.6], altar: [1.6, 0.8], maptable: [2.0, 1.4], cot: [0.8, 1.9], workbench: [2.0, 0.8], candles: [0.4, 0.4],
+  stack3: [1.36, 0.92], stack5: [2.02, 0.92], stand3: [1.38, 0.7], stand5: [2.06, 0.7],
   sconce: [0.3, 0.25], target: [1.2, 0.5], pell: [0.4, 0.4], yard: [4, 4], forge: [2.2, 1.6], trough: [1.8, 0.6], block: [0.6, 0.6],
   bowrack: [1.6, 0.3], stones: [0.9, 0.9], chair: [0.5, 0.5], dresser: [1.4, 0.5], grain: [1.3, 0.8], veg: [0.9, 0.7], kegs: [1.2, 0.6], jars: [1.2, 0.4],
   coal: [1.0, 0.8], hams: [1.2, 0.2], chains: [1.0, 0.12], straw: [1.4, 1.0], bones: [0.9, 0.6], wreck: [0.9, 0.9], cage: [1.2, 1.2],
@@ -38,7 +39,7 @@ const KIT = {
   pantry: { wall: ['barrel', 'sacks', 'grain', 'veg', 'veg', 'crate', 'cask', 'kegs', 'jars', 'jars', 'basket', 'herbs', 'hams', 'sconce'] },
   mess: { wall: ['bench', 'shelf', 'brazier', 'banner', 'sconce', 'sconce', 'cask', 'barrel', 'kegs', 'dresser'], centre: ['longtable', 'table'], ware: true, chandelier: true },
   guard: { must: ['rack'], wall: ['rack', 'bench', 'chest', 'barrel', 'sconce', 'shields', 'chair', 'kegs'], centre: ['table'], ware: true },
-  passage: { wall: ['brazier', 'sconce', 'sconce', 'barrel'] },
+  passage: { wall: ['brazier', 'sconce', 'sconce', 'barrel', 'stack3', 'stack5', 'stand3', 'stand5'] },
   armoury: { must: ['anvil', 'grind'], wall: ['rack', 'rack', 'shields', 'shields', 'armour', 'armour', 'arrows', 'chest', 'crate', 'sconce'] },
   barracks: { must: ['bunk', 'bunk'], wall: ['bunk', 'bunk', 'bunk', 'chest', 'chest', 'rack', 'sconce', 'shields'], centre: ['table'], ware: true },
   bedchamber: { must: ['fourposter'], wall: ['wardrobe', 'chest', 'desk', 'tapestry', 'candles', 'sconce', 'shelf', 'dresser', 'chair'], rug: true, ware: true },
@@ -47,10 +48,10 @@ const KIT = {
   infirmary: { must: ['cot', 'cot'], wall: ['cot', 'cot', 'shelf', 'herbs', 'bucket', 'chest', 'candles', 'chair', 'jars'] },
   treasury: { must: ['chest', 'chest'], wall: ['chest', 'chest', 'chest', 'crate', 'candles', 'sconce'] },
   library: { wall: ['shelf', 'shelf', 'shelf', 'shelf', 'desk', 'candles', 'sconce', 'chair', 'chair'], centre: ['table'], ware: true },
-  cellar: { wall: ['cask', 'cask', 'cask', 'barrel', 'kegs', 'kegs', 'jars', 'veg', 'crate', 'sconce'] },
+  cellar: { wall: ['cask', 'cask', 'cask', 'barrel', 'kegs', 'kegs', 'stack3', 'stand5', 'jars', 'veg', 'crate', 'sconce'] },
   bakehouse: { must: ['oven'], wall: ['sacks', 'grain', 'grain', 'basket', 'shelf', 'barrel', 'coal', 'sconce'], centre: ['table'], ware: true },
   workshop: { must: ['workbench'], wall: ['workbench', 'crate', 'woodpile', 'barrel', 'rack', 'sconce', 'coal', 'chair'] },
-  store: { wall: ['barrel', 'barrel', 'crate', 'crate', 'sacks', 'grain', 'veg', 'kegs', 'coal', 'woodpile', 'sconce'] },
+  store: { wall: ['barrel', 'stack5', 'stand3', 'crate', 'crate', 'sacks', 'grain', 'veg', 'kegs', 'coal', 'woodpile', 'sconce'] },
   granary: { wall: ['sacks', 'grain', 'grain', 'grain', 'hay', 'basket', 'sconce'] },
   servants: { must: ['bed'], wall: ['bed', 'bed', 'chest', 'stool', 'shelf', 'sconce', 'dresser'] },
   guest: { must: ['bed'], wall: ['chest', 'wardrobe', 'candles', 'desk', 'tapestry', 'dresser', 'chair'], rug: true, ware: true },
@@ -70,8 +71,10 @@ const UPPER = ['servants', 'guest', 'linen', 'study', 'sewing', 'store', 'worksh
 const TOWER_TOP = ['watch', 'arsenal']
 const WARE = ['jug', 'bowl', 'bowl', 'loaf', 'cup', 'cup', 'candle', 'book']
 const SURFACE = { table: 0.82, longtable: 0.82, desk: 0.8, maptable: 0.83, dresser: 1.0 }
-const COURT_KINDS = ['barrel', 'barrel', 'crate', 'hay', 'cart', 'rack', 'woodpile', 'sacks', 'brazier', 'trough']
-const TRAIN_KINDS = ['dummy', 'dummy', 'pell', 'target', 'target', 'rack']
+const COURT_KINDS = ['barrel', 'stack3', 'stack5', 'stand3', 'stand5', 'crate', 'hay', 'hay', 'cart', 'rack', 'woodpile', 'sacks', 'brazier', 'trough']
+const TRAIN_KINDS = ['dummy', 'dummy', 'pell', 'rack', 'hay']
+// Flames a chamber may carry as sconces and braziers.
+const TORCHES = new Set(['sconce', 'brazier']), MAX_TORCHES = 2
 const WORK_KINDS = ['trough', 'block', 'woodpile', 'anvil', 'barrel', 'crate']
 const ROOF_KINDS = ['arrows', 'arrows', 'bowrack', 'stones', 'stones', 'barrel']
 const DUNGEON_KINDS = ['barrel', 'crate', 'crate', 'sacks', 'grain', 'kegs', 'bucket', 'stones', 'cot', 'cask', 'chains', 'chains', 'straw', 'straw', 'bones', 'wreck', 'wreck', 'cage']
@@ -279,8 +282,8 @@ export function roomPlan(lay) {
   return plan
 }
 
-/** The court's props, in exterior metres on the court floor (y 0): masonry-side clutter round the rim, a training ground and a
- * work yard by the forge in the open, and a well in the middle. */
+/** The court's props, in exterior metres on the court floor (y 0): masonry-side clutter round the rim, a training ground in a
+ * corner, a work yard by the forge, and a well in the middle. */
 export function courtProps(lay) {
   const rng = mulberry32(lay.seed * 6271 + 3), out = [], portals = []
   let gateIn = null
@@ -292,9 +295,9 @@ export function courtProps(lay) {
     }
     if (e.flight) {
       const f = e.flight, cm = (f.c0 + f.c1) / 2, lo = Math.min(f.a0, f.a1), hi = Math.max(f.a0, f.a1)
-      // A flight is solid from foot to landing: keep its whole length clear, and its foot.
+      // A flight is solid from foot to landing: keep its whole length clear, and the court before its foot.
       for (let a = lo; a <= hi + 1e-6; a += 0.8) portals.push(f.axis === 'x' ? [a, cm] : [cm, a])
-      const foot = f.a0 - Math.sign(f.a1 - f.a0) * 0.8
+      const foot = f.a0 - Math.sign(f.a1 - f.a0)
       portals.push(f.axis === 'x' ? [foot, cm] : [cm, foot])
     }
   }
@@ -303,18 +306,30 @@ export function courtProps(lay) {
   const cellRect = (gx, gz, m = 0) => [lay.X(gx) + m, lay.Z(gz) + m, lay.X(gx + 1) - m, lay.Z(gz + 1) - m]
   const cells = []
   for (let x = 0; x < lay.cw; x++) for (let z = 0; z < lay.cd; z++) if (!lay.occAt(x, z)) cells.push([x, z])
-  const rim = ([gx, gz]) => [[-1, 0], [1, 0], [0, -1], [0, 1]].some(([dx, dz]) => lay.occAt(gx + dx, gz + dz))
+  const sides = ([gx, gz]) => [[-1, 0], [1, 0], [0, -1], [0, 1]].filter(([dx, dz]) => lay.occAt(gx + dx, gz + dz)).length
+  const rim = (c) => sides(c) > 0
+  // The section a record's back stands against, if any.
+  const behind = (o) => { const bx = o.x - Math.sin(o.yaw) * (o.d / 2 + 0.3), bz = o.z - Math.cos(o.yaw) * (o.d / 2 + 0.3); return lay.occAt(Math.floor((bx - lay.X(0)) / C), Math.floor((bz - lay.Z(0)) / C)) }
   const mid = [Math.floor(lay.cw / 2), Math.floor(lay.cd / 2)]
   const fromGate = ([gx, gz]) => Math.hypot(lay.X(gx + 0.5) - gateIn[0], lay.Z(gz + 0.5) - gateIn[1])
-  // The training ground: the cell farthest from the gate, in the open if any is. The work yard: the rim cell nearest the gate but its own.
-  const open = cells.filter((c) => !rim(c) && (c[0] !== mid[0] || c[1] !== mid[1]))
-  const train = (open.length ? open : cells).reduce((a, b) => (fromGate(b) > fromGate(a) ? b : a))
+  // The training ground: a corner of the court far from the gate, its targets leant on the masonry so a missed arrow meets stone.
+  // The work yard: the rim cell nearest the gate but its own.
+  const train = cells.filter(rim).reduce((a, b) => (fromGate(b) + 6 * sides(b) > fromGate(a) + 6 * sides(a) ? b : a))
   const work = cells.filter((c) => rim(c) && c !== train && fromGate(c) > 3).sort((a, b) => fromGate(a) - fromGate(b))[0]
   for (const c of cells) {
     const r = cellRect(...c)
     if (c === train) {
-      // Drilled against the yard's edges; the sand goes in after, so it is no obstacle.
+      // The sand goes in after, so it is no obstacle. A target's foot stands clear of the root crown and its top leans on the masonry
+      // at 1.4 m: a curtain wall's face is 0.8 m into its cell, its crown out to the cell's edge at grade; a tower's face is the
+      // edge, its crown 0.8 m out. Each as [foot, top] in from the cell's edge (shell.js profile).
       const n0 = out.length
+      fillRect(rng, r, false, near(r), ['target'], 0.05, null, out, 2)
+      for (let i = out.length - 1; i >= n0; i--) {
+        const o = out[i], by = behind(o), [foot, top] = by && by.kind === 'wall' ? [0.15, -0.5] : [0.85, 0.3], sh = foot - 0.05
+        const [x, z] = [o.x + Math.sin(o.yaw) * sh, o.z + Math.cos(o.yaw) * sh]
+        if (by && near(r).every((p) => Math.hypot(p[0] - x, p[1] - z) > CLEAR + 0.4)) Object.assign(o, { x, z, lean: foot - top })
+        else out.splice(i, 1)
+      }
       fillRect(rng, cellRect(...c, 0.6), false, near(r), TRAIN_KINDS, 0.05, null, out)
       const [x, z] = [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2]
       if (out.length > n0) out.push({ kind: 'yard', x, y: 0.05, z, yaw: 0, w: r[2] - r[0] - 0.8, d: r[3] - r[1] - 0.8 })
@@ -329,13 +344,10 @@ export function courtProps(lay) {
     const n0 = out.length
     fillRect(rng, r, false, near(r), COURT_KINDS, 0, null, out)
     // A rim cell's clutter hugs the masonry it borders: drop any that faces open court.
-    for (let i = out.length - 1; i >= n0; i--) {
-      const o = out[i], bx = o.x - Math.sin(o.yaw) * (o.d / 2 + 0.3), bz = o.z - Math.cos(o.yaw) * (o.d / 2 + 0.3)
-      if (!lay.occAt(Math.floor((bx - lay.X(0)) / C), Math.floor((bz - lay.Z(0)) / C))) out.splice(i, 1)
-    }
+    for (let i = out.length - 1; i >= n0; i--) if (!behind(out[i])) out.splice(i, 1)
   }
-  // A well in the court's middle cell when the yard is three cells deep and wide and the training ground is elsewhere.
-  if (lay.cw >= 3 && lay.cd >= 3 && (train[0] !== mid[0] || train[1] !== mid[1])) {
+  // A well in the court's middle cell when the yard is three cells deep and wide.
+  if (lay.cw >= 3 && lay.cd >= 3) {
     const x = lay.X(mid[0] + 0.5), z = lay.Z(mid[1] + 0.5)
     if (!lay.occAt(...mid) && portals.every((p) => Math.hypot(p[0] - x, p[1] - z) > 2.2) && !out.some((o) => Math.hypot(o.x - x, o.z - z) < 2)) out.push({ kind: 'well', x, y: 0, z, yaw: 0, w: 1.6, d: 1.6 })
   }
@@ -392,7 +404,8 @@ export function roomProps(lay) {
     const [cx, cz] = [(c.rect[0] + c.rect[2]) / 2, (c.rect[1] + c.rect[3]) / 2]
     if (kit.rug && !c.round && !list.some((o) => Math.hypot(o.x - cx, o.z - cz) < 1.6)) list.push({ kind: 'rug', x: cx, y, z: cz, yaw: c.rect[2] - c.rect[0] >= c.rect[3] - c.rect[1] ? 0 : Math.PI / 2, w: 2.4, d: 1.6 })
     if (kit.chandelier) list.push({ kind: 'chandelier', x: cx, y, z: cz, yaw: 0, w: 1.2, d: 1.2 })
-    for (const o of list) out.push({ ...o, k: c.k })
+    let torches = 0
+    for (const o of list) if (!TORCHES.has(o.kind) || ++torches <= MAX_TORCHES) out.push({ ...o, k: c.k })
   })
   return out
 }
