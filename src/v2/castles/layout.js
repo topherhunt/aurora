@@ -285,7 +285,7 @@ export function castleLayout(seed) {
     const ra = roomAt(A, k, ...cellOf(A, fa, t)), rb = roomAt(B, k, ...cellOf(B, fb, t))
     const da = door(fa, t, k * H, ra), db = door(fb, t, k * H, rb)
     const P = ax === 'x' ? X : Z
-    cand(ra, rb, 'bridge', { doors: [da, db], bridge: { axis: ax, a0: P(fa.at), a1: P(fb.at), c: (ax === 'x' ? Z : X)(t + 0.5), y: k * H }, pts: [ra.pos, through(da), through(db), rb.pos] })
+    cand(ra, rb, 'bridge', { doors: [da, db], bridge: { axis: ax, a0: P(fa.at), a1: P(fb.at), c: (ax === 'x' ? Z : X)(t + 0.5), y: k * H, clear: tallest * H }, pts: [ra.pos, through(da), through(db), rb.pos] })
   }
   // The way back down from the summit: a rope a metre off the lookout's face farthest from the centre, clear of its flares.
   const [lx0, lz0, lx1, lz1] = [X(look.x0), Z(look.z0), X(look.x0 + look.w), Z(look.z0 + look.d)]

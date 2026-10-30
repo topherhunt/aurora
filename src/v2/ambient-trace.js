@@ -27,10 +27,41 @@ const SNOW = 0.5 // precip.snow, the rain-to-snow blend
 const FOREST = [20, 30] // trunks in the host's box round her
 const ALOFT_M = 40 // metres over the ground
 
+// What the browser will say about the headset itself, to tell a hot or starved device from a heavy scene. Each reading
+// is a string ('unsupported', or 'refused: ...') where the browser lacks or denies it: none may stop a capture.
+class DeviceProbe {
+  constructor() {
+    this.battery = 'unsupported'
+    this.pressure = 'unsupported' // the Compute Pressure API's cpu state: nominal / fair / serious / critical, throttling included
+    if (navigator.getBattery) {
+      this.battery = 'pending'
+      navigator.getBattery().then((b) => { this.battery = b }, (err) => { this.battery = `refused: ${err.message}` })
+    }
+    if (window.PressureObserver) {
+      this.pressure = 'pending'
+      try {
+        new PressureObserver((records) => { this.pressure = records[records.length - 1].state })
+          .observe('cpu', { sampleInterval: 1000 }).catch((err) => { this.pressure = `refused: ${err.message}` })
+      } catch (err) { this.pressure = `refused: ${err.message}` }
+    }
+  }
+
+  // Chrome buckets performance.memory and refreshes it rarely, so the heap is a magnitude, not a trend.
+  snapshot() {
+    const m = performance.memory, b = this.battery
+    return {
+      heapMb: m === undefined ? 'unsupported' : Math.round(m.usedJSHeapSize / 1048576),
+      heapLimitMb: m === undefined ? 'unsupported' : Math.round(m.jsHeapSizeLimit / 1048576),
+      battery: typeof b === 'string' ? b : { level: r2(b.level), charging: b.charging },
+    }
+  }
+}
+
 export class AmbientTrace {
   /**
    * host: TraceWindows' host, plus {
    *   active() -> bool (in XR, nothing open or running that skews a frame), context(), pulse(hand, intensity, ms),
+   *   audio() -> the sound's AudioContext, or null while it has none,
    *   env() -> { room: 'overworld' | 'glade' | 'house' | 'hut' | 'cave', town: bool, trunks, agl, dayness, precip, snow }
    * }
    */
@@ -48,6 +79,7 @@ export class AmbientTrace {
     this.placeAt = new Map() // env key -> when it was last captured
     this.history = []
     this.env = { place: 'open', time: 'day', sky: 'dry', key: '' }
+    this.probe = new DeviceProbe()
     this.reset(performance.now())
   }
 
@@ -56,6 +88,7 @@ export class AmbientTrace {
     this.ring = []
     this.lastAt = now
     this.lastPos = null
+    this.lastAudio = null
     this.fastWindows = 0
     this.slowRun = 0
     this.pending = null
@@ -93,6 +126,8 @@ export class AmbientTrace {
     sample.trunks = e.trunks
     sample.speed = Math.round(speed)
     sample.env = this.env.key
+    sample.audio = this.audioClock(now)
+    sample.pressure = this.probe.pressure
     this.ring.push(sample)
     if (this.ring.length > RING) this.ring.shift()
     this.fastWindows = sample.flying && speed > FAST_MPS ? this.fastWindows + 1 : 0
@@ -104,6 +139,16 @@ export class AmbientTrace {
     this.watchSlow(now)
     if (this.pending === null) this.watchPlace(now)
     if (this.pending === null) this.watchFlight(now)
+  }
+
+  /** The context's state, and its clock's seconds per wall second since the last window: under 1 while it is 'running'
+   * means the audio thread is starved, the sound breaking up or gone. */
+  audioClock(now) {
+    const ctx = this.host.audio()
+    if (ctx === null) return null
+    const prev = this.lastAudio
+    this.lastAudio = { t: ctx.currentTime, now }
+    return { state: ctx.state, rate: prev === null ? null : r2((ctx.currentTime - prev.t) / ((now - prev.now) / 1000)) }
   }
 
   classify(now) {
@@ -183,6 +228,7 @@ export class AmbientTrace {
       startedAt: new Date(Date.now() - (now - t0)).toISOString(),
       seconds: r2((now - t0) / 1000),
       context: this.host.context(),
+      device: this.probe.snapshot(),
       samples: samples.map(({ at, ...s }) => ({ ...s, t: r2((at - t0) / 1000) })),
     }
     this.host.pulse(Math.random() < 0.5 ? 'left' : 'right', 0.4, 30)

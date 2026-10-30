@@ -474,14 +474,20 @@ export function dungeonProps(lay) {
   return out
 }
 
-/** Where the dungeon's key lies (interior metres, unwarped): on a chest or a table in the throne room most often, else the treasury,
- * else the bedchamber; on its floor when nothing there has a top. */
-export function keySpot(lay) {
+/** The chamber the dungeon's key lies in, and the roll that picked it, which keySpot goes on drawing from: the throne room most
+ * often, else the treasury, else the bedchamber. */
+export function keyChamber(lay) {
   const rng = mulberry32(lay.seed * 4421 + 7), { chambers } = roomPlan(lay)
   const order = rng() < 0.7 ? ['throne', 'treasury', 'bedchamber'] : ['treasury', 'bedchamber', 'throne']
   const c = order.map((role) => chambers.find((q) => q.role === role)).find((q) => q !== undefined)
   if (c === undefined) throw new Error(`castle ${lay.seed}: no throne room, treasury or bedchamber for the key`)
-  const [x0, z0, x1, z1] = c.rect, y = c.k * SH
+  return { c, rng }
+}
+
+/** Where the dungeon's key lies (interior metres, unwarped): on a chest or a table in keyChamber's room; on its floor when nothing
+ * there has a top. */
+export function keySpot(lay) {
+  const { c, rng } = keyChamber(lay), [x0, z0, x1, z1] = c.rect, y = c.k * SH
   const tops = roomProps(lay).filter((o) => o.k === c.k && o.y === y && o.x > x0 && o.x < x1 && o.z > z0 && o.z < z1 && (o.kind === 'chest' || o.kind in SURFACE))
   if (tops.length) {
     const o = tops[Math.floor(rng() * tops.length)]

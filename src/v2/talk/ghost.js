@@ -11,7 +11,7 @@ export function ghostSays(q, log, world) {
     log.accept(q)
     return { text: `Oh! You can see me? I am ${q.ghost.name}. ${to.name} in ${town.name} is ${q.bond}. Tell ${them}: "${q.words[0]}" Those words exactly, little one.`, mood: null }
   }
-  if (state === 'accepted') return { text: `Have you told ${to.name}? "${q.words[0]}" And the door at the foot of the stair down: its key lies with the lord's finest things.`, mood: null }
+  if (state === 'accepted') return { text: `Have you told ${to.name}? "${q.words[0]}" I have waited down here so long.`, mood: null }
   if (state === 'delivered') {
     log.set(q.id, 'done')
     return { text: `${to.name} heard me at last... Thank you, little one. Now I can rest.`, mood: 'warm' }

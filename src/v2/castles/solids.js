@@ -5,7 +5,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
-import { COURT_RUN, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
+import { COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
@@ -61,7 +61,7 @@ function exteriorSolids(lay) {
   for (const e of lay.edges) {
     const seen = e.a.out || e.b.out || e.kind === 'bridge'
     if (seen) for (const d of e.doors) if (d.look !== 'barred') {
-      const depth = d.y === 0 ? ROOT + 0.05 : 0.05
+      const depth = doorDepth(d)
       notches.push({ x: d.x, z: d.z, axis: d.axis, side: d.side, hw: d.w / 2, depth, out: depth + 0.6, lo: d.y + 0.06, hi: d.y + d.h })
     }
     if (e.a.kind === 'entry') { const d = e.doors[0]; ramps.push({ x: d.x, z: d.z, axis: d.axis, side: d.side, hw: d.w / 2 }) }
@@ -212,9 +212,8 @@ export function exteriorSpans(ex, x, z) {
   }
   // A flight is a ramp through its treads' middles, so her feet ride it and a lob never lands between two steps.
   for (const f of ex.flights) {
-    const t = ((f.axis === 'x' ? x : z) - f.a0) * f.dir, c = f.axis === 'x' ? z : x
-    if (t < 0 || t > f.len || c < f.c0 || c > f.c1) continue
-    put(-1, Math.min(f.rise - 0.08, f.rise * (t / f.run + 0.5 / f.n)))
+    const t = flightT(f, x, z)
+    if (t >= 0) put(-1, Math.min(f.rise - 0.08, f.rise * (t / f.run + 0.5 / f.n)))
   }
   // A door's leaves close its notch: solid behind them, cut out in front.
   const cuts = []
@@ -226,6 +225,13 @@ export function exteriorSpans(ex, x, z) {
   }
   return settle(LO, HI, n, cuts)
 }
+/** How far up flight `f` local (x, z) is, or -1 off it. */
+function flightT(f, x, z) {
+  const t = ((f.axis === 'x' ? x : z) - f.a0) * f.dir, c = f.axis === 'x' ? z : x
+  return t < 0 || t > f.len || c < f.c0 || c > f.c1 ? -1 : t
+}
+/** Whether local (x, z) is on one of the exterior's flights. */
+export const onFlight = (ex, x, z) => ex.flights.some((f) => flightT(f, x, z) >= 0)
 const RAMP_FLAT = ROOT + 0.4, RAMP_SLOPE = Math.tan(Math.PI / 6), RAMP_END = RAMP_FLAT + 11, RAMP_DEEP = 0.05 - 11 * RAMP_SLOPE - 0.5
 
 /** The interior's spans at interior (x, z) into LO/HI: solid but for the air of storeys within one of `ref`'s, then what stands in
@@ -254,14 +260,32 @@ export function interiorSpans(it, x, z, ref) {
       if (s.k < k0 || s.k > k1) continue
       const r = Math.hypot(x - s.x, z - s.z), y = s.k * SH, rise = SH / SPIRAL.steps / SPIRAL.treads
       if (r < SPIRAL.post) { LO[n] = y; HI[n++] = y + SH + (s.top ? SPIRAL.cap : 0); continue }
-      if (r >= SPIRAL.R) continue
-      const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8 / SPIRAL.treads))
-      if (j < SPIRAL.steps * SPIRAL.treads) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise }
+      const j = treadOf(s, x, z, r)
+      if (j >= 0) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise }
     }
     for (const b of it.boxes) if (!(b.lock && it.unlocked) && inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
   }
   return settle(LO, HI, n, [])
 }
+
+/** Spiral `s`'s tread over interior (x, z) at `r` from its axis, from 0 up, or -1 off its treads. */
+function treadOf(s, x, z, r) {
+  if (r < SPIRAL.post || r >= SPIRAL.R) return -1
+  const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8 / SPIRAL.treads))
+  return j < SPIRAL.steps * SPIRAL.treads ? j : -1
+}
+
+/** The top of the spiral tread whose top is within TREAD_FILL over interior (x, y, z), or null: a teleport lob's samples are further
+ * apart than a tread is thick, so it asks this as WalkSurface.stairAt and cannot pass through one to the turn below. */
+export function spiralTreadAt(it, x, y, z) {
+  const rise = SH / SPIRAL.steps / SPIRAL.treads
+  for (const s of it.spirals) {
+    const j = treadOf(s, x, z, Math.hypot(x - s.x, z - s.z)), top = s.k * SH + (j + 1) * rise
+    if (j >= 0 && y <= top && y >= top - TREAD_FILL) return top
+  }
+  return null
+}
+const TREAD_FILL = 0.6
 
 /** Where she stands at (x, z) with her feet about `y` (the highest floor from 0.8 m below it to 0.6 above), when that floor runs on
  * round a ring of `r` with 1.9 m of air over all of it: [x, y, z], or null. */
@@ -304,7 +328,7 @@ function portals(lay, ex, it) {
     const seen = e.a.out || e.b.out || e.kind === 'bridge'
     if (seen) for (const d of e.doors) {
       if (d.look === 'barred') continue
-      const [nx, nz] = doorAlong(d), depth = d.y === 0 ? ROOT + 0.05 : 0.05, k = Math.round(d.y / H)
+      const [nx, nz] = doorAlong(d), depth = doorDepth(d), k = Math.round(d.y / H)
       const iy = k * SH, ix = d.x * S - nx * (G + WT + 0.9), iz = d.z * S - nz * (G + WT + 0.9)
       doors.push({
         hw: d.w / 2,

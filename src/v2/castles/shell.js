@@ -195,6 +195,9 @@ const beside = (lay, x, z) => lay.occAt(Math.floor((x - lay.X(0)) / C), Math.flo
 /** Ring heights and outward offsets: a footing deep below ground, a root crown spreading at grade, a narrow jittered waist, a slow
  * swell, then a corbelled flare. Rings from BAND_FROM up are the band. */
 export const ROOT = 0.8
+/** How far a door's leaves stand out of its wall's plane, past the root crown at the ground: the wall's faces are flat between
+ * vertices metres apart while each leaf corner takes the warp on its own, so a thinner margin lets the wall sag over the leaves. */
+export const doorDepth = (d) => (d.y === 0 ? ROOT : 0) + 0.3
 const profile = (top, fl, j) => [[-6, ROOT + 0.5], [0, ROOT], [0.9, ROOT * 0.45], [2.4, ROOT * 0.12], [top * 0.5, j()], [top * 0.75, 0.06 + j()],
   [top - 1.1, 0.16 + j()], [top - 0.55, fl * 0.8], [top, fl]]
 const BAND_FROM = 6
@@ -370,7 +373,7 @@ export function leaves(m, base, n, hw, h, gate, col) {
 /** A door as its leaves with a stone frame, bars over them when barred. A ground door stands proud of the root crown as a portal,
  * or the flare would bury it. */
 function doorway(m, d, col) {
-  const depth = d.y === 0 ? ROOT + 0.05 : 0.05, o = d.side * depth, hw = d.w / 2
+  const depth = doorDepth(d), o = d.side * depth, hw = d.w / 2
   const along = (u0, u1, y0, y1, t0, t1) => (d.axis === 'x' ? m.box(d.x + t0, y0, d.z + u0, d.x + t1, y1, d.z + u1, col) : m.box(d.x + u0, y0, d.z + t0, d.x + u1, y1, d.z + t1, col))
   const n = d.axis === 'x' ? [d.side, 0, 0] : [0, 0, d.side]
   leaves(m, d.axis === 'x' ? [d.x + o, d.y, d.z] : [d.x, d.y, d.z + o], n, hw, d.h, d.look === 'gate', col)
@@ -381,11 +384,11 @@ function doorway(m, d, col) {
   if (d.look === 'barred' && m.full) for (const u of [-0.35, 0, 0.35]) along(u - 0.04, u + 0.04, d.y, d.y + d.h, o, o + d.side * 0.08)
 }
 
-/** A deck on a stone arch springing from the two faces it joins. The ends run 0.3 m into the masonry, so no end face lies in a
- * wall's plane. */
+/** A deck on a stone arch springing from the two faces it joins, a door's height over the walk or roof it crosses (`clear`) so it
+ * never hangs before a door onto that walk. The ends run 0.3 m into the masonry, so no end face lies in a wall's plane. */
 function bridge(m, b, col) {
   const A0 = Math.min(b.a0, b.a1), A1 = Math.max(b.a0, b.a1), mid = (A0 + A1) / 2, half = (A1 - A0) / 2
-  const rise = Math.min(half * 0.75, 2.4), spring = b.y - 0.6 - rise, W = 1.1
+  const rise = Math.min(half * 0.75, 2.4, b.y - 0.6 - b.clear - 2.5), spring = b.y - 0.6 - rise, W = 1.1
   const us = [A0 - 0.3], ys = [spring]
   for (let i = 0; i <= 10; i++) { const t = i / 5 - 1; us.push(mid + t * half); ys.push(spring + rise * Math.sqrt(1 - t * t)) }
   us.push(A1 + 0.3); ys.push(spring)
@@ -455,7 +458,6 @@ export function exteriorGeometry(lay, { warp = true, full = true } = {}) {
     if (e.bridge) bridge(m, e.bridge, m.tint(STONE.wall))
     m.with(WOOD_SLOT, () => {
       if (e.ladder) m.box(e.ladder.x - 0.5, (e.ladder.k + 1) * H, e.ladder.z - 0.5, e.ladder.x + 0.5, (e.ladder.k + 1) * H + 0.2, e.ladder.z + 0.5, m.tint(DARKWOOD))
-      if (e.rope) m.box(e.rope.x - 0.05, -CASTLE.raise, e.rope.z - 0.05, e.rope.x + 0.05, e.rope.top + 0.45, e.rope.z + 0.05, ROPE)
     }, true)
   }
   // The summit chest, open: its lid stands up behind it.
@@ -510,7 +512,7 @@ export function prop(m, o) {
   }
   // The one barrel: `len` long, bulging from 0.85 r at its heads to r, in 4 bands of 9 staves under two iron hoops. Standing on
   // (u, y, v), or lying with its belly on y and its axis along 'u' or 'v'.
-  const barrel = (u, y, v, len, r, lying = null, col = wood) => {
+  const barrel = (u, y, v, len, r, lying = null, col = wood, hoops = true) => {
     const N = 9, rad = (t) => r * (0.85 + 0.15 * (1 - (2 * t - 1) ** 2))
     const at = (t, i, rr = rad(t)) => {
       const a = t * len, p = Math.cos((i / N) * Math.PI * 2) * rr, q = Math.sin((i / N) * Math.PI * 2) * rr
@@ -523,8 +525,9 @@ export function prop(m, o) {
       }
     }
     for (let k = 0; k < 4; k++) band(k / 4, (k + 1) / 4, col)
-    for (const t of [0.12, 0.82]) band(t, t + 0.06, IRON, 0.012)
-    for (const t of lying ? [0, 1] : [1]) for (let i = 1; i < N - 1; i++) m.face([at(t, 0), at(t, i), at(t, i + 1)], sub(at(t, 0, 0), at(1 - t, 0, 0)), col)
+    if (hoops) for (const t of [0.12, 0.82]) band(t, t + 0.06, IRON, 0.012)
+    // A barrel lying along v has its back to the wall, so only its front end is capped.
+    for (const t of lying === 'u' ? [0, 1] : [1]) for (let i = 1; i < N - 1; i++) m.face([at(t, 0), at(t, i), at(t, i + 1)], sub(at(t, 0, 0), at(1 - t, 0, 0)), col)
   }
   // Barrels stacked in rows of `n` and n - 1, each upper one in the saddle of two below: lying along v, or standing.
   const stack = (n, lying) => {
@@ -567,17 +570,27 @@ export function prop(m, o) {
           const y = 0.06 + (i * (T - 0.15)) / 5
           blk(-w + 0.05, y, -d + 0.03, w - 0.05, y + 0.03, d, wood)
           if (i === 0 && rng() < 0.5) continue
-          m.with(CLOTH_SLOT, () => {
-            for (let u = -w + 0.07; u < w - 0.1;) {
-              const t = 0.035 + rng() * 0.045, h = 0.19 + rng() * 0.08, deep = 0.2 + rng() * 0.06
-              if (u + t > w - 0.07) break
-              if (rng() < 0.08) { u += t * 2; continue }
-              const lean = u + t > w - 0.16 && rng() < 0.4 ? h * 0.25 : 0, y0 = y + 0.03, v1 = d - 0.02, v0 = v1 - deep
-              const col = BOOKS[Math.floor(rng() * BOOKS.length)].map((x) => x * (0.85 + rng() * 0.3))
-              m.hexa([W(u, y0, v0), W(u + t, y0, v0), W(u + t, y0, v1), W(u, y0, v1), W(u + lean, y0 + h, v0), W(u + t + lean, y0 + h, v0), W(u + t + lean, y0 + h, v1), W(u + lean, y0 + h, v1)], col, true)
-              u += t + 0.002 + lean * 1.2
+          const row = [], y0 = y + 0.03, v1 = d - 0.02
+          for (let u = -w + 0.07; u < w - 0.1;) {
+            const t = 0.04 + rng() * 0.05, h = 0.19 + rng() * 0.08, deep = 0.2 + rng() * 0.06
+            if (u + t > w - 0.07) break
+            if (rng() < 0.08) { u += t * 2; row.push(null); continue }
+            const lean = u + t > w - 0.16 && rng() < 0.4 ? h * 0.25 : 0
+            row.push({ u, t, h, v0: v1 - deep, lean, col: BOOKS[Math.floor(rng() * BOOKS.length)].map((x) => x * (0.85 + rng() * 0.3)) })
+            u += t + 0.002 + lean * 1.2
+          }
+          // An upright book draws its spine, top, and only the parts of its sides that stand above its neighbours.
+          m.with(CLOTH_SLOT, () => row.forEach((b, i) => {
+            if (!b) return
+            const { u, t, h, v0, lean, col } = b, top = y0 + h
+            if (lean) return m.hexa([W(u, y0, v0), W(u + t, y0, v0), W(u + t, y0, v1), W(u, y0, v1), W(u + lean, top, v0), W(u + t + lean, top, v0), W(u + t + lean, top, v1), W(u + lean, top, v1)], col, true)
+            m.quad(W(u, y0, v1), W(u + t, y0, v1), W(u + t, top, v1), W(u, top, v1), col, [0, 0, 1])
+            m.quad(W(u, top, v0), W(u + t, top, v0), W(u + t, top, v1), W(u, top, v1), col, [0, 1, 0])
+            for (const [n, x, s] of [[row[i - 1], u, -1], [row[i + 1], u + t, 1]]) {
+              const low = y0 + (n && !n.lean ? Math.min(n.h, h) : 0)
+              if (low < top) m.quad(W(x, low, v0), W(x, low, v1), W(x, top, v1), W(x, top, v0), col, [s, 0, 0])
             }
-          })
+          }))
         }
         break
       }
@@ -806,7 +819,7 @@ export function prop(m, o) {
       }
       case 'kegs':
         for (const v of [-d + 0.1, d - 0.16]) blk(-w + 0.03, 0, v, w - 0.03, 0.06, v + 0.06, DARKWOOD)
-        for (const [u, y] of [[-0.39, 0.06], [0, 0.06], [0.39, 0.06], [-0.195, 0.4], [0.195, 0.4]]) barrel(u, y, 0, 0.52, 0.19, 'v', m.tint(PLANK, 0.16))
+        for (const [u, y] of [[-0.39, 0.06], [0, 0.06], [0.39, 0.06], [-0.195, 0.4], [0.195, 0.4]]) barrel(u, y, 0, 0.52, 0.19, 'v', m.tint(PLANK, 0.16), false)
         break
       case 'jars':
         for (const u of [-w, w - 0.06]) blk(u, 0, -d, u + 0.06, 0.6, d, DARKWOOD)
@@ -999,8 +1012,13 @@ export function interiorGeometries(lay) {
         for (const sgn of [-1, 1]) along(-G, G, sgn > 0 ? hw : -hw - WT, sgn > 0 ? hw + WT : -hw, y, wtop, m.tint(INNER), m)
         if (y + d.h * V < wtop) along(-G, G, -hw, hw, y + d.h * V, wtop, m.tint(INNER), m)
       } else {
-        const o = -d.side * (G - 0.05), n = d.axis === 'x' ? [-d.side, 0, 0] : [0, 0, -d.side]
+        const o = -d.side * (G - 0.05), n = d.axis === 'x' ? [-d.side, 0, 0] : [0, 0, -d.side], s = -d.side
         leaves(m, d.axis === 'x' ? [cx + o, y, cz] : [cx, y, cz + o], n, hw, d.h * V, d.look === 'gate', m.tint(INNER))
+        // A frame from behind the leaves into the room's wall, lapping their edges, or the void past the wall shows round them.
+        const [a0, a1] = [s * (G - 0.15), s * (G + 0.05)].sort((p, q) => p - q), lap = 0.06
+        along(a0, a1, -hw - 0.1, hw + 0.1, y - 0.3, y + 0.01, m.tint(FLOOR.gate), m)
+        for (const sgn of [-1, 1]) along(a0, a1, sgn > 0 ? hw - lap : -hw - 0.1, sgn > 0 ? hw + 0.1 : -hw + lap, y, Math.min(wtop, y + d.h * V + 0.1), m.tint(INNER), m)
+        if (y + d.h * V < wtop) along(a0, a1, -hw - 0.1, hw + 0.1, y + d.h * V - lap, Math.min(wtop, y + d.h * V + 0.1), m.tint(INNER), m)
       }
     }
   }

@@ -1,21 +1,22 @@
 // A castle's ghost, who wants word carried to the last of its line (talk/ghost.js; design/45-bone-friends.md §Castle ghost):
-// a pale, see-through sheet drifting over the floor of a ground-floor room, bobbing and turning slowly to her.
+// one of the townsfolk's bodies in white, nearly invisible, drifting over a back corner of the dungeon, bobbing and turning slowly to her.
 
 import THREE from '../../three-instance.js'
-import { sheetGeometry } from './sheets.js'
-import { castleSpot, ghostSpot } from '../hideout-spot.js'
+import { ghostSpot } from '../hideout-spot.js'
 import { castleLayout } from '../castles/layout.js'
-import { roomProps } from '../castles/furnish.js'
 import { toWorld } from '../layers/castles.js'
+import { TRADES } from '../layers/trades.js'
+import { hash32 } from '../../sim/score.js'
+import { gltfLoader } from './critters.js'
 
 export const GHOST = {
   // Metres: its height, its hem over the floor at rest, and its bob (at `bobHz`). It turns to her at `turn` rad/s.
-  size: 1.6,
-  lift: 0.35,
-  bob: 0.12,
+  size: 1.7,
+  lift: 0.15,
+  bob: 0.08,
   bobHz: 0.4,
   turn: 0.8,
-  opacity: 0.5,
+  opacity: 0.1,
   // She is near it within `near` m (times her size), where it speaks.
   near: 3,
   // Shown and within `hearM` of her, it whispers to itself every `murmurS` seconds, at `murmur` times a spoken line's gain.
@@ -26,14 +27,17 @@ export const GHOST = {
 
 export class CastleGhost {
   constructor(scene) {
-    this.material = new THREE.MeshBasicMaterial({ vertexColors: true, color: 0xb8d8ff, transparent: true, opacity: GHOST.opacity, depthWrite: false, side: THREE.DoubleSide })
-    this.mesh = new THREE.Mesh(sheetGeometry(), this.material)
+    this.material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: GHOST.opacity, depthWrite: false })
+    // Its body faces +X under the group's yaw, as the townsfolk's puppets do; dress() puts one in.
+    this.mesh = new THREE.Group()
     this.mesh.name = 'v2-castle-ghost'
-    this.mesh.scale.setScalar(GHOST.size)
     this.mesh.visible = false
     scene.add(this.mesh)
-    // Where it drifts in the castle she is in, `{ x, y, z }`, or null.
+    // Where it drifts in the castle she is in, `{ x, y, z }`, or null; and the townsfolk body (TRADES.bodies) it wears there.
     this.at = null
+    this.body = null
+    this.worn = null
+    this.mixer = null
     // Its whispers since the ambience last drained them (voices()), and the next murmur's time on update's clock.
     this.said = []
     this.murmurAt = 0
@@ -50,15 +54,40 @@ export class CastleGhost {
     this.said.length = 0
   }
 
-  /** Into castle `site` (floor `oy`): its ghost's room, away from the hiding child's. */
+  /** Into castle `site` (floor `oy`): its dungeon corner, and the body its seed picks. */
   into(site, oy) {
-    const lay = castleLayout(site.seed)
-    const hide = castleSpot(lay, roomProps(lay))
-    const spot = ghostSpot(lay, hide === null ? null : hide.room)
+    const spot = ghostSpot(castleLayout(site.seed))
+    this.body = TRADES.bodies[hash32(site.seed, 0x6057) % TRADES.bodies.length]
     if (spot === null) { this.at = null; return }
     const [x, z] = toWorld(site, spot.lx, spot.lz)
     this.at = { x, y: oy + spot.ly + GHOST.lift, z }
     this.mesh.rotation.y = site.yaw
+  }
+
+  /** Loads the body into() picked (public/creatures/<id>.glb), all white, idling; a body already worn is kept. */
+  async dress() {
+    const id = this.body
+    if (id === this.worn) return
+    const gltf = await (await gltfLoader()).loadAsync(`creatures/${id}.glb`)
+    if (id !== this.body) return
+    const skinned = []
+    gltf.scene.traverse((o) => { if (o.isSkinnedMesh) skinned.push(o) })
+    if (!skinned.length) throw new Error(`CastleGhost: creatures/${id}.glb carries no skinned mesh`)
+    // The richest tier alone, as townsfolk.js's near puppets draw.
+    skinned.sort((a, b) => b.geometry.index.count - a.geometry.index.count)
+    for (const m of skinned) { m.material.dispose(); m.material = this.material; m.visible = m === skinned[0]; m.frustumCulled = false }
+    const idle = gltf.animations.find((c) => c.name === 'idle')
+    if (!idle) throw new Error(`CastleGhost: creatures/${id}.glb has no idle clip`)
+    this.mixer = new THREE.AnimationMixer(gltf.scene)
+    this.mixer.clipAction(idle).play()
+    this.mixer.update(0)
+    gltf.scene.updateMatrixWorld(true)
+    const box = new THREE.Box3().setFromObject(gltf.scene)
+    gltf.scene.scale.setScalar(GHOST.size / (box.max.y - box.min.y))
+    gltf.scene.position.y = -box.min.y * gltf.scene.scale.y
+    this.mesh.clear()
+    this.mesh.add(gltf.scene)
+    this.worn = id
   }
 
   outside() {
@@ -70,6 +99,8 @@ export class CastleGhost {
   update(dt, seconds, her, shown) {
     this.mesh.visible = shown && this.at !== null
     if (!this.mesh.visible) return
+    // Until dress() has loaded its body the group is empty.
+    if (this.mixer !== null) this.mixer.update(dt)
     if (Math.hypot(her.x - this.at.x, her.z - this.at.z) > GHOST.hearM) this.murmurAt = Math.max(this.murmurAt, seconds + GHOST.murmurS[0])
     else if (seconds >= this.murmurAt) this.whisper(seconds, GHOST.murmur, 0.85 + 0.2 * Math.random())
     this.mesh.position.set(this.at.x, this.at.y + GHOST.bob * Math.sin(2 * Math.PI * GHOST.bobHz * seconds), this.at.z)
@@ -80,7 +111,7 @@ export class CastleGhost {
 
   dispose() {
     this.mesh.removeFromParent()
-    this.mesh.geometry.dispose()
+    this.mesh.traverse((o) => { if (o.isMesh) o.geometry.dispose() })
     this.material.dispose()
   }
 }

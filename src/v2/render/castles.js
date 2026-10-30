@@ -2,9 +2,11 @@
 // its court near by, and the exterior as stone. A castle's interior is set down CASTLE_RISE over it while she is inside, as its own
 // stone (CastleInteriorStone) under her own walk; main.js swaps walks. Portals: `portalAt`.
 import THREE from '../../three-instance.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+import { mulberry32 } from '../../sim/mathx.js'
 import { castleLayout, CASTLE } from '../castles/layout.js'
 import { courtGeometry, exteriorGeometry, toGeometry, UV_METRES } from '../castles/shell.js'
-import { exteriorSpans, interiorSpans, SPANS } from '../castles/solids.js'
+import { exteriorSpans, interiorSpans, onFlight, spiralTreadAt, SPANS } from '../castles/solids.js'
 import { castleExtents, toLocal } from '../layers/castles.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { downsample, flipY, dilate, SUPERSAMPLE } from '../../props/impostor.js'
@@ -28,10 +30,13 @@ export const MAP_KEYS = ['stone', 'plank', 'door', 'gate', 'thatch', 'leaded', '
 // metre off the lookout's face, past its 1.3 m battlement band, which she cannot step onto: she takes it over the band. A door
 // fires within `door` of its leaves' face, which is solid, so touching them is going through.
 const ZONE = { rope: 2.2, hatch: 0.6, ladder: 0.7, door: 0.5, rise: 0.6 }
+// The summit rope (render/castles.js ropeMeshes): coiled on the roof `back` m in from where it hangs until she clicks it (ropeOn),
+// then hanging from `lift` over the roof to the foot of the face. A ray within `grab` of the coil or the hanging top takes it.
+const ROPE = { r: 0.017, sides: 7, coil: 0.22, rings: 6, back: 2.2, lift: 0.45, grab: 0.35 }
 // How square to the rope she must walk at it, as the cosine of her step on its way out.
 const ROPE_INTO = 0.6
 // The interior's light (castles/light.js channels): fill, firelight and the window light the hour gives, as colours.
-const INNER_LIGHT = { fill: [0.75, 0.85, 1], fire: [1, 0.72, 0.45], win: 0.9 }
+export const INNER_LIGHT = { fill: [0.75, 0.85, 1], fire: [1, 0.72, 0.45], win: 0.9 }
 // How far from her eye (m) the dungeon's water must be for its probe to capture.
 const MIRROR_REACH = 30
 
@@ -185,6 +190,9 @@ export class Castles {
     this.courtMaterial = patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), 'v2-castle-court')
     Object.assign(this, interiorMaterials(this.maps, uTorch))
     this.probeHidden = probeHidden
+    this.ropeMaterial = patch(new THREE.MeshLambertMaterial({ map: ropeTexture() }), 'v2-castle-rope')
+    // Sites whose summit rope she has let down, for the session.
+    this.ropesDown = new Set()
 
     this.cardTexture = new THREE.DataTexture(new Uint8Array(CASTLE_CARD.size * CASTLE_CARD.size * 4), CASTLE_CARD.size, CASTLE_CARD.size, THREE.RGBAFormat, THREE.UnsignedByteType)
     this.cardTexture.colorSpace = THREE.SRGBColorSpace
@@ -341,9 +349,13 @@ export class Castles {
     c.low = new THREE.Mesh(toGeometry(d.low), this.material)
     c.court = new THREE.Mesh(toGeometry(d.court), this.courtMaterial)
     group.add(c.full, c.low, c.court)
+    c.rope = ropeMeshes(d.solids.portals.rope, this.ropeMaterial)
+    c.rope.hang.visible = this.ropesDown.has(s.id)
+    c.rope.coil.visible = !c.rope.hang.visible
+    group.add(c.rope.hang, c.rope.coil)
     group.visible = false
     group.updateMatrixWorld(true)
-    for (const m of [c.full, c.low, c.court]) m.matrixAutoUpdate = false
+    for (const m of [c.full, c.low, c.court, c.rope.hang, c.rope.coil]) m.matrixAutoUpdate = false
     this.scene.add(group)
     c.group = group
     c.interior = d.interior
@@ -361,7 +373,7 @@ export class Castles {
     this.live.delete(c.site.id)
     if (c.state !== 'ready') return
     c.group.removeFromParent()
-    for (const m of [c.full, c.low, c.court]) m.geometry.dispose()
+    for (const m of [c.full, c.low, c.court, c.rope.hang, c.rope.coil]) m.geometry.dispose()
     if (c.flames !== null) { c.flames.group.removeFromParent(); c.flames.dispose() }
   }
 
@@ -384,6 +396,12 @@ export class Castles {
     if (h === null) return 0
     const n = exteriorSpans(h.c.solids.ex, h.lx, h.lz)
     return writeSpans(n, h.c.site.y, out)
+  }
+
+  /** A flight is 1.4 m wide, so the walk's slope samples either side of it would meet the court below: its treads read level. */
+  deckAt(x, z) {
+    const h = this._at(x, z)
+    return h !== null && onFlight(h.c.solids.ex, h.lx, h.lz)
   }
 
   blockTopAt(x, z) {
@@ -420,6 +438,50 @@ export class Castles {
     c.doorMesh.removeFromParent()
     c.doorMesh.geometry.dispose()
     c.doorMesh = null
+  }
+
+  /** The drawn castle whose summit rope (its coil, or once let down its top) the ray from `origin` along unit `dir` passes within
+   * ROPE.grab of inside `maxDist`: `{ site, down }`, or null. */
+  ropeOn(origin, dir, maxDist) {
+    for (const c of this.live.values()) {
+      if (c.state !== 'ready' || !c.shown) continue
+      const down = this.ropesDown.has(c.site.id), [x, y, z] = ropeGrip(c.site, c.solids.portals.rope, down)
+      const dx = x - origin.x, dy = y - origin.y, dz = z - origin.z
+      const t = Math.min(maxDist, Math.max(0, dx * dir.x + dy * dir.y + dz * dir.z))
+      if (Math.hypot(dx - dir.x * t, dy - dir.y * t, dz - dir.z * t) < ROPE.grab) return { site: c.site, down }
+    }
+    return null
+  }
+
+  /** Site's summit rope uncoiled down the lookout's face, for the session. */
+  dropRope(site) {
+    this.ropesDown.add(site.id)
+    const c = this.live.get(site.id)
+    if (c !== undefined && c.state === 'ready') { c.rope.hang.visible = true; c.rope.coil.visible = false }
+  }
+
+  /** Site's summit rope as Climb.startRope takes it, but for `bottom`: world `{ x, z, top }` where she takes hold. */
+  ropeAt(site) {
+    const c = this.live.get(site.id)
+    if (c === undefined || c.state !== 'ready') throw new Error(`Castles: castle ${site.id} is not built`)
+    const [x, y, z] = ropeGrip(site, c.solids.portals.rope, true)
+    return { x, z, top: y - ROPE.lift }
+  }
+
+  /** The scene children drawing the interior she is in: its stone, and its flames. */
+  insideDrawn() {
+    const c = this.inside
+    return c.innerFlames === null ? [c.innerMesh] : [c.innerMesh, c.innerFlames.group]
+  }
+
+  /** The drawn castle site nearest world `p` ({ x, z }) within `maxD` m, or null. */
+  nearestDrawn(p, maxD) {
+    let best = null, bestD = maxD
+    for (const c of this.live.values()) {
+      const d = Math.hypot(p.x - c.site.x, p.z - c.site.z)
+      if (c.state === 'ready' && c.shown && d < bestD) { bestD = d; best = c.site }
+    }
+    return best
   }
 
   /** Built castles, for the chests' loot. */
@@ -491,7 +553,7 @@ export class Castles {
     const face = (u, v) => turn(s, u, v)
     // The rope: walking at it off the summit, not merely past it.
     const r = P.rope, ru = r.x - r.from[0], rv = r.z - r.from[1], rl = Math.hypot(ru, rv)
-    if (!inside && Math.hypot(lx - r.x, lz - r.z) < ZONE.rope && Math.abs(ly - r.top) < ZONE.rise && step > 0 && (sx * ru + sz * rv) / (step * rl) >= ROPE_INTO) return { kind: 'rope', site: s, at: world([r.x, r.top, r.z], s.y), face: face(ru, rv) }
+    if (!inside && this.ropesDown.has(s.id) && Math.hypot(lx - r.x, lz - r.z) < ZONE.rope && Math.abs(ly - r.top) < ZONE.rise && step > 0 && (sx * ru + sz * rv) / (step * rl) >= ROPE_INTO) return { kind: 'rope', site: s, at: world([r.x, r.top, r.z], s.y), face: face(ru, rv) }
     // Zones: the first one her feet are in, by key; it fires only when it was not the one they were in last.
     let zone = null, act = null
     const near = (x, z, r, y) => Math.hypot(lx - x, lz - z) < r && Math.abs(ly - y) < ZONE.rise
@@ -554,8 +616,8 @@ export class Castles {
     this.cards.removeFromParent()
     this.cards.geometry.dispose()
     this.cards.dispose()
-    for (const m of [...this.material, ...this.innerMaterial, this.waterMaterial, this.courtMaterial, this.cardMaterial]) m.dispose()
-    for (const t of [...Object.values(this.maps), this.cardTexture]) t.dispose()
+    for (const m of [...this.material, ...this.innerMaterial, this.waterMaterial, this.courtMaterial, this.cardMaterial, this.ropeMaterial]) m.dispose()
+    for (const t of [...Object.values(this.maps), this.cardTexture, this.ropeMaterial.map]) t.dispose()
   }
 }
 
@@ -582,6 +644,73 @@ export class CastleInteriorStone {
 
   /** Every top inside is level, so the walk reads a spiral's steps as floor and not the slope across them. */
   deckAt() { return true }
+
+  stairAt(x, y, z) {
+    const [lx, lz] = toLocal(this.c.site, x, z), top = spiralTreadAt(this.c.solids.it, lx, y - this.oy, lz)
+    return top === null ? null : this.oy + top
+  }
+}
+
+/** World [x, y, z] of portals().rope `r`'s grip in site `s`: the coil's top on the roof, or let `down`, the hanging rope's top. */
+function ropeGrip(s, r, down) {
+  const [u, v] = ropeBack(r), lx = down ? r.x : r.x + u * ROPE.back, lz = down ? r.z : r.z + v * ROPE.back
+  const [wx, wz] = turn(s, lx, lz)
+  return [s.x + wx, s.y + r.top + (down ? ROPE.lift : ROPE.r * 3.8), s.z + wz]
+}
+
+// The unit from where the rope hangs in toward the summit.
+const ropeBack = (r) => { const u = r.from[0] - r.x, v = r.from[1] - r.z, l = Math.hypot(u, v); return [u / l, v / l] }
+
+/** A seven-sided rope of ROPE.r from a to b (local metres), its texture wrapping once round and tiling square along it. */
+function ropeRun(a, b) {
+  const d = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]), L = d.length(), around = 2 * Math.PI * ROPE.r
+  const g = new THREE.CylinderGeometry(ROPE.r, ROPE.r, L, ROPE.sides, 1, true)
+  const uv = g.getAttribute('uv')
+  for (let i = 0; i < uv.count; i++) uv.setY(i, (uv.getY(i) * L) / (2 * around))
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()))
+  return g.translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2)
+}
+
+/** The summit rope's two looks, local to the castle's group: `coil` on the roof, and `hang`, over the parapet and down the face. */
+function ropeMeshes(r, material) {
+  const [u, v] = ropeBack(r), top = r.top + ROPE.lift, tie = [r.x + u * ROPE.back, top, r.z + v * ROPE.back]
+  // A flat coil, ring inside ring on the roof, its outer turns laid again on top.
+  const rings = (n, x, z) => Array.from({ length: n }, (_, i) => {
+    const up = i >= n - Math.floor(n / 3) ? 1 : 0, rad = ROPE.coil - 2.1 * ROPE.r * (up ? n - 1 - i : i)
+    const g = new THREE.TorusGeometry(rad, ROPE.r, ROPE.sides, 16).rotateX(Math.PI / 2)
+    const uv = g.getAttribute('uv')
+    for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getY(k), (uv.getX(k) * 2 * Math.PI * rad) / (4 * Math.PI * ROPE.r))
+    return g.translate(x, r.top + ROPE.r * (1 + 1.8 * up), z)
+  })
+  const merge = (parts) => { const g = mergeGeometries(parts); for (const p of parts) p.dispose(); return g }
+  const mesh = (g) => { const m = new THREE.Mesh(g, material); m.name = 'v2-castle-rope'; return m }
+  return {
+    coil: mesh(merge(rings(ROPE.rings, tie[0], tie[2]))),
+    hang: mesh(merge([...rings(1, tie[0], tie[2]), ropeRun([tie[0], r.top + ROPE.r, tie[2]], tie), ropeRun(tie, [r.x, top, r.z]), ropeRun([r.x, top, r.z], [r.x, -CASTLE.raise, r.z])])),
+  }
+}
+
+/** A braided rope's wrapping tile, made in code: speckled browns, strands lit across their middles, darker grooves between them
+ * running diagonally both ways so the lay reads as plaited. u goes once round the rope, v twice its girth along it. */
+function ropeTexture() {
+  const W = 32, H = 64, data = new Uint8Array(W * H * 4), rng = mulberry32(0x40be)
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const u = i / W, v = j / H
+    // Integer slopes in u and v, so each family of strands wraps and tiles seamlessly.
+    const a = (3 * u + 4 * v) % 1, b = (((3 * u - 4 * v) % 1) + 1) % 1, over = Math.floor(8 * v + 3 * u) % 2 === 0
+    const s = over ? a : b, strand = 0.72 + 0.28 * Math.sin(Math.PI * s), groove = Math.min(a, 1 - a) < 0.06 || Math.min(b, 1 - b) < 0.06
+    const k = strand * (groove ? 0.55 : 1) * (0.88 + 0.24 * rng()) * (rng() < 0.07 ? 0.65 : 1)
+    const o = (j * W + i) * 4
+    data[o] = Math.min(255, 150 * k); data[o + 1] = Math.min(255, 112 * k); data[o + 2] = Math.min(255, 70 * k); data[o + 3] = 255
+  }
+  const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.UnsignedByteType)
+  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.colorSpace = THREE.SRGBColorSpace
+  t.magFilter = THREE.LinearFilter
+  t.minFilter = THREE.LinearMipmapLinearFilter
+  t.generateMipmaps = true
+  t.needsUpdate = true
+  return t
 }
 
 const _hit = { c: null, lx: 0, lz: 0 }

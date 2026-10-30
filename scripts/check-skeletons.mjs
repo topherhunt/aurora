@@ -12,6 +12,8 @@ import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { roomProps } from '../src/v2/castles/furnish.js'
 import { caveSpot, castleSpot, ghostSpot } from '../src/v2/hideout-spot.js'
 import { CastleGhost, GHOST } from '../src/v2/render/ghost.js'
+import { dungeonCell, dungeonPlan } from '../src/v2/castles/dungeon.js'
+import { TRADES } from '../src/v2/layers/trades.js'
 import { Skeletons, SKELETON, CLIPS, placeKey } from '../src/v2/render/skeletons.js'
 import { TOWNSFOLK } from '../src/v2/render/townsfolk.js'
 import { LOD_RUNGS } from '../src/v2/render/critters.js'
@@ -343,18 +345,16 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
 
 // --- the castle ghost ------------------------------------------------------------
 {
-  const S = CASTLE.scale
   for (const seed of [1, 2, 3, 77, 991, 4242]) {
-    const lay = castleLayout(seed)
-    const boy = castleSpot(lay, roomProps(lay))
-    const g = ghostSpot(lay, boy.room)
-    const room = g && lay.nodes.find((n) => n.kind === 'room' && n.k === 0 && !n.unused && lay.X(n.x0) * S < g.lx && g.lx < lay.X(n.x0 + n.w) * S && lay.Z(n.z0) * S < g.lz && g.lz < lay.Z(n.z0 + n.d) * S)
-    check(g !== null && room !== undefined && room.id !== boy.room, `castle ${seed}: its ghost drifts in a ground-floor room, not the boy's`, room && `${room.sec.kind}`)
+    const lay = castleLayout(seed), g = ghostSpot(lay), d = dungeonPlan(lay)
+    const room = g && d.rooms.find((r) => r.rect[0] < g.lx && g.lx < r.rect[2] && r.rect[1] < g.lz && g.lz < r.rect[3])
+    const cell = g && dungeonCell(d, g.lx, g.lz)
+    check(g !== null && room !== undefined && room !== d.entry && Number.isNaN(d.water[cell]) && Math.abs(g.ly - d.lo[cell]) < 1e-9, `castle ${seed}: its ghost drifts on a dry dungeon floor past the entry room`, room && `depth ${room.depth}`)
   }
   const ghost = new CastleGhost(new THREE.Scene())
   const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   ghost.into(site, 320)
-  check(ghost.at !== null && Math.abs(ghost.at.y - 320 - GHOST.lift) < 1e-9, 'in its castle, it floats over the ground floor', ghost.at && `${ghost.at.y}`)
+  check(ghost.at !== null && Math.abs(ghost.at.y - 320 - ghostSpot(castleLayout(3)).ly - GHOST.lift) < 1e-9 && TRADES.bodies.includes(ghost.body), 'in its castle, it floats over the dungeon floor in a townsfolk body', ghost.at && `${ghost.at.y} ${ghost.body}`)
   const her = { x: ghost.at.x, z: ghost.at.z + 5 }
   for (let i = 0; i < 300; i++) ghost.update(1 / 30, i / 30, her, true)
   const fwd = new THREE.Vector3(1, 0, 0).applyEuler(ghost.mesh.rotation)

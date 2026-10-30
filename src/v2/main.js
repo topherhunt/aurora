@@ -88,6 +88,7 @@ import { Snowmen } from './render/snowmen.js'
 import { Skeletons, placeKey } from './render/skeletons.js'
 import { Wisps } from './render/wisps.js'
 import { CastleGhost, GHOST } from './render/ghost.js'
+import { CastleFolk, FOLK, maidSays } from './render/castle-folk.js'
 import { Sheets } from './render/sheets.js'
 import { TREAT, Treats, doorOnRay, nightOf } from './treats.js'
 import { Giants } from './render/giants.js'
@@ -2492,14 +2493,22 @@ function takeRein(find, key) {
   return true
 }
 
-/** Her empty hand `key` pressed along the ray at a scaffold's rope (Palisades.ropeOn): its coil drops it down the side; the dropped rope's top puts her on it to slide down (Climb.startRope). */
+/** Her empty hand `key` pressed along the ray at a scaffold's or a castle summit's rope (Palisades/Castles.ropeOn): its coil drops it down the side; the dropped rope's top puts her on it to slide down (Climb.startRope). */
 function pullRope(key, origin, dir) {
-  if (palisades === null || climb === null || player.th !== walk || hands.holding(key) !== null || (wildStriders && wildStriders.riding)) return false
-  const hit = palisades.ropeOn(origin, dir, DESK_CLICK_M * herScale())
-  if (hit === null) return false
-  if (hit.down) climb.startRope(palisades.ropeAt(hit.site))
-  else palisades.dropRope(hit.site)
-  return true
+  if (climb === null || player.th !== walk || hands.holding(key) !== null || (wildStriders && wildStriders.riding)) return false
+  const reach = DESK_CLICK_M * herScale()
+  for (const ropes of [palisades, castles]) {
+    const hit = ropes === null ? null : ropes.ropeOn(origin, dir, reach)
+    if (hit === null) continue
+    if (!hit.down) ropes.dropRope(hit.site)
+    else if (ropes === palisades) climb.startRope(palisades.ropeAt(hit.site))
+    else {
+      const r = castles.ropeAt(hit.site)
+      climb.startRope({ ...r, bottom: walk.heightAt(r.x, r.z, r.top - 1.5) })
+    }
+    return true
+  }
+  return false
 }
 
 const gunFrame = new THREE.Matrix4()
@@ -3871,6 +3880,9 @@ let bridges = null
 let palisades = null
 // The sited castles (render/castles.js), and while she is in one { site, back, stone, outside }.
 let castles = null
+let castleFolk = null
+// The world plan's keep trails (layers/castles.js planCastles records), for the castles' travellers.
+let castleTrails = []
 let inCastle = null
 let giants = null
 // The watchtowers' ladders and the scaffolds' and castles' ropes, while there are either and she is on the overworld's walk.
@@ -4516,7 +4528,7 @@ function disposeRoom() {
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
   if (palisades) { palisades.dispose(); palisades = null; window.v2palisades = null }
-  if (castles) { closeCastle(); castles.dispose(); castles = null; window.v2castles = null }
+  if (castles) { closeCastle(); castleFolk.dispose(); castleFolk = window.v2castleFolk = null; castles.dispose(); castles = null; window.v2castles = null }
   climb = null
   if (giants) { giants.dispose(); giants = null }
   if (roadLines) { roadLines.removeFromParent(); for (const part of roadLines.children) { part.geometry.dispose(); part.material.dispose() } roadLines = null }
@@ -4801,12 +4813,15 @@ function openCastle(site, back) {
   peerAvatars.ground(inner)
   skeletons.intoCastle(site, stone.oy, inner)
   castleGhost.into(site, stone.oy)
+  castleGhost.dress().catch(reportRuntimeError)
 }
 
 /** The castle's interior down and the overworld walk hers again; nothing when she is not in one. */
 function closeCastle() {
   if (!inCastle) return
   castles.closeInterior()
+  for (const o of castleHidden) o.visible = true
+  castleHidden.clear()
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = inCastle.outside
   if (skeletons) skeletons.outside(walk)
@@ -4891,6 +4906,9 @@ let slashesRung = 0
 // In a house, the same hiding: everything but its view and residents, put back by closeHouse.
 const houseKeep = new Set()
 const houseHidden = new Set()
+// In a castle, the same: everything but its interior and who is in it, put back by closeCastle.
+const castleKeep = new Set()
+const castleHidden = new Set()
 // The chalk lumps of the system meshed, for her hands; and a pen a hand, its strokes on the system she is in.
 const chalkStones = new ChalkStones()
 for (const m of chalkStones.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-chalk' })
@@ -5099,6 +5117,14 @@ function stepIndoors() {
   houseKeep.clear()
   keepUnderRoof(houseKeep).add(indoors.view.group).add(indoors.residents.group)
   hideOutside(houseKeep, houseHidden)
+}
+
+/** Each frame in a castle, after every layer's own update and before its water's reflection: the overworld out of the draw. */
+function stepInCastle() {
+  castleKeep.clear()
+  keepUnderRoof(castleKeep).add(castleFolk.inner).add(castleGhost.mesh).add(skeletons.batch).add(wildlife.batch).add(items.group)
+  for (const o of castles.insideDrawn()) castleKeep.add(o)
+  hideOutside(castleKeep, castleHidden)
 }
 
 /** Each frame underground, after every layer's own update: the overworld out of the draw, and the cave's fog, culling and creatures. */
@@ -5350,6 +5376,7 @@ async function buildRoom(room, at) {
           `roads ${roadPlan.ways.length} ways, ${roadPlan.bridges.length} bridges, ${roadPlan.signs.length} signposts, ${castlePlan.sites.length} castles, ${file !== null && file.key === key ? 'baked' : 'laid'} in ${(performance.now() - t0).toFixed(0)} ms`
       )
       applyWorldPlan(layers, { townPlan, mouths, labyrinthPlan, castlePlan })
+      castleTrails = castlePlan.records
       caveSites = siteCaves(mouths, townPlan)
     }
   }
@@ -5575,6 +5602,8 @@ async function buildRoom(room, at) {
     castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden })
     castles.update(spawn, fireNow(), lampNight(), dayness)
     window.v2castles = castles // console: `v2castles.stats`
+    castleFolk = new CastleFolk(scene, { castles, ground: (x, z) => walk.heightAt(x, z), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), trails: castleTrails })
+    window.v2castleFolk = castleFolk
   }
 
   // Trees. The atlas was built up ahead of the terrain, because the terrain
@@ -7555,6 +7584,7 @@ const ambientTrace = new AmbientTrace({
   active: () => ready && fatalError === null && renderer.xr.isPresenting && !questPanelGroup.visible && !perfTrace.running && !recordTrace.recording,
   context: () => ({ ...perfTrace.host.context(), peers: netplay.peers.size }),
   pulse: questPulse,
+  audio: () => sound === null ? null : sound.ctx,
   env: () => {
     const p = player.rig.position
     const out = !indoors && cave === null
@@ -8927,7 +8957,7 @@ function tick() {
   // means restating this hour's palette. See airHook.
   const state = clock.state()
   // A wreath she is inside is culled, and the air thickens in its place (§10). Under a roof there is no cloud and no weather.
-  if (currentRoom.village || indoors || cave) { state.cover = 0; state.precip = 0 }
+  if (currentRoom.village || indoors || cave || inCastle) { state.cover = 0; state.precip = 0 }
   if (wreaths) wreaths.visible = questToggles.wreaths && !currentRoom.village
   if (wreaths && wreaths.visible) {
     state.hazeDensity *= wreaths.hazeGain(headTmp)
@@ -8989,6 +9019,7 @@ function tick() {
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
   if (questToggles.reflections && cave === null && !indoors && inCastle === null) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook, camera.getWorldDirection(probeLook))
+  if (inCastle !== null) stepInCastle()
   if (questToggles.reflections && inCastle !== null) castles.reflect(renderer, scene, headTmp, dt, camera.getWorldDirection(probeLook))
   if (cave !== null) stepCave(headTmp, now / 1000)
   else if (indoors) stepIndoors()
@@ -9145,6 +9176,11 @@ function stepOverworld(dt, now) {
   wisps.update(dt, clock.seconds, player.originPosition(), { dayness, outdoors: cave === null && inCastle === null && indoors === null, places: wispPlaces, heightAt: (x, z) => walk.heightAt(x, z) })
   const ghostQuest = inCastle !== null && castleGhost.at !== null && conversations !== null ? conversations.ghostOf(inCastle.site.id) : null
   castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale(), () => castleGhost.whisper(clock.seconds)))
+  if (castleFolk) {
+    castleFolk.update(dt, clock.seconds, headTmp, inCastle === null ? null : inCastle.site, inCastle === null ? 0 : inCastle.stone.oy)
+    const maidAt = inCastle !== null && conversations !== null ? castleFolk.greet(headTmp, FOLK.near * herScale()) : null
+    if (maidAt !== null) conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked)), maidAt)
+  }
   if (giants) {
     giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider') || herLantern
     giants.glow = herLantern

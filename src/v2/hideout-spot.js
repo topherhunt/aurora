@@ -1,8 +1,9 @@
 // Where a missing child sits in his hideout (talk/quests.js hideouts): off the beaten path in a cave, a quiet ground-floor
-// corner of a castle's tallest tower. Pure and deterministic per plan; three-free.
+// corner of a castle's tallest tower; and where a castle's ghost drifts. Pure and deterministic per plan; three-free.
 
 import { CASTLE } from './castles/layout.js'
-import { roomPlan } from './castles/furnish.js'
+import { dungeonProps } from './castles/furnish.js'
+import { dungeonPlan } from './castles/dungeon.js'
 
 const H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
 // Passages she can walk both ways: not under water, not down a drop she could not climb back.
@@ -78,12 +79,20 @@ export function castleSpot(lay, props) {
   return null
 }
 
-/** Where a castle's ghost drifts: the middle of the biggest chamber (roomPlan, so never in a partition) of a ground-floor room other than room `not` (the hiding child's), the keep's first, else the biggest. `{ lx, lz, ly }` as castleSpot; null with no such room. */
-export function ghostSpot(lay, not) {
-  const rooms = lay.nodes.filter((n) => n.kind === 'room' && !n.unused && n.k === 0 && n.id !== not)
-  if (rooms.length === 0) return null
-  const n = rooms.reduce((a, b) => ((b.sec.kind === 'keep') - (a.sec.kind === 'keep') || b.w * b.d - a.w * a.d) > 0 ? b : a)
-  const area = (c) => (c.rect[2] - c.rect[0]) * (c.rect[3] - c.rect[1])
-  const c = roomPlan(lay).chambers.filter((c) => c.node === n).reduce((a, b) => (area(b) > area(a) ? b : a))
-  return { lx: (c.rect[0] + c.rect[2]) / 2, lz: (c.rect[1] + c.rect[3]) / 2, ly: 0 }
+/** Where a castle's ghost drifts: a dry back corner of the dungeon (dungeonPlan) past its locked door, in the deepest dead-end room
+ * that is not the chest's (else the deepest room), clear of its openings and props. `{ lx, lz, ly }` as castleSpot; null with no such corner. */
+export function ghostSpot(lay) {
+  const g = dungeonPlan(lay), props = dungeonProps(lay)
+  const rooms = g.rooms.filter((r, i) => i !== g.chest && r !== g.entry).sort((a, b) => (a.portals.length === 2) - (b.portals.length === 2) || a.depth - b.depth).reverse()
+  for (const r of [...rooms, g.rooms[g.chest]]) {
+    const [i0, j0, i1, j1] = r.cells
+    for (const [i, j] of [[i0, j0], [i1 - 1, j0], [i0, j1 - 1], [i1 - 1, j1 - 1]]) {
+      const c = i + j * g.W, lx = g.x0 + i + 0.5, lz = g.z0 + j + 0.5
+      if (Number.isNaN(g.lo[c]) || !Number.isNaN(g.water[c])) continue
+      if (r.portals.some(([px, pz]) => Math.hypot(px - lx, pz - lz) < CLEAR_M)) continue
+      if (props.some((p) => Math.hypot(p.x - lx, p.z - lz) < Math.hypot(p.w, p.d) / 2 + 0.3)) continue
+      return { lx, lz, ly: g.lo[c] }
+    }
+  }
+  return null
 }
