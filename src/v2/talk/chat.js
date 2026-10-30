@@ -174,7 +174,7 @@ function nextExchange(conv, hour, r, not) {
   if (conv._worried()) return not.includes('worried') ? 'hush' : 'worried'
   const T = mind.traits
   const q = conv.quest
-  const m = conv._message('giver')
+  const m = conv._message()
   const tone = conv.tone
   // The cheery talk and gossip; the curt grumble or say nothing.
   const talk = { cheery: 1.6, plain: 1, curt: 0.25 }[tone]
@@ -236,7 +236,7 @@ export function wantsHer(mind, ctx, r) {
   const conv = new Conversation(mind, ctx)
   const q = conv.quest
   if (q !== null && q.parent === mind.id && ctx.log.state(q.id) === null) return true
-  const m = conv._message('giver')
+  const m = conv._message()
   if (m !== null && [null, 'delivered'].includes(ctx.log.state(m.id))) return true
   return conv.tone === 'cheery' && r < mind.traits.chattiness * 0.5
 }

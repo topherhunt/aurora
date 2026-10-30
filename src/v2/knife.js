@@ -2,10 +2,11 @@ import THREE from '../three-instance.js'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
 // The smith's knife (items.js kind 'knife'), built here rather than shipped: a steel blade along -Z, a wrapped wooden handle
-// along +Z, centred, ITEMS.knife.size long. TIP is the point in its frame that carves (main.js carvePumpkins).
+// along +Z, centred, ITEMS.knife.size long. HEEL to TIP, in its frame, is the edge that carves (main.js carveByHand).
 
 const LONG = 0.26
 export const TIP = new THREE.Vector3(0, 0.004, -LONG / 2)
+export const HEEL = new THREE.Vector3(0, 0.004, 0.006)
 
 /** The knife's geometry, vertex-coloured, and its material. */
 export function buildKnife() {

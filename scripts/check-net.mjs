@@ -246,6 +246,12 @@ try {
   }
   if (forgotten !== 'deadbeef-c0') throw new Error(`the oldest loose thing should be forgotten at the cap, got ${forgotten}`)
   if (ids.size !== 24 || ids.has('deadbeef-c0')) throw new Error(`24 loose things should remain, got ${ids.size}`)
+  // A jack-o'-lantern's cut mask rides its slot past SLOT_MAX_JSON; one of the wrong length is dropped with its message.
+  const lantern = { kind: 'jack-o-lantern', name: "jack-o'-lantern", size: 0.36, scale: [1, 1, 1], color: [1, 1, 1], stowable: true, lit: true, attrs: {}, carve: `${'A/8+'.repeat(341)}AA==` }
+  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-j0', slot: { ...lantern, carve: lantern.carve.slice(4) }, pose: pose7, vel: [0, 0, 0], state: 0 }))
+  first.send(JSON.stringify({ version: 1, type: 'loose', id: 'deadbeef-j1', slot: lantern, pose: pose7, vel: [0, 0, 0], state: 0 }))
+  const carved = await nextThings(second, (t) => t.loose)
+  if (carved.loose.length !== 1 || carved.loose[0][0] !== 'deadbeef-j1' || !same(carved.loose[0][1], lantern)) throw new Error(`a carved lantern should cross the relay whole, and a bad mask not at all: ${JSON.stringify(carved.loose).slice(0, 200)}`)
   // The creatures someone is interacting with: an anchor reaches the other
   // client once with its sender's id on it, a second for the same key replaces
   // the first, a malformed one is dropped, a lured set rides the same block, a

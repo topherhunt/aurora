@@ -31,8 +31,23 @@ export const MESSAGES = [
 ]
 const BONDS = ['an old friend', 'my cousin', 'my old partner', 'someone I owe']
 
+// A castle ghost's word for the last of its line in the town below, with its near-misses as MESSAGES.
+export const GHOST_WORDS = [
+  ['The ring is under the third stair.', 'The ring is under the third stone.', 'The ring is over the third stair.', 'The rope is under the third stair.'],
+  ['I was never angry with you.', 'I was always angry with you.', 'I was never afraid of you.', 'I was never angry with him.'],
+  ['Plant the apple tree by the well.', 'Plant the pear tree by the well.', 'Fell the apple tree by the well.', 'Plant the apple tree by the wall.'],
+  ['The old song ends on a high note.', 'The old song ends on a low note.', 'The old song starts on a high note.', 'The old song ends on a sad note.'],
+]
+const GHOSTS = [
+  { name: 'Lady Ysolde', she: true },
+  { name: 'Sir Brannoc', she: false },
+  { name: 'Mistress Hale', she: true },
+  { name: 'Old Grandsire Orm', she: false },
+]
+
 const SALT = 7201
 const SALT_MESSAGE = 7202
+const SALT_GHOST = 7203
 
 export const epochOf = (seconds) => Math.floor(seconds / QUESTS.epochS)
 
@@ -106,7 +121,7 @@ export function missingChild(world, townIndex, epoch) {
   }
 }
 
-/** Town `townIndex`'s word to carry in `epoch`, or null: `{ id, kind, town, giver, to, bond, message, choices }`. `to` is a grown-up in the nearest town, `message` an index into MESSAGES, `choices` its four phrasings in the order the recipient offers them. */
+/** Town `townIndex`'s word to carry in `epoch`, or null: `{ id, kind, town, giver, ghost, to, bond, words, choices }`. `to` is a grown-up in the nearest town, `words` one of MESSAGES, `choices` its four phrasings in the order the recipient offers them; `ghost` null (ghostMessage). */
 export function message(world, townIndex, epoch) {
   const t = world.towns[townIndex]
   const rand = mulberry32(hash32(world.seed, SALT_MESSAGE, townIndex, epoch))
@@ -115,20 +130,53 @@ export function message(world, townIndex, epoch) {
   const near = world.nearestTown(t.town.x, t.town.z, townIndex)
   const takers = near.minds.filter((m) => m.cls !== 'child')
   if (givers.length === 0 || takers.length === 0) return null
-  const choices = [0, 1, 2, 3]
-  for (let i = choices.length - 1; i > 0; i--) {
-    const j = (rand() * (i + 1)) | 0
-    ;[choices[i], choices[j]] = [choices[j], choices[i]]
-  }
+  const choices = shuffled(rand)
   return {
     id: `msg:${t.town.id}:${epoch}`,
     kind: 'message',
     town: townIndex,
     giver: pick(rand, givers).id,
+    ghost: null,
     to: pick(rand, takers).id,
     bond: pick(rand, BONDS),
-    message: (rand() * MESSAGES.length) | 0,
+    words: pick(rand, MESSAGES),
     choices,
+  }
+}
+
+/** The four phrasings' indices in the order the recipient offers them. */
+function shuffled(rand) {
+  const choices = [0, 1, 2, 3]
+  for (let i = choices.length - 1; i > 0; i--) {
+    const j = (rand() * (i + 1)) | 0
+    ;[choices[i], choices[j]] = [choices[j], choices[i]]
+  }
+  return choices
+}
+
+/**
+ * The ghost of the castle that is town `townIndex`'s hideout, with word for the last of its line in that town, or null:
+ * a message (as message) whose `giver` is null and `ghost` `{ name, she, site }`. One ghost a castle, the first town's;
+ * the same in every epoch, since a ghost has waited long enough already.
+ */
+export function ghostMessage(world, townIndex) {
+  const hide = world.hideouts[townIndex]
+  if (hide === null || hide.kind !== 'castle') return null
+  if (world.hideouts.findIndex((h) => h !== null && h.kind === 'castle' && h.site === hide.site) !== townIndex) return null
+  const t = world.towns[townIndex]
+  const takers = t.minds.filter((m) => m.cls !== 'child')
+  if (takers.length === 0) return null
+  const rand = mulberry32(hash32(world.seed, SALT_GHOST, townIndex))
+  return {
+    id: `ghost:${t.town.id}`,
+    kind: 'message',
+    town: townIndex,
+    giver: null,
+    ghost: { ...pick(rand, GHOSTS), site: hide.site },
+    to: pick(rand, takers).id,
+    bond: 'the last of my line',
+    words: pick(rand, GHOST_WORDS),
+    choices: shuffled(rand),
   }
 }
 
@@ -136,7 +184,7 @@ export function message(world, townIndex, epoch) {
 export function questsFor(world, epoch) {
   const out = new Map()
   for (const t of world.towns) {
-    for (const q of [missingChild(world, t.index, epoch), message(world, t.index, epoch)]) if (q !== null) out.set(q.id, q)
+    for (const q of [missingChild(world, t.index, epoch), message(world, t.index, epoch), ghostMessage(world, t.index)]) if (q !== null) out.set(q.id, q)
   }
   return out
 }

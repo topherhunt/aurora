@@ -87,6 +87,14 @@ export const SOUNDS = {
   humanScreamWoman2: 'sounds/npc-human-scream-woman-2.mp3',
   humanScreamChild1: 'sounds/npc-human-scream-child-1.mp3',
   humanScreamChild2: 'sounds/npc-human-scream-child-2.mp3',
+  // A bone friend's (render/skeletons.js).
+  skeletonRattle: 'sounds/skeleton-rattle.mp3',
+  skeletonClack: 'sounds/skeleton-clack.mp3',
+  skeletonCollapse: 'sounds/skeleton-collapse.mp3',
+  skeletonReassemble: 'sounds/skeleton-reassemble.mp3',
+  skeletonCrunch: 'sounds/skeleton-crunch.mp3',
+  skeletonGiggle: 'sounds/skeleton-giggle.mp3',
+  skeletonWhimper: 'sounds/skeleton-whimper.mp3',
   // A hob weevil's cry (render/hobs.js).
   hobCry: 'sounds/animal-hob-weevil-cry.mp3',
   // A frost strider's calls (render/striders.js, wild-striders.js), the flutter of its fidget, and its whine.
@@ -151,7 +159,7 @@ const ROCKSLIDES = ['rockslide1', 'rockslide2']
 const CAMPFIRES = ['campfire1', 'campfire2', 'campfire3', 'campfire4']
 const CAVE_TAKES = ['cave1', 'cave2', 'cave3']
 // What still sounds underground (Ambience._underground); everything else is the overworld's.
-const CAVE_LOOPS = new Set(['underwater', 'cave', 'blaze'])
+const CAVE_LOOPS = new Set(['underwater', 'cave', 'caveRiver', 'cavePool', 'blaze'])
 const CAVE_TIMERS = new Set(['footstep', 'stroke', 'caveSwap', 'caveDrip'])
 // No boulders under her feet: the rockslide scatter is the overworld's talus.
 const CAVE_SENSE = WorldSense.blank()
@@ -272,8 +280,11 @@ export const RULES = {
   underwater: { level: 0.5, gain: [0.8, 1.0] },
   // Underground, dry: the cave bed loops on the near bus (the house walls are not the rock), and every `swap` seconds one pass of it is one of CAVE_TAKES instead. The clips are mastered ~18 dB hotter than the brook, which is why the level is low.
   cave: { level: 0.3, gain: [0.8, 1.0], swap: [30, 60] },
-  // A drop into the cave's water every `interval` seconds while a pool, sump or river is within `reach` metres of her head (CaveWalk.nearestWater), from that nearest point: `level` up to `near` metres off, falling as near/distance past it.
-  caveDrip: { interval: [10, 15], reach: 10, near: 3, level: 0.4, gain: [0.7, 1.0] },
+  // A drop into the cave's water every `interval` seconds while a pool, sump or river is heard, from the nearest of them: `level` up to `near` metres off, falling as near/distance past it.
+  // The brook's loop from the nearest point of a cave river, and the glades' lapping bed from a pool's or sump's, within `reach` metres of her head (main.js asks CaveWalk.nearestWater that far): full up to `near`, fading to nothing at the reach. On the near bus, since a cave stands the air bus behind the house's walls.
+  caveRiver: { reach: 10, near: 2, level: 0.9, gain: [0.7, 1.0] },
+  cavePool: { reach: 10, near: 3, level: 0.5, gain: [0.6, 1.0] },
+  caveDrip: { interval: [10, 15], near: 3, level: 0.4, gain: [0.7, 1.0] },
   // A violin playing inside a house (village.js FIDDLE, the room's fiddlers()), heard through the wall: a loop of its own per house, placed `ear` metres over the floor, on within `reach` metres of the trunk's wall, at `level` up to `near` off it and falling as near/distance past, fading to nothing over the last `edge` metres. The wall is a low-pass: its cutoff `cutoff[0]` Hz at the reach opening to `cutoff[1]` at the wall, so it comes clearer as she nears and never clear. The rate is held at 1 (a tune drifting in pitch is a tune out of tune) and the level walks little. Each fiddler plays now and then, a spell of `play` seconds (one to three times through the 15 s tune) after a rest of `rest`, and is never heard while she is indoors.
   fiddle: { ear: 1.5, reach: 6, near: 1.5, edge: 2, level: 0.3, cutoff: [500, 2200], gain: [0.9, 1.0], play: [15, 45], rest: [120, 300] },
   // A labyrinth's drums (design/41-palisade-labyrinths.md), looped from its middle while she is within `reach` metres of its outline and has not yet stood in its middle: `near` 0 at the reach to 1 at the middle's edge walks the level from `level[0]` to `level[1]` and the low-pass from `cutoff[0]` to `cutoff[1]` Hz, both geometrically, so far off they are a distant thump, and the rate (pitch with it) linearly from `rate[0]` to `rate[1]`. `span` is the clip's two whole bars in seconds, looped exactly (LoopVoice `exact`); the clip runs on into a third it cuts short.
@@ -384,6 +395,8 @@ export class Ambience {
       this.timers[k] = { armed: false, left: 0 }
     }
     this.loops = {
+      caveRiver: engine.loop('brook', { bus: 'near', directional: true, gain: RULES.caveRiver.gain }),
+      cavePool: engine.loop('lakeBed', { bus: 'near', directional: true, gain: RULES.cavePool.gain }),
       underwater: engine.loop('underwater', { bus: 'water', gain: RULES.underwater.gain }),
       brook: engine.loop('brook', { directional: true, gain: RULES.brook.gain }),
       lakeBed: engine.loop('lakeBed', { directional: true, gain: RULES.lakeBed.gain }),
@@ -525,7 +538,7 @@ export class Ambience {
    * @param now       the room's world clock in seconds (clock.js), which the dragons' roars are scored against
    * @param indoors   she is inside a house: the fiddles are silent
    * @param hushed    the birds, crickets and rustling leaves are silent (a chanterelle, design/33-vitals.md §Eating)
-   * @param cave      null above ground; underground `{ water }`, the nearest point {x, y, z} of the cave's water within RULES.caveDrip.reach, or null
+   * @param cave      null above ground; underground `{ river, pool }`, the nearest point {x, y, z} of the cave's river and of its still water (pool or sump) within RULES.caveRiver / cavePool reach, each or null
    */
   update(dt, { head, dayness, submerged, speed, afoot, swimming = false, cover = 0, precip = 0, now, indoors = false, hushed = false, cave = null }) {
     if (!(dt >= 0)) throw new Error(`Ambience.update: dt must be non-negative, got ${dt}`)
@@ -553,6 +566,8 @@ export class Ambience {
     const s = this.s
 
     this._loop('cave', false)
+    this._loop('caveRiver', false)
+    this._loop('cavePool', false)
     this.caveTake = null
     this.timers.caveSwap.armed = false
     this.timers.caveDrip.armed = false
@@ -666,17 +681,21 @@ export class Ambience {
     this.engine.update()
   }
 
-  /** Underground and dry: the cave bed with a take swapped in now and then, and a drop into the nearest water within reach. All off under the water. */
+  /** Underground and dry: the cave bed with a take swapped in now and then, the river and pool beds, and a drop into the nearest water within reach. All off under the water. */
   _cave(dt, head, cave, submerged) {
     const dry = !submerged
     const C = RULES.cave
     this._loop('cave', dry, C.level)
     if (!dry) this.caveTake = null
     if (this.due('caveSwap', dry, C.swap, dt)) this.caveTake = this.pick(CAVE_TAKES)
+    const dist = (p) => (p === null ? Infinity : Math.hypot(p.x - head.x, p.y - head.y, p.z - head.z))
+    const dr = dist(cave.river), dp = dist(cave.pool)
+    const R = RULES.caveRiver, P = RULES.cavePool
+    this._loop('caveRiver', dry && cave.river !== null, R.level * (1 - smoothstep(R.near, R.reach, dr)), cave.river)
+    this._loop('cavePool', dry && cave.pool !== null, P.level * (1 - smoothstep(P.near, P.reach, dp)), cave.pool)
     const D = RULES.caveDrip
-    const w = dry ? cave.water : null
+    const d = Math.min(dr, dp), w = dry ? (dr < dp ? cave.river : cave.pool) : null
     if (this.due('caveDrip', w !== null, D.interval, dt)) {
-      const d = Math.hypot(w.x - head.x, w.y - head.y, w.z - head.z)
       this.fire('caveDrip', { rate: this.rate(), gain: D.level * (D.near / Math.max(D.near, d)) * this.between(...D.gain), at: { x: w.x, y: w.y, z: w.z }, bus: 'near' })
     }
   }

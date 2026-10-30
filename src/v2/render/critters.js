@@ -32,6 +32,8 @@ export const CRITTER_GLB = {
   snowman: 'creatures/abominable-snowman.glb',
   // The village biped (ship-biped.mjs too): the human library. See render/leafkin.js.
   leafkin: 'creatures/leafkin.glb',
+  // The hand-rigged skeleton (tools/creatures/rig-skeleton.mjs), the human library. See render/skeletons.js.
+  boneFriend: 'creatures/bone-friend.glb',
   // The wyvern (tools/creatures/ship-wyvern.mjs): the same shape, with the wyvern clip library. See render/dragons.js.
   dragon: 'creatures/fen-dragon.glb',
 }

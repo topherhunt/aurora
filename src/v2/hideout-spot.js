@@ -76,3 +76,11 @@ export function castleSpot(lay, props) {
   }
   return null
 }
+
+/** Where a castle's ghost drifts: the middle of a ground-floor room other than room `not` (the hiding child's), the keep's first, else the biggest. `{ lx, lz, ly }` as castleSpot; null with no such room. */
+export function ghostSpot(lay, not) {
+  const rooms = lay.nodes.filter((n) => n.kind === 'room' && !n.unused && n.k === 0 && n.id !== not)
+  if (rooms.length === 0) return null
+  const n = rooms.reduce((a, b) => ((b.sec.kind === 'keep') - (a.sec.kind === 'keep') || b.w * b.d - a.w * a.d) > 0 ? b : a)
+  return { lx: (lay.X(n.x0) + lay.X(n.x0 + n.w)) / 2 * S, lz: (lay.Z(n.z0) + lay.Z(n.z0 + n.d)) / 2 * S, ly: 0 }
+}

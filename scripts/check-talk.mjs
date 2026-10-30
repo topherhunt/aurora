@@ -18,7 +18,8 @@ import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
 import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
 import { TalkWorld } from '../src/v2/talk/world.js'
 import { Rapport } from '../src/v2/talk/rapport.js'
-import { QuestLog, questsFor, missingChild, hideouts, MESSAGES, QUESTS, ODD } from '../src/v2/talk/quests.js'
+import { QuestLog, questsFor, missingChild, hideouts, MESSAGES, GHOST_WORDS, QUESTS, ODD } from '../src/v2/talk/quests.js'
+import { ghostSays } from '../src/v2/talk/ghost.js'
 import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
@@ -233,7 +234,7 @@ check(/^Any word of/.test(hello.text) && !worried.ended && lastOff.moment === 'm
 }
 
 // --- the message ---
-const msgs = [...quests.values()].filter((x) => x.kind === 'message')
+const msgs = [...quests.values()].filter((x) => x.kind === 'message' && x.ghost === null)
 check(msgs.length > world.towns.length * 0.3 && msgs.every((x) => {
   const to = world.person(x.to)
   return to.cls !== 'child' && to.town === world.nearestTown(fire(world.towns[x.town]).x, fire(world.towns[x.town]).z, x.town).index && [...x.choices].sort().join() === '0,1,2,3'
@@ -243,13 +244,13 @@ const msg = msgs.find((x) => world.person(x.giver).id !== qs.find((c) => c.town 
 const mctx = ctxAt(fire(world.towns[msg.town]))
 const giver = world.person(msg.giver), to = world.person(msg.to)
 const ask = new Conversation(giver, mctx).say('talk:needs')
-check(mctx.log.state(msg.id) === 'accepted' && ask.text.includes(MESSAGES[msg.message][0]) && ask.text.includes(to.name), 'asked what they need, the sender hands her the message word for word, and she has taken it', ask.text)
+check(mctx.log.state(msg.id) === 'accepted' && MESSAGES.includes(msg.words) && ask.text.includes(msg.words[0]) && ask.text.includes(to.name), 'asked what they need, the sender hands her the message word for word, and she has taken it', ask.text)
 const rc = new Conversation(to, { ...mctx, from: fire(world.townOf(to)) })
 check(!new Conversation(to, ctxAt(fire(world.townOf(to)))).menu().some((c) => c.topic.startsWith('deliver:')), 'the recipient offers no "word from" chip to someone carrying none')
 check(rc.menu().some((c) => c.topic === `deliver:${msg.id}`), 'the recipient offers a "word from" chip to her')
 rc.say(`deliver:${msg.id}`)
 const offered = rc.menu().filter((c) => c.topic.startsWith('word:'))
-check(offered.length === 4 && offered.some((c) => c.label.includes(MESSAGES[msg.message][0])), 'asked what was said, she chooses among the true words and three near-misses', offered.map((c) => c.label).join(' / '))
+check(offered.length === 4 && offered.some((c) => c.label.includes(msg.words[0])), 'asked what was said, she chooses among the true words and three near-misses', offered.map((c) => c.label).join(' / '))
 const s0 = mctx.rapport.standing(to.id)
 const got = rc.say(`word:0:${msg.id}`)
 check(got.mood === 'warm' && mctx.log.state(msg.id) === 'delivered' && mctx.rapport.standing(to.id) > s0, 'the true words delivered warm the recipient', got.text)
@@ -262,6 +263,37 @@ gc.say(`deliver:${msg.id}`)
 const garbled = gc.say(`word:${msg.choices.find((k) => k !== 0)}:${msg.id}`)
 check(garbled.mood === 'cold' && gctx.log.state(msg.id) === 'garbled' && gctx.rapport.standing(to.id) < 0 && !gc.menu().some((c) => /^(deliver|word):/.test(c.topic)),'garbled words leave the recipient cold, and the errand cannot be retried', garbled.text)
 check(new Conversation(as(to, { wariness: 1 }), gctx).tell({ kind: 'sent', by: msg.giver }).caught === false, 'once the sender has asked her, "they sent me" is the truth')
+
+// --- the castle ghost ---
+{
+const ghosts = [...quests.values()].filter((x) => x.kind === 'message' && x.ghost !== null)
+const castleTowns = world.hideouts.map((h, i) => (h !== null && h.kind === 'castle' ? i : -1)).filter((i) => i >= 0)
+check(castleTowns.length > 0 && ghosts.length === 1 && ghosts[0].town === castleTowns[0] && ghosts[0].ghost.site === 'k0' && ghosts[0].giver === null, 'one ghost haunts the castle, with word for the first town that hides its child there', `${ghosts.length} ghosts, castle towns ${castleTowns}`)
+const gq = ghosts[0]
+const heir = world.person(gq.to)
+check(heir.cls !== 'child' && heir.town === gq.town && GHOST_WORDS.includes(gq.words), 'its word goes to a grown-up of that town, in a ghost\'s words', heir.name)
+check(JSON.stringify(questsFor(world, EPOCH + 3).get(gq.id)) === JSON.stringify(gq), 'the ghost asks the same of every epoch')
+const hctx = ctxAt(fire(world.townOf(heir)))
+check(!new Conversation(heir, hctx).menu().some((c) => c.topic === `deliver:${gq.id}`), 'the heir offers no word from the ghost before she has met it')
+const ask0 = ghostSays(gq, hctx.log, world)
+check(hctx.log.state(gq.id) === 'accepted' && ask0.text.includes(gq.words[0]) && ask0.text.includes(heir.name) && ask0.text.includes(gq.ghost.name), 'met, the ghost names itself and gives her its words for the heir', ask0.text)
+check(ghostSays(gq, hctx.log, world).text.includes(gq.words[0]) && hctx.log.state(gq.id) === 'accepted', 'met again, it reminds her of the words')
+const hc = new Conversation(heir, hctx)
+check(hc.menu().some((c) => c.topic === `deliver:${gq.id}` && c.label.includes(gq.ghost.name)), 'the heir offers a "word from" the ghost by name', hc.menu().filter((c) => c.topic.startsWith('deliver:')).map((c) => c.label).join(' / '))
+const recall = hc.say(`deliver:${gq.id}`)
+check(recall.text.includes(gq.ghost.name) && hc.menu().filter((c) => c.topic.startsWith('word:')).length === 4, 'the heir knows the name from old stories and asks what was said', recall.text)
+const heard = hc.say(`word:0:${gq.id}`)
+check(heard.mood === 'warm' && hctx.log.state(gq.id) === 'delivered', 'the true words warm the heir', heard.text)
+const rest = ghostSays(gq, hctx.log, world)
+check(rest.mood === 'warm' && hctx.log.state(gq.id) === 'done' && ghostSays(gq, hctx.log, world) === null, 'back at the castle the ghost thanks her and is at rest', rest.text)
+const sctx = ctxAt(fire(world.townOf(heir)))
+ghostSays(gq, sctx.log, world)
+const sc = new Conversation(heir, sctx)
+sc.say(`deliver:${gq.id}`)
+sc.say(`word:${gq.choices.find((k) => k !== 0)}:${gq.id}`)
+const sigh = ghostSays(gq, sctx.log, world)
+check(sigh.mood === 'cold' && sctx.log.state(gq.id) === 'done', 'garbled, the ghost is sorry but thanks her for trying, and rests', sigh.text)
+}
 
 // --- telling ---
 const listener = qt.minds.find((m) => m.friends.includes(parent.index) && m.cls !== 'child')
@@ -562,6 +594,11 @@ check(terse.ended && turns <= terse.patience && last.alone > 0, 'a curt person r
 const byeChat = new Chat(cheery, ctxAt(fire(world.townOf(cheery))))
 const bye = byeChat.ask('bye')
 check(bye.ended && bye.moment === 'bye.warm' && bye.alone >= CHAT.alone.bye, 'goodbye ends it warmly, and they leave her be after', bye.text)
+const byeAt = (t, hour, w = world) => new Conversation(as(t.minds.find((m) => m.cls !== 'child'), STRAIGHT), ctxAt(fire(t), { hour, world: w })).bye()
+const hidden = world.towns.find((t) => world.hideouts[t.index] !== null)
+const duskBye = byeAt(hidden, 18)
+check(duskBye.moment === 'observe.dusk' && duskBye.text.includes(world.hideouts[hidden.index].label), 'at dusk a friendly goodbye warns her off her town\'s hideout by name', duskBye.text)
+check(byeAt(hidden, 12).moment === 'bye.warm' && byeAt(hidden, 18, new TalkWorld(SEED, towns)).moment === 'bye.warm', 'by day, or in a town with no hideout, it is only goodbye')
 
 // --- voices ---
 const table = JSON.parse(readFileSync(new URL('../public/sounds/voice/moments.json', import.meta.url), 'utf8'))

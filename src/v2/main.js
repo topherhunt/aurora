@@ -69,8 +69,8 @@ import { LitterCards } from './render/litter-cards.js'
 import { Sticks, KIND as STICK, TIP as STICK_TIP } from './render/sticks.js'
 import { Bones, loadBonesBank } from './render/bones.js'
 import { Carrots, loadCarrotsBank } from './render/carrots.js'
-import { Pumpkins, KIND as PUMPKIN, LANTERN, FLAME, LIGHT_M as LANTERN_LIGHT_M } from './render/pumpkins.js'
-import { buildKnife, TIP as KNIFE_TIP } from './knife.js'
+import { Pumpkins, KIND as PUMPKIN, LANTERN, FLAME, LIGHT_M as LANTERN_LIGHT_M, SIZE_M as PUMPKIN_SIZE, CARVE_BYTES, cutSweep, rayInto, encodeCarve, decodeCarve } from './render/pumpkins.js'
+import { buildKnife, TIP as KNIFE_TIP, HEEL as KNIFE_HEEL } from './knife.js'
 import { Rowboats, loadRowboatsBank } from './render/rowboats.js'
 import { Boats } from './boats.js'
 import { Fish } from './render/fish.js'
@@ -84,6 +84,11 @@ import { Fireflies } from './render/fireflies.js'
 import { Spiders } from './render/spiders.js'
 import { Wildlife } from './render/wildlife.js'
 import { Snowmen } from './render/snowmen.js'
+import { Skeletons, placeKey } from './render/skeletons.js'
+import { Wisps } from './render/wisps.js'
+import { CastleGhost, GHOST } from './render/ghost.js'
+import { Sheets } from './render/sheets.js'
+import { TREAT, Treats, doorOnRay, nightOf } from './treats.js'
 import { Giants } from './render/giants.js'
 import { Leafkin } from './render/leafkin.js'
 import { LeafkinGround } from './render/leafkin-ground.js'
@@ -972,6 +977,10 @@ const talkWrongs ={ wronged: () => villagers !== null && trust.wronged(villageSe
 const talkLog = new QuestLog()
 // The labyrinths whose middle she has stood in, by `rx,rz`, saved: their drums are still for good.
 const drumsStilled = new Set()
+const boneFriends = new Set()
+// The town doors that have answered her knock, by night (treats.js), for the session; her knock waiting on one, or null.
+const doorsAnswered = new Set()
+let knocking = null
 const drumsHere = { s: null, near: 0, middle: false }
 // The labyrinth she is in against its clock (timeLimit), `left` of `limit` seconds till she is faded back to its gate; `done` once she stands by its altar or its drums are stilled (drumsStilled, saved), which stops it. Unsaved: a load inside starts it afresh.
 let mazeClock = null
@@ -1045,6 +1054,7 @@ function saveGame() {
     size: effects.size,
     talk: { topics: [...talkKnown] },
     drumsStilled: [...drumsStilled],
+    boneFriends: [...boneFriends],
     pets: { ...Object.fromEntries(petsIn), ...(wildlife ? { [petRoom]: wildlife.pets() } : {}) },
   }
   if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
@@ -1087,6 +1097,8 @@ function applySave(doc) {
   if (doc.talk !== undefined) for (const t of doc.talk.topics) talkKnown.add(t)
   drumsStilled.clear()
   if (doc.drumsStilled !== undefined) for (const k of doc.drumsStilled) drumsStilled.add(k)
+  boneFriends.clear()
+  if (doc.boneFriends !== undefined) for (const k of doc.boneFriends) boneFriends.add(k)
   // A save from before pets were kept has none.
   restorePets(doc.pets ?? {})
 }
@@ -1192,6 +1204,7 @@ function newGame() {
   talkRapport.of.clear()
   talkLog.of.clear()
   drumsStilled.clear()
+  boneFriends.clear()
   restorePets({})
   giveFlareGun()
   giveFlint()
@@ -2370,6 +2383,42 @@ function playStow() {
   if (ambience) sound.play('uiClose', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
 }
 
+/** Hand `key`, empty, knocking after dark on the town door its ray reaches: knocked now, answered by stepKnock. */
+function knockDoor(key, origin, dir) {
+  if (townsfolk === null || !townsfolk.loaded || knocking !== null || indoors !== null || cave !== null || inCastle !== null || dayness >= TREAT.dayness || hands.holding(key) !== null) return false
+  const feet = player.originPosition()
+  const doors = []
+  for (const t of townsfolk.alive.keys()) {
+    const town = townPlan.towns[t]
+    if (Math.hypot(feet.x - town.x, feet.z - town.z) > town.radius + 10) continue
+    for (let i = 0; i < town.buildings.length; i++) doors.push({ key: `${t}:${i}`, ...townDoor(t, i) })
+  }
+  const door = doorOnRay(origin, dir, DESK_CLICK_M * herScale(), doors)
+  if (door === null) return false
+  knocking = { key, kind: treats.knock(door.key, nightOf(clock.elapsed)), at: clock.seconds, knocks: 0 }
+  return true
+}
+
+/** Her knock's two raps, then the door opening on a treat into the knocking hand (the backpack if it has filled); a door that answered tonight stays shut. */
+function stepKnock() {
+  if (knocking === null) return
+  const t = clock.seconds - knocking.at
+  while (knocking.knocks < 2 && t >= knocking.knocks * TREAT.knockS) {
+    if (ambience) sound.play('thud', { bus: 'near', rate: 1.4, gain: 0.7 })
+    knocking.knocks++
+  }
+  if (t < TREAT.knockS + TREAT.waitS) return
+  const { key, kind } = knocking
+  knocking = null
+  if (kind === null) return
+  if (ambience) sound.play('door', { bus: 'near', gain: 0.3 })
+  const slot = treats.slot(kind)
+  if (hands.holding(key) === null) hands.give(key, slot, handsHead())
+  else if (backpack.indexOf(null) >= 0) { backpack[backpack.indexOf(null)] = slot; paintBackpack() }
+  else { console.warn(`[v2] trick-or-treat: no free hand or backpack slot for the ${kind}`); return }
+  playPick()
+}
+
 /** The pop of a thing coming into a hand, from the ground or a backpack slot: one voice for every kind until each has its own. */
 function playPick() {
   if (ambience) sound.play('uiPop', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
@@ -2483,25 +2532,104 @@ function refillGun() {
   questPulse(gun, 0.8, 120)
 }
 
-/** The pumpkin in hand `key` carved into a jack-o'-lantern where it is. */
-function carvePumpkin(key) {
-  hands.give(key, pumpkins.carved(hands.put(key)), handsHead())
-  if (ambience) sound.play('eat', { bus: 'near', rate: 0.6, gain: 0.9 })
-  questPulse(key, 0.7, 140)
+// The carving under way: the held record and its mask, the blade in its frame a frame ago (`had`), and whether the room
+// has yet to hear the latest cut. The room hears at most every CARVE_SEND_S while she cuts; a hold or drop packs it anyway.
+const carving = { key: null, rec: null, bits: null, a: new THREE.Vector3(), b: new THREE.Vector3(), had: false, dirty: false, sentAt: 0, buzzAt: 0 }
+const CARVE_SEND_S = 0.25
+const holdsGourd = (key) => hands.holding(key)?.kind === PUMPKIN || hands.holding(key)?.kind === LANTERN
+const gourdInv = new THREE.Matrix4()
+const bladeA = new THREE.Vector3()
+const bladeB = new THREE.Vector3()
+
+/** The pumpkin in hand `key` cut by the blade swept from where it was a frame ago to (a, b), in its frame; a whole one becomes a jack-o'-lantern at its first cut. */
+function carveStroke(key, a, b) {
+  let rec = hands.holding(key)
+  if (carving.rec !== rec) {
+    Object.assign(carving, { key, rec, bits: rec.kind === LANTERN ? decodeCarve(rec.carve) : new Uint8Array(CARVE_BYTES), had: false, dirty: false })
+  }
+  const n = cutSweep(carving.bits, carving.had ? carving.a : a, carving.had ? carving.b : b, a, b)
+  carving.a.copy(a)
+  carving.b.copy(b)
+  carving.had = true
+  if (n === 0) return
+  if (rec.kind === PUMPKIN) {
+    hands.give(key, pumpkins.carved(hands.put(key), encodeCarve(carving.bits)), handsHead())
+    rec = carving.rec = hands.holding(key)
+    if (ambience) sound.play('eat', { bus: 'near', rate: 0.6, gain: 0.9 })
+  } else {
+    rec.carve = encodeCarve(carving.bits)
+    carving.dirty = true
+  }
+  const now = performance.now()
+  if (now - carving.buzzAt > 60) { carving.buzzAt = now; questPulse(key, 0.25, 12) }
 }
 
-const knifeAt = new THREE.Vector3()
-const gourdAt = new THREE.Vector3()
-/** A knife's point driven into a pumpkin held in the other hand carves it. */
+/** Each frame: the latest cut told to the room, if it is owed and the last telling was CARVE_SEND_S ago. */
+function sendCarving() {
+  if (!carving.dirty || hands.holding(carving.key) !== carving.rec) { carving.dirty = false; return }
+  const now = performance.now() / 1000
+  if (now - carving.sentAt < CARVE_SEND_S) return
+  carving.sentAt = now
+  carving.dirty = false
+  hands.rehold(carving.key)
+}
+
+/** A knife's blade through the wall of a pumpkin held in the other hand cuts it there. */
 function carveByHand() {
   const knife = HAND_KEYS.find((key) => hands.holding(key)?.kind === 'knife')
-  const gourd = HAND_KEYS.find((key) => hands.holding(key)?.kind === PUMPKIN)
-  if (knife === undefined || gourd === undefined) return
-  hands.heldFrame(knife, flintFrame)
-  knifeAt.copy(KNIFE_TIP).applyMatrix4(flintFrame)
+  const gourd = HAND_KEYS.find(holdsGourd)
+  if (knife === undefined || gourd === undefined) { if (deskCarve === null) carving.had = false; return }
   hands.heldFrame(gourd, flintFrame)
-  gourdAt.setFromMatrixPosition(flintFrame)
-  if (knifeAt.distanceTo(gourdAt) < hands.holding(gourd).size / 2) carvePumpkin(gourd)
+  gourdInv.copy(flintFrame).invert()
+  hands.heldFrame(knife, flintFrame)
+  bladeA.copy(KNIFE_HEEL).applyMatrix4(flintFrame).applyMatrix4(gourdInv)
+  bladeB.copy(KNIFE_TIP).applyMatrix4(flintFrame).applyMatrix4(gourdInv)
+  // Out of reach of the shell, it only moves on.
+  if (Math.min(bladeA.length(), bladeB.length()) > PUMPKIN_SIZE) { carving.had = false; return }
+  carveStroke(gourd, bladeA, bladeB)
+}
+
+// The desk carves with the knife in her pack: held down over a held pumpkin, the mouse moves a point over it (`deskCarve`,
+// in NDC, shown by the crosshair) instead of turning the view, and where its ray meets the skin is cut.
+let deskCarve = null
+const deskCarving = () => holdsGourd('desk') && knifeInPack()
+const carveRay = new THREE.Raycaster()
+const carveNdc = new THREE.Vector2()
+const carveHit = new THREE.Vector3()
+
+/** The desk's point moved by a pointer's movement; on the first, set over the held pumpkin's centre. */
+function moveDeskCarve(e) {
+  if (deskCarve === null) {
+    hands.heldFrame('desk', flintFrame)
+    const c = carveHit.setFromMatrixPosition(flintFrame).project(camera)
+    deskCarve = { x: c.x, y: c.y }
+  }
+  deskCarve.x = THREE.MathUtils.clamp(deskCarve.x + (e.movementX * 2) / innerWidth, -1, 1)
+  deskCarve.y = THREE.MathUtils.clamp(deskCarve.y - (e.movementY * 2) / innerHeight, -1, 1)
+  crosshair.style.left = `${((deskCarve.x + 1) / 2) * 100}%`
+  crosshair.style.top = `${((1 - deskCarve.y) / 2) * 100}%`
+  crosshair.style.display = 'block'
+}
+
+/** Each frame on the desktop: the point's ray cuts the held pumpkin where it first meets its skin; let go, the crosshair goes home. */
+function carveByDesk() {
+  if (deskCarve === null) return
+  if (!dragging || !deskCarving() || renderer.xr.isPresenting) {
+    deskCarve = null
+    carving.had = false
+    crosshair.style.left = crosshair.style.top = '50%'
+    crosshair.style.display = mouseCaptured() ? 'block' : 'none'
+    return
+  }
+  carveRay.setFromCamera(carveNdc.set(deskCarve.x, deskCarve.y), camera)
+  hands.heldFrame('desk', flintFrame)
+  gourdInv.copy(flintFrame).invert()
+  const o = carveRay.ray.origin.clone().applyMatrix4(gourdInv)
+  const d = carveRay.ray.direction.clone().transformDirection(gourdInv)
+  if (!rayInto(o, d, carveHit)) { carving.had = false; return }
+  bladeA.copy(d).multiplyScalar(-0.004).add(carveHit)
+  bladeB.copy(d).multiplyScalar(0.02).add(carveHit)
+  carveStroke('desk', bladeA, bladeB)
 }
 
 const flintFrame = new THREE.Matrix4()
@@ -3074,6 +3202,11 @@ function buildQuestPanel() {
       else if (holdsFlint(key) && !hands.wouldStow(key, handsHead())) strikeFlint(key)
       else {
         const empty = hands.holding(key) === null
+        if (empty && el.components.raycaster) {
+          const rc = el.components.raycaster
+          rc.updateOriginDirection()
+          if (knockDoor(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction)) return
+        }
         let got = hands.press(key, handsHead())
         // A hand that reaches nothing takes along its pointer, so nothing asks her to bend or crouch (eye-level.js).
         if (got === null && empty && el.components.raycaster) {
@@ -3141,7 +3274,7 @@ function buildQuestPanel() {
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
     else if ((holdsStick('desk') || (holdsLantern('desk') && !hands.holding('desk').lit)) && flintInPack() && !hands.wouldStow('desk', handsHead())) strikeFlint('desk', true)
-    else if (hands.holding('desk')?.kind === PUMPKIN && knifeInPack() && !hands.wouldStow('desk', handsHead())) carvePumpkin('desk')
+    else if (knockDoor('desk', raycaster.ray.origin, raycaster.ray.direction)) return
     else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
   })
 }
@@ -3631,6 +3764,11 @@ let fireflies = null
 let spiders = null
 let wildlife = null
 let snowmen = null
+// The bone friends (render/skeletons.js): its hideouts' shy ones and the ones she tamed, `boneFriends` the tamed ones' saved place keys.
+let skeletons = null
+let wisps = null
+let treats = null
+let castleGhost = null
 let leafkin = null
 let villagers = null
 // Talk with the room's townsfolk or villagers (conversations.js), null in a room with neither.
@@ -3681,6 +3819,8 @@ let roomProps = null
 let townPlan = null
 let towns = null
 let townsfolk = null
+// The children's sheet costumes after dark (render/sheets.js), with the townsfolk.
+let sheets = null
 // The unsaddled striders of the open overworld, and her ride on one (render/wild-striders.js); null in a village.
 let wildStriders = null
 // The striders that trust her and how much feeding has grown them, by key, the wild ones' and the towns' alike; kept across rooms for the session.
@@ -4333,7 +4473,7 @@ function disposeRoom() {
   if (ambience) { ambience.dispose(); ambience = null; window.v2ambience = null }
   if (conversations) { conversations.dispose(); conversations = null }
   if (towns) { towns.dispose(); towns = null }
-  if (townsfolk) { townsfolk.dispose(); townsfolk = null; townHearths = null }
+  if (townsfolk) { townsfolk.dispose(); townsfolk = null; townHearths = null; sheets.dispose(); sheets = null }
   if (wildStriders) { wildStriders.dispose(); wildStriders = null }
   if (signposts) { signposts.dispose(); signposts = null }
   if (bridges) { bridges.dispose(); bridges = null }
@@ -4351,14 +4491,14 @@ function disposeRoom() {
   items.clear()
   if (wildlife) petsIn.set(petRoom, wildlife.pets())
   for (const layer of [
-    leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish, seaweed,
+    leafkin, villagers, hobs, entrances, dragons, roosts, creatureNet, handsNet, skeletons, wisps, treats, castleGhost, hands, snowmen, wildlife, spiders, fireflies, grasshoppers, butterflies, crabs, frogs, fishLeap, fish, seaweed,
     boats, rowboats, carrots, pumpkins, bones, mushrooms, litter, grass, ferns, trees, deadwood, litterCards, sticks, wildfire, rocks, roomProps, lamps, hearth, stools, boulders, shell, markers, terrainWire, terrain,
   ]) gone(layer)
   buildScheduler.clear()
   if (overworld !== null && waterSurfaces === overworld.waterSurfaces) waterSurfaces.detach()
   else gone(waterSurfaces)
   lighting.clearLamps()
-  leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = hands = snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = seaweed = null
+  leafkin = villagers = hobs = entrances =dragons = roosts = creatureNet = handsNet = skeletons = wisps = treats = castleGhost = hands =snowmen = wildlife = spiders = fireflies = grasshoppers = butterflies = crabs = frogs = fishLeap = fish = seaweed = null
   boats = rowboats = carrots = pumpkins = bones = mushrooms = litter = grass = ferns = trees = deadwood = litterCards = sticks = wildfire = rocks = roomProps = lamps = hearth = stools = boulders = shell = markers = waterSurfaces = terrainWire = terrain = null
   roofPlants = []
   terrainTint = player = walk = height = layers = roomSpec = roomHeightmap = null
@@ -4604,6 +4744,8 @@ function openCastle(site, back) {
   walk = window.v2walk = inner
   player.setGround(inner)
   peerAvatars.ground(inner)
+  skeletons.intoCastle(site, stone.oy, inner)
+  castleGhost.into(site, stone.oy)
 }
 
 /** The castle's interior down and the overworld walk hers again; nothing when she is not in one. */
@@ -4612,6 +4754,8 @@ function closeCastle() {
   castles.closeInterior()
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = inCastle.outside
+  if (skeletons) skeletons.outside(walk)
+  if (castleGhost) castleGhost.outside()
   if (player) player.setGround(walk)
   peerAvatars.ground(walk)
   inCastle = null
@@ -4804,6 +4948,7 @@ async function enterCave(sys, door, back) {
   const d = plan.doors[door]
   inner.hintY = d.y + CAVE_OY
   walk = window.v2walk = inner
+  skeletons.intoCave(sys, plan.graph, CAVE_OY, inner)
   player.setGround(inner)
   peerAvatars.ground(inner)
   hands.setWorld(caveWorld(sys), inner, caveWater)
@@ -4866,6 +5011,7 @@ function closeCave() {
   for (const l of [crabs, snowmen, wildStriders]) if (l) l.wait = null
   if (sound) sound.setIndoors(false)
   walk = window.v2walk = cave.outside
+  if (skeletons) skeletons.outside(walk)
   if (player) player.setGround(walk)
   peerAvatars.ground(walk)
   if (hands) hands.setWorld('overworld', walk, waterSurfaces)
@@ -4903,7 +5049,7 @@ function stepIndoors() {
 /** Each frame underground, after every layer's own update: the overworld out of the draw, and the cave's fog, culling and creatures. */
 function stepCave(head, t) {
   caveKeep.clear()
-  keepUnderRoof(caveKeep).add(caveBuild.room.group).add(fish.batch).add(wildlife.batch).add(frogs.batch)
+  keepUnderRoof(caveKeep).add(caveBuild.room.group).add(fish.batch).add(wildlife.batch).add(frogs.batch).add(skeletons.batch)
   hideOutside(caveKeep, caveHidden)
   // The ways her pets under with her lead along (wildlife.js CAVE_LEAD), from her feet once a second.
   if (t >= caveLeadAt) {
@@ -5449,6 +5595,8 @@ async function buildRoom(room, at) {
     walk.addStone(townsfolk)
     walk.addBody(townsfolk)
     window.v2townsfolk = townsfolk // console: `v2townsfolk.stats`
+    sheets = new Sheets(scene)
+    for (const m of sheets.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-sheets' })
     townsfolk.ready.then(() => { if (build === roomBuild) townsfolk.bakeCards(renderer) })
     townHearths = townsfolk.hearths
   }
@@ -5849,7 +5997,7 @@ async function buildRoom(room, at) {
     douse: (x, y, z) => { if (ambience) sound.play('extinguish', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.7, at: heardAt({ x, y, z }) }) },
     // A creature eating from her hand: deeper from a strider or a stag. A hob gone down a frog wrongs its glade, the nearest leafkin within HOB_WITNESS_M seeing it.
     eaten: (lure, eater, rec) => {
-      if (ambience) sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) })
+      if (ambience && eater !== 'skeleton') sound.play('eat', { bus: 'near', rate: eater === 'strider' || eater === 'stag' ? 0.7 : 1, gain: 0.8, at: heardAt(lure) })
       if (rec.kind !== 'hob') return
       hobs.eaten(rec)
       let witness = null, best = HOB_WITNESS_M
@@ -5885,6 +6033,17 @@ async function buildRoom(room, at) {
   hands.addSource(sticks, STICK)
   hands.addSource(chalkStones, CHALK)
   hands.addSource(items, Object.keys(ITEMS))
+  skeletons = new Skeletons(scene, { walk, hands, pumpkins, townsfolk, conv: () => conversations, friends: boneFriends, bones: bones.kinds, fetches: [STICK] })
+  for (const m of skeletons.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-skeletons' })
+  lighting.patch(skeletons.boneMat, { mode: 'vertex', cacheKey: 'v2-skeleton-bones' })
+  hands.addSource(skeletons, ['bone', 'ghostcap'])
+  window.v2skeletons = skeletons
+  wisps = new Wisps(scene)
+  castleGhost = new CastleGhost(scene)
+  treats = new Treats(SEED, doorsAnswered)
+  for (const m of treats.materials) lighting.patch(m, { mode: 'vertex', cacheKey: 'v2-treats' })
+  hands.addSource(treats, 'candy')
+  knocking = null
   hands.addHand('left', leftGrip)
   hands.addHand('right', rightGrip)
   deskHand = new THREE.Group()
@@ -5977,8 +6136,8 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, { layer: skeletons, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, { layer: skeletons, rule: 'villagerVoice' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,
@@ -6881,8 +7040,9 @@ addEventListener('pointermove', (e) => {
   cursorNdc.y = ndc.y
   cursorNdc.seen = true
   if (!(dragging || mouseCaptured()) || orbitLocked || renderer.xr.isPresenting) return
-  // A free cursor drawing chalk moves the line, not the view.
+  // A free cursor drawing chalk moves the line, not the view; a press carving a pumpkin moves the knife.
   if (!mouseCaptured() && chalkPens.desk.live.length > 0) return
+  if (dragging && deskCarving()) { moveDeskCarve(e); return }
   camera.rotation.y -= e.movementX * 0.0026
   camera.rotation.x = THREE.MathUtils.clamp(
     camera.rotation.x - e.movementY * 0.0026,
@@ -7104,7 +7264,7 @@ const OUTSIDE = [
   { clips: ['owl'], glade: false, bird: true, when: (day) => day < 0.3, every: [25, 70], range: [10, 25], gain: 0.5 },
 ]
 const outsideLeft = OUTSIDE.map(() => 10)
-const caveDripAt = { x: 0, y: 0, z: 0 }
+const caveRiverAt = { x: 0, y: 0, z: 0 }, cavePoolAt = { x: 0, y: 0, z: 0 }
 
 function updateAmbience(dt, state) {
   if (!ambience) return
@@ -7136,7 +7296,7 @@ function updateAmbience(dt, state) {
     precip: state.precip,
     indoors: !!indoors || cave !== null,
     hushed: effects.maddened,
-    cave: cave === null ? null : { water: cave.walk.nearestWater(ears.x, ears.y, ears.z, SOUND_RULES.caveDrip.reach, caveDripAt) },
+    cave: cave === null ? null : { river: cave.walk.nearestWater(ears.x, ears.y, ears.z, SOUND_RULES.caveRiver.reach, caveRiverAt, 'river'), pool: cave.walk.nearestWater(ears.x, ears.y, ears.z, SOUND_RULES.cavePool.reach, cavePoolAt, 'still') },
   })
   // The room owner's music, which hers follows in its pool; none when she is the owner or it has not been seen.
   const owner = netplay.owner !== null && netplay.owner !== netplay.id ? netplay.peers.get(netplay.owner) : undefined
@@ -7874,7 +8034,7 @@ function aimTeleport(origin, dir) {
   const vy = dir.y * TELEPORT_LOB * k * lob
   const vz = dir.z * TELEPORT_LOB * k * lob
   const stepS = TELEPORT_STEP_S * lob
-  const gravity = TELEPORT_GRAVITY * k
+  const gravity = TELEPORT_GRAVITY * k * (effects.floating ? EAT.ghost.lift : 1)
   // Riding, the lob stops WILD.hop.cap under the strider's feet: past that it is a leap.
   const floor = mount ? feet.y - WILD.hop.cap * k : -Infinity
   const at = (t) => ({ x: origin.x + vx * t, y: origin.y + vy * t - 0.5 * gravity * t * t, z: origin.z + vz * t })
@@ -7991,7 +8151,7 @@ function aimTeleport(origin, dir) {
   teleportTarget.swim = false
   teleportTarget.leap = leap !== null
   // Into water, or as a strider's hop, the drop is free.
-  teleportTarget.fell = hit === null || onWater || mount ? 0 : Math.max(0, feet.y - hit.y) / k
+  teleportTarget.fell = hit === null || onWater || mount || effects.floating ? 0 : Math.max(0, feet.y - hit.y) / k
   const colour = !standable ? TELEPORT_NO : leap || fallDamage(teleportTarget.fell) > 0 ? TELEPORT_HURT : TELEPORT_OK
   arc.material.color.setHex(colour)
   ring.material.color.setHex(colour)
@@ -8604,7 +8764,7 @@ function tick() {
       }
       player.update(dt, moveInput)
     }
-    harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
+    if (!effects.floating) harm(fallDamage(player.fell), `a fall of ${player.fell.toFixed(1)} m`)
     // Feet on a palisade's points: they hurt, and she topples off to one side or the other.
     const o = player.originPosition()
     if (palisades !== null && player.th === walk && !player.flying && !player.swimming && player.standY !== null && palisades.onWallTop(o.x, o.z, player.standY, wallAcross)) {
@@ -8615,6 +8775,7 @@ function tick() {
     if (palisades !== null && player.th === walk && palisades.labyrinths.nearness(o.x, o.z, 0, drumsHere) && drumsHere.middle) drumsStilled.add(`${drumsHere.s.rx},${drumsHere.s.rz}`)
     mazeTick(dt, o)
   }
+  stepKnock()
   if (boats) boats.settle()
   portalTest()
   spikes.lap('player')
@@ -8676,6 +8837,8 @@ function tick() {
   placeHeld()
   refillGun()
   carveByHand()
+  carveByDesk()
+  sendCarving()
   gunWindows.update(hands)
   shotFlash.update(dt, headTmp)
   drainFlares()
@@ -8828,6 +8991,7 @@ function stepOverworld(dt, now) {
     if (dragons) for (const d of dragons.bodies(dragonTmp)) if (d.fell === null) dreadTmp.push(d)
     townsfolk.update(player.originPosition(), headTmp, clock.seconds, dt, (now / 1000) % 1024, lures, dreadTmp, herTorches)
   }
+  if (sheets) sheets.update(townsfolk && questToggles.townsfolk ? townsfolk.shown : [], dayness)
   spikes.lap('townsfolk')
   if (questToggles.trees) trees.update(headTmp.x, headTmp.y, headTmp.z)
   spikes.lap('trees')
@@ -8905,7 +9069,7 @@ function stepOverworld(dt, now) {
   // The fireflies exist only after dark, off the same scalar.
   stepAnimal('fireflies', () => fireflies.update(headTmp.x, headTmp.y, headTmp.z, dt, dayness))
   // The spiders flee a whole body, so they take her feet too -- the rig's, under her head -- and the peers' bodies beside hers, so a spider bolts from whoever walks up to it and both clients watch it go. Laid in a bed in the headset the rig is turned about her head, its origin beside or above it, so her body is her head alone.
-  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, peerHeadsNow()))
+  stepAnimal('spiders', () => spiders.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, laid !== null ? headTmp.y : player.originPosition().y, skeletons.scarers(peerHeadsNow())))
   // The wildlife runs on the room's clock (sim/score.js), last frame's reading, the same on every client; its night rest reads the clock's dayness at the planned hour, not this frame's.
   wildlife.blades = blades
   wildlife.foes = dragons ? dragons.grounded(dragonFoes) : dragonFoes
@@ -8917,6 +9081,13 @@ function stepOverworld(dt, now) {
   snowmen.glow = herLantern
   // The snowmen run on the room's clock too, live on her head or a peer's relayed one (creature-sync.md).
   stepAnimal('snowmen', () => snowmen.update(headTmp.x, headTmp.y, headTmp.z, clock.seconds, peerHeadsNow(), dt))
+  skeletons.blades = blades
+  skeletons.update(dt, clock.seconds, player.originPosition(), headTmp)
+  // The wisps lead to the hideouts whose skeleton is not hers yet; a village's talk has none.
+  const wispPlaces = conversations === null ? [] : conversations.world.hideouts.filter((h) => h !== null && !boneFriends.has(placeKey(h))).map((h) => ({ key: placeKey(h), x: h.x, z: h.z }))
+  wisps.update(dt, clock.seconds, player.originPosition(), { dayness, outdoors: cave === null && inCastle === null && indoors === null, places: wispPlaces, heightAt: (x, z) => walk.heightAt(x, z) })
+  const ghostQuest = inCastle !== null && castleGhost.at !== null && conversations !== null ? conversations.ghostOf(inCastle.site.id) : null
+  castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale()))
   if (giants) {
     giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider') || herLantern
     giants.glow = herLantern

@@ -205,8 +205,8 @@ export class CaveWalk {
     return null
   }
 
-  /** The nearest point of any water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null: a pool or sump at a wet node of its shore grid (the nearest on a 1 m lattice, then the nearest round that), a river at each row whose middle is wet. Run every frame for the drip, hence the lattice. */
-  nearestWater(x, y, z, reach, out) {
+  /** The nearest point of a water body's surface within `reach` metres of (x, y, z), into `out` as { x, y, z }, or null; `kind` 'river' takes only rivers, 'still' only pools and sumps, null any. A pool or sump at a wet node of its shore grid (the nearest on a 1 m lattice, then the nearest round that), a river at each row whose middle is wet. Run twice a frame for the cave's water sounds, hence the lattice. */
+  nearestWater(x, y, z, reach, out, kind = null) {
     let best = reach
     let found = false
     const take = (px, py, pz) => {
@@ -219,6 +219,7 @@ export class CaveWalk {
     }
     for (const b of this._waters) {
       if (x < b.x0 - reach || x > b.x1 + reach || z < b.z0 - reach || z > b.z1 + reach) continue
+      if (kind !== null && (b.kind === 'river') !== (kind === 'river')) continue
       if (b.kind !== 'river') {
         const { x0, z0, nx, nz, cell, s } = b.shore
         const lattice = Math.max(1, Math.round(1 / cell))

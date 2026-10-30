@@ -16,6 +16,7 @@ import { LK } from './talk/leafkin.js'
 import { Voices } from './audio/voices.js'
 import { jeer, swordWarning } from './talk/armed.js'
 import { DialogPanel } from './ui/dialog-panel.js'
+import { ghostSays } from './talk/ghost.js'
 
 export const TALK = {
   // Metres, at her scale: whom a hail reaches, and past which a conversation is over.
@@ -96,8 +97,10 @@ export class Conversations {
     this.asked = new Map()
     this.pairs = new Map()
     this.turns = []
-    // A chider's scold or a passer-by's jeer on the panel with no conversation open: `{ c, until }`, or null.
+    // A chider's scold, a passer-by's jeer or a ghost's word on the panel with no conversation open: `{ c, until, ghost }` (`ghost` a ghost's quest id, else null), or null.
     this.scold = null
+    // The ghost quest whose ghost has spoken to her since she last came near it, or null.
+    this.haunting = null
     // The house she is in, `{ residents, t }` (`t` its town, null in a village), or null: its residents are whom she talks with.
     this.room = null
     // Seconds until which each townsperson leaves her sword be, by mind id; the alive towns whose guard has warned her off it.
@@ -172,6 +175,32 @@ export class Conversations {
     if (q === undefined) throw new Error(`Conversations: no quest ${id}`)
     this.log.accept(q)
     this.log.set(id, 'found')
+  }
+
+  /** The message quest of castle `site`'s ghost (quests.js ghostMessage), or null when no ghost haunts it. */
+  ghostOf(site) {
+    this._refresh()
+    for (const q of this.quests.values()) if (q.kind === 'message' && q.ghost !== null && q.ghost.site === site) return q
+    return null
+  }
+
+  /**
+   * Once a frame in its castle: ghost quest `q`'s ghost floating `at` ({ x, y, z }, its feet) speaks (talk/ghost.js) on the
+   * panel as she comes within `near` m of it, once each time she comes. Returns whether it is still there to be drawn:
+   * until it is at rest and its last line has been read.
+   */
+  haunt(q, at, head, near) {
+    const d = Math.hypot(at.x - head.x, at.z - head.z)
+    if (d > 1.5 * near) this.haunting = null
+    else if (d < near && this.haunting !== q.id && this.chat === null) {
+      this.haunting = q.id
+      const line = ghostSays(q, this.log, this.world)
+      if (line !== null) {
+        this.scold = { c: { pose: at }, until: this.now + TALK.linger + line.text.split(' ').length / TALK.wordsPerS, ghost: q.id }
+        this.panel.show(q.ghost.name, line.text, EMPTY)
+      }
+    }
+    return this.log.state(q.id) !== 'done' || (this.scold !== null && this.scold.ghost === q.id)
   }
 
   /** Whether the smith `mind` stands at his workshop (a smith with none is always in it); false for anyone else. */
@@ -294,7 +323,7 @@ export class Conversations {
   /** `line` ({ text, moment }) called at her by `p` unasked: on the panel over them unless she is talking, and in their voice. */
   _remark(p, line, head) {
     if (this.chat === null) {
-      this.scold = { c: p.c, until: this.now + TALK.linger + line.text.split(' ').length / TALK.wordsPerS }
+      this.scold = { c: p.c, until: this.now + TALK.linger + line.text.split(' ').length / TALK.wordsPerS, ghost: null }
       this.panel.show(p.mind.name, line.text, EMPTY)
     }
     if (this.picker === null || this.voices === null && !this._voices()) return

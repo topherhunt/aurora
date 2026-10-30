@@ -336,11 +336,13 @@ function chalkFor(room, client) {
 // A SLOT is what hands.js packs for the backpack: kind, name, size, scale,
 // tint, stowable, the instanced attributes, and a source's own scalars (a
 // variant); held to a small alphabet and to SLOT_MAX_JSON bytes since every
-// client draws it. A loose thing's POSE is [x, y, z, qx, qy, qz, qw], its VEL
+// client draws it, besides a jack-o'-lantern's `carve`, its cut mask as
+// CARVE_B64 base64 (v2/render/pumpkins.js). A loose thing's POSE is [x, y, z, qx, qy, qz, qw], its VEL
 // [vx, vy, vz] (a throw's flight; zero at rest) and its STATE 0 (still), 1
 // (afloat) or 2 (in motion: let go, and the taker sends where it came to rest). The taken log is [key, x, z] entries as the taken
 // registry keys them, kept to TAKEN_CAP with the oldest forgotten.
 const SLOT_MAX_JSON = 512
+const CARVE_B64 = 1368
 const SLOT_MAX_ATTRS = 8
 const ROOM_LOOSE_CAP = 24
 const ROOM_GONE_CAP = 64
@@ -362,11 +364,12 @@ function validSlot(slot) {
   if (attrs.length > SLOT_MAX_ATTRS) return false
   for (const [name, values] of attrs) if (!/^[A-Za-z]{1,24}$/.test(name) || !Array.isArray(values) || values.length > SLOT_MAX_ATTRS || !values.every((n) => Number.isFinite(n))) return false
   for (const [key, value] of Object.entries(slot)) {
-    if (['kind', 'name', 'size', 'scale', 'stowable', 'color', 'attrs'].includes(key)) continue
+    if (['kind', 'name', 'size', 'scale', 'stowable', 'color', 'attrs', 'carve'].includes(key)) continue
     if (!/^[A-Za-z]{1,24}$/.test(key)) return false
     if (!(Number.isFinite(value) || typeof value === 'boolean' || (typeof value === 'string' && value.length <= 32))) return false
   }
-  return JSON.stringify(slot).length <= SLOT_MAX_JSON
+  if (slot.carve !== undefined && !(typeof slot.carve === 'string' && slot.carve.length === CARVE_B64 && /^[A-Za-z0-9+/]+=*$/.test(slot.carve))) return false
+  return JSON.stringify(slot).length <= SLOT_MAX_JSON + (slot.carve === undefined ? 0 : CARVE_B64 + 10)
 }
 const validPose7 = (p) => Array.isArray(p) && p.length === 7 && p.every((n) => Number.isFinite(n))
 const validVel3 = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(n))

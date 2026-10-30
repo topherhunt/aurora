@@ -1493,24 +1493,33 @@ for (const rule of ['voice', 'villagerVoice']) {
       if (take !== null) takes.push({ take, t })
     }
   }
-  const water = { x: 6, y: HEAD.y - 1, z: 8 }
-  drive(300, { cave: { water } })
+  const water = { x: 6, y: HEAD.y - 1, z: 6 }
+  drive(300, { cave: { river: null, pool: water } })
   const drips = engine.plays.filter((p) => p.name === 'caveDrip')
   check(bed.active && bed.level === C.level && bed.opts.bus === 'near', 'underground the cave bed loops on the near bus')
   check(takes.length >= 300 / C.swap[1] - 1 && takes.length <= 300 / C.swap[0] + 1 && takes.every((k) => ['cave1', 'cave2', 'cave3'].includes(k.take)), 'every 30-60 s one pass of the bed is one of the three takes', takes.map((k) => k.take).join(' '))
   check(bed.opts.next() === null, 'a take is played once, then the bed again')
-  const near = D.level * (D.near / Math.hypot(6, 1, 8))
-  check(drips.length >= 300 / D.interval[1] - 1 && drips.length <= 300 / D.interval[0] + 1 && drips.every((p) => p.at.x === 6 && p.at.z === 8 && p.bus === 'near' && p.gain <= near && p.gain >= near * D.gain[0]), 'with water within reach a drop falls every 10-15 s from it, faded by its distance', `${drips.length} in 300 s`)
+  const near = D.level * (D.near / Math.hypot(6, 1, 6))
+  check(drips.length >= 300 / D.interval[1] - 1 && drips.length <= 300 / D.interval[0] + 1 && drips.every((p) => p.at.x === 6 && p.at.z === 6 && p.bus === 'near' && p.gain <= near && p.gain >= near * D.gain[0]), 'with water within reach a drop falls every 10-15 s from it, faded by its distance', `${drips.length} in 300 s`)
   engine.plays.length = 0
-  run(amb, 60, { cave: { water: null } })
-  check(count(engine, 'caveDrip') === 0 && bed.active, 'with no water in reach the bed loops and no drop falls')
-  run(amb, 120, { cave: { water }, submerged: true })
-  check(!bed.active && count(engine, 'caveDrip') === 0 && bed.opts.next() === null && engine.loops.underwater.active, 'under the cave\'s water only the underwater loop plays')
+  const pool = amb.loops.cavePool, river = amb.loops.caveRiver, P = RULES.cavePool, R = RULES.caveRiver
+  check(pool.active && pool.name === 'lakeBed' && pool.opts.bus === 'near' && pool.at.x === 6 && pool.at.z === 6 && pool.level < P.level && pool.level > 0 && !river.active, 'a pool within reach laps with the glades\' bed from its nearest point, fading with distance, and no river runs')
+  run(amb, 2, { cave: { river: { x: 1, y: HEAD.y, z: 0 }, pool: null } })
+  const close = river.level
+  run(amb, 2, { cave: { river: { x: 7, y: HEAD.y, z: 0 }, pool: null } })
+  check(river.name === 'brook' && river.opts.bus === 'near' && close === R.level && river.level < close && river.level > 0 && river.at.x === 7 && !pool.active, 'a river within reach runs with the brook from its nearest point, louder the nearer she is', `${close.toFixed(2)} at 1 m, ${river.level.toFixed(2)} at 7 m`)
   engine.plays.length = 0
-  run(amb, 10, { cave: { water: null }, speed: 1.4 })
+  run(amb, 60, { cave: { river: null, pool: null } })
+  check(count(engine, 'caveDrip') === 0 && bed.active && !river.active && !pool.active, 'with no water in reach the bed loops, no water is heard and no drop falls')
+  run(amb, 120, { cave: { river: null, pool: water }, submerged: true })
+  check(!bed.active && !pool.active && count(engine, 'caveDrip') === 0 && bed.opts.next() === null && engine.loops.underwater.active, 'under the cave\'s water only the underwater loop plays')
+  engine.plays.length = 0
+  run(amb, 10, { cave: { river: null, pool: null }, speed: 1.4 })
   const cavern = engine.plays.filter((p) => p.name === 'footstep')
   run(amb, 1, {})
-  check(!bed.active && !engine.loops.underwater.active, 'out of the cave the bed stops')
+  run(amb, 2, { cave: { river: water, pool: water } })
+  run(amb, 1, {})
+  check(!bed.active && !river.active && !pool.active && !engine.loops.underwater.active, 'out of the cave the bed and its water stop')
   engine.plays.length = 0
   run(amb, 10, { speed: 1.4 })
   const open = engine.plays.filter((p) => p.name === 'footstep')
@@ -1533,7 +1542,7 @@ for (const rule of ['voice', 'villagerVoice']) {
   check(amb.loops.lakeBed.active && amb.loops.leaves.active && amb.loops.campfire0.active, 'above ground the lake, the leaves and the fire are heard')
   engine.plays.length = 0
   const samples = sense.samples
-  run(amb, 120, { dayness: DAY, speed: 1.4, cave: { water: null } })
+  run(amb, 120, { dayness: DAY, speed: 1.4, cave: { river: null, pool: null } })
   const heard = [...new Set(engine.plays.map((p) => p.name))]
   check(heard.length === 1 && heard[0] === 'footstep', 'underground only her own footsteps fire, nothing from the overworld', heard.join(' '))
   const looping = Object.entries(amb.loops).filter(([, v]) => v.active).map(([k]) => k)

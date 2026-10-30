@@ -147,9 +147,6 @@ export const OVER_CAP = 3
 export const UNPLACED_Y = -1e4
 // What a source's instanced attribute holds when the record does not say: the arena's fade slot is "never fade", the rest rest.
 const ATTR_DEFAULT = { aPropFade: 1 }
-// `aLit` is drawn from rec.lit each frame, since lighting it changes the record in place.
-const LIT = [1]
-const UNLIT = [0]
 // The studio: where the camera looks from (a unit direction, front and a little above), the sky, ground and sun of its lights, and how much room the frame leaves round the thing.
 const STUDIO_VIEW = new THREE.Vector3(0.35, 0.55, 1).normalize()
 const STUDIO_SKY = 0xffffff
@@ -264,7 +261,8 @@ export class Hands {
    * of record it hands out: pickAt(x, y, z, reach, maxSize) -> hit | null,
    * take(hit, stowMax) -> record, dress(slot) -> { geometry, material } for a
    * packed slot of its kind (null while its asset has not landed), and
-   * release(record, x, y, z, head) -> boolean.
+   * release(record, x, y, z, head) -> boolean. One with drawn(name, record) gives its
+   * instanced values each frame, for a record that changes in place (a lantern lit or carved).
    */
   addSource(src, kinds) {
     if (typeof src.pickAt !== 'function' || typeof src.take !== 'function' || typeof src.dress !== 'function') throw new Error('Hands.addSource: a source has pickAt(x, y, z, reach, maxSize), take(hit, stowMax) and dress(slot)')
@@ -393,16 +391,16 @@ export class Hands {
   /** Where her hand `key` is in the world, into `out`. */
   pointOf(key, out) { return out.copy(this._point(this._hand(key))) }
 
-  /** Her hand holding `lure` (one lures() handed out) loses the thing to a creature that ate it, the `eater` ('stag', 'strider', 'leafkin'...) told to `eaten`; false if no hand of hers holds it. */
+  /** Her hand holding `lure` (one lures() handed out) loses the thing to a creature that took it, the `eater` ('stag', 'strider', 'leafkin'...) told to `eaten`: its record, or null if no hand of hers holds it. */
   eatLure(lure, eater) {
     for (const hand of this.hands.values()) {
       if (hand.lure !== lure || !hand.held) continue
       const rec = hand.held.rec
       this._unhold(hand)
       this.eaten(lure, eater, rec)
-      return true
+      return rec
     }
-    return false
+    return null
   }
 
   /** She eats what hand `key` holds: it is gone from the hand, and its record returned. */
@@ -651,8 +649,10 @@ export class Hands {
       const studio = this._studio()
       const subject = this._subject(rec)
       const attrs = this._attrs(rec, subject.instanced)
+      const src = this.byKind.get(rec.kind)
       for (const { name, attr, size } of subject.instanced) {
-        for (let i = 0; i < size; i++) attr.array[i] = attrs[name][i]
+        const values = src.drawn ? src.drawn(name, rec) : attrs[name]
+        for (let i = 0; i < size; i++) attr.array[i] = values[i]
         attr.needsUpdate = true
       }
       if (subject.mesh.instanceColor) {
@@ -1321,7 +1321,7 @@ export class Hands {
       _s.fromArray(item.rec.scale).multiplyScalar(k)
       _m.compose(_p, item.q, _s).toArray(mat, n * 16)
       for (const { name, attr, size } of instanced) {
-        const values = name === 'aLit' ? (item.rec.lit ? LIT : UNLIT) : item.attrs[name]
+        const values = item.src.drawn ? item.src.drawn(name, item.rec) : item.attrs[name]
         for (let i = 0; i < size; i++) attr.array[n * size + i] = values[i]
       }
       if (col) {

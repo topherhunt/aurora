@@ -12,6 +12,8 @@ export const EAT = {
   agaric: { s: 15, inS: 3, outS: 3, m: 500, rgba: [0.25, 1, 0.3, 0.32] },
   porcini: { s: 60, inS: 3, outS: 3, guard: 0.5, rgba: [0.4, 0.22, 0.06, 0.22], most: 0.75 },
   chanterelle: { s: 300, inS: 3, outS: 3, m: 10, rgba: [0, 0, 0, 0.45] },
+  // The ghost cap (skeletons.js grows it by the bone-folk): pale and floaty, falls free and her lob under `lift` of gravity.
+  ghost: { s: 15, inS: 2, outS: 3, lift: 0.25, rgba: [0.78, 0.9, 1, 0.24] },
   pulseHz: 0.6,
 }
 
@@ -27,7 +29,7 @@ export const MUSHROOMS = ['ink cap', 'parasol', 'fly agaric', 'porcini', 'chante
 export function edible(rec) {
   if (rec === null) return false
   if (rec.kind === 'mushroom' && !MUSHROOMS.includes(rec.name)) throw new Error(`edible: no mushroom named ${rec.name}`)
-  return rec.kind === 'carrot' || rec.kind === 'fish' || rec.kind === 'mushroom'
+  return rec.kind === 'carrot' || rec.kind === 'fish' || rec.kind === 'candy' || rec.kind === 'mushroom' || rec.kind === 'ghostcap'
 }
 
 /** 0..1 for an effect `e` begun `t` s ago: in over e.inS, held to e.s, out over e.outS. */
@@ -65,6 +67,7 @@ export class Effects {
     this.sizeT = Infinity
     this.agaric = -Infinity
     this.chanterelle = -Infinity
+    this.ghost = -Infinity
     this.porcini = []
     this._tint = [0, 0, 0, 0]
   }
@@ -72,6 +75,7 @@ export class Effects {
   /** What eating the thing `rec` does now: { heal, harm, sound } for main.js to carry out. */
   eat(rec) {
     if (!edible(rec)) throw new Error(`Effects.eat: ${rec && rec.kind} is not food`)
+    if (rec.kind === 'ghostcap') { this.ghost = this.t; return { heal: 0, harm: 0, sound: 'zoomBack' } }
     if (rec.kind !== 'mushroom') return { heal: EAT.heal, harm: 0, sound: null }
     let sound = null
     switch (rec.name) {
@@ -118,7 +122,7 @@ export class Effects {
 
   /** Every timed effect gone, her size kept: a revival. */
   clear() {
-    this.agaric = this.chanterelle = -Infinity
+    this.agaric = this.chanterelle = this.ghost = -Infinity
     this.porcini.length = 0
   }
 
@@ -131,13 +135,19 @@ export class Effects {
   /** Whether the animals within EAT.chanterelle.m come for her. */
   get maddened() { return this.t - this.chanterelle < EAT.chanterelle.s }
 
+  /** 0..1, the ghost cap's paleness. */
+  get ghostly() { return level(EAT.ghost, this.t - this.ghost) }
+
+  /** Whether the ghost cap holds her up: falls free, her lob lighter. */
+  get floating() { return this.t - this.ghost < EAT.ghost.s + EAT.ghost.outS }
+
   /** What a blow does to her: halved for every porcini she is under, from the frame after it was eaten, so its own harm lands whole. */
   get guard() {
     const P = EAT.porcini
     return Math.pow(P.guard, this.porcini.filter((t0) => this.t > t0 && this.t - t0 < P.s).length)
   }
 
-  /** The wash over her sight, [r, g, b, a], each effect laid over the last: the porcini's brown, the agaric's green, the chanterelle's black. */
+  /** The wash over her sight, [r, g, b, a], each effect laid over the last: the porcini's brown, the agaric's green, the chanterelle's black, the ghost cap's pale. */
   get tint() {
     const out = this._tint
     out[0] = out[1] = out[2] = out[3] = 0
@@ -147,6 +157,7 @@ export class Effects {
     over(out, P.rgba, brown * pulse)
     over(out, EAT.agaric.rgba, this.seeing * EAT.agaric.rgba[3] * pulse)
     over(out, EAT.chanterelle.rgba, this.dread * EAT.chanterelle.rgba[3])
+    over(out, EAT.ghost.rgba, this.ghostly * EAT.ghost.rgba[3] * pulse)
     if (out[3] > 0) for (let i = 0; i < 3; i++) out[i] /= out[3]
     return out
   }

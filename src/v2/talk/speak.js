@@ -3,7 +3,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { TITLES } from './world.js'
-import { MESSAGES, ODD } from './quests.js'
+import { ODD } from './quests.js'
 import { LORE, TOPICS, knowOdds, expertise, expertBody, beliefOdds, sawOdds } from './lore.js'
 import { MANNERS, MOVES, reception, isNight } from './manners.js'
 import { LK, lkLine } from './leafkin.js'
@@ -220,10 +220,15 @@ export class Conversation {
     return null
   }
 
-  /** The message quest the speaker gives (`role` 'giver') or receives ('to'), or null. */
-  _message(role) {
-    for (const q of this.ctx.quests.values()) if (q.kind === 'message' && q[role] === this.mind.id) return q
+  /** The message quest the speaker gives, or null. */
+  _message() {
+    for (const q of this.ctx.quests.values()) if (q.kind === 'message' && q.giver === this.mind.id) return q
     return null
+  }
+
+  /** Who sent message `m`: a townsperson, or a castle ghost. */
+  _sender(m) {
+    return m.ghost !== null ? m.ghost.name : this.ctx.world.person(m.giver).name
   }
 
   /** What she may say: `{ topic, label, path }`, `path` the fragments the dialog grid (grid.js) builds it from. Gated lore shows once she has heard of it (`ctx.known`). */
@@ -239,10 +244,10 @@ export class Conversation {
     }
     for (const t of Object.keys(TOPICS)) if (!TOPICS[t].gated || this.ctx.known.has(t)) chips.push([`lore:${t}`, LORE_PATH[t]])
     if (!this.leafkin) for (const t of Object.keys(TOPICS)) if (!TOPICS[t].gated || this.ctx.known.has(t)) chips.push([`who:${t}`, ['Who knows', `about ${TOPICS[t].label}?`]])
-    const m = this._message('to')
-    if (m !== null && this.ctx.log.state(m.id) === 'accepted') {
-      if (this.delivering === m.id) for (const k of m.choices) chips.push([`word:${k}:${m.id}`, ['The words were', `"${MESSAGES[m.message][k]}"`]])
-      else chips.push([`deliver:${m.id}`, ['I bring word', `from ${this.ctx.world.person(m.giver).name}.`]])
+    for (const m of this.ctx.quests.values()) {
+      if (m.kind !== 'message' || m.to !== this.mind.id || this.ctx.log.state(m.id) !== 'accepted') continue
+      if (this.delivering === m.id) for (const k of m.choices) chips.push([`word:${k}:${m.id}`, ['The words were', `"${m.words[k]}"`]])
+      else chips.push([`deliver:${m.id}`, ['I bring word', `from ${this._sender(m)}.`]])
     }
     for (const [topic, label] of this.mentions) chips.push([topic, ['What about', `${label}?`]])
     chips.push(...this._heardOf())
@@ -456,6 +461,16 @@ export class Conversation {
   bye() {
     const warm = this._standing() >= 0 && this.tone !== 'curt'
     if (this.leafkin) return this._line(this._lk(warm ? 'byeWarm' : 'byeCurt'), 'wave', { moment: warm ? 'bye.warm' : 'bye.curt' })
+    const dusk = warm && this.ctx.hour >= 17 && this.ctx.hour < 21 ? this.ctx.world.hideouts[this.ctx.world.townOf(this.mind).index] : null
+    if (dusk !== null) {
+      const at = dusk.label
+      return this._line(this._pick('dusk', [
+        `Be indoors by full dark. Something rattles out by ${at} after sundown. Every year about this time.`,
+        `Getting dark. If you hear clacking by ${at}, don't run at it. Running only scatters them.`,
+        `They say the bone-folk wake at dusk out by ${at}. Shy things. They'd do anything for a bone.`,
+        `Home before dark, now. My gran swore the bones by ${at} would beg for a pumpkin.`,
+      ]), 'wave', { moment: 'observe.dusk', mood: 'warm' })
+    }
     const text = this._withQuirk(warm ? this._pick('bye', ['Safe roads.', 'Take care of yourself.', 'Come back any time.', 'Go well.', 'Until next time.']) : this._pick('bye', ['Right.', 'Well, then.', 'Off you go.', 'Mm.']), 'bye')
     return this._line(text, warm ? 'wave' : 'talk-shrug', { moment: warm ? 'bye.warm' : 'bye.curt', mood: warm ? 'warm' : 'cold', plain: true })
   }
@@ -483,7 +498,7 @@ export class Conversation {
       const child = this.ctx.world.person(q.child)
       return this._line(`Any word of ${child.name}?`, 'talk-gesture', { mood: 'distress', quest: q.id, moment: 'missing.worry', about: [{ kind: 'missing', id: child.id, parent: true }] })
     }
-    const m = this._message('giver')
+    const m = this._message()
     if (m !== null && this.ctx.log.state(m.id) === 'delivered') return this._errand(m)
     const s = this._standing()
     if (this.leafkin && this.ctx.wronged) {
@@ -853,7 +868,7 @@ export class Conversation {
     if (q !== null && q.parent === mind.id) return ctx.log.state(q.id) === null ? this._plea(q) : this._lastSeen(q)
     const home = this._rescue()
     if (home !== null) return this._thanks(home)
-    const m = this._message('giver')
+    const m = this._message()
     if (m !== null && [null, 'accepted', 'delivered'].includes(ctx.log.state(m.id))) return this._errand(m)
     const wish = this.wish()
     if (wish !== null) return wish
@@ -1016,7 +1031,7 @@ export class Conversation {
     const { world, log, rapport } = this.ctx
     const to = world.person(m.to)
     const town = world.townOf(to)
-    const words = MESSAGES[m.message][0]
+    const words = m.words[0]
     this._mention(`ask:person:${to.id}`, to.name)
     this._mention(`ask:town:${town.index}`, town.name)
     const state = log.state(m.id)
@@ -1032,27 +1047,31 @@ export class Conversation {
     return this._line(`Would you carry word to ${to.name} in ${town.name}? ${to.name} is ${m.bond}. Tell ${this._pr(to).him}: "${words}" Those words exactly.`, 'talk-gesture', { quest: m.id, moment: 'errand.ask', about })
   }
 
-  /** The recipient's side: with `k` null they ask what was said; else she answers with phrasing `k` of MESSAGES. */
+  /** The recipient's side: with `k` null they ask what was said; else she answers with phrasing `k` of the words. A ghost's word is met with wonder before it is weighed. */
   _deliver(id, k) {
-    const { world, log, rapport } = this.ctx
-    const m = this._message('to')
-    if (m === null || m.id !== id || log.state(m.id) !== 'accepted') throw new Error(`Conversation: ${this.mind.id} awaits no word ${id}`)
-    const giver = world.person(m.giver)
+    const { log, rapport } = this.ctx
+    const m = this.ctx.quests.get(id)
+    if (m === undefined || m.kind !== 'message' || m.to !== this.mind.id || log.state(m.id) !== 'accepted') throw new Error(`Conversation: ${this.mind.id} awaits no word ${id}`)
+    const from = this._sender(m)
+    const ghost = m.ghost !== null
     if (k === null) {
       this.delivering = m.id
-      return this._line(`Word from ${giver.name}? What did ${giver.name} say?`, 'talk-nod', { moment: 'errand.recall' })
+      const ask = ghost ? `From ${from}? Grandmother told stories of ${from}... What did ${m.ghost.she ? 'she' : 'he'} say?` : `Word from ${from}? What did ${from} say?`
+      return this._line(ask, 'talk-nod', { moment: 'errand.recall' })
     }
     this.delivering = null
-    const words = MESSAGES[m.message][k]
+    const words = m.words[k]
     if (k === 0) {
       log.set(m.id, 'delivered')
       rapport.warm(this.mind.id, 0.25)
       rapport.owe(this.mind.id, 0.2)
-      return this._line(`"${words}" Oh... Thank you for carrying that all this way.`, 'talk-nod', { mood: 'warm', quest: m.id, moment: 'errand.true' })
+      const thanks = ghost ? `"${words}" After all these years... Tell ${from} I heard. Tell ${m.ghost.she ? 'her' : 'him'} to rest.` : `"${words}" Oh... Thank you for carrying that all this way.`
+      return this._line(thanks, 'talk-nod', { mood: 'warm', quest: m.id, moment: 'errand.true' })
     }
     log.set(m.id, 'garbled')
     rapport.warm(this.mind.id, -0.15)
-    return this._line(`"${words.slice(0, -1)}"? That can't be right. ${giver.name} would never say that.`, 'talk-shrug', { mood: 'cold', quest: m.id, moment: 'errand.garbled' })
+    const doubt = ghost ? `"${words.slice(0, -1)}"? That doesn't sound like the old stories at all.` : `"${words.slice(0, -1)}"? That can't be right. ${from} would never say that.`
+    return this._line(doubt, 'talk-shrug', { mood: 'cold', quest: m.id, moment: 'errand.garbled' })
   }
 
   _askAbout(arg) {
