@@ -16,7 +16,8 @@ const PROP_TOP = {
   hearth: 1.5, oven: 1.5, cauldron: 0.8, herbs: 0, cask: 0.85, bucket: 0.4, basket: 0.45, bunk: 1.9, shields: 0, armour: 1.85, arrows: 1.1,
   grind: 1.05, anvil: 0.75, dais: 0.3, carpet: 0, tapestry: 0, chandelier: 0, fourposter: 0.95, wardrobe: 2.0, desk: 0.8, rug: 0, altar: 1.0,
   maptable: 0.83, cot: 0.5, workbench: 0.9, candles: 1.2, sconce: 0, target: 1.6, pell: 1.6, yard: 0, forge: 2.3, trough: 0.6, block: 0.5,
-  bowrack: 1.5, stones: 0.45, jug: 0, bowl: 0, loaf: 0, cup: 0, candle: 0, book: 0,
+  bowrack: 1.5, stones: 0.45, chair: 1.0, dresser: 1.0, grain: 0.62, veg: 0.45, kegs: 0.57, jars: 0.85, coal: 0.4, hams: 0, chains: 0, straw: 0, bones: 0,
+  wreck: 0.4, cage: 1.95, jug: 0, bowl: 0, loaf: 0, cup: 0, candle: 0, book: 0,
 }
 // A parapet's band reaches past the merlons, so her reach (1.2 m) never finds its top; within STEP_GAP of where a step crosses it
 // only the 0.6 m wall under the merlons stands, which she steps over.

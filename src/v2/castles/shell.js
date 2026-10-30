@@ -468,11 +468,12 @@ export function exteriorGeometry(lay, { warp = true, full = true } = {}) {
 // Prop colours multiply the plank or stone texture; cloth and straw ride the planks.
 const PLANK = rgb(0xe6d6bf), DARKWOOD = rgb(0x9c8068), CLOTH = rgb(0xd9cfb8), STRAW = rgb(0xf2d98a), RED = rgb(0xa8342c), IRON = rgb(0x4a4744), EMBER = rgb(0xff9a3c), ROPE = rgb(0xe0c890)
 const BLUE = rgb(0x3a5a9a), GREEN = rgb(0x4f7a3a), CLAY = rgb(0xb06a40), BREAD = rgb(0xd2a060), SAND = rgb(0xd8c49a), WATER = rgb(0x3d6a78), PARCH = rgb(0xead9a8), PEWTER = rgb(0x9a9894)
+const COAL = rgb(0x3a3634), BONE = rgb(0xe8e0c8), HAM = rgb(0xa05040), CROPS = [GREEN, rgb(0xd87a30), rgb(0xd8c8d0), rgb(0xa88a5a)]
 // Wall hangings and anything else picked by where it stands, so it is the same in every build.
 const DYES = [RED, BLUE, GREEN]
 const dye = (o) => DYES[Math.abs(Math.floor(o.x * 7.3 + o.z * 13.1)) % 3]
 // Kinds hung high on a wall or from the ceiling, left out of a storey's waist-high cut.
-const HIGH = new Set(['chandelier', 'banner', 'tapestry', 'herbs', 'sconce', 'shields'])
+const HIGH = new Set(['chandelier', 'banner', 'tapestry', 'herbs', 'sconce', 'shields', 'hams', 'chains'])
 
 /** A furnish.js prop record drawn from primitives in its own frame: u along its width, v along its depth (its back at -d/2),
  * y up from its floor. Everything is planks but the well's stone. */
@@ -720,6 +721,80 @@ export function prop(m, o) {
       case 'cup': prism(0, 0, 0, 0.1, 0.045, 5, PEWTER); break
       case 'candle': prism(0, 0, 0, 0.17, 0.025, 4, CLOTH); break
       case 'book': blk(-w, 0, -d, w, 0.05, d, dye(o)); break
+      case 'chair': blk(-w, 0.42, -d, w, 0.47, d, wood); legs(w - 0.04, d - 0.04, 0.42, 0.025, DARKWOOD); blk(-w, 0.47, -d, w, 1.0, -d + 0.05, DARKWOOD); break
+      case 'dresser':
+        blk(-w, 0, -d, w, 0.95, d, DARKWOOD); blk(-w - 0.03, 0.95, -d, w + 0.03, 1.0, d + 0.03, wood)
+        for (const y of [0.12, 0.4, 0.68]) { blk(-w + 0.06, y, d - 0.01, w - 0.06, y + 0.22, d + 0.02, wood); blk(-0.04, y + 0.09, d + 0.02, 0.04, y + 0.13, d + 0.04, GOLD) }
+        break
+      case 'grain':
+        for (const u of [-0.42, 0, 0.42]) blk(u - 0.19, 0, -d + 0.02, u + 0.19, 0.32, d - 0.08, m.tint(CLOTH, 0.14))
+        for (const u of [-0.21, 0.21]) blk(u - 0.18, 0.32, -d + 0.06, u + 0.18, 0.62, d - 0.14, m.tint(CLOTH, 0.14))
+        blk(-0.3, 0, d - 0.07, 0.25, 0.04, d, SAND)
+        break
+      case 'veg': {
+        const crop = CROPS[Math.abs(Math.floor(o.x * 5.1 + o.z * 3.7)) % 4]
+        for (const u of [-w, w - 0.05]) blk(u, 0, -d, u + 0.05, 0.45, d, wood)
+        for (const v of [-d, d - 0.05]) blk(-w + 0.05, 0, v, w - 0.05, 0.45, v + 0.05, wood)
+        blk(-w + 0.05, 0, -d + 0.05, w - 0.05, 0.36, d - 0.05, m.tint(crop, 0.2))
+        for (const [u, v] of [[-0.2, -0.13], [0.04, -0.15], [0.24, -0.1], [-0.12, 0.13], [0.15, 0.14]]) prism(u, v, 0.36, 0.45, 0.09, 5, m.tint(crop, 0.25))
+        break
+      }
+      case 'kegs':
+        for (const u of [-w + 0.2, w - 0.26]) blk(u, 0, -d + 0.03, u + 0.06, 0.06, d - 0.03, DARKWOOD)
+        for (const [u0, u1, y, v] of [[-w + 0.05, w - 0.05, 0.19, -0.14], [-w + 0.07, w - 0.07, 0.19, 0.14], [-w + 0.12, w - 0.12, 0.43, 0]]) {
+          log(u0, u1, y, v, 0.15, wood); log(-0.02, 0.02, y, v, 0.16, IRON)
+        }
+        break
+      case 'jars':
+        for (const u of [-w, w - 0.06]) blk(u, 0, -d, u + 0.06, 0.6, d, DARKWOOD)
+        for (const y of [0.05, 0.5]) blk(-w + 0.06, y, -d, w - 0.06, y + 0.04, d, wood)
+        for (const [i, y] of [0.09, 0.54].entries()) for (let u = -w + 0.2; u < w - 0.15; u += 0.27) {
+          const h = 0.18 + ((u * 13 + i * 7) % 1 + 1) % 1 * 0.12
+          prism(u, 0, y, y + h, 0.09, 6, i ? PEWTER : CLAY); prism(u, 0, y + h, y + h + 0.04, 0.05, 6, i ? CLAY : DARKWOOD)
+        }
+        break
+      case 'coal':
+        blk(-w, 0, -d, w, 0.4, -d + 0.05, wood)
+        for (const u of [-w, w - 0.05]) blk(u, 0, -d + 0.05, u + 0.05, 0.4, d, wood)
+        blk(-w + 0.05, 0, -d + 0.05, w - 0.05, 0.24, d - 0.05, COAL)
+        for (const [u, v, r] of [[-0.15, -0.1, 0.22], [0.18, 0.02, 0.18], [-0.02, 0.18, 0.15]]) prism(u, v, 0.24, 0.34, r, 5, m.tint(COAL, 0.3))
+        break
+      case 'hams':
+        blk(-w, 2.4, -d - 0.05, w, 2.45, -d + 0.06, DARKWOOD, true)
+        for (let u = -w + 0.2; u < w - 0.1; u += 0.4) {
+          blk(u - 0.01, 2.25, -d + 0.07, u + 0.01, 2.4, -d + 0.09, ROPE, true)
+          blk(u - 0.1, 1.9, -d + 0.02, u + 0.1, 2.25, -d + 0.16, m.tint(HAM, 0.2), true)
+        }
+        break
+      case 'chains':
+        blk(-w, 1.85, -d, w, 1.95, -d + 0.04, IRON, true)
+        for (const u of [-0.3, 0.3]) {
+          for (let i = 0; i < 5; i++) blk(u - 0.015 + (i % 2) * 0.01, 1.73 - 0.12 * i, -d + 0.02, u + 0.015 + (i % 2) * 0.01, 1.85 - 0.12 * i, -d + 0.06, IRON, true)
+          blk(u - 0.06, 1.1, -d + 0.02, u + 0.06, 1.25, -d + 0.12, IRON, true)
+        }
+        break
+      case 'straw': blk(-w, 0, -d, w, 0.07, d, m.tint(STRAW, 0.3)); blk(-w + 0.2, 0.07, -d + 0.15, w - 0.3, 0.14, d - 0.2, m.tint(STRAW, 0.3)); break
+      case 'bones':
+        for (const [u0, v0, u1, v1] of [[-0.4, -0.2, 0.05, -0.15], [-0.3, 0.05, -0.25, 0.28], [0.0, 0.1, 0.38, 0.15], [-0.1, -0.1, -0.05, 0.05]]) blk(u0, 0, v0, u1, 0.04, v1, m.tint(BONE, 0.15))
+        prism(0.28, -0.12, 0, 0.13, 0.09, 6, BONE); blk(0.22, 0, -0.04, 0.34, 0.04, 0.02, m.tint(BONE, 0.2))
+        break
+      case 'wreck': {
+        // A barrel stove in: its staves broken off at uneven heights, more lying by it.
+        const ang = (i) => i * Math.PI / 4, r = 0.3, at = (i, y) => W(-0.12 + Math.cos(ang(i)) * r, y, Math.sin(ang(i)) * r)
+        for (let i = 0; i < 8; i++) {
+          const h = 0.2 + ((i * 0.37) % 0.5), a = ang(i + 0.5), n = [Math.cos(a) * c + Math.sin(a) * s, 0, -Math.cos(a) * s + Math.sin(a) * c]
+          m.quad(at(i, 0), at(i + 1, 0), at(i + 1, h), at(i, h), wood, n); m.quad(at(i + 1, 0), at(i, 0), at(i, h), at(i + 1, h), wood, n.map((x) => -x))
+        }
+        prism(-0.12, 0, 0, 0.03, 0.29, 8, DARKWOOD)
+        for (const [u, v] of [[0.25, -0.3], [0.32, 0.05]]) blk(u, 0, v, u + 0.08, 0.03, v + 0.55, wood)
+        break
+      }
+      case 'cage':
+        blk(-w, 0, -d, w, 0.05, d, IRON)
+        for (let t = -w + 0.1; t < w - 0.05; t += 0.2) for (const [u, v] of [[t, -d + 0.03], [t + 0.1, d - 0.03], [-w + 0.03, t + 0.1], [w - 0.03, t]]) blk(u - 0.015, 0.05, v - 0.015, u + 0.015, 1.9, v + 0.015, IRON)
+        for (const v of [-d, d - 0.05]) blk(-w, 1.9, v, w, 1.95, v + 0.05, IRON, true)
+        for (const u of [-w, w - 0.05]) blk(u, 1.9, -d + 0.05, u + 0.05, 1.95, d - 0.05, IRON, true)
+        break
       default: throw new Error(`castle prop: no mesh for '${o.kind}'`)
     }
   }, true)

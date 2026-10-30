@@ -5571,8 +5571,8 @@ async function buildRoom(room, at) {
     window.v2palisades = palisades // console: `v2palisades.stats`
   }
   if (layers.castles.list.length) {
-    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }) })
-    castles.update(spawn, fireNow(), lampNight())
+    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden })
+    castles.update(spawn, fireNow(), lampNight(), dayness)
     window.v2castles = castles // console: `v2castles.stats`
   }
 
@@ -8987,7 +8987,8 @@ function tick() {
   // The air hook on every frame: the linear ramp ends are wanted for every
   // capture, wet or dry, and the hook itself decides whether there is murk to lift.
   airHook.state = state
-  if (questToggles.reflections && cave === null && !indoors) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook, camera.getWorldDirection(probeLook))
+  if (questToggles.reflections && cave === null && !indoors && inCastle === null) worldProbe.update(renderer, scene, headTmp, waterY, dt, airHook, camera.getWorldDirection(probeLook))
+  if (questToggles.reflections && inCastle !== null) castles.reflect(renderer, scene, headTmp, dt, camera.getWorldDirection(probeLook))
   if (cave !== null) stepCave(headTmp, now / 1000)
   else if (indoors) stepIndoors()
   spikes.lap('probes')
@@ -9040,7 +9041,7 @@ function stepOverworld(dt, now) {
   spikes.lap('signposts')
   if (bridges) bridges.update(headTmp)
   if (palisades) palisades.update(headTmp, fireNow())
-  if (castles) castles.update(headTmp, fireNow(), lampNight())
+  if (castles) castles.update(headTmp, fireNow(), lampNight(), dayness)
   if (townsfolk && questToggles.townsfolk) {
     dreadTmp.length = dragonTmp.length = 0
     if (dragons) for (const d of dragons.bodies(dragonTmp)) if (d.fell === null) dreadTmp.push(d)

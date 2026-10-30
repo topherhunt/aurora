@@ -6,11 +6,12 @@ import { propFlames, roomPlan, roomProps } from './furnish.js'
 
 const C = CASTLE.cell, S = CASTLE.scale, SH = CASTLE.storey * CASTLE.tall, INSET = 0.4
 // Fill: its level, and each wall, floor or ceiling darkening what is within about `aoReach` of it by up to `ao`.
-// Torches: power per flame by its height, fall-off reach, saturation cap. Windows: spill per square metre and its reach, and the
+// Torches: power per flame by its height, fall-off reach, saturation cap, and the share a face lit edge-on keeps (the wall a sconce
+// hangs on). Windows: spill per square metre and its reach, and the
 // even share a room gets of its windows' area over the square root of its floor's. Doorways pass on `bleed` of what reaches them.
 export const BAKE = {
   cell: 2, fill: 0.42, ao: 0.38, aoReach: 0.75,
-  torch: { power: 1.25, reach: 2.6, cap: 1.6 },
+  torch: { power: 3, reach: 1.0, cap: 1.8, wrap: 0.5 },
   win: { spill: 0.45, reach: 3.5, share: 0.35 },
   bleed: 0.5,
 }
@@ -20,7 +21,7 @@ export const PANE = 1.5, GLASS = 1.2
 const PANES = { ground: [0.5, 1.4, 1.8], upper: [1.0, 2.0, 1.4], grand: [1.4, 2.6, 1.2] }
 const GRAND = new Set(['throne', 'bedchamber', 'chapel', 'mess'])
 // Kinds low enough for a window over them.
-const LOW = new Set(['rug', 'carpet', 'dais', 'bench', 'stool', 'chest', 'bucket', 'basket', 'jug', 'bowl', 'loaf', 'cup', 'candle', 'book', 'sacks', 'crate', 'grain', 'veg', 'coal', 'stones', 'cot'])
+const LOW = new Set(['rug', 'carpet', 'dais', 'bench', 'stool', 'chest', 'bucket', 'basket', 'jug', 'bowl', 'loaf', 'cup', 'candle', 'book', 'sacks', 'crate', 'grain', 'veg', 'coal', 'stones', 'cot', 'chair', 'kegs', 'jars'])
 
 /** The unshaded fraction of light a face facing n keeps, by which way it faces. */
 export const faceShade = (n) => 0.85 * (n[1] > 0.7 ? 1 : n[1] < -0.7 ? 0.55 : Math.abs(n[0]) > Math.abs(n[2]) ? 0.8 : 0.7)
@@ -99,7 +100,7 @@ export function interiorLight(lay) {
     for (const [lx, ly, lz, pw] of q.lights) {
       const dx = lx - p[0], dy = ly - p[1], dz = lz - p[2], d = Math.max(0.05, Math.hypot(dx, dy, dz))
       const ndl = n ? Math.max(0, (n[0] * dx + n[1] * dy + n[2] * dz) / d) : 0.6
-      sum += pw * (0.3 + 0.7 * ndl) / (1 + (d / T.reach) ** 2)
+      sum += pw * (T.wrap + (1 - T.wrap) * ndl) / (1 + (d / T.reach) ** 2)
     }
     return sum
   }
@@ -138,9 +139,13 @@ export function interiorLight(lay) {
   // Grid vertices recur in up to six faces: memoized by centimetre and normal.
   const memo = new Map()
   const at = (p, n) => {
-    const key = `${Math.round(p[0] * 100)},${Math.round(p[1] * 100)},${Math.round(p[2] * 100)},${n ? `${Math.round(n[0] * 20)},${Math.round(n[1] * 20)},${Math.round(n[2] * 20)}` : ''}`
-    let v = memo.get(key)
-    if (!v) memo.set(key, v = bake(p, n))
+    const key = ((Math.round(p[0] * 100) + 50000) * 8000 + Math.round(p[1] * 100) + 1000) * 100000 + Math.round(p[2] * 100) + 50000
+    const nk = n ? (Math.round(n[0] * 20) + 20) * 1681 + (Math.round(n[1] * 20) + 20) * 41 + Math.round(n[2] * 20) + 20 : -1
+    let list = memo.get(key)
+    if (!list) memo.set(key, list = [])
+    for (let i = 0; i < list.length; i += 2) if (list[i] === nk) return list[i + 1]
+    const v = bake(p, n)
+    list.push(nk, v)
     return v
   }
   const storeys = new Map()

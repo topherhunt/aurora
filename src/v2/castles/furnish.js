@@ -20,7 +20,8 @@ export const PROP = {
   dais: [3.6, 2.4], carpet: [1.4, 4], tapestry: [1.8, 0.1], chandelier: [1.2, 1.2], fourposter: [1.6, 2.2], wardrobe: [1.2, 0.6],
   desk: [1.3, 0.7], rug: [2.4, 1.6], altar: [1.6, 0.8], maptable: [2.0, 1.4], cot: [0.8, 1.9], workbench: [2.0, 0.8], candles: [0.4, 0.4],
   sconce: [0.3, 0.25], target: [1.2, 0.5], pell: [0.4, 0.4], yard: [4, 4], forge: [2.2, 1.6], trough: [1.8, 0.6], block: [0.6, 0.6],
-  bowrack: [1.6, 0.3], stones: [0.9, 0.9],
+  bowrack: [1.6, 0.3], stones: [0.9, 0.9], chair: [0.5, 0.5], dresser: [1.4, 0.5], grain: [1.3, 0.8], veg: [0.9, 0.7], kegs: [1.2, 0.6], jars: [1.2, 0.4],
+  coal: [1.0, 0.8], hams: [1.2, 0.2], chains: [1.0, 0.12], straw: [1.4, 1.0], bones: [0.9, 0.6], wreck: [0.9, 0.9], cage: [1.2, 1.2],
   jug: [0.18, 0.18], bowl: [0.24, 0.24], loaf: [0.26, 0.16], cup: [0.1, 0.1], candle: [0.06, 0.06], book: [0.26, 0.2],
 }
 // Flames each kind carries, in its own frame (shell.js prop): [u, y, v, height, radius].
@@ -32,34 +33,34 @@ const FLAMES = {
 }
 // What each role holds: `must` placed first (one each), then `wall` kinds round it, a `centre` piece, tableware on its tables.
 const KIT = {
-  throne: { wall: ['banner', 'tapestry', 'tapestry', 'brazier', 'sconce', 'sconce', 'chest', 'shelf'] },
-  kitchen: { must: ['hearth', 'oven', 'cauldron'], wall: ['barrel', 'sacks', 'shelf', 'herbs', 'herbs', 'crate', 'cask', 'bucket', 'basket', 'sconce'], centre: ['table'], ware: true },
-  pantry: { wall: ['barrel', 'barrel', 'sacks', 'sacks', 'crate', 'cask', 'shelf', 'basket', 'herbs', 'sconce'] },
-  mess: { wall: ['bench', 'shelf', 'brazier', 'banner', 'sconce', 'sconce', 'cask', 'barrel'], centre: ['longtable', 'table'], ware: true, chandelier: true },
-  guard: { must: ['rack'], wall: ['rack', 'bench', 'chest', 'barrel', 'sconce', 'shields'], centre: ['table'], ware: true },
+  throne: { wall: ['banner', 'tapestry', 'tapestry', 'brazier', 'sconce', 'sconce', 'chest', 'shelf', 'chair', 'chair'] },
+  kitchen: { must: ['hearth', 'oven', 'cauldron'], wall: ['barrel', 'sacks', 'shelf', 'herbs', 'herbs', 'crate', 'cask', 'bucket', 'basket', 'sconce', 'veg', 'jars', 'hams', 'coal'], centre: ['table'], ware: true },
+  pantry: { wall: ['barrel', 'sacks', 'grain', 'veg', 'veg', 'crate', 'cask', 'kegs', 'jars', 'jars', 'basket', 'herbs', 'hams', 'sconce'] },
+  mess: { wall: ['bench', 'shelf', 'brazier', 'banner', 'sconce', 'sconce', 'cask', 'barrel', 'kegs', 'dresser'], centre: ['longtable', 'table'], ware: true, chandelier: true },
+  guard: { must: ['rack'], wall: ['rack', 'bench', 'chest', 'barrel', 'sconce', 'shields', 'chair', 'kegs'], centre: ['table'], ware: true },
   passage: { wall: ['brazier', 'sconce', 'sconce', 'barrel'] },
   armoury: { must: ['anvil', 'grind'], wall: ['rack', 'rack', 'shields', 'shields', 'armour', 'armour', 'arrows', 'chest', 'crate', 'sconce'] },
   barracks: { must: ['bunk', 'bunk'], wall: ['bunk', 'bunk', 'bunk', 'chest', 'chest', 'rack', 'sconce', 'shields'], centre: ['table'], ware: true },
-  bedchamber: { must: ['fourposter'], wall: ['wardrobe', 'chest', 'desk', 'tapestry', 'candles', 'sconce', 'shelf'], rug: true, ware: true },
+  bedchamber: { must: ['fourposter'], wall: ['wardrobe', 'chest', 'desk', 'tapestry', 'candles', 'sconce', 'shelf', 'dresser', 'chair'], rug: true, ware: true },
   chapel: { must: ['altar'], wall: ['candles', 'candles', 'bench', 'tapestry', 'banner'], centre: ['bench'] },
-  maproom: { wall: ['shelf', 'shelf', 'chest', 'candles', 'banner', 'sconce', 'desk'], centre: ['maptable'], ware: true },
-  infirmary: { must: ['cot', 'cot'], wall: ['cot', 'cot', 'shelf', 'herbs', 'bucket', 'chest', 'candles'] },
+  maproom: { wall: ['shelf', 'shelf', 'chest', 'candles', 'banner', 'sconce', 'desk', 'chair'], centre: ['maptable'], ware: true },
+  infirmary: { must: ['cot', 'cot'], wall: ['cot', 'cot', 'shelf', 'herbs', 'bucket', 'chest', 'candles', 'chair', 'jars'] },
   treasury: { must: ['chest', 'chest'], wall: ['chest', 'chest', 'chest', 'crate', 'candles', 'sconce'] },
-  library: { wall: ['shelf', 'shelf', 'shelf', 'shelf', 'desk', 'candles', 'sconce'], centre: ['table'], ware: true },
-  cellar: { wall: ['cask', 'cask', 'cask', 'barrel', 'barrel', 'crate', 'sconce'] },
-  bakehouse: { must: ['oven'], wall: ['sacks', 'sacks', 'basket', 'shelf', 'barrel', 'sconce'], centre: ['table'], ware: true },
-  workshop: { must: ['workbench'], wall: ['workbench', 'crate', 'woodpile', 'barrel', 'rack', 'sconce'] },
-  store: { wall: ['barrel', 'barrel', 'crate', 'crate', 'sacks', 'woodpile', 'sconce'] },
-  granary: { wall: ['sacks', 'sacks', 'sacks', 'hay', 'basket', 'sconce'] },
-  servants: { must: ['bed'], wall: ['bed', 'bed', 'chest', 'stool', 'shelf', 'sconce'] },
-  guest: { must: ['bed'], wall: ['chest', 'wardrobe', 'candles', 'desk', 'tapestry'], rug: true, ware: true },
-  watch: { wall: ['bench', 'arrows', 'chest', 'sconce', 'stool', 'barrel'] },
+  library: { wall: ['shelf', 'shelf', 'shelf', 'shelf', 'desk', 'candles', 'sconce', 'chair', 'chair'], centre: ['table'], ware: true },
+  cellar: { wall: ['cask', 'cask', 'cask', 'barrel', 'kegs', 'kegs', 'jars', 'veg', 'crate', 'sconce'] },
+  bakehouse: { must: ['oven'], wall: ['sacks', 'grain', 'grain', 'basket', 'shelf', 'barrel', 'coal', 'sconce'], centre: ['table'], ware: true },
+  workshop: { must: ['workbench'], wall: ['workbench', 'crate', 'woodpile', 'barrel', 'rack', 'sconce', 'coal', 'chair'] },
+  store: { wall: ['barrel', 'barrel', 'crate', 'crate', 'sacks', 'grain', 'veg', 'kegs', 'coal', 'woodpile', 'sconce'] },
+  granary: { wall: ['sacks', 'grain', 'grain', 'grain', 'hay', 'basket', 'sconce'] },
+  servants: { must: ['bed'], wall: ['bed', 'bed', 'chest', 'stool', 'shelf', 'sconce', 'dresser'] },
+  guest: { must: ['bed'], wall: ['chest', 'wardrobe', 'candles', 'desk', 'tapestry', 'dresser', 'chair'], rug: true, ware: true },
+  watch: { wall: ['bench', 'arrows', 'chest', 'sconce', 'stool', 'barrel', 'chair'] },
   arsenal: { must: ['bowrack'], wall: ['arrows', 'arrows', 'stones', 'stones', 'barrel', 'bowrack', 'sconce'] },
-  linen: { wall: ['chest', 'chest', 'wardrobe', 'shelf', 'basket', 'basket', 'sconce'] },
-  study: { must: ['desk'], wall: ['shelf', 'shelf', 'chest', 'candles', 'tapestry'], rug: true },
-  sewing: { must: ['workbench'], wall: ['basket', 'basket', 'chest', 'shelf', 'tapestry', 'stool', 'candles'], centre: ['table'], ware: true },
-  scullery: { wall: ['bucket', 'bucket', 'barrel', 'shelf', 'basket', 'crate', 'sconce'], centre: ['table'], ware: true },
-  woodstore: { wall: ['woodpile', 'woodpile', 'woodpile', 'crate', 'block'] },
+  linen: { wall: ['chest', 'chest', 'wardrobe', 'dresser', 'dresser', 'shelf', 'basket', 'basket', 'sconce'] },
+  study: { must: ['desk'], wall: ['shelf', 'shelf', 'chest', 'candles', 'tapestry', 'chair', 'dresser'], rug: true },
+  sewing: { must: ['workbench'], wall: ['basket', 'basket', 'chest', 'shelf', 'tapestry', 'stool', 'candles', 'chair'], centre: ['table'], ware: true },
+  scullery: { wall: ['bucket', 'bucket', 'barrel', 'shelf', 'basket', 'crate', 'sconce', 'veg', 'jars'], centre: ['table'], ware: true },
+  woodstore: { wall: ['woodpile', 'woodpile', 'woodpile', 'crate', 'block', 'coal'] },
 }
 // Rooms each castle has one of, if a chamber is left for them, in the order they are tried.
 const EXTRAS = ['chapel', 'maproom', 'treasury', 'infirmary', 'library', 'bakehouse', 'cellar', 'workshop']
@@ -68,12 +69,12 @@ const GROUND = ['store', 'granary', 'scullery', 'woodstore']
 const UPPER = ['servants', 'guest', 'linen', 'study', 'sewing', 'store', 'workshop', 'servants', 'guest']
 const TOWER_TOP = ['watch', 'arsenal']
 const WARE = ['jug', 'bowl', 'bowl', 'loaf', 'cup', 'cup', 'candle', 'book']
-const SURFACE = { table: 0.82, longtable: 0.82, desk: 0.8, maptable: 0.83 }
+const SURFACE = { table: 0.82, longtable: 0.82, desk: 0.8, maptable: 0.83, dresser: 1.0 }
 const COURT_KINDS = ['barrel', 'barrel', 'crate', 'hay', 'cart', 'rack', 'woodpile', 'sacks', 'brazier', 'trough']
 const TRAIN_KINDS = ['dummy', 'dummy', 'pell', 'target', 'target', 'rack']
 const WORK_KINDS = ['trough', 'block', 'woodpile', 'anvil', 'barrel', 'crate']
 const ROOF_KINDS = ['arrows', 'arrows', 'bowrack', 'stones', 'stones', 'barrel']
-const DUNGEON_KINDS = ['barrel', 'barrel', 'crate', 'crate', 'sacks', 'bucket', 'stones', 'cot', 'cask']
+const DUNGEON_KINDS = ['barrel', 'crate', 'crate', 'sacks', 'grain', 'kegs', 'bucket', 'stones', 'cot', 'cask', 'chains', 'chains', 'straw', 'straw', 'bones', 'wreck', 'wreck', 'cage']
 const CLEAR = 1.3, LANE = 0.75, GAP = 0.15
 
 /** Distance from p to segment ab, in plan. */
@@ -146,10 +147,11 @@ function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity)
   }
 }
 
-/** `must` kinds one each, then `wall` kinds, then `centre`, into `out`. */
+/** `must` kinds one each, then `wall` kinds, `centre`, and `wall` kinds again, into `out`. */
 function fillKit(rng, r, round, portals, kit, y, out) {
   for (const kind of kit.must ?? []) fillRect(rng, r, round, portals, [kind], y, null, out, 1)
   fillRect(rng, r, round, portals, kit.wall, y, kit.centre ?? null, out)
+  fillRect(rng, r, round, portals, kit.wall, y, null, out)
 }
 
 /** Tableware scattered on the tops of the tables among `list`, appended to it. */
@@ -452,6 +454,7 @@ export function dungeonProps(lay) {
       if (list.length && !keep(list[0])) list.length = 0
     }
     if (ri === g.chest && !list.length) throw new Error(`castle ${lay.seed}: no wall for the dungeon chest`)
+    fillRect(rng, r.rect, false, r.portals, DUNGEON_KINDS, r.lo, null, list)
     fillRect(rng, r.rect, false, r.portals, DUNGEON_KINDS, r.lo, null, list)
     for (const o of list) if (o.kind === 'chest' || keep(o)) out.push({ ...o, k: -1 })
   })

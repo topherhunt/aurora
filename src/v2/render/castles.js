@@ -8,6 +8,11 @@ import { exteriorSpans, interiorSpans, SPANS } from '../castles/solids.js'
 import { castleExtents, toLocal } from '../layers/castles.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { downsample, flipY, dilate, SUPERSAMPLE } from '../../props/impostor.js'
+import { HELD_TORCH, HELD_TORCH_GLSL, skyThroughGlass } from './interior.js'
+import { GLASS } from '../castles/light.js'
+import { TORCHES } from '../../lighting.js'
+import { WorldProbe, WORLD_PROBE } from '../../world-probe.js'
+import { WATER, RIPPLE_GLSL } from '../../water.js'
 
 // Metres from the site: built within `build`, dropped past `drop`; its meshes drawn within `mesh` (the card past it), the full
 // exterior within `full` and the mid-distance one past `low`.
@@ -22,6 +27,103 @@ export const CASTLE_RISE = 320
 const ZONE = { rope: 2.2, hatch: 0.6, ladder: 0.7, door: 0.5, rise: 0.6 }
 // How square to the rope she must walk at it, as the cosine of her step on its way out.
 const ROPE_INTO = 0.6
+// The interior's light (castles/light.js channels): fill, firelight and the window light the hour gives, as colours.
+const INNER_LIGHT = { fill: [0.75, 0.85, 1], fire: [1, 0.72, 0.45], win: 0.9 }
+// How far from her eye (m) the dungeon's water must be for its probe to capture.
+const MIRROR_REACH = 30
+
+const INNER_VERT = /* glsl */ `
+attribute vec3 light;
+varying vec2 vUv;
+varying vec3 vCol;
+varying vec3 vLight;
+varying vec3 vPos;
+varying vec3 vNrm;
+void main() {
+  vUv = uv;
+  vCol = color;
+  vLight = light;
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vPos = w.xyz;
+  vNrm = mat3(modelMatrix) * normal;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`
+// Glass (a window channel past GLASS) shows the sky's light alone and no stone.
+const INNER_FRAG = /* glsl */ `
+uniform sampler2D map;
+uniform vec3 uFill;
+uniform vec3 uFire;
+uniform float uWin;
+uniform vec3 uSky;
+uniform float uFlicker;
+uniform vec4 uTorch[${TORCHES}];
+varying vec2 vUv;
+varying vec3 vCol;
+varying vec3 vLight;
+varying vec3 vPos;
+varying vec3 vNrm;
+${HELD_TORCH_GLSL}
+void main() {
+  vec3 c;
+  if (vLight.z > ${GLASS.toFixed(2)}) c = vCol * (uSky * vLight.z * uWin + 0.06 * uFill);
+  else {
+    vec3 lit = uFill * vLight.x + uFire * vLight.y * uFlicker + uSky * vLight.z * uWin;
+    lit += heldTorch(vPos, normalize(vNrm)) * vec3(${HELD_TORCH.color.map((v) => v.toFixed(2)).join(', ')});
+    c = texture2D(map, vUv).rgb * vCol * lit;
+  }
+  gl_FragColor = vec4(c, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
+const WATER_VERT = /* glsl */ `
+attribute vec3 light;
+varying vec3 vLight;
+varying vec3 vPos;
+void main() {
+  vLight = light;
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vPos = w.xyz;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`
+// The cave water's (render/cave-room.js) in the dungeon: water.js's ripple, its body tint in the baked light, the probe's two cubes
+// cross-faded by Fresnel, the held torch's glint, and water.js's clarity looking down.
+const WATER_FRAG = /* glsl */ `
+${RIPPLE_GLSL}
+uniform samplerCube uMirrorA;
+uniform samplerCube uMirrorB;
+uniform float uMirrorFade;
+uniform vec3 uTint;
+uniform vec3 uReflTint;
+uniform float uMirrorDown;
+uniform vec2 uClarity;
+uniform vec3 uFill;
+uniform vec3 uFire;
+uniform float uFlicker;
+uniform vec4 uTorch[${TORCHES}];
+varying vec3 vLight;
+varying vec3 vPos;
+${HELD_TORCH_GLSL}
+void main() {
+  vec3 n = rippleNormal(vPos.xz);
+  vec3 v = normalize(vPos - cameraPosition);
+  vec3 torch = vec3(${HELD_TORCH.color.map((x) => x.toFixed(2)).join(', ')});
+  vec3 body = uTint * (uFill * vLight.x + uFire * vLight.y * uFlicker + heldTorch(vPos, n) * torch);
+  vec3 r = reflect(v, n);
+  if (r.y < 0.0) r.y = -r.y;
+  vec3 refl = mix(texture(uMirrorA, r).rgb, texture(uMirrorB, r).rgb, uMirrorFade) * uReflTint;
+  for (int i = 0; i < ${TORCHES}; i++) {
+    float s = uTorch[i].w;
+    if (s <= 0.0) continue;
+    vec3 l = uTorch[i].xyz - vPos;
+    refl += torch * s * pow(max(dot(r, normalize(l)), 0.0), 120.0) * 3.0 / (1.0 + 0.05 * dot(l, l));
+  }
+  float f = pow(1.0 - clamp(dot(-v, n), 0.0, 1.0), 5.0);
+  vec3 c = mix(body, refl, mix(uMirrorDown, 1.0, f));
+  float alpha = 1.0 - uClarity.x * smoothstep(uClarity.y, 1.0, -v.y);
+  gl_FragColor = vec4(c / alpha, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
 
 const loadTile = (path, metres, done) => {
   const t = new THREE.TextureLoader().load(path, done, undefined, () => { throw new Error(`Castles: ${path} failed to load`) })
@@ -31,6 +133,8 @@ const loadTile = (path, metres, done) => {
   t.repeat.setScalar(UV_METRES / metres)
   return t
 }
+const tmpBox = new THREE.Box3()
+const tmpV = new THREE.Vector3()
 // Castle-local direction to world (layers/castles.js toWorld's turn).
 const turn = (s, u, v) => [u * Math.cos(s.yaw) + v * Math.sin(s.yaw), -u * Math.sin(s.yaw) + v * Math.cos(s.yaw)]
 
@@ -46,9 +150,28 @@ function flamesOf(site, list, y0) {
   return f
 }
 
+/** The interior's materials, a slot each for `maps` stone, plank, door and gate, and the dungeon water's, with their shared uniforms:
+ * lit by the bake (castles/light.js), the hour through the windows (uSky) and the held torches in `uTorch` (lighting.js's). */
+export function interiorMaterials(maps, uTorch) {
+  const L = INNER_LIGHT
+  const innerUniforms = { uFill: { value: new THREE.Color(...L.fill) }, uFire: { value: new THREE.Color(...L.fire) }, uWin: { value: L.win }, uSky: { value: new THREE.Color() }, uFlicker: { value: 1 }, uTorch }
+  const innerMaterial = ['stone', 'plank', 'door', 'gate'].map((k) => new THREE.ShaderMaterial({ uniforms: { ...innerUniforms, map: { value: maps[k] } }, vertexShader: INNER_VERT, fragmentShader: INNER_FRAG, vertexColors: true }))
+  const waterUniforms = {
+    ...innerUniforms, uTime: { value: 0 }, uChop: { value: WATER.chop }, uFlow: { value: WATER.flow }, uMirrorA: { value: null }, uMirrorB: { value: null }, uMirrorFade: { value: 0 },
+    uTint: { value: new THREE.Color(WATER.tint) }, uMirrorDown: { value: WATER.mirrorDown }, uReflTint: { value: new THREE.Color(WATER.reflTint).multiplyScalar(WATER.reflDim) },
+    uClarity: { value: new THREE.Vector2(WATER.clarity, Math.sin((WATER.clarityAngle * Math.PI) / 180)) },
+  }
+  // water.js's lake material: sorted with the other see-through things.
+  const waterMaterial = new THREE.ShaderMaterial({ uniforms: waterUniforms, vertexShader: WATER_VERT, fragmentShader: WATER_FRAG, transparent: WATER.clarity > 0, depthWrite: true })
+  return { innerUniforms, innerMaterial, waterUniforms, waterMaterial }
+}
+
 export class Castles {
-  /** `sites` layers/castles.js CastleSites.list; `patch(material, cacheKey)` lighting.js's vertex patch. */
-  constructor(scene, sites, { patch }) {
+  /** `sites` layers/castles.js CastleSites.list; `patch(material, cacheKey)` lighting.js's vertex patch; `uTorch` lighting.js's
+   * held torches, shared by reference; `probeHidden` what the dungeon water's probe must not capture (main.js's world probe's). */
+  constructor(scene, sites, { patch, uTorch, probeHidden }) {
+    if (!uTorch || uTorch.value.length !== TORCHES) throw new Error('Castles: needs lighting.uniforms.uTorch')
+    if (!Array.isArray(probeHidden)) throw new Error('Castles: needs the world probe\'s hidden list')
     this.scene = scene
     this.sites = sites
     let left = 5, loaded
@@ -57,8 +180,8 @@ export class Castles {
     this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done), gate: loadTile('/buildings/castle_gate.png', UV_METRES, done) }
     this.material = ['stone', 'plank', 'door', 'gate'].map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
     this.courtMaterial = patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), 'v2-castle-court')
-    // The interior has no sun: drawn unlit, its colours shaded in the worker.
-    this.innerMaterial = ['stone', 'plank', 'door', 'gate'].map((k) => new THREE.MeshBasicMaterial({ vertexColors: true, map: this.maps[k] }))
+    Object.assign(this, interiorMaterials(this.maps, uTorch))
+    this.probeHidden = probeHidden
 
     this.cardTexture = new THREE.DataTexture(new Uint8Array(CASTLE_CARD.size * CASTLE_CARD.size * 4), CASTLE_CARD.size, CASTLE_CARD.size, THREE.RGBAFormat, THREE.UnsignedByteType)
     this.cardTexture.colorSpace = THREE.SRGBColorSpace
@@ -154,8 +277,10 @@ export class Castles {
     this.stats.cards = n
   }
 
-  /** Once a frame: build and drop castles by the eye, pick each one's tier, and run the flames, the court's and roofs' lit by `night` (0 by day to 1). */
-  update(eye, t, night) {
+  /** Once a frame: build and drop castles by the eye, pick each one's tier, and run the flames, the court's and roofs' lit by `night`
+   * (0 by day to 1); the interior's windows take the light of `dayness` (clock.js). */
+  update(eye, t, night, dayness) {
+    if (!(dayness >= 0)) throw new Error(`Castles.update: needs dayness, got ${dayness}`)
     const B = CASTLE_BANDS
     let cards = false
     for (const s of this.sites) {
@@ -176,7 +301,12 @@ export class Castles {
         c.flames.mesh.visible &&= shown && full && night > 0.05
       }
     }
-    if (this.inside !== null && this.inside.innerFlames !== null) this.inside.innerFlames.update(t, [1, 1, 1])
+    if (this.inside !== null) {
+      if (this.inside.innerFlames !== null) this.inside.innerFlames.update(t, [1, 1, 1])
+      skyThroughGlass(dayness, this.innerUniforms.uSky.value)
+      this.innerUniforms.uFlicker.value = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
+      this.waterUniforms.uTime.value = t % 1024
+    }
     if (cards) this._placeCards()
     this.stats.live = this.live.size
     this.stats.full = [...this.live.values()].filter((c) => c.state === 'ready' && c.shown && c.full.visible).length
@@ -214,6 +344,7 @@ export class Castles {
     this.scene.add(group)
     c.group = group
     c.interior = d.interior
+    c.water = d.water
     c.door = d.door
     c.solids = d.solids
     c.flames = flamesOf(s, d.flames.exterior, s.y)
@@ -310,6 +441,18 @@ export class Castles {
     mesh.add(c.doorMesh)
     c.innerFlames = flamesOf(site, c.innerFlameList, site.y + CASTLE_RISE)
     if (c.innerFlames !== null) this.scene.add(c.innerFlames.group)
+    c.waterMesh = c.probe = null
+    if (c.water !== null) {
+      // Its own probe, so the first capture snaps in.
+      c.waterMesh = new THREE.Mesh(toGeometry(c.water), this.waterMaterial)
+      c.waterMesh.geometry.computeBoundingBox()
+      mesh.add(c.waterMesh)
+      c.probe = new WorldProbe()
+      c.probe.setVantage((head, out) => this._vantage(head, out))
+      c.probe.exclude(c.waterMesh, ...this.probeHidden)
+      this.waterUniforms.uMirrorA.value = c.probe.textureA
+      this.waterUniforms.uMirrorB.value = c.probe.textureB
+    }
     c.innerStone = new CastleInteriorStone(c)
     this._zone = null
     return c.innerStone
@@ -322,7 +465,8 @@ export class Castles {
     c.innerMesh.geometry.dispose()
     if (c.doorMesh !== null) c.doorMesh.geometry.dispose()
     if (c.innerFlames !== null) { c.innerFlames.group.removeFromParent(); c.innerFlames.dispose() }
-    c.innerMesh = c.innerStone = c.innerFlames = c.doorMesh = null
+    if (c.waterMesh !== null) { c.waterMesh.geometry.dispose(); c.probe.dispose() }
+    c.innerMesh = c.innerStone = c.innerFlames = c.doorMesh = c.waterMesh = c.probe = null
     this.inside = null
     this._zone = null
   }
@@ -375,6 +519,31 @@ export class Castles {
     this.portalAt(feet, feet)
   }
 
+  /** Each frame she is in a castle, after update() and before the frame is drawn: the dungeon water's probe stepped while its water
+   * is within MIRROR_REACH. `eye` world, `dt` real seconds, `look` her unit view direction. */
+  reflect(renderer, scene, eye, dt, look) {
+    const c = this.inside
+    if (c === null || c.waterMesh === null) return
+    if (tmpBox.copy(c.waterMesh.geometry.boundingBox).applyMatrix4(c.waterMesh.matrixWorld).distanceToPoint(eye) > MIRROR_REACH) return
+    c.probe.update(renderer, scene, eye, null, dt, null, look)
+    this.waterUniforms.uMirrorFade.value = c.probe.blend
+  }
+
+  // The probe's capture point at a re-anchor (WorldProbe.setVantage): WORLD_PROBE.height over the water vertex nearest her head.
+  _vantage(head, out) {
+    const m = this.inside.waterMesh, q = m.geometry.getAttribute('position').array
+    tmpV.copy(head)
+    m.worldToLocal(tmpV)
+    let best = Infinity, at = 0
+    for (let i = 0; i < q.length; i += 3) {
+      const d = (q[i] - tmpV.x) ** 2 + (q[i + 1] - tmpV.y) ** 2 + (q[i + 2] - tmpV.z) ** 2
+      if (d < best) { best = d; at = i }
+    }
+    out.set(q[at], q[at + 1] + WORLD_PROBE.height, q[at + 2])
+    m.localToWorld(out)
+    return true
+  }
+
   dispose() {
     for (const c of [...this.live.values()]) this._drop(c)
     this.closeInterior()
@@ -382,7 +551,7 @@ export class Castles {
     this.cards.removeFromParent()
     this.cards.geometry.dispose()
     this.cards.dispose()
-    for (const m of [...this.material, ...this.innerMaterial, this.courtMaterial, this.cardMaterial]) m.dispose()
+    for (const m of [...this.material, ...this.innerMaterial, this.waterMaterial, this.courtMaterial, this.cardMaterial]) m.dispose()
     for (const t of [...Object.values(this.maps), this.cardTexture]) t.dispose()
   }
 }

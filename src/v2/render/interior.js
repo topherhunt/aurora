@@ -71,6 +71,20 @@ export function loadInteriorTextures() {
   return texReady
 }
 
+/** heldTorchAt's, in world metres, as GLSL heldTorch(p, n); the shader declares uTorch. */
+export const HELD_TORCH_GLSL = /* glsl */ `
+float heldTorch(vec3 p, vec3 n) {
+  float sum = 0.0;
+  for (int i = 0; i < ${TORCHES}; i++) {
+    float s = uTorch[i].w;
+    if (s <= 0.0) continue;
+    vec3 l = uTorch[i].xyz - p;
+    float d = max(length(l), 1e-3);
+    sum += s * exp(-d / ${HELD_TORCH.reach.toFixed(2)}) * (0.35 + 0.65 * max(dot(n, l / d), 0.0));
+  }
+  return ${HELD_TORCH.cap.toFixed(2)} * (1.0 - exp(-${(HELD_TORCH.gain / HELD_TORCH.cap).toFixed(4)} * sum));
+}`
+
 const VERT = /* glsl */ `
 attribute vec2 tuv;
 attribute vec3 tint;
@@ -126,18 +140,7 @@ float glint(vec3 n, vec3 e, vec3 d) {
   float l = length(d);
   return l < 1e-4 ? 0.0 : pow(max(0.0, dot(n, normalize(d / l + e))), ${SHINE.exp.toFixed(1)});
 }
-// heldTorchAt's, in world metres.
-float heldTorch(vec3 p, vec3 n) {
-  float sum = 0.0;
-  for (int i = 0; i < ${TORCHES}; i++) {
-    float s = uTorch[i].w;
-    if (s <= 0.0) continue;
-    vec3 l = uTorch[i].xyz - p;
-    float d = max(length(l), 1e-3);
-    sum += s * exp(-d / ${HELD_TORCH.reach.toFixed(2)}) * (0.35 + 0.65 * max(dot(n, l / d), 0.0));
-  }
-  return ${HELD_TORCH.cap.toFixed(2)} * (1.0 - exp(-${(HELD_TORCH.gain / HELD_TORCH.cap).toFixed(4)} * sum));
-}
+${HELD_TORCH_GLSL}
 void main() {
   vec3 an = abs(vNrm);
   vec2 sp = an.y >= an.x && an.y >= an.z ? vPos.xz : an.x >= an.z ? vPos.zy : vPos.xy;

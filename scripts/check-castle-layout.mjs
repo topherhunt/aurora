@@ -56,7 +56,7 @@ const tri = (g) => g.position.length / 9
 const ext = good.map((l) => tri(exteriorGeometry(l)))
 const int = good.slice(0, 40).map((l) => interiorGeometries(l).reduce((a, s) => a + tri(s.geometry), 0))
 check(Math.max(...ext) < 20000, 'an exterior shell stays under 20k triangles', `worst ${Math.max(...ext)}`)
-check(Math.max(...int) < 60000, 'an interior shell stays under 60k triangles', `worst ${Math.max(...int)}`)
+check(Math.max(...int) < 80000, 'an interior shell stays under 80k triangles', `worst ${Math.max(...int)}`)
 
 // Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is
 // scanned, since the warp moves coincident faces together.
