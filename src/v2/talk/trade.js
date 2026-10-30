@@ -22,7 +22,7 @@ const STOLEN = 3
 const NAME = {
   coin: ['coin', 'coins'], jade: ['jade', 'jade'], ruby: ['ruby', 'rubies'], sapphire: ['sapphire', 'sapphires'], diamond: ['diamond', 'diamonds'],
   'bog-iron': ['bog iron', 'bog iron'], lodestone: ['lodestone', 'lodestones'], rimesilver: ['rimesilver', 'rimesilver'], firestone: ['firestone', 'firestone'],
-  egg: ['dragon egg', 'dragon eggs'], pickaxe: ['pickaxe', 'pickaxes'], sword: ['sword', 'swords'], shield: ['shield', 'shields'], knife: ['knife', 'knives'],
+  egg: ['dragon egg', 'dragon eggs'], pickaxe: ['pickaxe', 'pickaxes'], sword: ['sword', 'swords'], shield: ['shield', 'shields'], knife: ['knife', 'knives'], key: ['iron key', 'iron keys'],
   'flare-charges': ['jar of flare charges', 'jars of flare charges'],
 }
 

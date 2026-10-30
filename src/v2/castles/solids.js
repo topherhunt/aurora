@@ -53,7 +53,7 @@ function exteriorSolids(lay) {
     }
     const f = sectionFrame(lay, s, rng)
     const T = offsetLoop(f.pts, f.N, f.touch.map((t) => (t ? 0 : f.fl))).map(f.clamp)
-    const t = convex(T)
+    const t = convex(f.split(T))
     const skip = t.P.map((p, k) => f.ceded(p, t.P[(k + 1) % t.P.length]))
     const level = steps.filter((p) => Math.abs(p[1] - 0.4 - f.top) < 0.1).map((p) => [p[0], p[2]])
     secs.push({ body: convex(f.pts), T: t, skip, top: f.top, spire: s.roof.unused ? Math.min(s.w, s.d) * C * 1.1 + 1 : 0, steps: level })
@@ -196,7 +196,9 @@ export function exteriorSpans(ex, x, z) {
     let band = false
     for (let i = 0; i < s.T.P.length && !band; i++) {
       if (s.skip[i]) continue
-      band = (x - s.T.P[i][0]) * s.T.N[i][0] + (z - s.T.P[i][1]) * s.T.N[i][1] >= -0.36
+      // Bounded along the edge too: a ceded part collinear with it stays open.
+      const P = s.T.P[i], Q = s.T.P[(i + 1) % s.T.P.length], u = (x - P[0]) * (Q[0] - P[0]) + (z - P[1]) * (Q[1] - P[1])
+      band = (x - P[0]) * s.T.N[i][0] + (z - P[1]) * s.T.N[i][1] >= -0.36 && u >= 0 && u <= (Q[0] - P[0]) ** 2 + (Q[1] - P[1]) ** 2
     }
     if (!band) continue
     const low = s.steps.some((p) => Math.hypot(x - p[0], z - p[1]) < STEP_GAP)

@@ -4,7 +4,7 @@
 //
 // Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
-// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight, door leaves hidden behind their wall,
+// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight, door leaves hidden behind stone,
 // collision that throws (over a wide seed sweep) or passes the walk's span cap, a castle without its doors, spirals and rope, or a
 // dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
@@ -86,32 +86,40 @@ function zFights(g) {
 const fights = good.slice(0, 30).map((l) => [l.seed, zFights(exteriorGeometry(l, { warp: false }))]).filter(([, h]) => h)
 check(fights.length === 0, 'no two differently coloured exterior faces share a plane', fights.slice(0, 4).map(([s, h]) => `seed ${s}: ${h}`).join(', '))
 
-// The warped wall sags between its far-apart vertices while each leaf corner warps on its own: a leaf set too close to its wall
-// vanishes behind it. A ray from 1 m out along each leaf triangle's normal must reach its centroid through no other face.
-function hiddenLeaves(g) {
-  const P = g.position, T = (i) => [0, 1, 2].map((j) => [P[i * 9 + j * 3], P[i * 9 + j * 3 + 1], P[i * 9 + j * 3 + 2]])
+// A leaf vanishes behind stone that stands across it: the warped wall sagging between its far-apart vertices, or a parapet running
+// past a door onto its roof. Rays from 1.5 m out up each unbarred door's centreline must meet its leaf first for 2 m of its height.
+function leafSeen(l) {
+  const g = exteriorGeometry(l), P = g.position, tris = [], leaf = []
+  for (const [start, count, slot] of g.groups) for (let v = start; v < start + count; v += 3) {
+    tris.push([0, 1, 2].map((j) => [P[(v + j) * 3], P[(v + j) * 3 + 1], P[(v + j) * 3 + 2]])); leaf.push(slot === DOOR_SLOT || slot === GATE_SLOT)
+  }
   const sub = (a, b) => a.map((v, k) => v - b[k]), dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-  const leaves = [], other = []
-  for (const [start, count, slot] of g.groups) for (let v = start; v < start + count; v += 3) (slot === DOOR_SLOT || slot === GATE_SLOT ? leaves : other).push(T(v / 3))
-  const box = other.map((t) => [0, 1, 2].flatMap((k) => [Math.min(t[0][k], t[1][k], t[2][k]) - 0.01, Math.max(t[0][k], t[1][k], t[2][k]) + 0.01]))
-  let hidden = 0
-  for (const t of leaves) {
-    const n = cross(sub(t[1], t[0]), sub(t[2], t[0])), l = Math.hypot(...n)
-    if (l < 1e-9) continue
-    const d = n.map((v) => -v / l), p = [0, 1, 2].map((k) => (t[0][k] + t[1][k] + t[2][k]) / 3), o = p.map((v, k) => v - d[k])
-    hidden += other.some(([A, B, C], i) => {
-      if ([0, 1, 2].some((k) => Math.max(o[k], p[k]) < box[i][k * 2] || Math.min(o[k], p[k]) > box[i][k * 2 + 1])) return false
+  const box = tris.map((t) => [0, 1, 2].flatMap((k) => [Math.min(t[0][k], t[1][k], t[2][k]) - 0.01, Math.max(t[0][k], t[1][k], t[2][k]) + 0.01]))
+  const first = (o, p) => {
+    let best = Infinity, hit = -1
+    const d = sub(p, o)
+    tris.forEach(([A, B, C], i) => {
+      if ([0, 1, 2].some((k) => Math.max(o[k], p[k]) < box[i][k * 2] || Math.min(o[k], p[k]) > box[i][k * 2 + 1])) return
       const f1 = sub(B, A), f2 = sub(C, A), h = cross(d, f2), det = dot(f1, h)
-      if (Math.abs(det) < 1e-12) return false
-      const s = sub(o, A), u = dot(s, h) / det, q = cross(s, f1), w = dot(d, q) / det, tt = dot(f2, q) / det
-      return u >= 0 && u <= 1 && w >= 0 && u + w <= 1 && tt > 0 && tt < 0.998
+      if (Math.abs(det) < 1e-12) return
+      const s = sub(o, A), u = dot(s, h) / det, q = cross(s, f1), w = dot(d, q) / det, t = dot(f2, q) / det
+      if (u >= 0 && u <= 1 && w >= 0 && u + w <= 1 && t > 0 && t < best) { best = t; hit = i }
     })
+    return hit >= 0 && leaf[hit]
   }
-  return hidden
+  let worst = Infinity
+  for (const e of l.edges) if (e.a.out || e.b.out || e.kind === 'bridge') for (const d of e.doors) {
+    if (d.look === 'barred') continue
+    const n = d.axis === 'x' ? [d.side, 0, 0] : [0, 0, d.side], at = (y, r) => [d.x + n[0] * r, d.y + y, d.z + n[2] * r]
+    let seen = 0
+    for (let y = 0.1; y < d.h; y += 0.2) if (first(at(y, 1.5), at(y, -0.5))) seen += 0.2
+    worst = Math.min(worst, seen)
+  }
+  return worst
 }
-const hid = good.slice(0, 60).map((l) => [l.seed, hiddenLeaves(exteriorGeometry(l))]).filter(([, h]) => h)
-check(hid.length === 0, "every door's leaves stand clear of the stone in front of them", hid.slice(0, 4).map(([s, h]) => `seed ${s}: ${h}`).join(', '))
+const seen = good.slice(0, 60).map((l) => [l.seed, leafSeen(l)]), shortSeen = seen.filter(([, m]) => m < 2)
+check(shortSeen.length === 0, "every door's leaves show 2 m of their height past the stone in front of them", shortSeen.length ? shortSeen.slice(0, 4).map(([s, m]) => `seed ${s}: ${m.toFixed(1)} m`).join(', ') : `worst ${Math.min(...seen.map(([, m]) => m)).toFixed(1)} m`)
 
 const lowTri = good.slice(0, 40).map((l, i) => tri(exteriorGeometry(l, { full: false })) / ext[i])
 check(Math.max(...lowTri) < 0.9, 'the mid-distance exterior is lighter than the full one', `worst ${(Math.max(...lowTri) * 100).toFixed(0)}% of full`)

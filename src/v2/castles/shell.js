@@ -216,20 +216,37 @@ export function sectionFrame(lay, s, rng) {
   // A box side that a tall neighbour stands against is a hard plane for every ring, else bevel facets, which probe a diagonal
   // cell, flare into the neighbour and their caps overlap. Along it one parapet stands, the taller section's (on a tie, the earlier).
   const tall = (by) => !!by && by !== s && by.kind !== 'wall' && by.floors * H > top - 1.2
-  const me = lay.sections.indexOf(s)
   const sides = [[0, lay.X(s.x0), 1, s.d, (i) => lay.occAt(s.x0 - 1, s.z0 + i)], [0, lay.X(s.x0 + s.w), -1, s.d, (i) => lay.occAt(s.x0 + s.w, s.z0 + i)],
     [1, lay.Z(s.z0), 1, s.w, (i) => lay.occAt(s.x0 + i, s.z0 - 1)], [1, lay.Z(s.z0 + s.d), -1, s.w, (i) => lay.occAt(s.x0 + i, s.z0 + s.d)]]
-    .map(([ax, v, dir, cnt, cell]) => {
-      const by = Array.from({ length: cnt }, (_, i) => cell(i)).filter(tall)
-      return { ax, v, dir, on: by.length > 0, cede: by.some((o) => o.floors * H > top || (o.floors * H === top && lay.sections.indexOf(o) < me)) }
-    }).filter((d) => d.on)
+    .map(([ax, v, dir, cnt, cell]) => ({ ax, v, dir, on: Array.from({ length: cnt }, (_, i) => cell(i)).some(tall) })).filter((d) => d.on)
   const clamp = (p) => { for (const d of sides) p[d.ax] = d.dir > 0 ? Math.max(p[d.ax], d.v) : Math.min(p[d.ax], d.v); return p }
-  const ceded = (p, q) => sides.some((d) => d.cede && Math.abs(p[d.ax] - d.v) < 1e-6 && Math.abs(q[d.ax] - d.v) < 1e-6)
-  return { top, fl, pts, corner, N, n, nx, touch, clamp, ceded }
+  // A round ring's edges run along such a side without lying on it: one within a parapet's thickness would stand across its doors.
+  const along = (p, q) => sides.find((d) => Math.abs(p[d.ax] - d.v) < 0.4 && Math.abs(q[d.ax] - d.v) < 0.4 && Math.abs(q[d.ax] - p[d.ax]) < 0.31 * Math.hypot(q[0] - p[0], q[1] - p[1]))
+  // A round neighbour meets the plane only at its middle; past ROUND_MEET its facets fall away and leave the drop open.
+  const ROUND_MEET = 0.9, mid = (o, k) => (k === 0 ? lay.X(o.x0 + o.w / 2) : lay.Z(o.z0 + o.d / 2))
+  const me = lay.sections.indexOf(s), wins = (o, k, at) => tall(o) && (!!o.round === !!s.round ? o.floors * H > top || (o.floors * H === top && lay.sections.indexOf(o) < me)
+    : !o.round || (o.floors * H > top && Math.abs(at - mid(o, k)) < ROUND_MEET))
+  // Such an edge splits where the neighbour across it changes, so each part cedes on its own: a part past the neighbour's end
+  // keeps its parapet, or its roof edge opens on the drop.
+  const split = (T) => T.flatMap((p, i) => {
+    const q = T[(i + 1) % T.length], d = along(p, q)
+    if (!d) return [p]
+    const k = 1 - d.ax, o = k === 0 ? lay.X(0) : lay.Z(0), lo = Math.min(p[k], q[k]) + 0.05, hi = Math.max(p[k], q[k]) - 0.05, at = []
+    for (let g = o + Math.ceil((lo - o) / C) * C; g < hi; g += C) at.push(g)
+    for (const r of lay.sections) if (r.round && (d.ax === 0 ? lay.X(d.dir > 0 ? r.x0 + r.w : r.x0) : lay.Z(d.dir > 0 ? r.z0 + r.d : r.z0)) === d.v) at.push(mid(r, k) - ROUND_MEET, mid(r, k) + ROUND_MEET)
+    return [p, ...at.filter((g) => g > lo && g < hi).map((g) => (g - p[k]) / (q[k] - p[k])).sort((a, b) => a - b).map((t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t])]
+  })
+  const ceded = (p, q) => {
+    const d = along(p, q)
+    if (!d) return false
+    const a = d.v - d.dir * C / 2, o = (p[1 - d.ax] + q[1 - d.ax]) / 2
+    return wins(d.ax === 0 ? beside(lay, a, o) : beside(lay, o, a), 1 - d.ax, o)
+  }
+  return { top, fl, pts, corner, N, n, nx, touch, clamp, split, ceded }
 }
 
 function sectionShell(m, lay, s, rng) {
-  const { top, fl, pts, corner, N, n, nx, touch, clamp, ceded } = sectionFrame(lay, s, rng)
+  const { top, fl, pts, corner, N, n, nx, touch, clamp, split, ceded } = sectionFrame(lay, s, rng)
   const col = m.tint(STONE[s.kind]), band = m.tint(BAND)
   const j = () => (rng() - 0.5) * 0.06
   const rings = profile(top, fl, j).map(([y, off], r) => {
@@ -245,7 +262,8 @@ function sectionShell(m, lay, s, rng) {
   if (s.roof.unused) spire(m, T, N, touch, clamp, top, Math.min(s.w, s.d) * C * 1.1 + 1, rng)
   else {
     for (let i = 0; i < n; i++) m.tri(at3(c, top), at3(T[i], top), at3(T[nx(i)], top), col, at3(c, top - 1))
-    parapet(m, T, top, col, T.map((p, i) => ceded(p, T[nx(i)])), rng)
+    const R = split(T)
+    parapet(m, R, top, col, R.map((p, i) => ceded(p, R[(i + 1) % R.length])), rng)
   }
   // Arrow slits on the faces of each upper storey that nothing taller stands against.
   if (m.full) for (let k = 1; k < s.floors; k++) for (let i = 0; i < n; i++) {
