@@ -5,7 +5,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
-import { sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
+import { COURT_RUN, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
@@ -38,7 +38,7 @@ const doorAlong = (d) => (d.axis === 'x' ? [d.side, 0] : [0, d.side])
 
 /** The exterior's solids: sections as loops, every straight thing as a box, the gate ramps, and the door notches cut back out. */
 function exteriorSolids(lay) {
-  const secs = [], boxes = [], ramps = [], notches = [], steps = []
+  const secs = [], boxes = [], ramps = [], notches = [], steps = [], flights = []
   for (const e of lay.edges) if (e.kind === 'step') steps.push(e.pts[1])
   lay.sections.forEach((s, i) => {
     const rng = mulberry32(lay.seed * 131 + i)
@@ -66,12 +66,8 @@ function exteriorSolids(lay) {
     }
     if (e.a.kind === 'entry') { const d = e.doors[0]; ramps.push({ x: d.x, z: d.z, axis: d.axis, side: d.side, hw: d.w / 2 }) }
     if (e.flight) {
-      const fl = e.flight, n = Math.max(4, Math.round(fl.rise / 0.4)), dir = Math.sign(fl.a1 - fl.a0), run = Math.abs(fl.a1 - fl.a0) - fl.landing
-      for (let k = 0; k < n; k++) {
-        const u0 = fl.a0 + dir * run * k / n, u1 = k === n - 1 ? fl.a1 : fl.a0 + dir * run * (k + 1) / n
-        const y = k === n - 1 ? fl.rise - 0.08 : fl.rise * (k + 1) / n
-        boxes.push(fl.axis === 'x' ? box(u0, fl.c0, u1, fl.c1, -1, y) : box(fl.c0, u0, fl.c1, u1, -1, y))
-      }
+      const fl = e.flight
+      flights.push({ axis: fl.axis, a0: fl.a0, dir: Math.sign(fl.a1 - fl.a0), len: Math.abs(fl.a1 - fl.a0), run: Math.abs(fl.a1 - fl.a0) - fl.landing, rise: fl.rise, n: fl.steps, c0: Math.min(fl.c0, fl.c1), c1: Math.max(fl.c0, fl.c1) })
     }
     if (e.bridge) {
       const b = e.bridge, A0 = Math.min(b.a0, b.a1) - 0.3, A1 = Math.max(b.a0, b.a1) + 0.3
@@ -82,12 +78,12 @@ function exteriorSolids(lay) {
     }
     if (e.ladder) { const l = e.ladder, y = (l.k + 1) * H; boxes.push(box(l.x - 0.5, l.z - 0.5, l.x + 0.5, l.z + 0.5, y, y + 0.2)) }
   }
-  boxes.push(box(lay.X(0), lay.Z(0), lay.X(lay.cw), lay.Z(lay.cd), -1, 0.05))
+  boxes.push(box(lay.X(0) - COURT_RUN, lay.Z(0) - COURT_RUN, lay.X(lay.cw) + COURT_RUN, lay.Z(lay.cd) + COURT_RUN, -1, 0.05))
   const [sx, sy, sz] = lay.nodes.find((n) => n.kind === 'summit').pos
   boxes.push(box(sx - 0.5, sz - 0.3, sx + 0.5, sz + 0.3, sy - 0.4, sy + 0.2), box(sx - 0.52, sz - 0.36, sx + 0.52, sz - 0.28, sy + 0.2, sy + 0.8))
   for (const o of [...courtProps(lay), ...roofProps(lay)]) if (solid(o)) boxes.push(propBox(o, o.y))
   for (const p of [...secs.map((q) => q.body.P), ...secs.map((q) => q.T.P)]) for (const q of p) if (!Number.isFinite(q[0] + q[1])) throw new Error(`castle ${lay.seed}: a section loop is not finite`)
-  return { secs, boxes, ramps, notches }
+  return { secs, boxes, ramps, notches, flights }
 }
 
 /** The interior's air: every room's floor-to-ceiling, every door's way through the walls, every spiral's hole up through the slab
@@ -108,7 +104,7 @@ function interiorSolids(lay) {
   for (const e of [...lay.edges, { stair: { k: -1, x: g.stair.x, z: g.stair.z }, doors: [] }]) {
     if (e.stair) {
       const { k } = e.stair, x = e.stair.x * S, z = e.stair.z * S, a0 = spiralStart(x, z), Rh = SPIRAL.R + 0.05
-      spirals.push({ k, x, z, a0 })
+      spirals.push({ k, x, z, a0, top: !lay.edges.some((o) => o.stair && o.stair.k === k + 1 && o.stair.x === e.stair.x && o.stair.z === e.stair.z) })
       const arc = Array.from({ length: SPIRAL.steps - SPIRAL.hole + 1 }, (_, i) => [x + Math.cos(a0 + (SPIRAL.hole + i) * Math.PI / 8) * Rh, z + Math.sin(a0 + (SPIRAL.hole + i) * Math.PI / 8) * Rh])
       airs.push({ k, poly: convex([[x, z], ...arc]), lo: k * SH, hi: (k + 1) * SH })
     }
@@ -214,6 +210,12 @@ export function exteriorSpans(ex, x, z) {
     if (u > hw + 0.3) continue
     put(RAMP_DEEP, u <= hw ? top : top - (u - hw))
   }
+  // A flight is a ramp through its treads' middles, so her feet ride it and a lob never lands between two steps.
+  for (const f of ex.flights) {
+    const t = ((f.axis === 'x' ? x : z) - f.a0) * f.dir, c = f.axis === 'x' ? z : x
+    if (t < 0 || t > f.len || c < f.c0 || c > f.c1) continue
+    put(-1, Math.min(f.rise - 0.08, f.rise * (t / f.run + 0.5 / f.n)))
+  }
   // A door's leaves close its notch: solid behind them, cut out in front.
   const cuts = []
   for (const c of ex.notches) {
@@ -250,11 +252,11 @@ export function interiorSpans(it, x, z, ref) {
   if (air.length) {
     for (const s of it.spirals) {
       if (s.k < k0 || s.k > k1) continue
-      const r = Math.hypot(x - s.x, z - s.z), y = s.k * SH, rise = SH / SPIRAL.steps
-      if (r < SPIRAL.post) { LO[n] = y; HI[n++] = y + SH; continue }
+      const r = Math.hypot(x - s.x, z - s.z), y = s.k * SH, rise = SH / SPIRAL.steps / SPIRAL.treads
+      if (r < SPIRAL.post) { LO[n] = y; HI[n++] = y + SH + (s.top ? SPIRAL.cap : 0); continue }
       if (r >= SPIRAL.R) continue
-      const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8))
-      if (j < SPIRAL.steps) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise }
+      const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8 / SPIRAL.treads))
+      if (j < SPIRAL.steps * SPIRAL.treads) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise }
     }
     for (const b of it.boxes) if (!(b.lock && it.unlocked) && inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
   }

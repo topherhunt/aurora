@@ -28,9 +28,10 @@ const STONE = { keep: rgb(0x8d877c), hall: rgb(0x958b7a), gate: rgb(0x8a857d), t
 const BAND = rgb(0x6f6a63), SLATE = rgb(0x3f4652), DARK = rgb(0x15120f), GOLD = rgb(0xc9a33a)
 const FLOOR = { keep: rgb(0x7a5a3a), hall: rgb(0x80603e), gate: rgb(0x6d6a66), tower: rgb(0x6d6a66), lookout: rgb(0x75645f) }
 const INNER = rgb(0xb8b0a2), STEP = rgb(0x8f8a83), FLAG = [1, 1, 1], LEAF = [1, 1, 1], GLASS_TINT = rgb(0xc8d8e0)
-// A spiral stair (interior metres): 15 steps round a post, each 1/16 turn, the 16th its landing in the storey above. That storey's slab
-// is open over steps `hole` on, where her head would meet it; over the rest it is the landing.
-export const SPIRAL = { R: 2, post: 0.3, steps: 15, hole: 7 }
+// A spiral stair (interior metres): 15 segments round a post, each 1/16 turn of `treads` steps, the 16th its landing in the storey
+// above. That storey's slab is open over segments `hole` on, where her head would meet it; over the rest it is the landing. Where
+// no spiral climbs on from that landing, its post ends in a finial `cap` tall.
+export const SPIRAL = { R: 2, post: 0.3, steps: 15, treads: 2, hole: 7, cap: 1.3 }
 /** The bearing a spiral about interior (x, z) climbs from, on a 1/16 turn so its segments' corners meet its hole's square. */
 export const spiralStart = (x, z) => Math.round(Math.atan2(z, x) / (Math.PI / 8)) * Math.PI / 8
 
@@ -108,10 +109,10 @@ export class Mesher {
     this.quad(P(0, 0, 1), P(1, 0, 1), P(1, 1, 1), P(0, 1, 1), col, [0, 0, 1])
     this.quad(P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 1, 0), col, [0, 0, -1])
   }
-  /** Eight corners, bottom ring then top ring, each ring going round; `open` leaves the bottom face off. */
-  hexa(v, col, open = false) {
+  /** Eight corners, bottom ring then top ring, each ring going round; `open` leaves the bottom face off, and `hidden` the face on those corners. */
+  hexa(v, col, open = false, hidden = null) {
     const mid = v.reduce((a, p) => [a[0] + p[0] / 8, a[1] + p[1] / 8, a[2] + p[2] / 8], [0, 0, 0])
-    for (const f of open ? HEXA_FACES.slice(1) : HEXA_FACES) {
+    for (const f of (open ? HEXA_FACES.slice(1) : HEXA_FACES).filter((f) => !hidden || f.join() !== hidden.join())) {
       const q = f.map((i) => v[i]), c = q.reduce((a, p) => [a[0] + p[0] / 4, a[1] + p[1] / 4, a[2] + p[2] / 4], [0, 0, 0])
       this.quad(...q, col, sub(c, mid))
     }
@@ -341,7 +342,7 @@ function wallShell(m, lay, s, rng) {
 
 /** A flight of solid steps from the ground (or y0) along `axis`, ending in a flat landing. */
 function flight(m, f, col, scale = 1) {
-  const n = Math.max(4, Math.round(f.rise / 0.4)), dir = Math.sign(f.a1 - f.a0)
+  const n = f.steps, dir = Math.sign(f.a1 - f.a0)
   const run = Math.abs(f.a1 - f.a0) - f.landing
   for (let i = 0; i < n; i++) {
     const u0 = f.a0 + dir * run * i / n, u1 = i === n - 1 ? f.a1 : f.a0 + dir * run * (i + 1) / n
@@ -427,10 +428,12 @@ function ramp(m, d) {
 }
 
 /** The court's flagstone floor, solid so no terrain need show under it, and a ramp out of every door the entry uses. Unwarped, so
- * both stay true. UVs are in UV_METRES. */
+ * both stay true. UVs are in UV_METRES. The floor runs COURT_RUN into the ring's cells, under the walls' court faces (0.8 m in,
+ * then flared and warped) but short of their outer faces. */
+export const COURT_RUN = 1.6
 export function courtGeometry(lay) {
   const m = new Mesher(lay.seed)
-  m.box(lay.X(0), -1, lay.Z(0), lay.X(lay.cw), 0.05, lay.Z(lay.cd), FLAG)
+  m.box(lay.X(0) - COURT_RUN, -1, lay.Z(0) - COURT_RUN, lay.X(lay.cw) + COURT_RUN, 0.05, lay.Z(lay.cd) + COURT_RUN, FLAG)
   for (const e of lay.edges) if (e.a.kind === 'entry') ramp(m, e.doors[0])
   return m.arrays()
 }
@@ -814,15 +817,23 @@ function minusHole([x0, z0, x1, z1], cx, cz, h) {
   return [[x0, z0, x1, hz0], [x0, hz1, x1, z1], [x0, hz0, hx0, hz1], [hx1, hz0, x1, hz1]].filter(([a, b, c, d]) => c - a > 0.01 && d - b > 0.01)
 }
 
-/** A spiral stair's steps and post about interior (cx, cz), climbing one storey from y. */
-export function spiralSteps(m, cx, cz, y) {
-  const SH = H * V, a0 = spiralStart(cx, cz), { R, post, steps } = SPIRAL, rise = SH / steps
+/** A spiral stair's steps and post about interior (cx, cz), climbing one storey from y; `top` when none climbs on from its landing. */
+export function spiralSteps(m, cx, cz, y, top) {
+  const SH = H * V, a0 = spiralStart(cx, cz), { R, post, steps, treads, cap } = SPIRAL, n = steps * treads, rise = SH / n, turn = Math.PI / 8 / treads
   const P = (ang, rad, yy) => [cx + Math.cos(ang) * rad, yy, cz + Math.sin(ang) * rad]
-  for (let i = 0; i < steps; i++) {
-    const a = a0 + i * Math.PI / 8, b = a + Math.PI / 8, y0 = y + i * rise, y1 = y0 + rise
-    m.hexa([P(a, post, y0), P(a, R, y0), P(b, R, y0), P(b, post, y0), P(a, post, y1), P(a, R, y1), P(b, R, y1), P(b, post, y1)], m.tint(STEP))
+  for (let i = 0; i < n; i++) {
+    const a = a0 + i * turn, b = a + turn, y0 = y + i * rise, y1 = y0 + rise
+    const v = [P(a, post, y0), P(a, R, y0), P(b, R, y0), P(b, post, y0), P(a, post, y1), P(a, R, y1), P(b, R, y1), P(b, post, y1)]
+    m.hexa(v, m.tint(STEP), false, [3, 0, 4, 7])
   }
-  m.box(cx - post, y, cz - post, cx + post, y + SH, cz + post, m.tint(STEP))
+  const col = m.tint(STEP), t = y + SH + (top ? cap - 0.45 : 0)
+  m.box(cx - post, y, cz - post, cx + post, t, cz + post, col)
+  if (!top) return
+  // A newel's cap and spike: a post ending flush with the landing's slab would flicker against it.
+  const q = post + 0.06, c = [cx, t + 0.45, cz]
+  m.box(cx - q, t, cz - q, cx + q, t + 0.1, cz + q, col)
+  const B = [[-q, -q], [q, -q], [q, q], [-q, q]].map(([u, v]) => [cx + u, t + 0.1, cz + v])
+  for (let i = 0; i < 4; i++) m.tri(B[i], B[(i + 1) % 4], c, col, [cx, t, cz])
 }
 
 /** The interior's warp. It bends walls across but leaves every height true, so floors stay level under the props and the walk. */
@@ -906,7 +917,7 @@ export function interiorGeometries(lay) {
         }
       }
       for (const e of mine) {
-        if (e.stair && e.a === n) spiralSteps(m, e.stair.x * S, e.stair.z * S, y)
+        if (e.stair && e.a === n) spiralSteps(m, e.stair.x * S, e.stair.z * S, y, !lay.edges.some((o) => o.stair && o.stair.k === e.stair.k + 1 && o.stair.x === e.stair.x && o.stair.z === e.stair.z))
         if (e.ladder) m.with(WOOD_SLOT, () => {
           const lx = e.ladder.x * S, lz = e.ladder.z * S
           for (const o of [-0.3, 0.3]) m.box(lx + o - 0.04, y, lz - 0.04, lx + o + 0.04, y + SH, lz + 0.04, DARKWOOD)

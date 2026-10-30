@@ -54,7 +54,7 @@ export function dungeonGeometry(lay) {
       wall(Math.max(roof[o] ? hi[o] : -0.3, y0), y1)
     }
   }
-  spiralSteps(m, g.foot.x, g.foot.z, F)
+  spiralSteps(m, g.foot.x, g.foot.z, F, !lay.edges.some((e) => e.stair && e.stair.k === 0 && e.stair.x === g.stair.x && e.stair.z === g.stair.z))
 
   // Props drawn where they stand, so they bake against the grid; each moves with its own origin after.
   const records = dungeonProps(lay), moved = []

@@ -1384,6 +1384,7 @@ async function revive(doc) {
   reviving = true
   if (laid !== null) unlay()
   closeHouse()
+  closeCastle()
   if (wildStriders) wildStriders.letGo()
   const room = doc === null ? ROOMS.overworld : ROOMS[doc.room]
   if (!room) throw new Error(`v2: the save is in a room this build has no file for: ${doc.room}`)

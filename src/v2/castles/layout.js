@@ -206,30 +206,36 @@ export function castleLayout(seed) {
     if (s === look) {
       const outside = facesOn(r, isOut), from = outside.length ? entry : courtNode
       const { f, t } = (outside.length ? outside : onCourt)[int(0, (outside.length || onCourt.length) - 1)], d = door(f, t, 0, r, 'barred')
+      if (!outside.length) groundDoor.add(`${f.axis}${f.at}|${t}`)
       fixed.push({ a: from, b: r, kind: 'barred', doors: [d], pts: [from.pos, through(d), r.pos] })
     }
   }
   const flightPt = (axis, a, c, y) => (axis === 'x' ? [a, y, c] : [c, y, a])
   // Two flights may not share court: each claims its plan rect, and one that would overlap a claim is not offered.
+  // A flight climbs at 32-40 deg in 0.2 m steps: a walk's over 3 cells, a first floor's over 2. FOOT of court before its foot stays
+  // clear to turn onto it, its foot set in that far where the court stops at the flight's end.
+  const FOOT = 1, STEP = 0.2
   const claimed = []
   const claim = (f) => {
-    const [u0, u1, v0, v1] = [Math.min(f.a0, f.a1), Math.max(f.a0, f.a1), Math.min(f.c0, f.c1), Math.max(f.c0, f.c1)]
+    const foot = f.a0 - Math.sign(f.a1 - f.a0) * FOOT
+    const [u0, u1, v0, v1] = [Math.min(foot, f.a1), Math.max(foot, f.a1), Math.min(f.c0, f.c1), Math.max(f.c0, f.c1)]
     const r = f.axis === 'x' ? [u0, v0, u1, v1] : [v0, u0, v1, u1]
     if (claimed.some((q) => r[0] < q[2] + 0.2 && q[0] < r[2] + 0.2 && r[1] < q[3] + 0.2 && q[1] < r[3] + 0.2)) return false
     claimed.push(r)
     return true
   }
   for (const w of secs) if (w.kind === 'wall') {
-    const inn = w.inner[0] || w.inner[1]
-    const starts = range(0, w.cells.length - 1).filter((i) => [i, i + 1].every((j) => isCourt(w.cells[j][0] + w.inner[0], w.cells[j][1] + w.inner[1])))
-    if (!starts.length) continue
+    const inn = w.inner[0] || w.inner[1], L = w.cells.length
+    const courtAt = (j) => j >= 0 && j < L && isCourt(w.cells[j][0] + w.inner[0], w.cells[j][1] + w.inner[1])
     // The top lands mid-wall where the wall is long enough, never against the tower it ends on.
-    const i = starts[int(0, starts.length - 1)], coin = rng() < 0.5 ? 1 : -1, long = w.cells.length > 2
-    const dir = long && i === 0 ? 1 : long && i === w.cells.length - 2 ? -1 : coin
+    const opts = range(0, L - 2).filter((i) => [i, i + 1, i + 2].every(courtAt)).flatMap((i) => [1, -1].map((dir) => ({ i, dir })))
+      .filter(({ i, dir }) => L <= 3 || (dir > 0 ? i + 3 < L : i > 0))
+    if (!opts.length) continue
+    const { i, dir } = opts[int(0, opts.length - 1)], clear = courtAt(dir > 0 ? i - 1 : i + 3)
     const A = w.axis === 'x' ? X : Z, B = w.axis === 'x' ? Z : X
     const g = w.cells[i][w.axis === 'x' ? 0 : 1], across = B(w.axis === 'x' ? w.z0 : w.x0) + C / 2 + inn * CASTLE.wallT / 2
-    const a0 = A(dir > 0 ? g : g + 2), a1 = A(dir > 0 ? g + 2 : g), mid = across + inn * 0.7
-    const flight = { axis: w.axis, a0, a1, c0: across, c1: across + inn * 1.4, rise: 2 * H, landing: 1.6 }
+    const a0 = A(dir > 0 ? g : g + 3) + (clear ? 0 : dir * FOOT), a1 = A(dir > 0 ? g + 3 : g), mid = across + inn * 0.7
+    const flight = { axis: w.axis, a0, a1, c0: across, c1: across + inn * 1.4, rise: 2 * H, steps: Math.round(2 * H / STEP), landing: 1.6 }
     if (!claim(flight)) continue
     cand(courtNode, w.walk, 'outstair', {
       flight,
@@ -237,15 +243,21 @@ export function castleLayout(seed) {
     })
   }
   for (const s of solid) if (s.floors >= 2) for (const r of s.rooms[1]) {
+    // The flight runs on along the face past the door's cell, against whatever stands there.
+    const along1 = (f, t) => {
+      const side = outOf(r, f), out = side > 0 ? f.at : f.at - 1, back = side > 0 ? f.at - 1 : f.at, free = !groundDoor.has(`${f.axis}${f.at}|${t}`)
+      return f.axis === 'x' ? { court: isCourt(out, t), backed: free && occ.has(key(back, t)) } : { court: isCourt(t, out), backed: free && occ.has(key(t, back)) }
+    }
     const open = facesOn(r, isCourt).filter(({ f, t }) => !groundDoor.has(`${f.axis}${f.at}|${t}`))
+      .flatMap(({ f, t }) => [1, -1].map((dir) => ({ f, t, dir }))).filter(({ f, t, dir }) => { const q = along1(f, t - dir); return q.court && q.backed })
     if (!open.length || rng() < 0.4) continue
-    const { f, t } = open[int(0, open.length - 1)], dir = rng() < 0.5 ? 1 : -1
+    const { f, t, dir } = open[int(0, open.length - 1)], clear = along1(f, t - 2 * dir).court
     const along = f.axis === 'x' ? 'z' : 'x', A = along === 'x' ? X : Z
     const across = (f.axis === 'x' ? X : Z)(f.at), side = outOf(r, f), mid = across + side * 0.7
-    const a0 = A(dir > 0 ? t : t + 1), a1 = A(dir > 0 ? t + 1 : t), at = a1 - dir * 0.8
+    const a0 = A(dir > 0 ? t - 1 : t + 2) + (clear ? 0 : dir * FOOT), a1 = A(dir > 0 ? t + 1 : t), at = a1 - dir * 0.8
     const [x, z] = f.axis === 'x' ? [across, at] : [at, across]
     const d = { x, y: H, z, axis: f.axis, w: 1.2, h: 2.4, look: 'door', side }
-    const flight = { axis: along, a0, a1, c0: across, c1: across + side * 1.4, rise: H, landing: 1.6 }
+    const flight = { axis: along, a0, a1, c0: across, c1: across + side * 1.4, rise: H, steps: Math.round(H / STEP), landing: 1.6 }
     if (!claim(flight)) continue
     cand(courtNode, r, 'outstair', {
       doors: [d], flight,
