@@ -43,7 +43,7 @@ const len = (a) => Math.hypot(...a)
 const norm = (a) => { const l = len(a); return [a[0] / l, a[1] / l, a[2] / l] }
 /** Point (s, t) of the bilinear patch over corners P going round. */
 const bilinear = (P, s, t) => [0, 1, 2].map((i) => (1 - s) * (1 - t) * P[0][i] + s * (1 - t) * P[1][i] + s * t * P[2][i] + (1 - s) * t * P[3][i])
-const warpOf = (seed, s) => makeWarp({ strength: 1, seed, amp: 0.22 * s, scale: 6 * s, amp2: 0.05 * s, scale2: 1.8 * s, leanX: 0, leanZ: 0, leanPow: 1 })
+export const warpOf = (seed, s) => makeWarp({ strength: 1, seed, amp: 0.22 * s, scale: 6 * s, amp2: 0.05 * s, scale2: 1.8 * s, leanX: 0, leanZ: 0, leanPow: 1 })
 
 const HEXA_FACES = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
 
@@ -220,6 +220,7 @@ export function sectionFrame(lay, s, rng) {
     [1, lay.Z(s.z0), 1, s.w, (i) => lay.occAt(s.x0 + i, s.z0 - 1)], [1, lay.Z(s.z0 + s.d), -1, s.w, (i) => lay.occAt(s.x0 + i, s.z0 + s.d)]]
     .map(([ax, v, dir, cnt, cell]) => ({ ax, v, dir, on: Array.from({ length: cnt }, (_, i) => cell(i)).some(tall) })).filter((d) => d.on)
   const clamp = (p) => { for (const d of sides) p[d.ax] = d.dir > 0 ? Math.max(p[d.ax], d.v) : Math.min(p[d.ax], d.v); return p }
+  const onSide = (p) => sides.some((d) => Math.abs(p[d.ax] - d.v) < 1e-6)
   // A round ring's edges run along such a side without lying on it: one within a parapet's thickness would stand across its doors.
   const along = (p, q) => sides.find((d) => Math.abs(p[d.ax] - d.v) < 0.4 && Math.abs(q[d.ax] - d.v) < 0.4 && Math.abs(q[d.ax] - p[d.ax]) < 0.31 * Math.hypot(q[0] - p[0], q[1] - p[1]))
   // A round neighbour meets the plane only at its middle; past ROUND_MEET its facets fall away and leave the drop open.
@@ -227,43 +228,65 @@ export function sectionFrame(lay, s, rng) {
   const me = lay.sections.indexOf(s), wins = (o, k, at) => tall(o) && (!!o.round === !!s.round ? o.floors * H > top || (o.floors * H === top && lay.sections.indexOf(o) < me)
     : !o.round || (o.floors * H > top && Math.abs(at - mid(o, k)) < ROUND_MEET))
   // Such an edge splits where the neighbour across it changes, so each part cedes on its own: a part past the neighbour's end
-  // keeps its parapet, or its roof edge opens on the drop.
-  const split = (T) => T.flatMap((p, i) => {
+  // keeps its parapet, or its roof edge opens on the drop. `cuts` gives each edge's cut parameters, so every ring is cut alike.
+  const cuts = (T) => T.map((p, i) => {
     const q = T[(i + 1) % T.length], d = along(p, q)
-    if (!d) return [p]
+    if (!d) return []
     const k = 1 - d.ax, o = k === 0 ? lay.X(0) : lay.Z(0), lo = Math.min(p[k], q[k]) + 0.05, hi = Math.max(p[k], q[k]) - 0.05, at = []
     for (let g = o + Math.ceil((lo - o) / C) * C; g < hi; g += C) at.push(g)
     for (const r of lay.sections) if (r.round && (d.ax === 0 ? lay.X(d.dir > 0 ? r.x0 + r.w : r.x0) : lay.Z(d.dir > 0 ? r.z0 + r.d : r.z0)) === d.v) at.push(mid(r, k) - ROUND_MEET, mid(r, k) + ROUND_MEET)
-    return [p, ...at.filter((g) => g > lo && g < hi).map((g) => (g - p[k]) / (q[k] - p[k])).sort((a, b) => a - b).map((t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t])]
+    return at.filter((g) => g > lo && g < hi).map((g) => (g - p[k]) / (q[k] - p[k])).sort((a, b) => a - b).filter((t, j, a) => !j || t - a[j - 1] > 1e-6)
   })
+  const split = (T) => cutLoop(T, cuts(T))
   const ceded = (p, q) => {
     const d = along(p, q)
     if (!d) return false
     const a = d.v - d.dir * C / 2, o = (p[1 - d.ax] + q[1 - d.ax]) / 2
     return wins(d.ax === 0 ? beside(lay, a, o) : beside(lay, o, a), 1 - d.ax, o)
   }
-  return { top, fl, pts, corner, N, n, nx, touch, clamp, split, ceded }
+  return { top, fl, pts, corner, N, n, nx, touch, clamp, onSide, cuts, split, ceded }
 }
+/** The loop with each point that doubles back along a straight run (a clamp folds bevel facets onto its plane) moved onto its nearer
+ * neighbour: the fold's faces overlap, and an edge passing a vertex it doesn't share cracks under the warp. Keeps the point count. */
+function unfold(L) {
+  const back = (i) => {
+    const a = L[(i + L.length - 1) % L.length], p = L[i], b = L[(i + 1) % L.length]
+    return Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) < 1e-6 && (p[0] - a[0]) * (b[0] - p[0]) + (p[1] - a[1]) * (b[1] - p[1]) < -1e-9
+  }
+  for (let i = L.findIndex((_, k) => back(k)), guard = 0; i >= 0; i = L.findIndex((_, k) => back(k))) {
+    if (++guard > 4 * L.length) throw new Error('castle shell: a ring folds without end')
+    const a = L[(i + L.length - 1) % L.length], b = L[(i + 1) % L.length], p = L[i]
+    L[i] = [...(Math.hypot(p[0] - a[0], p[1] - a[1]) < Math.hypot(p[0] - b[0], p[1] - b[1]) ? a : b)]
+  }
+  return L
+}
+const cutLoop = (L, ts) => L.flatMap((p, i) => [p, ...ts[i].map((t) => lerp2(p, L[(i + 1) % L.length], t))])
+/** The loop without repeated points, whose zero-length edges have no normal. */
+const cleanLoop = (L) => L.filter((p, i) => { const a = L[(i + L.length - 1) % L.length]; return Math.hypot(p[0] - a[0], p[1] - a[1]) > 1e-4 })
 
 function sectionShell(m, lay, s, rng) {
-  const { top, fl, pts, corner, N, n, nx, touch, clamp, split, ceded } = sectionFrame(lay, s, rng)
+  const { top, fl, pts, corner, N, n, nx, touch, clamp, onSide, cuts, ceded } = sectionFrame(lay, s, rng)
   const col = m.tint(STONE[s.kind]), band = m.tint(BAND)
   const j = () => (rng() - 0.5) * 0.06
   const rings = profile(top, fl, j).map(([y, off], r) => {
     const loop = offsetLoop(pts, N, touch.map((t) => (t && r >= BAND_FROM ? 0 : off)))
     if (r > 1) loop.forEach((p, i) => { if (corner[i]) { p[0] += (rng() - 0.5) * 0.1; p[1] += (rng() - 0.5) * 0.1 } })
-    return { y, loop: r ? loop.map(clamp) : loop }
+    return { y, loop: r ? unfold(loop.map(clamp)) : loop }
   })
+  // The parapet's cuts run down every ring and through the roof, so each of its vertices is one the wall and roof share.
+  const ts = s.roof.unused ? pts.map(() => []) : cuts(rings.at(-1).loop), cut = rings.map((r) => cutLoop(r.loop, ts))
+  const edge = ts.flatMap((t, i) => t.map(() => i).concat(i)), cn = edge.length, cx = (k) => (k + 1) % cn
   for (let r = 0; r + 1 < rings.length; r++) {
-    const A = rings[r], B = rings[r + 1]
-    for (let i = 0; i < n; i++) m.quad(at3(A.loop[i], A.y), at3(A.loop[nx(i)], A.y), at3(B.loop[nx(i)], B.y), at3(B.loop[i], B.y), r >= BAND_FROM ? band : col, [N[i][0], 0, N[i][1]])
+    const A = cut[r], B = cut[r + 1], ya = rings[r].y, yb = rings[r + 1].y
+    for (let k = 0; k < cn; k++) m.quad(at3(A[k], ya), at3(A[cx(k)], ya), at3(B[cx(k)], yb), at3(B[k], yb), r >= BAND_FROM ? band : col, [N[edge[k]][0], 0, N[edge[k]][1]])
   }
   const T = rings.at(-1).loop, c = centroid(T)
-  if (s.roof.unused) spire(m, T, N, touch, clamp, top, Math.min(s.w, s.d) * C * 1.1 + 1, rng)
+  if (s.roof.unused) spire(m, T, N, touch, clamp, onSide, top, Math.min(s.w, s.d) * C * 1.1 + 1, rng)
   else {
-    for (let i = 0; i < n; i++) m.tri(at3(c, top), at3(T[i], top), at3(T[nx(i)], top), col, at3(c, top - 1))
-    const R = split(T)
-    parapet(m, R, top, col, R.map((p, i) => ceded(p, R[(i + 1) % R.length])), rng)
+    const R = cut.at(-1)
+    for (let k = 0; k < cn; k++) m.tri(at3(c, top), at3(R[k], top), at3(R[cx(k)], top), col, at3(c, top - 1))
+    const Q = cleanLoop(R)
+    parapet(m, Q, top, col, Q.map((p, i) => ceded(p, Q[(i + 1) % Q.length])), rng)
   }
   // Arrow slits on the faces of each upper storey that nothing taller stands against.
   if (m.full) for (let k = 1; k < s.floors; k++) for (let i = 0; i < n; i++) {
@@ -307,9 +330,10 @@ function merlon(m, q, y0, y1, col, rng) {
   m.hexa([...base, ...top], col)
 }
 
-/** A two-stage spire over loop T: a shallow lower skirt and a steep upper needle, so the profile is concave. */
-function spire(m, T, N, touch, clamp, y, lift, rng) {
-  const E = offsetLoop(T, N, touch.map((t) => (t ? 0 : 0.25))).map(clamp), c = centroid(T), slate = m.tint(SLATE), ym = y + lift * 0.38
+/** A two-stage spire over loop T: a shallow lower skirt and a steep upper needle, so the profile is concave. On a clamped side the
+ * skirt starts from T's own vertices: a clamped offset slides along the plane, and its edge would pass T's corners unshared. */
+function spire(m, T, N, touch, clamp, onSide, y, lift, rng) {
+  const E = offsetLoop(T, N, touch.map((t) => (t ? 0 : 0.25))).map((p, i) => (onSide(T[i]) ? T[i] : clamp(p))), c = centroid(T), slate = m.tint(SLATE), ym = y + lift * 0.38
   const shrink = 0.4 + rng() * 0.06, M = E.map((p) => lerp2(c, p, shrink)), apex = [c[0], y + lift, c[1]]
   for (let i = 0; i < T.length; i++) {
     const i2 = (i + 1) % T.length
@@ -362,17 +386,28 @@ function wallShell(m, lay, s, rng) {
   crenels(m, P, us, T.out, inn, nOut, a0 + 0.6, a1 - 0.6, top, col, rng)
 }
 
-/** A flight of solid steps from the ground (or y0) along `axis`, ending in a flat landing. */
+/** A flight of solid steps from the ground along `axis`, ending in a flat landing. Each side is one face per step whose back edge
+ * carries the step behind's top corner, so no vertex sits partway along an edge for the warp to open. */
 function flight(m, f, col, scale = 1) {
-  const n = f.steps, dir = Math.sign(f.a1 - f.a0)
-  const run = Math.abs(f.a1 - f.a0) - f.landing
+  const n = f.steps, dir = Math.sign(f.a1 - f.a0), run = Math.abs(f.a1 - f.a0) - f.landing
+  const P = (u, y, c) => (f.axis === 'x' ? [u * scale, y * scale, c * scale] : [c * scale, y * scale, u * scale])
+  const along = f.axis === 'x' ? [dir, 0, 0] : [0, 0, dir], across = f.axis === 'x' ? [0, 0, 1] : [1, 0, 0], cs = [[f.c0, Math.sign(f.c0 - f.c1)], [f.c1, Math.sign(f.c1 - f.c0)]]
+  let yp = -1
   for (let i = 0; i < n; i++) {
     const u0 = f.a0 + dir * run * i / n, u1 = i === n - 1 ? f.a1 : f.a0 + dir * run * (i + 1) / n
     // The landing stops just short of the cap it meets: the warp bends two tessellations of one plane apart by a few cm.
     const y = i === n - 1 ? f.rise - 0.08 : f.rise * (i + 1) / n
-    if (f.axis === 'x') m.box(u0 * scale, -1, f.c0 * scale, u1 * scale, y * scale, f.c1 * scale, col)
-    else m.box(f.c0 * scale, -1, u0 * scale, f.c1 * scale, y * scale, u1 * scale, col)
+    m.quad(P(u0, yp, f.c0), P(u0, yp, f.c1), P(u0, y, f.c1), P(u0, y, f.c0), col, along.map((v) => -v))
+    m.quad(P(u0, y, f.c0), P(u1, y, f.c0), P(u1, y, f.c1), P(u0, y, f.c1), col, [0, 1, 0])
+    for (const [c, sg] of cs) {
+      const h = across.map((v) => v * sg)
+      if (yp > -1) m.face([P(u0, -1, c), P(u1, -1, c), P(u0, yp, c)], h, col)
+      m.face([P(u0, yp, c), P(u1, -1, c), P(u1, y, c)], h, col)
+      m.face([P(u0, yp, c), P(u1, y, c), P(u0, y, c)], h, col)
+    }
+    yp = y
   }
+  m.quad(P(f.a1, -1, f.c0), P(f.a1, -1, f.c1), P(f.a1, yp, f.c1), P(f.a1, yp, f.c0), col, along)
 }
 
 /** Door leaves `hw` either side of `base` (its foot's middle) and `h` tall, facing horizontal n: a door's one, or a gate's pair
@@ -392,36 +427,40 @@ export function leaves(m, base, n, hw, h, gate, col) {
  * or the flare would bury it. */
 function doorway(m, d, col) {
   const depth = doorDepth(d), o = d.side * depth, hw = d.w / 2
-  const along = (u0, u1, y0, y1, t0, t1) => (d.axis === 'x' ? m.box(d.x + t0, y0, d.z + u0, d.x + t1, y1, d.z + u1, col) : m.box(d.x + u0, y0, d.z + t0, d.x + u1, y1, d.z + t1, col))
+  const along = (u0, u1, y0, y1, t0, t1, bottom) => (d.axis === 'x' ? m.box(d.x + t0, y0, d.z + u0, d.x + t1, y1, d.z + u1, col, bottom) : m.box(d.x + u0, y0, d.z + t0, d.x + u1, y1, d.z + t1, col, bottom))
   const n = d.axis === 'x' ? [d.side, 0, 0] : [0, 0, d.side]
   leaves(m, d.axis === 'x' ? [d.x + o, d.y, d.z] : [d.x, d.y, d.z + o], n, hw, d.h, d.look === 'gate', col)
   const t0 = Math.min(-d.side * 0.1, d.side * (depth + 0.13)), t1 = Math.max(-d.side * 0.1, d.side * (depth + 0.13))
-  along(-hw - 0.25, -hw, d.y, d.y + d.h + 0.25, t0, t1)
-  along(hw, hw + 0.25, d.y, d.y + d.h + 0.25, t0, t1)
-  along(-hw - 0.25, hw + 0.25, d.y + d.h, d.y + d.h + 0.3, t0, t1)
+  // Jambs and lintel are each closed, so the seam where the lintel rests on them can open under the warp without showing through.
+  along(-hw - 0.25, -hw, d.y, d.y + d.h, t0, t1)
+  along(hw, hw + 0.25, d.y, d.y + d.h, t0, t1)
+  along(-hw - 0.25, hw + 0.25, d.y + d.h, d.y + d.h + 0.3, t0, t1, true)
   if (d.look === 'barred' && m.full) for (const u of [-0.35, 0, 0.35]) along(u - 0.04, u + 0.04, d.y, d.y + d.h, o, o + d.side * 0.08)
 }
 
 /** A deck on a stone arch springing from the two faces it joins, a door's height over the walk or roof it crosses (`clear`) so it
- * never hangs before a door onto that walk. The ends run 0.3 m into the masonry, so no end face lies in a wall's plane. */
+ * never hangs before a door onto that walk. The ends run 0.3 m into the masonry, so no end face lies in a wall's plane. Sides,
+ * rails and deck share the arch's stations: the warp moves each vertex on its own, so a long face over many short ones cracks. */
 function bridge(m, b, col) {
   const A0 = Math.min(b.a0, b.a1), A1 = Math.max(b.a0, b.a1), mid = (A0 + A1) / 2, half = (A1 - A0) / 2
   const rise = Math.min(half * 0.75, 2.4, b.y - 0.6 - b.clear - 2.5), spring = b.y - 0.6 - rise, W = 1.1
   const us = [A0 - 0.3], ys = [spring]
   for (let i = 0; i <= 10; i++) { const t = i / 5 - 1; us.push(mid + t * half); ys.push(spring + rise * Math.sqrt(1 - t * t)) }
   us.push(A1 + 0.3); ys.push(spring)
-  const P = (u, c, y) => (b.axis === 'x' ? [u, y, c] : [c, y, u]), across = b.axis === 'x' ? [0, 0, 1] : [1, 0, 0]
+  const P = (u, c, y) => (b.axis === 'x' ? [u, y, c] : [c, y, u]), across = b.axis === 'x' ? [0, 0, 1] : [1, 0, 0], ry = b.y + 0.9
   for (let i = 0; i + 1 < us.length; i++) {
     const [u0, u1, y0, y1] = [us[i], us[i + 1], ys[i], ys[i + 1]]
-    for (const s of [-1, 1]) m.quad(P(u0, b.c + s * W, y0), P(u1, b.c + s * W, y1), P(u1, b.c + s * W, b.y), P(u0, b.c + s * W, b.y), col, across.map((v) => v * s))
+    for (const s of [-1, 1]) {
+      const o = b.c + s * W, r = b.c + s * 0.8, n = across.map((v) => v * s)
+      m.quad(P(u0, o, y0), P(u1, o, y1), P(u1, o, ry), P(u0, o, ry), col, n)
+      m.quad(P(u0, r, b.y), P(u1, r, b.y), P(u1, r, ry), P(u0, r, ry), col, n.map((v) => -v))
+      m.quad(P(u0, r, ry), P(u1, r, ry), P(u1, o, ry), P(u0, o, ry), col, [0, 1, 0])
+    }
+    m.quad(P(u0, b.c - 0.8, b.y), P(u1, b.c - 0.8, b.y), P(u1, b.c + 0.8, b.y), P(u0, b.c + 0.8, b.y), col, [0, 1, 0])
     // The soffit faces the arch's centre; the flat ends inside the masonry face down.
     const n = i === 0 || i === us.length - 2 ? [0, -1, 0] : sub(P(mid, b.c, spring), P((u0 + u1) / 2, b.c, (y0 + y1) / 2))
     m.quad(P(u0, b.c - W, y0), P(u1, b.c - W, y1), P(u1, b.c + W, y1), P(u0, b.c + W, y0), col, n)
   }
-  const lo = us[0], hi = us.at(-1)
-  m.quad(P(lo, b.c - W, b.y), P(hi, b.c - W, b.y), P(hi, b.c + W, b.y), P(lo, b.c + W, b.y), col, [0, 1, 0])
-  const rail = (c0, c1) => (b.axis === 'x' ? m.box(lo, b.y, c0, hi, b.y + 0.9, c1, col) : m.box(c0, b.y, lo, c1, b.y + 0.9, hi, col))
-  rail(b.c - W, b.c - 0.8); rail(b.c + 0.8, b.c + W)
 }
 
 /** A flagstone ramp falling 30 deg out of a ground door, long enough to dive into a hillside: a cambered top with bevelled edges,

@@ -16,6 +16,8 @@ Z-fighting rules, enforced by the coplanar-overlap gate on the unwarped shell:
 - Landings stop 8 cm short of the cap they meet: the warp bends two tessellations of one plane apart by a few cm, so even same-coloured coplanar faces would flicker.
 - Two flights never share court (layout claims each flight's plan rect).
 
+Crack rule, enforced by the seam gate (no T-junction between faces turned alike opens 6 cm under the warp): the warp moves each vertex on its own, so a vertex partway along another face's edge opens a sky-coloured crack. Faces that continue one another share every vertex on their seam: a section's parapet cuts run down every ring and through its roof, clamped rings collapse a fold rather than double back, a spire skirt on a clamped side starts from the ring's own vertices, a bridge's sides, rails and deck share the arch's stations, and each step's side carries the corner of the step behind. Separate closed bodies (a lintel on its jambs) may meet unshared. What remains (under 4 cm) is roof meeting roof between equal sections, seen only from above.
+
 ## Siting
 
 `src/v2/layers/castles.js` `planCastles`, run in the world-plan boot: at most one castle per 1400 m region (75% of regions), its seed the first of up to 8 rolls that passes the maze score. Candidates every 40 m are ranked by prominence (at least 3 m over a ring 120 m out), clear of labyrinths, towns (radius + 60 m) and their keep-outs; the first with a yaw at which `fitAt` holds wins. `fitAt` asks that the ground under the whole footprint lies within the footing (5.5 m) below the floor, which stands `CASTLE.raise` (1.2 m) over the sited ground, and that the gate ramp's foot meets the ground. Castles shape no ground. Each gets a trail from its gate ramp's foot to the road network, as labyrinth gates do. `CastleSites.occupiesAt` is the footprint keep-out: trees, rocks and deadwood read it through `BiomeField.castleAt`, wildlife through main.js `wildAvoid`.
@@ -46,7 +48,7 @@ Collision: `interiorSolids` adds the spiral as a pseudo stair edge, the maze's a
 
 ## Garrison
 
-`render/castle-folk.js`, local to each client and set by the clock: at least 10 folk a castle besides two travellers on its trail, each in a townsfolk body. Inside: the lord and his steward in the throne hall, a cook, the kitchen maid, servants at chores and a guard. Outside: 3 or more guards pacing the wall walks, two at the gate, one at the well. The maid (`maidSays`) tells of noises behind the dungeon door, the ghost if there is one, and the room the key lies in. Some pace back and forth on a path by the clock; the rest stand at their posts. There is no town sim behind them.
+`render/castle-folk.js`, local to each client and set by the clock: at least 10 folk a castle besides two travellers on its trail, each in a townsfolk body. Inside: the lord and his steward in the throne hall, a cook, the kitchen maid, servants at chores and a guard. Outside: 3 or more guards pacing the wall walks, two at the gate, one at the well. The maid (`maidSays`) tells of noises behind the dungeon door, the ghost if there is one, and the room the key lies in. Some pace back and forth on a path by the clock; the rest stand at their posts. There is no town sim behind them, but each speaks once as she comes within `FOLK.near`, on their body's voice pack: a castle line (`castle.*` moments in `tools/voice/atoms.js`, `FOLK_SAYS`) 70% of the time, else an everyday one, and a gate guard halts her first. The ghost whispers a `castle.ghost` line with each line it speaks.
 
 ## Collision and portals
 

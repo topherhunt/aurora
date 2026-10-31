@@ -9178,8 +9178,10 @@ function stepOverworld(dt, now) {
   castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale(), () => castleGhost.whisper(clock.seconds)))
   if (castleFolk) {
     castleFolk.update(dt, clock.seconds, headTmp, inCastle === null ? null : inCastle.site, inCastle === null ? 0 : inCastle.stone.oy)
-    const maidAt = inCastle !== null && conversations !== null ? castleFolk.greet(headTmp, FOLK.near * herScale()) : null
-    if (maidAt !== null) conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked)), maidAt)
+    if (conversations !== null) for (const b of castleFolk.barks(headTmp, FOLK.near * herScale())) {
+      conversations.bark(b.mind, b.moment, b.mouth, headTmp)
+      if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked)), b.feet)
+    }
   }
   if (giants) {
     giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider') || herLantern

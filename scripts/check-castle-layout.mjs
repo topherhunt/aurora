@@ -4,18 +4,20 @@
 //
 // Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
-// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight, door leaves hidden behind stone,
+// highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight
+// or crack open under the warp, door leaves hidden behind stone,
 // collision that throws (over a wide seed sweep) or passes the walk's span cap, a castle without its doors, spirals and rope, or a
 // dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
+import { readFileSync } from 'node:fs'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
-import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, SPIRAL } from '../src/v2/castles/shell.js'
+import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, SPIRAL, warpOf } from '../src/v2/castles/shell.js'
 import { castleSolids, exteriorSpans, interiorSpans, spiralTreadAt, SPANS, SPAN_CAP } from '../src/v2/castles/solids.js'
 import { dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
 import { dungeonProps } from '../src/v2/castles/furnish.js'
-import { insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
+import { FOLK_SAYS, folkMoment, insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
 import { fits } from '../src/v2/talk/caption.js'
 
 let failures = 0
@@ -85,6 +87,41 @@ function zFights(g) {
 }
 const fights = good.slice(0, 30).map((l) => [l.seed, zFights(exteriorGeometry(l, { warp: false }))]).filter(([, h]) => h)
 check(fights.length === 0, 'no two differently coloured exterior faces share a plane', fights.slice(0, 4).map(([s, h]) => `seed ${s}: ${h}`).join(', '))
+
+// The warp moves each vertex on its own, so a vertex partway along another face's edge (a T-junction) opens a crack the sky shows
+// through. Returns the widest such crack between faces turned alike (back-to-back faces of abutting bodies hide theirs).
+function widestCrack(l) {
+  const P = exteriorGeometry(l, { warp: false }).position, W = warpOf(l.seed, 1), ids = new Map(), V = [], adj = [], faces = new Map()
+  const vid = (i) => { const k = [0, 1, 2].map((a) => Math.round(P[i * 3 + a] * 1e4)).join(); if (!ids.has(k)) { ids.set(k, V.length); V.push([P[i * 3], P[i * 3 + 1], P[i * 3 + 2]]) } return ids.get(k) }
+  const sub = (a, b) => a.map((x, i) => x - b[i]), dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], ek = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`)
+  for (let t = 0; t < P.length / 9; t++) {
+    const v = [0, 1, 2].map((k) => vid(t * 3 + k)), e1 = sub(V[v[1]], V[v[0]]), e2 = sub(V[v[2]], V[v[0]])
+    const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]]
+    for (let k = 0; k < 3; k++) {
+      const a = v[k], b = v[(k + 1) % 3]
+      if (!faces.has(ek(a, b))) faces.set(ek(a, b), []); faces.get(ek(a, b)).push(n); (adj[a] ??= new Set()).add(b); (adj[b] ??= new Set()).add(a)
+    }
+  }
+  const grid = new Map(), cell = (p) => p.map((x) => Math.floor(x / 0.5)).join()
+  V.forEach((p, i) => { if (!grid.has(cell(p))) grid.set(cell(p), []); grid.get(cell(p)).push(i) })
+  const off = (A, d, p) => { const w = sub(p, A), t = dot(w, d) / dot(d, d); return [t, Math.hypot(...sub(w, d.map((x) => x * t)))] }
+  let worst = { gap: 0 }
+  for (const [key, ns] of faces) {
+    const [a, b] = key.split(',').map(Number), A = V[a], d = sub(V[b], A), lo = A.map((x, i) => Math.floor(Math.min(x, V[b][i]) / 0.5)), hi = A.map((x, i) => Math.floor(Math.max(x, V[b][i]) / 0.5))
+    if (Math.hypot(...d) < 0.05) continue
+    for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) for (const v of grid.get(`${x},${y},${z}`) || []) {
+      const [t, o] = off(A, d, V[v])
+      if (v === a || v === b || t <= 1e-3 || t >= 1 - 1e-3 || o > 2e-4) continue
+      const mine = [...adj[v]].filter((w) => off(A, d, V[w])[1] < 2e-4).flatMap((w) => faces.get(ek(v, w)))
+      if (!mine.some((m) => ns.some((n) => dot(m, n) > -0.5 * Math.hypot(...m) * Math.hypot(...n)))) continue
+      const wa = W(...A), wb = W(...V[b]), gap = Math.hypot(...sub(W(...V[v]), wa.map((q, i) => q + (wb[i] - q) * t)))
+      if (gap > worst.gap) worst = { gap, seed: l.seed, at: V[v].map((q) => q.toFixed(1)).join(' ') }
+    }
+  }
+  return worst
+}
+const crack = good.slice(0, 30).map(widestCrack).reduce((a, b) => (b.gap > a.gap ? b : a))
+check(crack.gap < 0.06, 'no exterior seam opens 6 cm under the warp', `widest ${(crack.gap * 100).toFixed(1)} cm, seed ${crack.seed} at ${crack.at}`)
 
 // A leaf vanishes behind stone that stands across it: the warped wall sagging between its far-apart vertices, or a parapet running
 // past a door onto its roof. Rays from 1.5 m out up each unbarred door's centreline must meet its leaf first for 2 m of its height.
@@ -205,11 +242,13 @@ check(dungeonShut.length === 0 && dungeonShare > 0.85, 'unlocked, she walks from
 check(dungeonTri < 25000, 'a dungeon stays under 25k triangles', `worst ${dungeonTri}`)
 
 // The household and garrison (render/castle-folk.js), less the two travellers a castle without a trail lacks.
-const fewFolk = [], offFloor = [], noMaid = []
+const fewFolk = [], offFloor = [], noMaid = [], unvoiced = new Set()
+const voiced = JSON.parse(readFileSync(new URL('../public/sounds/voice/moments.json', import.meta.url), 'utf8')).human
 for (const l of good) {
   const inside = insideCast(l), outside = outsideCast(l, { x: 0, y: 0, z: 0, yaw: 0 }, null), it = castleSolids(l).it
   if (inside.length + outside.length < 10 || outside.filter((p) => p.who === 'watch').length < 3) fewFolk.push(l.seed)
   if (!inside.some((p) => p.who === 'maid') || ![true, false].every((h) => fits(maidSays(l, h, false)))) noMaid.push(l.seed)
+  for (const p of [...inside, ...outside]) if (FOLK_SAYS[p.who] === undefined || FOLK_SAYS[p.who].flat().some((m) => !(m in voiced) || voiced[m].length === 0)) unvoiced.add(p.who)
   for (const p of inside) {
     const n = interiorSpans(it, p.x, p.z, p.y + 0.5)
     let ok = false
@@ -219,6 +258,8 @@ for (const l of good) {
 }
 check(fewFolk.length === 0, 'every castle has 10+ folk besides its travellers, 3 of them on the walls', fewFolk.slice(0, 5).join(' '))
 check(noMaid.length === 0, 'every castle has its kitchen maid, her hint within the caption', noMaid.slice(0, 5).join(' '))
+const rolls = Array.from({ length: 40 }, (_, i) => folkMoment('gate', false, i / 40, (i * 0.37) % 1))
+check(unvoiced.size === 0 && folkMoment('gate', true, 0.9, 0.9) === 'castle.halt' && !rolls.includes('castle.halt') && rolls.some((m) => m.startsWith('castle.')) && rolls.some((m) => !m.startsWith('castle.')), 'every castle folk speaks recorded castle and everyday lines, a gate guard halting her first', [...unvoiced].join(' '))
 check(offFloor.length === 0, 'everyone inside stands on clear floor, 1.7 m under the ceiling', `${offFloor.length}: ${offFloor.slice(0, 6).join(' ')}`)
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

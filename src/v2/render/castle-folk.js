@@ -12,6 +12,7 @@ import { toLocal, toWorld } from '../layers/castles.js'
 import { hash32 } from '../../sim/score.js'
 import { gltfLoader } from './critters.js'
 import { INNER_LIGHT } from './castles.js'
+import { bodyVoice, VOICE } from '../talk/mind.js'
 
 export const FOLK = {
   size: 1.75,
@@ -23,8 +24,10 @@ export const FOLK = {
   awayS: 150,
   // The outside cast is drawn while she is within `drawM` of the castle.
   drawM: 140,
-  // The maid speaks as she comes within `near` m (times her size).
-  near: 2.6,
+  // Each of them speaks as she comes within `near` m (times her size), from FOLK_SAYS: a castle moment `color` of the time.
+  near: 3,
+  color: 0.7,
+  mouth: 1.55,
   // Clear metres round a chamber stand: from a prop's footprint, and from a portal.
   clear: 0.45,
   portal: 1.4,
@@ -41,6 +44,27 @@ const INSIDE = [
   { who: 'servant', body: 'healer', rooms: ['pantry', 'cellar', 'store', 'granary'], by: ['barrel', 'sacks', 'grain', 'cask'], clip: 'gather' },
   { who: 'guard', body: 'guard', rooms: ['barracks', 'armoury', 'guard'], by: ['rack', 'anvil', 'grind', 'bunk'], clip: 'idle' },
 ]
+// Who says what: [castle moments, everyday moments] (tools/voice/atoms.js). A gate guard halts her first.
+export const FOLK_SAYS = {
+  lord: [['castle.lord'], ['greet.stranger']],
+  steward: [['castle.steward'], ['greet.curt', 'greet.stranger']],
+  cook: [['castle.cook'], ['mood.busy']],
+  maid: [['castle.maid'], ['greet.stranger']],
+  servant: [['castle.servant'], ['mood.busy', 'pass.nod']],
+  guard: [['castle.guard'], ['greet.curt', 'mood.bored']],
+  watch: [['castle.watch'], ['greet.curt', 'weather.cold']],
+  gate: [['castle.guard'], ['greet.curt', 'greet.stranger']],
+  yard: [['castle.servant'], ['pass.nod', 'mood.busy']],
+  traveller: [['castle.road'], ['greet.stranger', 'pass.nod']],
+}
+
+/** The moment `who` says as she comes near, `first` the first time in this visit, from rolls `r` and `r2` in [0, 1). */
+export function folkMoment(who, first, r, r2) {
+  if (who === 'gate' && first) return 'castle.halt'
+  const pool = FOLK_SAYS[who][r < FOLK.color ? 0 : 1]
+  return pool[(r2 * pool.length) | 0]
+}
+
 const WALL_GUARDS = ['shieldmaiden', 'battlemage', 'guard']
 const GATE_GUARDS = ['guard', 'shieldmaiden']
 const TRAVELLERS = ['hunter', 'trapper']
@@ -148,7 +172,6 @@ export class CastleFolk {
     // Each cast: the site it is for, its lay, and its people `{ spec, obj, mixer, actions, clip }`.
     this.inside = null
     this.outside = null
-    this.maidSpoke = false
   }
 
   /** The body `id`'s GLB, loaded once. */
@@ -162,7 +185,9 @@ export class CastleFolk {
     for (const o of [...group.children]) this._drop(o)
     const cast = { site, lay, people: [] }
     specs.forEach((spec, i) => {
-      const p = { spec, obj: null, mixer: null, actions: null, clip: null }
+      const { pack, he } = bodyVoice(spec.body), h = hash32(site.seed, i + 80)
+      const voice = { pack, he, rate: 1 + ((h % 201) / 100 - 1) * VOICE.rate, tilt: (((h >>> 8) % 201) / 100 - 1) * VOICE.tilt }
+      const p = { spec, obj: null, mixer: null, actions: null, clip: null, mind: { id: `castle:${site.seed}:${group.name}:${i}`, kind: 'human', voice }, near: false, spoke: 0 }
       cast.people.push(p)
       this._body(spec.body).then((gltf) => {
         if (group.userData.cast !== cast) return
@@ -213,22 +238,24 @@ export class CastleFolk {
     o.traverse((m) => { if (m.isMesh) m.material.dispose() })
   }
 
-  /** The kitchen maid's world point `{ x, y, z }` (her feet) in the castle she is in, or null. */
-  get maid() {
-    if (this.inside === null) return null
-    const p = this.inside.people.find((q) => q.spec.who === 'maid')
-    if (p === undefined || p.obj === null) return null
-    return p.obj.getWorldPosition(new THREE.Vector3())
-  }
-
-  /** The kitchen maid's feet, once each time `her` ({ x, y, z }) comes within `near` m of her; else null. */
-  greet(her, near) {
-    const at = this.maid
-    if (at === null) return null
-    const d = Math.hypot(her.x - at.x, her.z - at.z), close = d < near && Math.abs(her.y - at.y) < 3, fresh = close && !this.maidSpoke
-    if (close) this.maidSpoke = true
-    else if (d > near + 2) this.maidSpoke = false
-    return fresh ? at : null
+  /** Who of the drawn cast has just come within `near` m of `her` ({ x, y, z }), each once a time she comes:
+   * `[{ who, mind, moment, feet, mouth }]`, world points. */
+  barks(her, near) {
+    const cast = this.inner.visible ? this.inside : this.outer.visible ? this.outside : null
+    if (cast === null) return []
+    const out = []
+    for (const p of cast.people) {
+      if (p.obj === null || !p.obj.visible) continue
+      const feet = p.obj.getWorldPosition(new THREE.Vector3()), d = Math.hypot(her.x - feet.x, her.z - feet.z)
+      const close = d < near && Math.abs(her.y - feet.y) < 3
+      if (close && !p.near) {
+        out.push({ who: p.spec.who, mind: p.mind, moment: folkMoment(p.spec.who, p.spoke === 0, Math.random(), Math.random()), feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
+        p.spoke++
+      }
+      if (close) p.near = true
+      else if (d > near + 2) p.near = false
+    }
+    return out
   }
 
   /** Once a frame: the inside cast while she is in castle `site` (its floor `oy`), else the outside cast of the nearest drawn castle
@@ -242,7 +269,6 @@ export class CastleFolk {
           const col = new THREE.Color(L.fill[0] * f + L.fire[0] * t + L.win * w, L.fill[1] * f + L.fire[1] * t + L.win * w, L.fill[2] * f + L.fire[2] * t + L.win * w)
           return new THREE.MeshBasicMaterial({ map, color: col, side: THREE.DoubleSide })
         })
-        this.maidSpoke = false
       }
       this.inner.position.y = oy
       this.inner.visible = true

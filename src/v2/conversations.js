@@ -199,9 +199,18 @@ export class Conversations {
         this.scold = { c: { pose: at }, until: this.now + TALK.linger + line.text.split(' ').length / TALK.wordsPerS, ghost: q.id }
         this.panel.show(q.ghost.name, line.text, EMPTY)
         spoke()
+        const voice = { pack: q.ghost.she ? 'woman' : 'man', he: !q.ghost.she, rate: 0.92, tilt: -2 }
+        this.bark({ id: `ghost:${q.id}`, kind: 'human', voice }, 'castle.ghost', { x: at.x, y: at.y + 1.5, z: at.z }, head, true)
       }
     }
     return this.log.state(q.id) !== 'done' || (this.scold !== null && this.scold.ghost === q.id)
+  }
+
+  /** A line for `moment` from `mind`, one with no town (castle folk, a ghost), at its `mouth` ({ x, y, z }); `reply` always plays. */
+  bark(mind, moment, mouth, head, reply = false) {
+    if (this.picker === null || this.voices === null && !this._voices()) return
+    const pick = this.picker.pick(mind, moment, { now: this.now, force: reply })
+    if (pick !== null) this.voices.say(pick, mouth, Math.hypot(mouth.x - head.x, mouth.y - head.y, mouth.z - head.z), { reply })
   }
 
   /** `text` on the panel as `name`'s over world point `at` ({ x, y, z }) unless she is talking, for as long as a scold's. */
