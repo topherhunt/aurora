@@ -5,7 +5,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
-import { COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart } from './shell.js'
+import { COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, SPIRAL, spiralStart, wallRails } from './shell.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
@@ -17,7 +17,7 @@ const PROP_TOP = {
   grind: 1.05, anvil: 0.75, dais: 0.3, carpet: 0, tapestry: 0, chandelier: 0, fourposter: 0.95, wardrobe: 2.0, desk: 0.8, rug: 0, altar: 1.0,
   maptable: 0.83, cot: 0.5, workbench: 0.9, candles: 1.2, sconce: 0, target: 1.6, pell: 1.6, yard: 0, forge: 2.3, trough: 0.6, block: 0.5,
   bowrack: 1.5, stones: 0.45, chair: 1.0, dresser: 1.0, grain: 0.62, veg: 0.45, kegs: 0.77, jars: 0.85, coal: 0.4, hams: 0, chains: 0, straw: 0, bones: 0,
-  wreck: 0.4, cage: 1.95, jug: 0, bowl: 0, loaf: 0, cup: 0, candle: 0, book: 0,
+  wreck: 0.4, cage: 1.95, jug: 0, bowl: 0, loaf: 0, cup: 0, candle: 0, book: 0, torch: 2.0,
 }
 // A parapet's band reaches past the merlons, so her reach (1.2 m) never finds its top; within STEP_GAP of where a step crosses it
 // only the 0.6 m wall under the merlons stands, which she steps over.
@@ -49,6 +49,8 @@ function exteriorSolids(lay) {
       const put = (v0, v1, lo, hi) => boxes.push(alongX ? box(a0, cc + inn * v0, a1, cc + inn * v1, lo, hi) : box(cc + inn * v0, a0, cc + inn * v1, a1, lo, hi))
       put(-1.3, 1.26, -6, 2 * H)
       put(-1.65, -1.25, 2 * H - 1.1, 2 * H + BAND)
+      const v = CASTLE.wallT / 2 + 0.06
+      for (const [r0, r1] of wallRails(lay, s)) boxes.push(alongX ? box(r0, cc + inn * (v - 0.36), r1, cc + inn * v, 2 * H - 0.1, 2 * H + BAND) : box(cc + inn * (v - 0.36), r0, cc + inn * v, r1, 2 * H - 0.1, 2 * H + BAND))
       return
     }
     const f = sectionFrame(lay, s, rng)
@@ -270,9 +272,10 @@ export function interiorSpans(it, x, z, ref) {
   return settle(LO, HI, n, [])
 }
 
-/** Spiral `s`'s tread over interior (x, z) at `r` from its axis, from 0 up, or -1 off its treads. */
+/** Spiral `s`'s tread over interior (x, z) at `r` from its axis, from 0 up, or -1 off its treads. They reach past the slab's hole
+ * (SPIRAL.R + 0.05), so no sliver of the hole falls through to the storey below. */
 function treadOf(s, x, z, r) {
-  if (r < SPIRAL.post || r >= SPIRAL.R) return -1
+  if (r < SPIRAL.post || r >= SPIRAL.R + 0.15) return -1
   const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8 / SPIRAL.treads))
   return j < SPIRAL.steps * SPIRAL.treads ? j : -1
 }

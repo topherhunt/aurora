@@ -17,6 +17,7 @@ import { Voices } from './audio/voices.js'
 import { jeer, swordWarning } from './talk/armed.js'
 import { DialogPanel } from './ui/dialog-panel.js'
 import { ghostSays } from './talk/ghost.js'
+import { CastleChat } from './talk/castle.js'
 
 export const TALK = {
   // Metres, at her scale: whom a hail reaches, and past which a conversation is over.
@@ -29,8 +30,8 @@ export const TALK = {
   wordsPerS: 3,
   // Mouth height over the feet, of their height.
   mouth: 0.9,
-  // Seconds between looks for someone to come to her; how near they must be, how close they come, how long they wait, and how long before the same one is asked again.
-  approach: { every: 6, m: 12, come: 1.4, wait: 15, again: 300 },
+  // Seconds between looks for someone to come to her; how near they must be, how close they come, how long they wait, and how long before the same one is asked again; the odds a castle guard comes.
+  approach: { every: 6, m: 12, come: 1.4, wait: 15, again: 300, castle: 0.35 },
   // Her with a sword in town: seconds between looks for a passer-by to jeer, within `m` m, each at most once an `again`.
   jeer: { every: 4, m: 6, again: 90 },
   // Seconds past which a pair's next turn is a fresh conversation.
@@ -49,9 +50,9 @@ export class Conversations {
    * SoundEngine once it is open and `mic()` her Mic once asked for, else null. `pack` is what she carries (main.js),
    * `roosts` the dragon roosts or null in a village (the deer town stands near one), and `wrongs` the glade she wronged:
    * `{ wronged(): boolean, witness(): villager id or null }`. `heard(p)` puts a point {x, y, z} where her ears hear it, in place.
-   * `hideouts` each town's (quests.js hideouts), or null in a village.
+   * `hideouts` each town's (quests.js hideouts), or null in a village. `castle()` is the castle folk (render/castle-folk.js) or null.
    */
-  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs, heard, hideouts }) {
+  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs, heard, hideouts, castle }) {
     this.world = new TalkWorld(seed, towns)
     if (hideouts !== null) this.world.seatHideouts(hideouts)
     this.pack = pack
@@ -70,6 +71,7 @@ export class Conversations {
     }
     this.townsfolk = townsfolk
     this.villagers = villagers
+    this.castle = castle
     this.village = villagers ? villageMinds(villageSeed, villagers.all.length, villagers.all.map((c) => villagers.graph.doorNodes.indexOf(c.home))) : []
     this.known = known
     this.rapport = rapport
@@ -270,6 +272,8 @@ export class Conversations {
       }
     }
     if (this.villagers) for (const c of this.villagers.all) if (c.puppet && !c.hidden) into.push({ kind: 'village', c, mind: this.village[c.id], res: null })
+    const folk = this.castle()
+    if (folk !== null) for (const c of folk.talkers([])) into.push({ kind: 'castle', c, mind: c.mind, res: null })
     return into
   }
 
@@ -403,7 +407,7 @@ export class Conversations {
       if (warmth < RAPPORT.fed) this.rapport.warm(p.mind.id, RAPPORT.fed - warmth)
     }
     this._hold(p)
-    const chat = new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
+    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
     const [lo, hi] = TALK.answer
     this.chat = { p, chat, closing: null, trusted, answerAt: approached ? this.now : this.now + lo + Math.random() * (hi - lo) }
     this.grid.reset()
@@ -449,6 +453,7 @@ export class Conversations {
   /** `line` said by `p`: its gesture, and its moment in their voice where she stands. */
   _say(p, line, head) {
     if (p.res !== null) p.res.gesture(p.c, line.gesture, line.toward)
+    else if (p.kind === 'castle') this.castle().gesture(p.c, line.gesture, this.now)
     else if (p.kind === 'town') this.townsfolk.gesture(p.c, line.gesture, this.now, line.toward)
     else this.villagers.gesture(p.c.id, line.gesture, this.now, line.toward)
     if (this.picker === null || this.voices === null && !this._voices()) return
@@ -489,24 +494,34 @@ export class Conversations {
 
   _hold(p) {
     if (p.res !== null) p.res.hold(p.c)
+    else if (p.kind === 'castle') this.castle().hold(p.c)
     else if (p.kind === 'town') this.townsfolk.hold(p.c, this.now)
     else this.villagers.hold(p.c.id, this.now)
   }
 
   _unhold(p) {
     if (p.res !== null) p.res.release(p.c)
+    else if (p.kind === 'castle') this.castle().release(p.c)
     else if (p.kind === 'town') this.townsfolk.release(p.c, this.now)
     else this.villagers.release(p.c.id)
   }
 
   // -- one who comes to her ------------------------------------------------------------------------------------
 
-  /** Now and then someone near her and free -- a leafkin only if it trusts her -- comes over, if they want something of her or are the friendly sort. Each is asked once an `again` about the item in her hand, and once about nothing. With a sword in her hand in town, only a guard comes, once a visit, to warn her off it. */
+  /** Now and then someone near her and free -- a leafkin only if it trusts her -- comes over, if they want something of her or are the friendly sort. Each is asked once an `again` about the item in her hand, and once about nothing. With a sword in her hand in town, only a guard comes, once a visit, to warn her off it. A castle guard comes at `castle` odds, once an `again`. */
   _approach(head, scale) {
     const A = TALK.approach
     const armed = this.pack.holds('sword')
     for (const p of this._people([])) {
       const c = p.c, id = p.mind.id
+      if (p.kind === 'castle') {
+        if (c.held || (this.alone.get(id) ?? -Infinity) > this.now || (this.asked.get(id) ?? -Infinity) > this.now || !this.castle().reaches(c)) continue
+        this.asked.set(id, this.now + A.again)
+        if (Math.random() >= A.castle) continue
+        this.castle().approach(c, A.come * scale)
+        this.coming = { p, until: Infinity, hailed: false, warn: false }
+        return
+      }
       if (p.res !== null ? !p.res.free(c) || (p.kind === 'village' && !this.trusts(c.id)) : p.kind === 'town' ? c.greet !== null || c.lag || c.hidden || c.job !== null || c.state === 'work' || c.state === 'sit' : this.villagers.talking.has(c.id) || !FREE.has(c.state) || !this.trusts(c.id)) continue
       if (Math.hypot(c.pose.x - head.x, c.pose.z - head.z) > A.m * scale) continue
       if (armed && p.kind === 'town' && p.res === null) {
@@ -533,7 +548,7 @@ export class Conversations {
   /** The one coming to her: hails her once there and waits; left waiting, goes back to what it was doing. */
   _wait(head) {
     const { p } = this.coming
-    const greet = p.res !== null ? (p.res.held(p.c) ? { at: p.res.arrived(p.c) ? 0 : Infinity } : null) : p.kind === 'town' ? p.c.greet : this.villagers.talking.get(p.c.id)
+    const greet = p.res !== null ? (p.res.held(p.c) ? { at: p.res.arrived(p.c) ? 0 : Infinity } : null) : p.kind === 'town' || p.kind === 'castle' ? p.c.greet : this.villagers.talking.get(p.c.id)
     if (!greet) { this.coming = null; return }
     if (!this.coming.hailed && greet.at !== Infinity) {
       this.coming.hailed = true

@@ -2876,6 +2876,7 @@ function updateFire(dt) {
     torchSorted.push({ x: t.x, y: t.y, z: t.z, strength: strength * flameFlicker(now, t.phase), reach, d: Math.hypot(t.x - headTmp.x, t.y - headTmp.y, t.z - headTmp.z) })
   }
   if (palisades) palisades.torchLights(headTmp, now, TORCH_REACH, torchSorted)
+  if (castleFolk) castleFolk.torchLights(headTmp, now, torchSorted)
   for (const f of flares.grounded(groundedFlares)) {
     if (!flareTints.has(f.color)) flareTints.set(f.color, new THREE.Color(f.color))
     torchSorted.push({ x: f.tx, y: f.ty, z: f.tz, strength: FLARE_LIGHT.strength * flameFlicker(now, f.seed * 10), reach: FLARE_LIGHT.reach, tint: flareTints.get(f.color), d: Math.hypot(f.tx - headTmp.x, f.ty - headTmp.y, f.tz - headTmp.z) })
@@ -6206,7 +6207,7 @@ async function buildRoom(room, at) {
     const caves = caveSites ? caveSites.mouths.map((m, mouth) => ({ system: m.system, mouth, x: m.x, z: m.z })) : []
     const keeps = layers.castles.list.map((site) => { const [x, z] = castleToWorld(site, site.gate[0], site.gate[1]); return { site: site.id, x, z } })
     const hideouts = townsfolk ? townHideouts(townsfolk.towns, caves, keeps) : null
-    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs, heard: heardAt, hideouts })
+    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs, heard: heardAt, hideouts, castle: () => castleFolk })
   }
   window.v2conversations = conversations
 
@@ -9177,9 +9178,9 @@ function stepOverworld(dt, now) {
   const ghostQuest = inCastle !== null && castleGhost.at !== null && conversations !== null ? conversations.ghostOf(inCastle.site.id) : null
   castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale(), () => castleGhost.whisper(clock.seconds)))
   if (castleFolk) {
-    castleFolk.update(dt, clock.seconds, headTmp, inCastle === null ? null : inCastle.site, inCastle === null ? 0 : inCastle.stone.oy)
-    if (conversations !== null) for (const b of castleFolk.barks(headTmp, FOLK.near * herScale())) {
-      conversations.bark(b.mind, b.moment, b.mouth, headTmp)
+    castleFolk.update(dt, clock.seconds, headTmp, inCastle === null ? null : inCastle.site, inCastle === null ? 0 : inCastle.stone.oy, lampNight(), fireNow())
+    if (conversations !== null) for (const b of castleFolk.barks(headTmp, FOLK.near * herScale(), clock.seconds)) {
+      if (b.moment !== null) conversations.bark(b.mind, b.moment, b.mouth, headTmp)
       if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked)), b.feet)
     }
     if (conversations !== null) for (const t of castleFolk.chatter(headTmp, clock.seconds)) {

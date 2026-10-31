@@ -12,11 +12,13 @@
 
 import { readFileSync } from 'node:fs'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
-import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, SPIRAL, warpOf } from '../src/v2/castles/shell.js'
+import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, interiorWarp, LEAD_SLOT, rayHit, SPIRAL, STONE_SLOT, warpedProp, warpOf, WOOD_SLOT } from '../src/v2/castles/shell.js'
+import { castleWindows } from '../src/v2/castles/light.js'
 import { castleSolids, exteriorSpans, interiorSpans, spiralTreadAt, SPANS, SPAN_CAP } from '../src/v2/castles/solids.js'
 import { dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
-import { dungeonProps } from '../src/v2/castles/furnish.js'
+import { courtProps, dungeonProps, roomProps } from '../src/v2/castles/furnish.js'
+import { courtGlow, GLOW } from '../src/v2/castles/glow.js'
 import { FOLK_CHAT, FOLK_SAYS, folkMoment, insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
 import { fits } from '../src/v2/talk/caption.js'
 
@@ -61,6 +63,83 @@ const ext = good.map((l) => tri(exteriorGeometry(l)))
 const int = good.slice(0, 40).map((l) => interiorGeometries(l).reduce((a, s) => a + tri(s.geometry), 0))
 check(Math.max(...ext) < 20000, 'an exterior shell stays under 20k triangles', `worst ${Math.max(...ext)}`)
 check(Math.max(...int) < 110000, 'an interior shell stays under 110k triangles', `median ${[...int].sort((a, b) => a - b)[int.length >> 1]}, worst ${Math.max(...int)}`)
+
+// Rays from 40 cm out in the room at each window pane and hanging: the pane (or cloth) must be hit first, with stone 1 cm or more
+// behind it. A hanging's edge may run into a corner facet beside its wall.
+const sunk = { window: [0, 0], hanging: [0, 0] }, sunkAt = []
+for (const l of good.slice(0, 12)) {
+  const warp = interiorWarp(l), tris = []
+  for (const { geometry: g } of interiorGeometries(l)) for (const slot of [STONE_SLOT, WOOD_SLOT, LEAD_SLOT]) {
+    const [start, count] = g.groups[slot], p = g.position
+    for (let i = start; i < start + count; i += 3) tris.push({ slot, t: [0, 1, 2].map((k) => [p[(i + k) * 3], p[(i + k) * 3 + 1], p[(i + k) * 3 + 2]]) })
+  }
+  const items = castleWindows(l).map((w) => {
+    const P = (u, y) => warp(w.x - w.nz * u - w.nx * 0.05, w.y + y, w.z + w.nx * u - w.nz * 0.05), hw = w.w / 2
+    return { kind: 'window', n: [w.nx, 0, w.nz], C: [P(-hw, 0), P(hw, 0), P(hw, w.h), P(-hw, w.h)] }
+  })
+  for (const r of roomProps(l).filter((r) => r.kind === 'tapestry' || r.kind === 'banner')) {
+    const o = warpedProp(warp, r), c = Math.cos(o.yaw), s = Math.sin(o.yaw), W = (u, y) => [o.x + u * c - o.d / 2 * s, o.y + y, o.z - u * s - o.d / 2 * c]
+    const w = o.w / 2 - (r.kind === 'banner' ? 0.08 : 0), [y0, y1] = r.kind === 'banner' ? [1.4, 3.3] : [1.2, 3.4]
+    items.push({ kind: 'hanging', n: [-s, 0, -c], C: [W(-w, y0), W(w, y0), W(w, y1), W(-w, y1)] })
+  }
+  for (const it of items) {
+    const lo = [0, 1, 2].map((i) => Math.min(...it.C.map((p) => p[i])) - 1), hi = [0, 1, 2].map((i) => Math.max(...it.C.map((p) => p[i])) + 1)
+    const near = tris.filter(({ t }) => [0, 1, 2].every((j) => Math.max(t[0][j], t[1][j], t[2][j]) >= lo[j] && Math.min(t[0][j], t[1][j], t[2][j]) <= hi[j]))
+    const proud = [0.1, 0.37, 0.63, 0.9].every((a) => [0.1, 0.37, 0.63, 0.9].every((b) => {
+      const q = [0, 1, 2].map((i) => (1 - b) * ((1 - a) * it.C[0][i] + a * it.C[1][i]) + b * ((1 - a) * it.C[3][i] + a * it.C[2][i])), from = q.map((v, i) => v - it.n[i] * 0.4)
+      let first = null, stone = Infinity
+      for (const tr of near) {
+        const h = rayHit(from, it.n, ...tr.t)
+        if (h === null || h < 0 || h > 1.2) continue
+        if (first === null || h < first.h) first = { h, slot: tr.slot }
+        if (tr.slot === STONE_SLOT) stone = Math.min(stone, h)
+      }
+      return first !== null && first.slot !== STONE_SLOT && stone - first.h >= 0.01
+    }))
+    sunk[it.kind][0]++
+    if (!proud) { sunk[it.kind][1]++; sunkAt.push(`${l.seed}:${it.kind}@${it.C[0].map((v) => v.toFixed(1))}`) }
+  }
+}
+// Looking up from anywhere on the floor through a doorway (on the room's side of an outer door's leaves), the first face overhead
+// must face down: a box's missing bottom shows the sky through its culled top. Walls are left out, which a vertical ray grazes.
+const leaky = []
+for (const l of good.slice(0, 12)) {
+  const warp = interiorWarp(l), SH = CASTLE.storey * CASTLE.tall, byK = new Map()
+  for (const { k, geometry: g } of interiorGeometries(l)) {
+    const tris = [], p = g.position, nm = g.normal
+    for (let i = 0; i < p.length / 3; i += 3) if (Math.abs(nm[i * 3 + 1]) > 0.5) tris.push({ ny: nm[i * 3 + 1], t: [0, 1, 2].map((j) => [p[(i + j) * 3], p[(i + j) * 3 + 1], p[(i + j) * 3 + 2]]) })
+    byK.set(k, tris)
+  }
+  for (const e of l.edges) for (const d of e.doors) {
+    const k = Math.round(d.y / CASTLE.storey), y = k * SH, hw = d.w * CASTLE.scale / 2, tris = byK.get(k)
+    const near = tris.filter(({ t }) => Math.abs(t[0][0] - d.x * CASTLE.scale) < 3 && Math.abs(t[0][2] - d.z * CASTLE.scale) < 3)
+    const first = (o, n) => near.reduce((b, tr) => { const h = rayHit(o, n, ...tr.t); return h !== null && h > 0 && h < SH && (b === null || h < b.h) ? { h, ny: tr.ny } : b }, null)
+    const inner = e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge', leafAt = 0.4 * CASTLE.scale - 0.05
+    for (let r = -1; r <= 1; r += 0.1) for (const u of [-0.7, 0, 0.7]) {
+      if (!inner && -d.side * r < leafAt + 0.02) continue
+      const [a, b] = d.axis === 'x' ? [r, u * hw] : [u * hw, r], o = warp(d.x * CASTLE.scale + a, y + d.h * CASTLE.tall - 0.15, d.z * CASTLE.scale + b)
+      const floor = first(o, [0, -1, 0])
+      if (floor === null || floor.h > d.h * CASTLE.tall) continue
+      const up = first(o, [0, 1, 0])
+      if (up === null || up.ny > -0.5) leaky.push(`${l.seed}:k${k}@${o.map((v) => v.toFixed(1))}`)
+    }
+  }
+}
+check(leaky.length === 0, 'every doorway has stone facing down over it', `${leaky.length} leaks ${leaky.slice(0, 4).join(' ')}`)
+
+// A rug or carpet over a spiral's well or the dungeon stair lies on air: no rug corner or edge midpoint within its square.
+const airRugs = []
+for (const l of good) {
+  const S = CASTLE.scale, wells = l.edges.filter((e) => e.stair).map((e) => [e.stair, [e.a, e.b]]).concat([[dungeonPlan(l).stair, null]])
+  for (const r of roomProps(l).filter((r) => r.kind === 'rug' || r.kind === 'carpet')) {
+    const c = Math.cos(r.yaw), s = Math.sin(r.yaw), pts = [-1, 0, 1].flatMap((u) => [-1, 0, 1].map((v) => [r.x + u * r.w / 2 * c + v * r.d / 2 * s, r.z - u * r.w / 2 * s + v * r.d / 2 * c]))
+    const k = Math.round(r.y / (CASTLE.storey * CASTLE.tall))
+    for (const [w, ns] of wells) if ((ns === null ? k === 0 : ns.some((n) => n.k === k)) && pts.some(([x, z]) => Math.max(Math.abs(x - w.x * S), Math.abs(z - w.z * S)) < SPIRAL.R + 0.05)) airRugs.push(`${l.seed}:${r.kind}@${r.x.toFixed(1)},${r.z.toFixed(1)}`)
+  }
+}
+check(airRugs.length === 0, 'no rug or carpet lies over a stair well', airRugs.slice(0, 4).join(' '))
+
+check(sunk.window[1] === 0 && sunk.hanging[1] <= sunk.hanging[0] * 0.03, 'every window pane, and nearly every tapestry and banner, stands 1 cm proud of its wall', `${sunk.window[1]}/${sunk.window[0]} panes, ${sunk.hanging[1]}/${sunk.hanging[0]} hangings sunk ${sunkAt.slice(0, 4).join(' ')}`)
 
 // Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is
 // scanned, since the warp moves coincident faces together.
@@ -185,6 +264,26 @@ check(solidFail === null, 'every castle\'s collision and portals build', solidFa
 check(worstEx < SPAN_CAP && worstIn < SPAN_CAP, 'no castle column passes the walk\'s span cap', `worst exterior ${worstEx}, interior ${worstIn} of ${SPAN_CAP}`)
 check(portalsShort.length === 0, 'every castle has doors, its spirals, a rope and a chest', portalsShort.slice(0, 5).join(' '))
 
+// Court torches: 2-3 posts, apart, clear of the well and the gate guards' stands; their light baked, capped, and gone 10 m off.
+const torchBad = [], glowBad = []
+for (const l of good) {
+  const props = courtProps(l), posts = props.filter((o) => o.kind === 'torch'), well = props.find((o) => o.kind === 'well')
+  const gate = outsideCast(l, null, null).filter((o) => o.who === 'gate')
+  if (posts.length < 2 || posts.length > 3 || posts.some((t, i) => posts.some((u, j) => j > i && Math.hypot(t.x - u.x, t.z - u.z) < 3)
+    || (well !== undefined && Math.hypot(t.x - well.x, t.z - well.z) < 2.6) || gate.some((g) => Math.hypot(t.x - g.x, t.z - g.z) < 1))) torchBad.push(`${l.seed}:${posts.length}`)
+}
+for (const l of good.slice(0, 8)) {
+  const glow = courtGlow(l, castleSolids(l)), posts = courtProps(l).filter((o) => o.kind === 'torch')
+  const g = exteriorGeometry(l, { glow }), lit = g.light.filter((_, i) => i % 3 === 0)
+  const best = posts.map((t) => Math.max(...Array.from({ length: 8 }, (_, k) => glow.at([t.x + 1.5 * Math.cos(k * Math.PI / 4), 0, t.z + 1.5 * Math.sin(k * Math.PI / 4)], [0, 1, 0])[0])))
+  const far = posts.map((t) => glow.at([t.x + 30, 0, t.z], [0, 1, 0])[0])
+  if (g.light.length !== g.position.length || Math.max(...lit) > GLOW.cap || best.some((b) => b < 0.3) || far.some((f) => f > 0)) glowBad.push(`${l.seed}: near ${best.map((b) => b.toFixed(2)).join(',')} max ${Math.max(...lit).toFixed(2)}`)
+}
+check(torchBad.length === 0, 'every court has 2-3 torch posts 3 m apart, clear of the well and the gate guards', torchBad.slice(0, 5).join(' '))
+check(glowBad.length === 0, "a court torch lights the ground round it, every exterior vertex carries the bake under its cap, and none lights 30 m off", glowBad.slice(0, 3).join(' | '))
+const glowFights = good.slice(0, 6).map((l) => [l.seed, zFights(exteriorGeometry(l, { warp: false, glow: courtGlow(l, castleSolids(l)) }))]).filter(([, h]) => h)
+check(glowFights.length === 0, 'cutting the exterior for its bake makes no two coloured faces share a plane', glowFights.slice(0, 4).map(([s, h]) => `seed ${s}: ${h}`).join(', '))
+
 // A teleport lob falls 0.26 m a sample at most: on every tread, at any phase, the first sample that meets a spiral is on that tread.
 const lobThrough = []
 for (const l of good.slice(0, 20)) {
@@ -196,6 +295,19 @@ for (const l of good.slice(0, 20)) {
     if (hit === null || Math.abs(hit - top) > 1e-6) lobThrough.push(`${l.seed}:${sp.k}:${j}`)
   }
 }
+// The slab's hole is cut a little wider than the treads: just inside its rim, she must stand on the tread under her, not fall past it.
+const sliver = []
+for (const l of good.slice(0, 20)) {
+  const it = castleSolids(l).it, SH = CASTLE.storey * CASTLE.tall, rise = SH / SPIRAL.steps / SPIRAL.treads
+  for (const sp of it.spirals) for (let t = SPIRAL.hole * SPIRAL.treads; t < SPIRAL.steps * SPIRAL.treads; t += 0.25) for (const r of [1.98, 2.02, 2.05]) {
+    const a = sp.a0 + (t + 0.125) * Math.PI / 8 / SPIRAL.treads, j = Math.floor(t + 0.125), n = interiorSpans(it, sp.x + Math.cos(a) * r, sp.z + Math.sin(a) * r, (sp.k + 1) * SH)
+    let floor = -Infinity
+    for (let i = 0; i < n; i++) if (SPANS.HI[i] <= (sp.k + 1) * SH + 0.05) floor = Math.max(floor, SPANS.HI[i])
+    if (floor < sp.k * SH + (j + 1) * rise - 0.01) sliver.push(`${l.seed}:${sp.k}:${j}@${r}`)
+  }
+}
+check(sliver.length === 0, "no sliver round a spiral's hole drops past its treads", `${sliver.length}: ${sliver.slice(0, 6).join(' ')}`)
+
 check(lobThrough.length === 0, 'a teleport lob falling onto a spiral tread meets that tread', `${lobThrough.length}: ${lobThrough.slice(0, 6).join(' ')}`)
 
 // The dungeon, walked on a 0.5 m grid from its foot chamber: a step is a floor within 0.45 m of the last with 1.7 m over it.
@@ -242,10 +354,16 @@ check(dungeonShut.length === 0 && dungeonShare > 0.85, 'unlocked, she walks from
 check(dungeonTri < 25000, 'a dungeon stays under 25k triangles', `worst ${dungeonTri}`)
 
 // The household and garrison (render/castle-folk.js), less the two travellers a castle without a trail lacks.
-const fewFolk = [], offFloor = [], noMaid = [], unvoiced = new Set()
+const fewFolk = [], offFloor = [], noMaid = [], unvoiced = new Set(), noLore = []
 const voiced = JSON.parse(readFileSync(new URL('../public/sounds/voice/moments.json', import.meta.url), 'utf8')).human
 for (const l of good) {
-  const inside = insideCast(l), outside = outsideCast(l, { x: 0, y: 0, z: 0, yaw: 0 }, null), it = castleSolids(l).it
+  const sol = castleSolids(l), it = sol.it, inside = insideCast(l), outside = outsideCast(l, { x: 0, y: 0, z: 0, yaw: 0 }, null)
+  const lore = outside.filter((p) => p.who === 'lore'), { rope, ladders, chest } = sol.portals
+  if (lore.length !== 1) noLore.push(`${l.seed}: ${lore.length} summit guards`)
+  else {
+    const g = lore[0], n = exteriorSpans(sol.ex, g.x, g.z), clear = Math.min(...[[rope.x, rope.z], [chest[0], chest[2]], ...ladders.flatMap((d) => [[d.hatch[0], d.hatch[2]], [d.roof[0], d.roof[2]]])].map(([x, z]) => Math.hypot(g.x - x, g.z - z)))
+    if (n === 0 || Math.abs(SPANS.HI[n - 1] - g.y) > 0.1 || clear < 0.9) noLore.push(`${l.seed}: top ${n ? SPANS.HI[n - 1].toFixed(2) : '-'} at ${g.y.toFixed(2)}, ${clear.toFixed(2)} m clear`)
+  }
   if (inside.length + outside.length < 10 || outside.filter((p) => p.who === 'watch').length < 3) fewFolk.push(l.seed)
   if (!inside.some((p) => p.who === 'maid') || ![true, false].every((h) => fits(maidSays(l, h, false)))) noMaid.push(l.seed)
   for (const p of [...inside, ...outside]) {
@@ -264,6 +382,7 @@ for (const l of good) {
   }
 }
 check(fewFolk.length === 0, 'every castle has 10+ folk besides its travellers, 3 of them on the walls', fewFolk.slice(0, 5).join(' '))
+check(noLore.length === 0, 'every castle keeps a guard on its summit floor, 0.9 m clear of the chest, the rope and the way up', noLore.slice(0, 5).join(' | '))
 check(noMaid.length === 0, 'every castle has its kitchen maid, her hint within the caption', noMaid.slice(0, 5).join(' '))
 let roll = 12345
 const rand = () => ((roll = (roll * 16807) % 2147483647) / 2147483647)

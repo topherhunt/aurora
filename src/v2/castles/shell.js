@@ -48,8 +48,9 @@ export const warpOf = (seed, s) => makeWarp({ strength: 1, seed, amp: 0.22 * s, 
 const HEXA_FACES = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
 
 export class Mesher {
-  /** With `lit` (light.js interiorLight) each vertex carries its light, and a quad is cut into cells of `lit.split(centre, n)` metres; with
-   * `fixed` [fill, torch, window] every face takes that, shaded by which way it faces. */
+  /** With `lit` (light.js interiorLight, glow.js courtGlow) each vertex carries its light, and a quad is cut into cells of
+   * `lit.split(centre, n, corners)` metres (0: whole); with `fixed` [fill, torch, window] every face takes that, shaded by which
+   * way it faces. */
   constructor(seed, warp = null, full = true, lit = null) {
     this.bufs = SLOTS.map(() => ({ p: [], n: [], c: [], uv: [], l: [] })); this.slot = STONE_SLOT; this.rng = mulberry32(seed); this.warp = warp; this.full = full
     this.lit = lit; this.fixed = null
@@ -64,7 +65,7 @@ export class Mesher {
   }
   /** A quad a-b-c-d facing the side of normal hint n, with UVs `uv` per corner when given. */
   quad(a, b, c, d, col, n, uv) {
-    const cell = this.lit && !this.fixed && !uv ? this.lit.split([0, 1, 2].map((i) => (a[i] + c[i]) / 2), norm(n)) : 0
+    const cell = this.lit && !this.fixed && !uv ? this.lit.split([0, 1, 2].map((i) => (a[i] + c[i]) / 2), norm(n), [a, b, c, d]) : 0
     const nu = cell && Math.ceil(Math.max(len(sub(b, a)), len(sub(c, d))) / cell), nv = cell && Math.ceil(Math.max(len(sub(d, a)), len(sub(c, b))) / cell)
     if (nu * nv <= 1) { this.face([a, b, c], n, col, uv && [uv[0], uv[1], uv[2]]); this.face([a, c, d], n, col, uv && [uv[0], uv[2], uv[3]]); return }
     // Cut for its light: the cells lie on the bilinear surface of the warped corners, so the quad's edges stay where its uncut
@@ -359,15 +360,36 @@ function crenels(m, P, us, out, inn, nOut, m0, m1, y, col, rng) {
   }
 }
 
+/** A curtain wall's stations along it, every half cell from its end buried 0.6 m in one tower to the other's. */
+function wallStations(lay, s) {
+  const alongX = s.axis === 'x'
+  const a0 = (alongX ? lay.X(s.x0) : lay.Z(s.z0)) - 0.6, a1 = (alongX ? lay.X(s.x0 + s.w) : lay.Z(s.z0 + s.d)) + 0.6
+  const us = [a0]
+  for (let u = a0 + C / 2; u < a1 - 0.5; u += C / 2) us.push(u)
+  us.push(a1)
+  return us
+}
+/** The court-side rail's runs [u0, u1] along curtain wall s, on its stations, open over each landing a flight brings up to it. */
+export function wallRails(lay, s) {
+  const us = wallStations(lay, s), cc = s.axis === 'x' ? lay.Z(s.z0) + C / 2 : lay.X(s.x0) + C / 2, inn = s.axis === 'x' ? s.inner[1] : s.inner[0]
+  const lands = lay.edges.filter((e) => e.flight && e.flight.axis === s.axis && Math.abs(e.flight.c0 - (cc + inn * CASTLE.wallT / 2)) < 0.01)
+    .map(({ flight: f }) => [Math.min(f.a1, f.a1 - Math.sign(f.a1 - f.a0) * f.landing), Math.max(f.a1, f.a1 - Math.sign(f.a1 - f.a0) * f.landing)])
+  const runs = []
+  for (let i = 0; i + 1 < us.length; i++) {
+    if (lands.some(([l0, l1]) => us[i] < l1 && l0 < us[i + 1])) continue
+    if (runs.length && runs.at(-1)[1] === us[i]) runs.at(-1)[1] = us[i + 1]
+    else runs.push([us[i], us[i + 1]])
+  }
+  return runs
+}
+
 /** A curtain wall lofted like a section, its ends buried 0.6 m in the towers, its court face barely flaring. */
 function wallShell(m, lay, s, rng) {
   const col = m.tint(STONE.wall), band = m.tint(BAND), top = 2 * H, half = CASTLE.wallT / 2, fl = 0.45
   const alongX = s.axis === 'x', inn = alongX ? s.inner[1] : s.inner[0]
   const a0 = (alongX ? lay.X(s.x0) : lay.Z(s.z0)) - 0.6, a1 = (alongX ? lay.X(s.x0 + s.w) : lay.Z(s.z0 + s.d)) + 0.6
   const cc = alongX ? lay.Z(s.z0) + C / 2 : lay.X(s.x0) + C / 2
-  const us = [a0]
-  for (let u = a0 + C / 2; u < a1 - 0.5; u += C / 2) us.push(u)
-  us.push(a1)
+  const us = wallStations(lay, s)
   const P = (u, v, y) => (alongX ? [u, y, v] : [v, y, u])
   const j = () => (rng() - 0.5) * 0.06
   const rings = profile(top, fl, j).map(([y, off], r) => ({
@@ -384,6 +406,18 @@ function wallShell(m, lay, s, rng) {
   const T = rings.at(-1)
   for (let i = 0; i + 1 < us.length; i++) m.quad(P(us[i], T.out[i], top), P(us[i + 1], T.out[i + 1], top), P(us[i + 1], T.in[i + 1], top), P(us[i], T.in[i], top), col, [0, 1, 0])
   crenels(m, P, us, T.out, inn, nOut, a0 + 0.6, a1 - 0.6, top, col, rng)
+  // The court-side rail: the parapet's wall without merlons, its court face on the wall's, so the warp bends both alike.
+  const y1 = top + 0.6, v = T.in[0], w = v - inn * 0.36, along = alongX ? [1, 0, 0] : [0, 0, 1]
+  for (const [r0, r1] of wallRails(lay, s)) {
+    const ui = us.filter((u) => u >= r0 && u <= r1)
+    for (let i = 0; i + 1 < ui.length; i++) {
+      m.quad(P(ui[i], v, top), P(ui[i + 1], v, top), P(ui[i + 1], v, y1), P(ui[i], v, y1), col, nOut.map((x) => -x))
+      m.quad(P(ui[i], w, top), P(ui[i + 1], w, top), P(ui[i + 1], w, y1), P(ui[i], w, y1), col, nOut)
+      m.quad(P(ui[i], v, y1), P(ui[i + 1], v, y1), P(ui[i + 1], w, y1), P(ui[i], w, y1), col, [0, 1, 0])
+    }
+    if (r0 > a0) m.quad(P(r0, v, top), P(r0, w, top), P(r0, w, y1), P(r0, v, y1), col, along.map((x) => -x))
+    if (r1 < a1) m.quad(P(r1, v, top), P(r1, w, top), P(r1, w, y1), P(r1, v, y1), col, along)
+  }
 }
 
 /** A flight of solid steps from the ground along `axis`, ending in a flat landing. Each side is one face per step whose back edge
@@ -492,17 +526,17 @@ function ramp(m, d) {
  * both stay true. UVs are in UV_METRES. The floor runs COURT_RUN into the ring's cells, under the walls' court faces (0.8 m in,
  * then flared and warped) but short of their outer faces. */
 export const COURT_RUN = 1.6
-export function courtGeometry(lay) {
-  const m = new Mesher(lay.seed)
+export function courtGeometry(lay, glow = null) {
+  const m = new Mesher(lay.seed, null, true, glow)
   m.box(lay.X(0) - COURT_RUN, -1, lay.Z(0) - COURT_RUN, lay.X(lay.cw) + COURT_RUN, 0.05, lay.Z(lay.cd) + COURT_RUN, FLAG)
   for (const e of lay.edges) if (e.a.kind === 'entry') ramp(m, e.doors[0])
   return m.arrays()
 }
 
 /** `warp: false` builds the straight shell, which the gate scans for coplanar overlaps (the warp moves coincident faces together).
- * `full: false` is the mid-distance tier: no merlons, arrow slits, door bars or props. */
-export function exteriorGeometry(lay, { warp = true, full = true } = {}) {
-  const m = new Mesher(lay.seed, warp ? warpOf(lay.seed, 1) : null, full)
+ * `full: false` is the mid-distance tier: no merlons, arrow slits, door bars or props. `glow` (glow.js courtGlow) bakes the flames' light. */
+export function exteriorGeometry(lay, { warp = true, full = true, glow = null } = {}) {
+  const m = new Mesher(lay.seed, warp ? warpOf(lay.seed, 1) : null, full, glow)
   lay.sections.forEach((s, i) => {
     const rng = mulberry32(lay.seed * 131 + i)
     if (s.kind === 'wall') wallShell(m, lay, s, rng)
@@ -678,6 +712,10 @@ export function prop(m, o) {
         blk(-w + 0.08, 0.5, -d + 0.12, w - 0.08, 0.56, d - 0.05, RED); blk(-w - 0.02, 1.62, -d - 0.02, w + 0.02, 1.76, -d + 0.14, GOLD)
         break
       case 'brazier': legs(0.2, 0.2, 0.7, 0.025, IRON); prism(0, 0, 0.7, 0.95, 0.3, 8, IRON); prism(0, 0, 0.95, 1.0, 0.24, 8, EMBER); break
+      case 'torch':
+        m.with(STONE_SLOT, () => prism(0, 0, 0, 0.18, 0.15, 6, m.tint(STONE.wall)))
+        prism(0, 0, 0.18, 1.9, 0.04, 6, DARKWOOD); prism(0, 0, 1.9, 2.1, 0.11, 6, IRON); prism(0, 0, 2.06, 2.13, 0.08, 6, EMBER)
+        break
       case 'banner': blk(-w, 3.3, -d, w, 3.36, d + 0.04, DARKWOOD); blk(-w + 0.08, 1.4, -d + 0.02, w - 0.08, 3.3, -d + 0.04, m.tint(RED, 0.1)); blk(-0.2, 2.2, -d + 0.035, 0.2, 2.6, -d + 0.05, GOLD); break
       case 'woodpile':
         // Each log's own length, so no two end caps share a plane.
@@ -974,6 +1012,34 @@ export function interiorWarp(lay) {
 /** Prop record o moved with the walls about it, so what stands against one stays against it. Props themselves are drawn straight. */
 export const warpedProp = (warp, o) => { const [x, , z] = warp(o.x, o.y, o.z); return { ...o, x, z } }
 
+/** How far along ray `n` from p triangle (a, b, c) lies (negative: behind p), or null if the ray misses it. */
+export function rayHit(p, n, a, b, c) {
+  const e1 = sub(b, a), e2 = sub(c, a), q = cross(n, e2), det = dot(e1, q)
+  if (Math.abs(det) < 1e-12) return null
+  const tv = sub(p, a), u = dot(tv, q) / det, r = cross(tv, e1), v = dot(n, r) / det
+  return u < 0 || u > 1 || v < 0 || u + v > 1 ? null : dot(e2, r) / det
+}
+// A long wall's light cells lie on the flat between its warped corners, up to 20 cm off the warp at any one point, so what hangs
+// on it takes no warp of its own: it is moved out along -n (toward the room) until each of points `pts` stands 2.5 cm proud of the
+// stone drawn so far (flat positions `tris`). Stone more than 15 cm in front of the median is a jamb or corner facet beside the
+// wall, which an edge may run into.
+function seatOn(tris, pts, n) {
+  const lo = [0, 1, 2].map((i) => Math.min(...pts.map((p) => p[i])) - 0.6), hi = [0, 1, 2].map((i) => Math.max(...pts.map((p) => p[i])) + 0.6)
+  const near = []
+  for (let i = 0; i < tris.length; i += 9) {
+    const t = [[tris[i], tris[i + 1], tris[i + 2]], [tris[i + 3], tris[i + 4], tris[i + 5]], [tris[i + 6], tris[i + 7], tris[i + 8]]]
+    if ([0, 1, 2].every((j) => Math.max(t[0][j], t[1][j], t[2][j]) >= lo[j] && Math.min(t[0][j], t[1][j], t[2][j]) <= hi[j])) near.push(t)
+  }
+  const ts = pts.map((p) => Math.min(...near.map((tr) => { const h = rayHit(p, n, ...tr); return h !== null && h > -0.3 && h < 0.5 ? h : Infinity })))
+    .filter((t) => t < Infinity).sort((a, b) => a - b)
+  if (ts.length === 0) throw new Error(`castle: nothing to seat on behind ${pts[0].map((v) => v.toFixed(1))}`)
+  const mid = ts[ts.length >> 1]
+  return 0.025 - ts.find((t) => t > mid - 0.15)
+}
+const GRID = [0.02, 0.35, 0.65, 0.98].flatMap((s) => [0.02, 0.35, 0.65, 0.98].map((t) => [s, t]))
+// Hangings seated flat on their wall, and the cloth each must keep proud: [u half-width less, y0, y1] at its back plane.
+const SEATED = { tapestry: [0, 1.2, 3.4], banner: [0.08, 1.4, 3.3] }
+
 /** One geometry per storey, so a cut can hide the storeys above it. Interior units are exterior metres times CASTLE.scale. */
 export function interiorGeometries(lay) {
   const { X, Z } = lay
@@ -1035,7 +1101,7 @@ export function interiorGeometries(lay) {
         for (const [axis, plane, lo, hi, t0, t1] of [['x', ex[0], iz0 + c00[1], iz1 - c01[1], ix0, ix0 + WT], ['x', ex[2], iz0 + c10[1], iz1 - c11[1], ix1 - WT, ix1], ['z', ex[1], ix0 + c00[0], ix1 - c10[0], iz0, iz0 + WT], ['z', ex[3], ix0 + c01[0], ix1 - c11[0], iz1 - WT, iz1]]) {
           const gaps = doors.filter((d) => d.axis === axis && Math.abs((axis === 'x' ? d.x : d.z) - plane) < 1e-6)
             .map((d) => [(axis === 'x' ? d.z : d.x) * S - d.w * S / 2, (axis === 'x' ? d.z : d.x) * S + d.w * S / 2, d.h * V]).sort((p, q) => p[0] - q[0])
-          const piece = (u0, u1, y0, y1) => (u1 - u0 > 0.01) && (axis === 'x' ? m.box(t0, y0, u0, t1, y1, u1, wall) : m.box(u0, y0, t0, u1, y1, t1, wall))
+          const piece = (u0, u1, y0, y1) => (u1 - u0 > 0.01) && (axis === 'x' ? m.box(t0, y0, u0, t1, y1, u1, wall, y0 > y) : m.box(u0, y0, t0, u1, y1, t1, wall, y0 > y))
           let u = lo
           for (const [g0, g1, gh] of gaps) { piece(u, g0, y, top); if (y + gh < top) piece(g0, g1, y + gh, top); u = g1 }
           piece(u, hi, y, top)
@@ -1058,21 +1124,31 @@ export function interiorGeometries(lay) {
   })
   // The gap between two rooms' inset walls at a door: a threshold slab and jambs, and a lintel over it. A door out of the
   // castle (or onto a bridge) is closed by its leaves just past its wall, which take the player out at a touch.
-  const G = INSET * S
+  // A round room's wall over a doorway is one slab lying flat between far-apart warped corners, so the frame on that side runs
+  // through the wall to where the slab's inner face really is, or the sky shows between them.
+  const G = INSET * S, walls = new Map([...meshers].filter(([k]) => k >= 0).map(([k, m]) => [k, m.bufs[STONE_SLOT].p.slice()]))
   for (const e of lay.edges) for (const d of e.doors) {
-    const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w * S / 2, top = y + SH - 0.3
-    const along = (a0, a1, b0, b1, y0, y1, col, m) => (d.axis === 'x' ? m.box(cx + a0, y0, cz + b0, cx + a1, y1, cz + b1, col) : m.box(cx + b0, y0, cz + a0, cx + b1, y1, cz + a1, col))
+    const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w * S / 2, top = y + SH - 0.3, dh = d.h * V
+    const along = (a0, a1, b0, b1, y0, y1, col, m) => (d.axis === 'x' ? m.box(cx + a0, y0, cz + b0, cx + a1, y1, cz + b1, col, y0 > y + 0.5) : m.box(cx + b0, y0, cz + a0, cx + b1, y1, cz + a1, col, y0 > y + 0.5))
+    const reach = (sg, base) => {
+      const round = [e.a, e.b].some((n) => n.kind === 'room' && n.sec.round && Math.sign(d.axis === 'x' ? lay.X(n.x0) + lay.X(n.x0 + n.w) - 2 * d.x : lay.Z(n.z0) + lay.Z(n.z0 + n.d) - 2 * d.z) === sg)
+      if (!round || y + dh + 0.2 > top) return base
+      const pts = [-0.8, -0.3, 0.3, 0.8].flatMap((u) => [0.3, 0.7].map((t) => warp(...(d.axis === 'x' ? [cx + sg * (G + WT), y + dh + t * (top - y - dh), cz + u * hw] : [cx + u * hw, y + dh + t * (top - y - dh), cz + sg * (G + WT)]))))
+      return Math.max(base, G + WT + seatOn(walls.get(k), pts, d.axis === 'x' ? [-sg, 0, 0] : [0, 0, -sg]) - 0.035)
+    }
+    const inner = e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge'
+    const [r0, r1, back] = inner ? [reach(-1, G), reach(1, G), 0] : [0, 0, reach(-d.side, G + 0.05)]
     for (const m of [at(k), at(-1 - k)]) {
       const wtop = m === at(k) ? top : y + 1.4
-      if (e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge') {
-        along(-G, G, -hw - WT, hw + WT, y - 0.3, y + 0.01, m.tint(FLOOR.gate), m)
-        for (const sgn of [-1, 1]) along(-G, G, sgn > 0 ? hw : -hw - WT, sgn > 0 ? hw + WT : -hw, y, wtop, m.tint(INNER), m)
-        if (y + d.h * V < wtop) along(-G, G, -hw, hw, y + d.h * V, wtop, m.tint(INNER), m)
+      if (inner) {
+        along(-r0, r1, -hw - WT, hw + WT, y - 0.3, y + 0.01, m.tint(FLOOR.gate), m)
+        for (const sgn of [-1, 1]) along(-r0, r1, sgn > 0 ? hw : -hw - WT, sgn > 0 ? hw + WT : -hw, y, wtop, m.tint(INNER), m)
+        if (y + dh < wtop) along(-r0, r1, -hw, hw, y + dh, wtop, m.tint(INNER), m)
       } else {
         const o = -d.side * (G - 0.05), n = d.axis === 'x' ? [-d.side, 0, 0] : [0, 0, -d.side], s = -d.side
         leaves(m, d.axis === 'x' ? [cx + o, y, cz] : [cx, y, cz + o], n, hw, d.h * V, d.look === 'gate', m.tint(INNER))
         // A frame from behind the leaves into the room's wall, lapping their edges, or the void past the wall shows round them.
-        const [a0, a1] = [s * (G - 0.15), s * (G + 0.05)].sort((p, q) => p - q), lap = 0.06
+        const [a0, a1] = [s * (G - 0.15), s * back].sort((p, q) => p - q), lap = 0.06
         along(a0, a1, -hw - 0.1, hw + 0.1, y - 0.3, y + 0.01, m.tint(FLOOR.gate), m)
         for (const sgn of [-1, 1]) along(a0, a1, sgn > 0 ? hw - lap : -hw - 0.1, sgn > 0 ? hw + 0.1 : -hw + lap, y, Math.min(wtop, y + d.h * V + 0.1), m.tint(INNER), m)
         if (y + d.h * V < wtop) along(a0, a1, -hw - 0.1, hw + 0.1, y + d.h * V - lap, Math.min(wtop, y + d.h * V + 0.1), m.tint(INNER), m)
@@ -1088,22 +1164,35 @@ export function interiorGeometries(lay) {
     if (!low) piece(w.door[0], w.door[1], w.y + PARTITION.doorH)
   }
   // Windows: a stone frame standing proud of the wall round a pane the shader lights by the hour, barred when it is big.
+  const stone = new Map([...meshers].filter(([k]) => k >= 0).map(([k, m]) => [k, m.bufs[STONE_SLOT].p.slice()]))
   for (const w of castleWindows(lay)) {
     const k = Math.round((w.y - 1) / SH), m = at(k), col = m.tint(INNER), r = [-w.nz, 0, w.nx], F = 0.14
     const P = (u, y, v) => [w.x + r[0] * u - w.nx * v, w.y + y, w.z + r[2] * u - w.nz * v]
+    const hw = w.w / 2, pane = [P(-hw, 0, 0.05), P(hw, 0, 0.05), P(hw, w.h, 0.05), P(-hw, w.h, 0.05)]
+    const C = pane.map((p) => warp(...p)), off = seatOn(stone.get(k), GRID.map(([s, t]) => bilinear(C, s, t)), [w.nx, 0, w.nz])
+    m.warp = (x, y, z) => { const p = warp(x, y, z); return [p[0] - w.nx * off, y, p[2] - w.nz * off] }
+    // The frame's back reaches as deep as the wall was before the seat.
     const slab = (u0, y0, v0, u1, y1, v1, c) => m.hexa([P(u0, y0, v0), P(u1, y0, v0), P(u1, y0, v1), P(u0, y0, v1), P(u0, y1, v0), P(u1, y1, v0), P(u1, y1, v1), P(u0, y1, v1)], c)
-    const hw = w.w / 2
-    slab(-hw - F, -0.12, -0.02, hw + F, 0, 0.18, col); slab(-hw - F, w.h, -0.02, hw + F, w.h + F, 0.12, col)
-    for (const u of [-hw - F, hw]) slab(u, 0, -0.02, u + F, w.h, 0.1, col)
+    const back = -0.02 - Math.max(off, 0)
+    slab(-hw - F, -0.12, back, hw + F, 0, 0.18, col); slab(-hw - F, w.h, back, hw + F, w.h + F, 0.12, col)
+    for (const u of [-hw - F, hw]) slab(u, 0, back, u + F, w.h, 0.1, col)
     const lit = m.lit
     m.lit = { at: () => [0, 0, PANE], split: () => 0 }
-    m.with(LEAD_SLOT, () => m.quad(P(-hw, 0, 0.05), P(hw, 0, 0.05), P(hw, w.h, 0.05), P(-hw, w.h, 0.05), GLASS_TINT, [-w.nx, 0, -w.nz], [[0, 0], [w.w / 0.5, 0], [w.w / 0.5, w.h / 0.5], [0, w.h / 0.5]]))
+    m.with(LEAD_SLOT, () => m.quad(...pane, GLASS_TINT, [-w.nx, 0, -w.nz], [[0, 0], [w.w / 0.5, 0], [w.w / 0.5, w.h / 0.5], [0, w.h / 0.5]]))
     m.lit = lit
     if (w.w >= 1) m.with(WOOD_SLOT, () => { slab(-0.03, 0, 0.06, 0.03, w.h, 0.1, IRON); slab(-hw, w.h * 0.55 - 0.03, 0.06, hw, w.h * 0.55 + 0.03, 0.1, IRON) })
+    m.warp = warp
   }
   // Props take the light of the floor under them, or of the wall they hang on, shaded only by which way each face looks.
   for (const r of roomProps(lay)) {
-    const o = warpedProp(warp, r), back = [r.x - Math.sin(r.yaw) * r.d / 2, r.y + 2.2, r.z - Math.cos(r.yaw) * r.d / 2]
+    let o = warpedProp(warp, r)
+    if (r.kind in SEATED) {
+      const [inset, y0, y1] = SEATED[r.kind], c = Math.cos(o.yaw), s = Math.sin(o.yaw), u = o.w / 2 - inset, v = -o.d / 2 + 0.01
+      const C = [[-u, y0], [u, y0], [u, y1], [-u, y1]].map(([a, y]) => [o.x + a * c + v * s, o.y + y, o.z - a * s + v * c])
+      const off = seatOn(stone.get(o.k), GRID.map(([p, q]) => bilinear(C, p, q)), [-s, 0, -c])
+      o = { ...o, x: o.x + s * off, z: o.z + c * off }
+    }
+    const back =[r.x - Math.sin(r.yaw) * r.d / 2, r.y + 2.2, r.z - Math.cos(r.yaw) * r.d / 2]
     const sample = r.kind === 'chandelier' ? light.at([r.x, r.y + 3.6, r.z], [0, -1, 0]) : HIGH.has(r.kind) ? light.at(back, [Math.sin(r.yaw), 0, Math.cos(r.yaw)]) : light.at([r.x, r.y, r.z], [0, 1, 0])
     for (const m of HIGH.has(o.kind) ? [at(o.k)] : [at(o.k), at(-1 - o.k)]) { m.fixed = sample; prop(m, o); m.fixed = null }
   }

@@ -146,6 +146,19 @@ const tmpV = new THREE.Vector3()
 // Castle-local direction to world (layers/castles.js toWorld's turn).
 const turn = (s, u, v) => [u * Math.cos(s.yaw) + v * Math.sin(s.yaw), -u * Math.sin(s.yaw) + v * Math.cos(s.yaw)]
 
+// The court's baked firelight (castles/glow.js, the `light` attribute's x) added to a Lambert material, `uGlow` its colour by the hour.
+// Set before lighting.js's patch, which chains it.
+function glowed(material, uGlow) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uCastleGlow = uGlow
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nattribute vec3 light;\nvarying float vGlow;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = light.x;')
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vGlow;\nuniform vec3 uCastleGlow;')
+      .replace('#include <lights_fragment_end>', '#include <lights_fragment_end>\nreflectedLight.directDiffuse += diffuseColor.rgb * uCastleGlow * vGlow;')
+  }
+  return material
+}
+
 // TriFlames draws in world coordinates: castle-local flames (x, y, z, height, radius) turned and set down at foot height `y0`.
 function flamesOf(site, list, y0) {
   const n = list.length / 5
@@ -186,8 +199,9 @@ export class Castles {
     this.texturesReady = new Promise((resolve) => { loaded = resolve })
     const done = () => { if (--left === 0) loaded() }
     this.maps = { stone: loadTile('/buildings/castle_stone.webp', UV_METRES, done), plank: loadTile('/buildings/timber_plank.png', UV_METRES, done), cobble: loadTile('/terrain/cobble.webp', 3, done), door: loadTile('/buildings/door.png', UV_METRES, done), gate: loadTile('/buildings/castle_gate.png', UV_METRES, done), thatch: loadTile('/buildings/thatch.png', UV_METRES, done), cloth: loadTile('/interiors/linen.webp', UV_METRES, done), leaded: leadedTexture(128, 0x1ead) }
-    this.material = MAP_KEYS.map((k) => patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), `v2-castle-${k}`))
-    this.courtMaterial = patch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), 'v2-castle-court')
+    this.glow = { value: new THREE.Color(0, 0, 0) }
+    this.material = MAP_KEYS.map((k) => patch(glowed(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps[k] }), this.glow), `v2-castle-${k}`))
+    this.courtMaterial = patch(glowed(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), this.glow), 'v2-castle-court')
     Object.assign(this, interiorMaterials(this.maps, uTorch))
     this.probeHidden = probeHidden
     this.ropeMaterial = patch(new THREE.MeshLambertMaterial({ map: ropeTexture() }), 'v2-castle-rope')
@@ -294,6 +308,8 @@ export class Castles {
     if (!(dayness >= 0)) throw new Error(`Castles.update: needs dayness, got ${dayness}`)
     const B = CASTLE_BANDS
     let cards = false
+    const flicker = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
+    this.glow.value.setRGB(...INNER_LIGHT.fire).multiplyScalar(night * flicker)
     for (const s of this.sites) {
       const d = Math.hypot(eye.x - s.x, eye.z - s.z), c = this.live.get(s.id)
       if (c === undefined) {
@@ -315,7 +331,7 @@ export class Castles {
     if (this.inside !== null) {
       if (this.inside.innerFlames !== null) this.inside.innerFlames.update(t, [1, 1, 1])
       skyThroughGlass(dayness, this.innerUniforms.uSky.value)
-      this.innerUniforms.uFlicker.value = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
+      this.innerUniforms.uFlicker.value = flicker
       this.waterUniforms.uTime.value = t % 1024
     }
     if (cards) this._placeCards()

@@ -8,6 +8,8 @@ import { dungeonCell, dungeonPlan } from './dungeon.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3
+// Half the side of a spiral's square well (shell.js SPIRAL.R + 0.05) with a margin.
+const WELL = 2.25
 // Partitions: thickness, and the doorway each has at one cell's middle along it.
 export const PARTITION = { t: 0.4, door: 1.6, doorH: 3 }
 // Footprints [w, d] in metres; the mesher in shell.js draws each kind.
@@ -24,12 +26,13 @@ export const PROP = {
   bowrack: [1.6, 0.3], stones: [0.9, 0.9], chair: [0.5, 0.5], dresser: [1.4, 0.5], grain: [1.3, 0.8], veg: [0.9, 0.7], kegs: [1.2, 0.6], jars: [1.2, 0.4],
   coal: [1.0, 0.8], hams: [1.2, 0.2], chains: [1.0, 0.12], straw: [1.4, 1.0], bones: [0.9, 0.6], wreck: [0.9, 0.9], cage: [1.2, 1.2],
   jug: [0.18, 0.18], bowl: [0.24, 0.24], loaf: [0.26, 0.16], cup: [0.1, 0.1], candle: [0.06, 0.06], book: [0.26, 0.2],
+  torch: [0.3, 0.3],
 }
 // Flames each kind carries, in its own frame (shell.js prop): [u, y, v, height, radius].
 const FLAMES = {
   brazier: [[0, 1.0, 0, 0.5, 0.22]], hearth: [[0, 0.28, 0.05, 0.75, 0.38]], oven: [[0, 0.36, 0.64, 0.22, 0.16]], cauldron: [[0, 0.02, 0, 0.28, 0.22]],
   forge: [[-0.35, 0.84, -0.2, 0.42, 0.28]], sconce: [[0, 2.3, 0.08, 0.3, 0.09]], candles: [[0, 1.35, 0, 0.09, 0.025]], candle: [[0, 0.18, 0, 0.08, 0.02]],
-  altar: [[-0.55, 1.28, 0, 0.09, 0.025], [0.55, 1.28, 0, 0.09, 0.025]],
+  altar: [[-0.55, 1.28, 0, 0.09, 0.025], [0.55, 1.28, 0, 0.09, 0.025]], torch: [[0, 2.1, 0, 0.42, 0.13]],
   chandelier: [[-0.45, 3.88, -0.45, 0.09, 0.025], [0.45, 3.88, -0.45, 0.09, 0.025], [0.45, 3.88, 0.45, 0.09, 0.025], [-0.45, 3.88, 0.45, 0.09, 0.025]],
 }
 // What each role holds: `must` placed first (one each), then `wall` kinds round it, a `centre` piece, tableware on its tables.
@@ -79,6 +82,9 @@ const WORK_KINDS = ['trough', 'block', 'woodpile', 'anvil', 'barrel', 'crate']
 const ROOF_KINDS = ['arrows', 'arrows', 'bowrack', 'stones', 'stones', 'barrel']
 const DUNGEON_KINDS = ['barrel', 'crate', 'crate', 'sacks', 'grain', 'kegs', 'bucket', 'stones', 'cot', 'cask', 'chains', 'chains', 'straw', 'straw', 'bones', 'wreck', 'wreck', 'cage']
 const CLEAR = 1.3, LANE = 0.75, GAP = 0.15
+// The court's torch posts (castles/glow.js bakes their light): how many for a court of fewer than `big` open cells and for more, how
+// far in from the masonry (clear of a tower's 0.8 m crown), the clear metres round them, and the least metres between two.
+const COURT_TORCH = { few: 2, many: 3, big: 6, off: 1.3, clear: 0.6, apart: 3 }
 
 /** Distance from p to segment ab, in plan. */
 function segDist(p, a, b) {
@@ -351,6 +357,28 @@ export function courtProps(lay) {
     const x = lay.X(mid[0] + 0.5), z = lay.Z(mid[1] + 0.5)
     if (!lay.occAt(...mid) && portals.every((p) => Math.hypot(p[0] - x, p[1] - z) > 2.2) && !out.some((o) => Math.hypot(o.x - x, o.z - z) < 2)) out.push({ kind: 'well', x, y: 0, z, yaw: 0, w: 1.6, d: 1.6 })
   }
+  // The torch posts: the first by the way in, the rest each as far from those already placed as can be, a spot before masonry
+  // counting two metres farther, none nearer another than `apart`. The well keeps room for whoever draws water at it.
+  const T = COURT_TORCH, spots = []
+  for (const [gx, gz] of cells) {
+    const r = cellRect(gx, gz), cx = (r[0] + r[2]) / 2, cz = (r[1] + r[3]) / 2, o = C / 2 - T.off
+    for (const du of [-1, 0, 1]) for (const dv of [-1, 0, 1]) {
+      const wall = (du && lay.occAt(gx + du, gz)) || (dv && lay.occAt(gx, gz + dv))
+      spots.push([cx + du * o, cz + dv * o, wall ? 2 : 0])
+    }
+  }
+  const free = spots.filter(([x, z]) => portals.every((p) => Math.hypot(p[0] - x, p[1] - z) > CLEAR + T.clear)
+    && out.every((o) => o.kind === 'yard' || Math.hypot(o.x - x, o.z - z) > Math.hypot(o.w, o.d) / 2 + (o.kind === 'well' ? 2.6 : T.clear)))
+  const torches = []
+  for (let n = cells.length < T.big ? T.few : T.many; torches.length < n && free.length > 0;) {
+    const gap = ([x, z]) => Math.min(...torches.map((t) => Math.hypot(t.x - x, t.z - z)))
+    const score = ([x, z, bonus]) => (torches.length === 0 ? -Math.abs(Math.hypot(x - gateIn[0], z - gateIn[1]) - 3) : gap([x, z]) < T.apart ? -Infinity : gap([x, z]) + bonus)
+    const best = free.reduce((a, b) => (score(b) > score(a) ? b : a))
+    if (score(best) === -Infinity) break
+    const [x, z] = free.splice(free.indexOf(best), 1)[0]
+    torches.push({ kind: 'torch', x, y: 0, z, yaw: 0, w: PROP.torch[0], d: PROP.torch[1] })
+  }
+  out.push(...torches)
   return out
 }
 
@@ -395,14 +423,19 @@ export function roofProps(lay) {
 
 /** Every chamber's props, in interior metres; each record also carries its storey `k`. */
 export function roomProps(lay) {
-  const out = []
+  const out = [], down = dungeonPlan(lay).stair
   roomPlan(lay).chambers.forEach((c, ci) => {
     const rng = mulberry32(lay.seed * 4099 + ci), y = c.k * SH, kit = KIT[c.role], list = []
-    if (c.role === 'throne') throneRoom(rng, c, y, list)
+    // A spiral's square well (its steps below, its hole above) and the dungeon stair's: a rug over one would lie on air.
+    const wells = lay.edges.filter((e) => e.stair && (e.a === c.node || e.b === c.node)).map((e) => e.stair).concat(down.node === c.node ? [down] : [])
+      .map((w) => cornersOf(w.x * S, w.z * S, 0, 2 * WELL, 2 * WELL))
+    const onFloor = (o) => wells.every((q) => apart(cornersOf(o.x, o.z, o.yaw, o.w, o.d), q))
+    if (c.role === 'throne') throneRoom(rng, c, y, list, onFloor)
     fillKit(rng, c.rect, c.round, c.portals, kit, y, list)
     if (kit.ware) setTables(rng, list)
     const [cx, cz] = [(c.rect[0] + c.rect[2]) / 2, (c.rect[1] + c.rect[3]) / 2]
-    if (kit.rug && !c.round && !list.some((o) => Math.hypot(o.x - cx, o.z - cz) < 1.6)) list.push({ kind: 'rug', x: cx, y, z: cz, yaw: c.rect[2] - c.rect[0] >= c.rect[3] - c.rect[1] ? 0 : Math.PI / 2, w: 2.4, d: 1.6 })
+    const rug = { kind: 'rug', x: cx, y, z: cz, yaw: c.rect[2] - c.rect[0] >= c.rect[3] - c.rect[1] ? 0 : Math.PI / 2, w: 2.4, d: 1.6 }
+    if (kit.rug && !c.round && !list.some((o) => Math.hypot(o.x - cx, o.z - cz) < 1.6) && onFloor(rug)) list.push(rug)
     if (kit.chandelier) list.push({ kind: 'chandelier', x: cx, y, z: cz, yaw: 0, w: 1.2, d: 1.2 })
     let torches = 0
     for (const o of list) if (!TORCHES.has(o.kind) || ++torches <= MAX_TORCHES) out.push({ ...o, k: c.k })
@@ -412,7 +445,7 @@ export function roomProps(lay) {
 
 /** The throne hall's dais against a wall clear of its portals, the throne on it, a carpet running out from it and chandeliers over
  * that, into `list`. */
-function throneRoom(rng, c, y, list) {
+function throneRoom(rng, c, y, list, onFloor) {
   fillRect(rng, c.rect, c.round, c.portals, ['dais'], y, null, list, 1)
   const dais = list[0]
   if (!dais) return
@@ -421,10 +454,12 @@ function throneRoom(rng, c, y, list) {
   // The carpet from the dais's front to 1 m short of the far wall.
   const [r0, r1, r2, r3] = c.rect, fx = Math.sin(dais.yaw), fz = Math.cos(dais.yaw)
   const reach = Math.abs(fx) > 0.5 ? (fx > 0 ? r2 - dais.x : dais.x - r0) : (fz > 0 ? r3 - dais.z : dais.z - r1)
-  const L = reach - dais.d / 2 - 1
+  // It stops short of a well, as it would a wall.
+  let L = reach - dais.d / 2 - 1
+  const run = (L) => { const [x, z] = frame(dais, 0, dais.d / 2 + L / 2); return { kind: 'carpet', x, y, z, yaw: dais.yaw, w: 1.4, d: L } }
+  while (L >= 2 && !onFloor(run(L))) L -= 0.5
   if (L < 2) return
-  const [cx, cz] = frame(dais, 0, dais.d / 2 + L / 2)
-  list.push({ kind: 'carpet', x: cx, y, z: cz, yaw: dais.yaw, w: 1.4, d: L })
+  list.push(run(L))
   for (let i = 0; i < (L > 8 ? 2 : 1); i++) {
     const [hx, hz] = frame(dais, 0, dais.d / 2 + L * (L > 8 ? 0.3 + i * 0.4 : 0.5))
     list.push({ kind: 'chandelier', x: hx, y, z: hz, yaw: 0, w: 1.2, d: 1.2 })

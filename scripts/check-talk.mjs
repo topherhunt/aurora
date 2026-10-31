@@ -29,6 +29,7 @@ import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
 import { ITEMS } from '../src/v2/items.js'
 import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
 import { walkTalks } from './lib/talk-walk.mjs'
+import { CastleChat, VIEW, allCastleLines } from '../src/v2/talk/castle.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -982,6 +983,28 @@ check(walked.again.length === 0, 'the "like I said" clip plays exactly when the 
 check(walked.crow.length === 0, 'a crow or a second thought in the words is never voiced as plain, nervous or a repeat', walked.crow.slice(0, 3).join(' || '))
 check(walked.home.length === 0, 'a traveller never voices the town as their home', walked.home.slice(0, 3).join(' || '))
 check(walked.refer.length === 0, 'sending her on to someone else is voiced as a referral', walked.refer.slice(0, 3).join(' || '))
+
+// Castle folk: every line fits, every sentence answers in a recorded moment, most press the summit's view, and the summit guard tells of the ghost.
+{
+  const moments = JSON.parse(readFileSync('public/sounds/voice/moments.json', 'utf8')).human
+  const long = allCastleLines().filter((t) => captionRows(t) > CAPTION.rows)
+  check(long.length === 0, `no castle line runs past the caption's ${CAPTION.rows} rows`, `${long.length}: ${long[0]}`)
+  const unvoiced = [], urged = new Set(), ghosts = []
+  for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let salt = 0; salt < 40; salt++) {
+    const chat = new CastleChat({ id: `castle:1:${who}`, name: who, who }, { rooms: 17 }, { approached: salt % 4 === 0, salt })
+    const lines = [chat.open()]
+    for (const { topic } of chat.conv.menu()) if (!chat.ended) lines.push(chat.ask(topic))
+    for (const l of lines) {
+      if (moments[l.moment] === undefined) unvoiced.push(`${who}: ${l.moment}`)
+      if (captionRows(l.text) > CAPTION.rows) unvoiced.push(`${who} too long: ${l.text}`)
+      if (VIEW.some((v) => l.text.includes(v))) urged.add(who)
+      if (who === 'lore' && l.text.includes('forlorn ghost')) ghosts.push(l.text)
+    }
+  }
+  check(unvoiced.length === 0, 'every castle line is voiced by a recorded moment and fits', unvoiced[0])
+  check(['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller'].every((w) => urged.has(w)) && !urged.has('lore'), 'everyone in a castle but the summit guard presses the view from the top of the highest tower', [...urged].join(' '))
+  check(ghosts.length > 0, "the summit guard tells of the dungeon's forlorn ghost", ghosts[0])
+}
 
 if (process.argv.includes('--transcript')) {
   for (const who of [parent, w0, friend]) {

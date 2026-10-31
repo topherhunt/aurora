@@ -6,6 +6,7 @@ import { courtGeometry, exteriorGeometry, interiorGeometries, interiorWarp, warp
 import { courtProps, dungeonProps, propFlames, roofProps, roomProps } from './furnish.js'
 import { dungeonGeometry } from './dungeon-mesh.js'
 import { castleSolids } from './solids.js'
+import { courtGlow } from './glow.js'
 
 /** Storey meshes as one, its groups per material slot spanning every storey. */
 function mergeStoreys(list) {
@@ -37,12 +38,13 @@ self.onmessage = (ev) => {
   try {
     const lay = castleLayout(seed)
     if (!lay.stats.ok) throw new Error(`castle worker: seed ${seed} has no good layout`)
-    const full = exteriorGeometry(lay), low = exteriorGeometry(lay, { full: false }), court = courtGeometry(lay)
+    const solids = castleSolids(lay), glow = courtGlow(lay, solids)
+    const full = exteriorGeometry(lay, { glow }), low = exteriorGeometry(lay, { full: false, glow }), court = courtGeometry(lay, glow)
     const dungeon = dungeonGeometry(lay)
     const interior = mergeStoreys([dungeon.geometry, ...interiorGeometries(lay).map((s) => s.geometry)]), { door, water } = dungeon
     const warp = interiorWarp(lay), inner = [...roomProps(lay), ...dungeonProps(lay)].map((o) => warpedProp(warp, o))
     const flames = { exterior: new Float32Array(propFlames([...courtProps(lay), ...roofProps(lay)])), interior: new Float32Array(propFlames(inner)) }
-    reply = { id, seed, full, low, court, interior, water, door, solids: castleSolids(lay), flames }
+    reply = { id, seed, full, low, court, interior, water, door, solids, flames }
   } catch (e) {
     self.postMessage({ id, seed, error: e.stack ?? e.message })
     return
