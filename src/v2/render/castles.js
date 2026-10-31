@@ -228,6 +228,8 @@ export class Castles {
     // Site id -> { site, state 'building' | 'ready' | 'failed', group, full, low, solids, shown }.
     this.live = new Map()
     this.worker = null
+    // Jobs held until the worker posts ready (castles/worker.js), then null.
+    this._held = []
     this._job = 0
     this.inside = null
     this.stats = { built: 0, live: 0, full: 0, low: 0, cards: 0 }
@@ -343,12 +345,17 @@ export class Castles {
   _build(s) {
     if (this.worker === null) {
       this.worker = new Worker(new URL('../castles/worker.js', import.meta.url), { type: 'module' })
-      this.worker.onmessage = (ev) => this._built(ev.data)
+      this.worker.onmessage = (ev) => {
+        if (!ev.data.ready) return this._built(ev.data)
+        for (const job of this._held) this.worker.postMessage(job)
+        this._held = null
+      }
       this.worker.onerror = (e) => { throw new Error(`Castles: the worker failed: ${e.message}`) }
     }
     const id = ++this._job
     this.live.set(s.id, { site: s, state: 'building', job: id, shown: false })
-    this.worker.postMessage({ id, seed: s.seed })
+    if (this._held === null) this.worker.postMessage({ id, seed: s.seed })
+    else this._held.push({ id, seed: s.seed })
   }
 
   _built(d) {

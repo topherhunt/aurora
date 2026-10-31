@@ -1,6 +1,8 @@
 // Builds one castle off the main thread (design/44-castles.md, Tiers): its layout, the full and mid-distance exteriors, the court,
 // the interior and dungeon as one mesh, the dungeon's water and door, its collision and portals, and its props' flames. Replies
 // { id, seed, full, low, court, interior, water (or null), door, solids, flames: { exterior, interior } }, or { id, seed, error }.
+// Posts { ready: true } once loaded: Chrome can deliver a job while the imports still evaluate, to a null onmessage, which drops it
+// without a sound and leaves the castle on its card. The main thread holds its jobs until then.
 import { castleLayout } from './layout.js'
 import { courtGeometry, exteriorGeometry, interiorGeometries, interiorWarp, warpedProp } from './shell.js'
 import { courtProps, dungeonProps, propFlames, roofProps, roomProps } from './furnish.js'
@@ -51,3 +53,4 @@ self.onmessage = (ev) => {
   }
   self.postMessage(reply, [...[reply.full, reply.low, reply.court, reply.interior, reply.door, ...(reply.water ? [reply.water] : [])].flatMap(buffers), reply.flames.exterior.buffer, reply.flames.interior.buffer])
 }
+self.postMessage({ ready: true })
