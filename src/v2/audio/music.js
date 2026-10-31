@@ -22,13 +22,16 @@
 // a fake element factory and a seeded random.
 // ---------------------------------------------------------------------------
 
-/** Each pool's songs, public/-relative under music/<pool>/. check-music.mjs pins these to the folders on disk; the wire carries a song as its index here. */
+/** Each pool's songs, public/-relative under music/<pool>/. check-music.mjs pins these to the folders on disk; the wire carries a song as its index here. poolFor() never names `climbing` yet. */
 export const POOLS = {
+  'castle-day': ['Stone Reverberating 1.m4a', 'Stone Reverberating 2.m4a', 'Stone Reverberating 3.m4a'],
+  'castle-night': ['Pas de Pierre 1-.m4a', 'Pas de Pierre 2+.m4a'],
   caverns: ['Abyss 1.mp3', 'Abyss 2.mp3', 'Abyss 3.mp3', 'Abyss 4.mp3', 'Caverns 5.mp3', 'Caverns 6.mp3'],
   'forest-day': ['Home Beyond the Vale - 1.mp3', 'Home Beyond the Vale - 2.mp3', 'Home Beyond the Vale - 4 - compass.mp3', 'Home Beyond the Vale - 5.mp3', 'Home Beyond the Vale - 6 - every day.mp3', 'Home Beyond the Vale - 8 - only stories.mp3'],
   'forest-night': ['mirror moors 1.mp3', 'mirror moors 2.mp3', 'mirror moors 3.mp3', 'mirror moors 4.mp3', 'mirror moors 5.mp3'],
   'human-town-day': ['02 Clockwork Continent.mp3', 'Salt and Copper - Meridians.mp3', 'The Ship Awaits - 4 - seaspray, victory.mp3'],
   'human-town-night': ['05 Day after Day.mp3', 'The Ship Awaits - 2 - dogs and children, peace.mp3'],
+  climbing: ['Windstrong 1-.m4a', 'Windstrong 2+.m4a', 'Windstrong 3+.m4a'],
   'leafkin-glade': ['Caverns 1.mp3', 'Caverns 2.mp3', 'Caverns 3.mp3', 'Caverns 4.mp3', 'OH - Swamp - Soft raindrops.mp3'],
   'snow-day': ['OH - Snow - White Silence 1.mp3', 'OH - Snow - White Silence 2.mp3', 'The Ship Awaits - bonechill, snow and swamp.mp3'],
   'snow-night': ['Nighttime snowstorm ambience (loop).mp3'],
@@ -54,13 +57,14 @@ export const MUSIC_VOLUMES = [{ name: 'On', gain: 1 }, { name: '50%', gain: 0.5 
 /** Metres above the ground or water past which no song plays. */
 export const ALOFT_M = 40
 
-/** The pool for where she is, or null for none: under water over everything, then a cave, ALOFT_M up (`aloft`, metres) none, then the glade room, a town's ground, above the snowline, else the forest; day by `day` (dayness >= 0.5). */
-export function poolFor({ underwater, cave, aloft, glade, town, aboveSnow, day }) {
+/** The pool for where she is, or null for none: under water over everything, then a cave, ALOFT_M up (`aloft`, metres) none, then a castle (its grounds or inside), the glade room, a town's ground, above the snowline, else the forest; day by `day` (dayness >= 0.5). */
+export function poolFor({ underwater, cave, aloft, castle, glade, town, aboveSnow, day }) {
   if (underwater) return 'underwater'
   if (cave) return 'caverns'
   if (aloft > ALOFT_M) return null
-  if (glade) return 'leafkin-glade'
   const half = day ? 'day' : 'night'
+  if (castle) return `castle-${half}`
+  if (glade) return 'leafkin-glade'
   if (town) return `human-town-${half}`
   return aboveSnow ? `snow-${half}` : `forest-${half}`
 }

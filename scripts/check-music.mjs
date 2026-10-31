@@ -32,24 +32,26 @@ console.log('pools')
   const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort()
   check(dirs.join() === Object.keys(POOLS).sort().join(), 'POOLS names every folder under public/music/ and no other', dirs.join(' '))
   for (const pool of dirs) {
-    const onDisk = fs.readdirSync(new URL(`${pool}/`, root)).filter((f) => f.endsWith('.mp3')).sort()
-    check((POOLS[pool] ?? []).slice().sort().join('|') === onDisk.join('|'), `${pool}: POOLS lists exactly its ${onDisk.length} mp3s`)
+    const onDisk = fs.readdirSync(new URL(`${pool}/`, root)).filter((f) => /\.(mp3|m4a)$/.test(f)).sort()
+    check((POOLS[pool] ?? []).slice().sort().join('|') === onDisk.join('|'), `${pool}: POOLS lists exactly its ${onDisk.length} songs`)
   }
 }
 
 // --- where she is ------------------------------------------------------------------
 console.log('poolFor')
 {
-  const at = (o) => poolFor({ underwater: false, cave: false, aloft: 0, glade: false, town: false, aboveSnow: false, day: true, ...o })
+  const at = (o) => poolFor({ underwater: false, cave: false, aloft: 0, castle: false, glade: false, town: false, aboveSnow: false, day: true, ...o })
   check(at({}) === 'forest-day' && at({ day: false }) === 'forest-night', 'the wild below the snow is the forest, by day and by night')
   check(at({ aboveSnow: true }) === 'snow-day' && at({ aboveSnow: true, day: false }) === 'snow-night', 'above the snowline is the snow, by day and by night')
   check(at({ town: true }) === 'human-town-day' && at({ town: true, day: false }) === 'human-town-night', 'a town is the town, by day and by night')
   check(at({ town: true, aboveSnow: true }) === 'human-town-day', 'a town above the snowline is still the town')
+  check(at({ castle: true }) === 'castle-day' && at({ castle: true, day: false }) === 'castle-night', 'a castle is the castle, by day and by night')
+  check(at({ castle: true, aboveSnow: true, town: true }) === 'castle-day' && at({ castle: true, cave: true }) === 'caverns' && at({ castle: true, aloft: ALOFT_M + 1 }) === null, 'a castle over the snow and a town, under a cave and the sky')
   check(at({ glade: true }) === 'leafkin-glade' && at({ glade: true, day: false }) === 'leafkin-glade', 'the glade at any hour')
   check(at({ cave: true, day: false }) === 'caverns' && at({ cave: true, glade: true, town: true }) === 'caverns', 'a cave at any hour, over everything')
   check(at({ underwater: true, day: false }) === 'underwater' && at({ underwater: true, cave: true, town: true, glade: true }) === 'underwater', 'under water at any hour, over everything')
   check(at({ aloft: ALOFT_M + 1 }) === null && at({ aloft: ALOFT_M + 1, town: true, day: false }) === null && at({ aloft: ALOFT_M - 1 }) === 'forest-day', `more than ${ALOFT_M} m up there is no pool, below it the ground's`)
-  for (const o of [{}, { day: false }, { aboveSnow: true }, { town: true, day: false }, { glade: true }, { cave: true }, { underwater: true }]) if (!(at(o) in POOLS)) check(false, `${at(o)} is a pool`)
+  for (const o of [{}, { day: false }, { aboveSnow: true }, { town: true, day: false }, { castle: true }, { castle: true, day: false }, { glade: true }, { cave: true }, { underwater: true }]) if (!(at(o) in POOLS)) check(false, `${at(o)} is a pool`)
 }
 
 

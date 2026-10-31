@@ -7390,7 +7390,9 @@ function updateAmbience(dt, state) {
     pool: poolFor({
       underwater: submerged,
       cave: cave !== null,
-      aloft: ears.y - Math.max(height.heightAt(ears.x, ears.z), waterSurfaces.levelAt(ears.x, ears.z) ?? -Infinity),
+      // A castle's interior stands CASTLE_RISE over the ground: she is on its floor, not aloft.
+      aloft: castles !== null && castles.inside !== null ? 0 : ears.y - Math.max(height.heightAt(ears.x, ears.z), waterSurfaces.levelAt(ears.x, ears.z) ?? -Infinity),
+      castle: castles !== null && (castles.inside !== null || castles.sites.some((s) => Math.hypot(ears.x - s.x, ears.z - s.z) <= s.reach)),
       glade: currentRoom.village,
       town: townPlan !== null && townPlan.towns.some((t) => Math.hypot(ears.x - t.x, ears.z - t.z) <= t.radius),
       aboveSnow: height.heightAt(ears.x, ears.z) > height.snowLineAt(ears.x, ears.z),
