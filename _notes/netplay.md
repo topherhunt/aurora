@@ -69,11 +69,11 @@ locally on its own port:
 ```
 VITE_WS_URL=ws://localhost:3004/ws npm run dev
 npm run relay
-adb reverse tcp:5173 tcp:5173
+adb reverse tcp:6283 tcp:6283
 adb reverse tcp:3004 tcp:3004
 ```
 
-The page is `http://localhost:5173`, which counts as a secure context for WebXR, and because it is not https there is no mixed-content rule -- plain `ws://localhost:3004` connects with no cert dance.
+The page is `http://localhost:6283`, which counts as a secure context for WebXR, and because it is not https there is no mixed-content rule -- plain `ws://localhost:3004` connects with no cert dance.
 
 For a LAN headset, use a local TLS reverse proxy for both Vite and the relay, or test through the
 deployed HTTPS site; the relay itself intentionally speaks plain HTTP/WebSocket on localhost only.

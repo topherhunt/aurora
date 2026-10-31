@@ -16,13 +16,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
   - [Claude - AI animation tools](https://claude.ai/chat/801dd461-e625-4511-8b37-8e283541e6fe)
   - [Skyrim trees](https://duckduckgo.com/?q=skyrim+tree&iar=images&iai=https%3A%2F%2Fimg.goodfon.com%2Fwallpaper%2Fnbig%2F0%2F5d%2Fskyrim-tes-5-elder-scrolls-fir-tree-stone-grass-mountain-fog.jpg) pics
 - Internal tools
-  - https://192.168.178.75:5173/gen-tree
-  - https://192.168.178.75:5173/gen-fern
-  - https://192.168.178.75:5173/gen-rock
-  - https://192.168.178.75:5173/gen-deadwood
-  - https://192.168.178.75:5173/gen-mushroom
-  - https://192.168.178.75:5173/gen-building
-  - <https://192.168.178.75:5173/test-aurora>
+  - https://192.168.178.75:6283/gen-tree
+  - https://192.168.178.75:6283/gen-fern
+  - https://192.168.178.75:6283/gen-rock
+  - https://192.168.178.75:6283/gen-deadwood
+  - https://192.168.178.75:6283/gen-mushroom
+  - https://192.168.178.75:6283/gen-building
+  - <https://192.168.178.75:6283/test-aurora>
 
 ### Tasks
 
@@ -298,7 +298,7 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 - Terrain LOD: How to preserve toothy peaks while minimizing triangles used in terrain rendering?
   - Idea 1: define billboard triangles for distant peaks (1 "layer" that provides 1 "resolution" more of terrain than what the actual LOD allows for at that distance, created only when the lower LOD loses a hill/protrusion that's added when you get closer)
   - Idea 2: "skyline backdrop" ???
-- https://192.168.178.75:5173/map.html
+- https://192.168.178.75:6283/map.html
 
 ### Gameplay mechanics
 

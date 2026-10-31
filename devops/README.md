@@ -46,7 +46,7 @@ message envelope leaves room for later ordered world events; it deliberately has
 must never be opened publicly.
 
 For local headset testing, run `npm run relay`, then start Vite with
-`VITE_WS_URL=ws://localhost:3004/ws npm run dev` and use `adb reverse tcp:5173 tcp:5173` plus
+`VITE_WS_URL=ws://localhost:3004/ws npm run dev` and use `adb reverse tcp:6283 tcp:6283` plus
 `adb reverse tcp:3004 tcp:3004`.
 
 The recommended order is static deployment first, then the relay and head-only presence, then hand

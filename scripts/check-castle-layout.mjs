@@ -17,7 +17,7 @@ import { castleSolids, exteriorSpans, interiorSpans, spiralTreadAt, SPANS, SPAN_
 import { dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
 import { dungeonProps } from '../src/v2/castles/furnish.js'
-import { FOLK_SAYS, folkMoment, insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
+import { FOLK_CHAT, FOLK_SAYS, folkMoment, insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
 import { fits } from '../src/v2/talk/caption.js'
 
 let failures = 0
@@ -248,7 +248,14 @@ for (const l of good) {
   const inside = insideCast(l), outside = outsideCast(l, { x: 0, y: 0, z: 0, yaw: 0 }, null), it = castleSolids(l).it
   if (inside.length + outside.length < 10 || outside.filter((p) => p.who === 'watch').length < 3) fewFolk.push(l.seed)
   if (!inside.some((p) => p.who === 'maid') || ![true, false].every((h) => fits(maidSays(l, h, false)))) noMaid.push(l.seed)
-  for (const p of [...inside, ...outside]) if (FOLK_SAYS[p.who] === undefined || FOLK_SAYS[p.who].flat().some((m) => !(m in voiced) || voiced[m].length === 0)) unvoiced.add(p.who)
+  for (const p of [...inside, ...outside]) {
+    if (FOLK_SAYS[p.who] === undefined || FOLK_SAYS[p.who].flat().some((m) => !(m in voiced) || voiced[m].length === 0)) unvoiced.add(p.who)
+    if (FOLK_CHAT[p.who] === undefined) { unvoiced.add(`${p.who} chat`); continue }
+    for (const step of FOLK_CHAT[p.who].flat()) {
+      const [m, ids] = step.split(': '), have = new Set((voiced[m] ?? []).map((l) => l.slice(0, l.indexOf('.'))))
+      if (have.size === 0 || (ids !== undefined && ids.split(' ').some((id) => !have.has(id)))) unvoiced.add(`${p.who} ${step}`)
+    }
+  }
   for (const p of inside) {
     const n = interiorSpans(it, p.x, p.z, p.y + 0.5)
     let ok = false
@@ -258,8 +265,14 @@ for (const l of good) {
 }
 check(fewFolk.length === 0, 'every castle has 10+ folk besides its travellers, 3 of them on the walls', fewFolk.slice(0, 5).join(' '))
 check(noMaid.length === 0, 'every castle has its kitchen maid, her hint within the caption', noMaid.slice(0, 5).join(' '))
-const rolls = Array.from({ length: 40 }, (_, i) => folkMoment('gate', false, i / 40, (i * 0.37) % 1))
-check(unvoiced.size === 0 && folkMoment('gate', true, 0.9, 0.9) === 'castle.halt' && !rolls.includes('castle.halt') && rolls.some((m) => m.startsWith('castle.')) && rolls.some((m) => !m.startsWith('castle.')), 'every castle folk speaks recorded castle and everyday lines, a gate guard halting her first', [...unvoiced].join(' '))
+let roll = 12345
+const rand = () => ((roll = (roll * 16807) % 2147483647) / 2147483647)
+const rolls = Array.from({ length: 400 }, () => folkMoment('gate', false, rand))
+const spoken = rolls.filter((m) => m !== null && m !== 'pass.nod')
+check(unvoiced.size === 0, 'every castle folk speaks, and talks among themselves, in recorded words', [...unvoiced].slice(0, 6).join(', '))
+check(folkMoment('gate', true, rand) === 'castle.halt' && !rolls.includes('castle.halt') && spoken.some((m) => m.startsWith('castle.')) && spoken.some((m) => !m.startsWith('castle.')), 'a gate guard halts her first, then speaks castle and everyday lines', spoken.slice(0, 4).join(' '))
+const silent = rolls.filter((m) => m === null).length / rolls.length, nods = rolls.filter((m) => m === 'pass.nod').length / rolls.length
+check(silent > 0.2 && nods > 0.1 && spoken.length / rolls.length < 0.6 && Array.from({ length: 20 }, () => folkMoment('maid', false, rand)).every((m) => m !== null && m !== 'pass.nod'), 'castle folk only sometimes speak to her, else nod or let her pass, but the maid always tells her hint', `${(silent * 100).toFixed(0)}% silent, ${(nods * 100).toFixed(0)}% nod`)
 check(offFloor.length === 0, 'everyone inside stands on clear floor, 1.7 m under the ceiling', `${offFloor.length}: ${offFloor.slice(0, 6).join(' ')}`)
 
 console.log(failures ? `\n${failures} CHECK(S) FAILED` : '\nALL CHECKS PASSED')

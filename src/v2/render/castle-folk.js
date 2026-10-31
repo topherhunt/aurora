@@ -24,10 +24,19 @@ export const FOLK = {
   awayS: 150,
   // The outside cast is drawn while she is within `drawM` of the castle.
   drawM: 140,
-  // Each of them speaks as she comes within `near` m (times her size), from FOLK_SAYS: a castle moment `color` of the time.
+  // As she comes within `near` m (times her size), each speaks to her `hail` of the time (FOLK_SAYS, a castle moment `color` of
+  // that), nods to her `nod`, else lets her pass.
   near: 3,
+  hail: 0.4,
+  nod: 0.25,
   color: 0.7,
   mouth: 1.55,
+  // Two standing within `pairM` of each other trade an exchange (FOLK_CHAT) every `chatS` seconds, a turn each `turnS`, while
+  // she is within `overhearM`.
+  pairM: 5,
+  chatS: [14, 32],
+  turnS: 2.8,
+  overhearM: 16,
   // Clear metres round a chamber stand: from a prop's footprint, and from a portal.
   clear: 0.45,
   portal: 1.4,
@@ -58,11 +67,30 @@ export const FOLK_SAYS = {
   traveller: [['castle.road'], ['greet.stranger', 'pass.nod']],
 }
 
-/** The moment `who` says as she comes near, `first` the first time in this visit, from rolls `r` and `r2` in [0, 1). */
-export function folkMoment(who, first, r, r2) {
+/** The moment `who` says as she comes near, or null to let her pass: `first` the first time in this visit, `rand` in [0, 1).
+ * A gate guard halts her first, and the maid always speaks, for the hint her caption carries. */
+export function folkMoment(who, first, rand) {
   if (who === 'gate' && first) return 'castle.halt'
-  const pool = FOLK_SAYS[who][r < FOLK.color ? 0 : 1]
-  return pool[(r2 * pool.length) | 0]
+  const r = who === 'maid' ? 0 : rand()
+  if (r >= FOLK.hail + FOLK.nod) return null
+  if (r >= FOLK.hail) return 'pass.nod'
+  const pool = FOLK_SAYS[who][rand() < FOLK.color ? 0 : 1]
+  return pool[(rand() * pool.length) | 0]
+}
+
+// What two of them say to each other, by who opens: each exchange its turns in order, `moment: ids` limiting a turn to those words.
+const GUARD_CHAT = [['castle.watch: all-quiet cold-up-here long-night', 'social.agree'], ['weather.cold', 'social.agree'], ['mood.bored', 'social.agree'], ['gossip.lead', 'gossip.react']]
+export const FOLK_CHAT = {
+  lord: [['small.ask', 'small.reply'], ['gossip.lead', 'social.agree']],
+  steward: [['gossip.lead', 'gossip.react'], ['small.ask', 'small.reply']],
+  cook: [['castle.cook: dont-touch no-time-no-time', 'castle.servant: beg-pardon'], ['mood.busy', 'social.agree']],
+  maid: [['castle.maid: hear-at-night dont-go-down', 'social.comfort'], ['gossip.lead', 'gossip.react']],
+  servant: [['gossip.lead', 'gossip.react'], ['small.ask', 'small.reply'], ['castle.servant: floor-wet no-time-no-time', 'social.agree']],
+  guard: GUARD_CHAT,
+  watch: GUARD_CHAT,
+  gate: GUARD_CHAT,
+  yard: [['small.ask', 'small.reply'], ['gossip.lead', 'gossip.react']],
+  traveller: [['castle.road', 'social.agree'], ['small.ask', 'small.reply']],
 }
 
 const WALL_GUARDS = ['shieldmaiden', 'battlemage', 'guard']
@@ -188,6 +216,7 @@ export class CastleFolk {
       const { pack, he } = bodyVoice(spec.body), h = hash32(site.seed, i + 80)
       const voice = { pack, he, rate: 1 + ((h % 201) / 100 - 1) * VOICE.rate, tilt: (((h >>> 8) % 201) / 100 - 1) * VOICE.tilt }
       const p = { spec, obj: null, mixer: null, actions: null, clip: null, mind: { id: `castle:${site.seed}:${group.name}:${i}`, kind: 'human', voice }, near: false, spoke: 0 }
+      p.chatAt = null
       cast.people.push(p)
       this._body(spec.body).then((gltf) => {
         if (group.userData.cast !== cast) return
@@ -249,11 +278,41 @@ export class CastleFolk {
       const feet = p.obj.getWorldPosition(new THREE.Vector3()), d = Math.hypot(her.x - feet.x, her.z - feet.z)
       const close = d < near && Math.abs(her.y - feet.y) < 3
       if (close && !p.near) {
-        out.push({ who: p.spec.who, mind: p.mind, moment: folkMoment(p.spec.who, p.spoke === 0, Math.random(), Math.random()), feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
+        const moment = folkMoment(p.spec.who, p.spoke === 0, Math.random)
+        if (moment !== null) out.push({ who: p.spec.who, mind: p.mind, moment, feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
         p.spoke++
       }
       if (close) p.near = true
       else if (d > near + 2) p.near = false
+    }
+    return out
+  }
+
+  /** The turns of the drawn cast's talk among themselves due at `seconds` while `her` ({ x, y, z }) is in earshot:
+   * `[{ mind, step, mouth }]`, `step` a FOLK_CHAT turn. A pair forms of two standing still within FOLK.pairM of each other. */
+  chatter(her, seconds) {
+    const cast = this.inner.visible ? this.inside : this.outer.visible ? this.outside : null
+    if (cast === null) return []
+    const out = [], mouth = (p) => { const v = p.obj.getWorldPosition(new THREE.Vector3()); v.y += FOLK.mouth; return v }
+    if (cast.talk !== undefined) {
+      const { a, b, turns, t0 } = cast.talk, k = Math.floor((seconds - t0) / FOLK.turnS)
+      if (k >= turns.length) cast.talk = undefined
+      else if (k > cast.talk.k) { cast.talk.k = k; const p = k % 2 === 0 ? a : b; out.push({ mind: p.mind, step: turns[k], mouth: mouth(p) }) }
+      return out
+    }
+    const still = cast.people.filter((p) => p.obj !== null && p.obj.visible && p.clip !== 'walk')
+    for (const a of still) {
+      if (a.chatAt === null) a.chatAt = seconds + Math.random() * FOLK.chatS[1]
+      if (seconds < a.chatAt) continue
+      a.chatAt = seconds + FOLK.chatS[0] + Math.random() * (FOLK.chatS[1] - FOLK.chatS[0])
+      const at = mouth(a)
+      if (Math.hypot(her.x - at.x, her.y - at.y, her.z - at.z) > FOLK.overhearM) continue
+      const b = still.find((q) => q !== a && mouth(q).distanceTo(at) < FOLK.pairM)
+      if (b === undefined) continue
+      const book = FOLK_CHAT[a.spec.who], turns = book[(Math.random() * book.length) | 0]
+      cast.talk = { a, b, turns, t0: seconds, k: 0 }
+      out.push({ mind: a.mind, step: turns[0], mouth: at })
+      break
     }
     return out
   }

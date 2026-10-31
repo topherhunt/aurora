@@ -32,11 +32,11 @@ npm install
 npm start
 ```
 
-`npm start` serves plain HTTP on port 5173; `npm run dev` serves the same thing with a self-signed certificate, which the Quest over LAN needs (WebXR needs a secure context, and only `localhost` counts as one without HTTPS).
+`npm start` serves plain HTTP on port 6283; `npm run dev` serves the same thing with a self-signed certificate, which the Quest over LAN needs (WebXR needs a secure context, and only `localhost` counts as one without HTTPS).
 
-- **Desktop:** `npm start`, then open `http://localhost:5173/`. Move with WASD or the arrow keys, `T` teleports, `G` grabs, `E` drops. Space and Shift fly up and down for surveying the map; click plants a measuring beam.
-- **Quest, over LAN:** `npm run dev`, then open `https://<your-lan-ip>:5173/` in Quest Browser, click through "Advanced" then "Proceed", and press Enter VR.
-- **Quest, over USB (no cert warning):** enable developer mode, run `adb reverse tcp:5173 tcp:5173`, and open `http://localhost:5173` on the headset.
+- **Desktop:** `npm start`, then open `http://localhost:6283/`. Move with WASD or the arrow keys, `T` teleports, `G` grabs, `E` drops. Space and Shift fly up and down for surveying the map; click plants a measuring beam.
+- **Quest, over LAN:** `npm run dev`, then open `https://<your-lan-ip>:6283/` in Quest Browser, click through "Advanced" then "Proceed", and press Enter VR.
+- **Quest, over USB (no cert warning):** enable developer mode, run `adb reverse tcp:6283 tcp:6283`, and open `http://localhost:6283` on the headset.
 
 `/` is the world, and `/?editor` is the same world with the authoring panel over it.
 
@@ -44,7 +44,7 @@ npm start
 
 | Command | What it does |
 | --- | --- |
-| `npm start` | Dev server on `0.0.0.0:5173` (HTTP, no HMR; reload the page) |
+| `npm start` | Dev server on `0.0.0.0:6283` (HTTP, no HMR; reload the page) |
 | `npm run dev` | The same dev server over HTTPS, for the Quest over LAN |
 | `npm run build` | Production build into `dist/`. Run it after every code change to confirm nothing broke |
 | `npm run preview` | Serve the built `dist/` |
@@ -62,7 +62,7 @@ npm run relay
 VITE_WS_URL=ws://localhost:3004/ws npm run dev
 ```
 
-For a headset, add `adb reverse tcp:3004 tcp:3004` next to the 5173 one. The relay carries pose, hand presence and avatar id only, and keeps nothing.
+For a headset, add `adb reverse tcp:3004 tcp:3004` next to the 6283 one. The relay carries pose, hand presence and avatar id only, and keeps nothing.
 
 ## Where things live
 

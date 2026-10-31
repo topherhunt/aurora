@@ -276,8 +276,8 @@ function worldPlan() {
 // tmp/client-log.txt (git-ignored) as one plain line each, the way a server
 // log is: `time  peer  level  message`, a stack indented under it. Then
 //
-//   curl -sk https://localhost:5173/__log?tail=50      the last 50 lines
-//   curl -sk -X DELETE https://localhost:5173/__log    start a fresh file
+//   curl -sk https://localhost:6283/__log?tail=50      the last 50 lines
+//   curl -sk -X DELETE https://localhost:6283/__log    start a fresh file
 //
 // reads it back from any shell, which is what makes a warning seen once in
 // the headset reviewable from the desk afterwards.
@@ -1649,10 +1649,10 @@ function bareRoutes() {
 
 // WebXR requires a secure context. Three ways to get one on the Quest:
 //
-//   1. `npm run dev` -> https://<your-lan-ip>:5173 (self-signed; Quest Browser will
+//   1. `npm run dev` -> https://<your-lan-ip>:6283 (self-signed; Quest Browser will
 //      show a warning you must click through: "Advanced" -> "Proceed").
-//   2. USB + developer mode, then `adb reverse tcp:5173 tcp:5173` and open
-//      http://localhost:5173 on the headset. localhost counts as a secure context,
+//   2. USB + developer mode, then `adb reverse tcp:6283 tcp:6283` and open
+//      http://localhost:6283 on the headset. localhost counts as a secure context,
 //      so there is no cert warning. Cleanest dev loop if you have a cable.
 //   3. `npm run build` and deploy dist/ to GitHub Pages.
 //
@@ -1691,6 +1691,20 @@ function threeIsTheInstance() {
   }
 }
 
+// Names this app above Vite's "Local:" line, to tell its terminal from the other dev servers'.
+function appBanner() {
+  return {
+    name: 'app-banner',
+    configureServer(server) {
+      const print = server.printUrls
+      server.printUrls = () => {
+        server.config.logger.info('  \x1b[32m➜\x1b[39m  \x1b[1mApp\x1b[22m:     Aurora')
+        print()
+      }
+    },
+  }
+}
+
 // HTTPS by default: WebXR on the Quest over LAN needs a secure context, and
 // gate scripts that spawn vite navigate to https://. `npm start` sets
 // AURORA_HTTP=1 for plain http://localhost on desktop (no cert warning).
@@ -1700,7 +1714,7 @@ const useHttps = process.env.AURORA_HTTP !== '1'
 // catalogue of what each one answers is DESIGN.md §17.
 export default defineConfig({
   base: './',
-  plugins: [...(useHttps ? [basicSsl()] : []), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard(), threeIsTheInstance()],
+  plugins: [...(useHttps ? [basicSsl()] : []), propOriginals(), worldDoc(), worldPlan(), clientLog(), perfTraces(), worldHeight(), charactersSave(), sheetGen(), fishGen(), creatureGen(), treeGen(), propGen(), bareRoutes(), unknownRouteGuard(), threeIsTheInstance(), appBanner()],
   // HMR IS OFF ON PURPOSE, and the refresh is yours: Cmd-R.
   //
   // None of these pages accepts a hot update -- there is no `import.meta.hot`
@@ -1731,7 +1745,7 @@ export default defineConfig({
   //
   // Set `hmr: true` for the old behaviour: page reload on save, and Vite's own
   // config-dependency restart back with it.
-  server: { host: true, port: 5173, hmr: false },
+  server: { host: true, port: 6283, hmr: false },
   worker: { format: 'es', plugins: () => [noThreeInWorkers()] },
   build: {
     // es2022 for three-instance.js's top-level await.

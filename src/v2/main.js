@@ -9182,6 +9182,10 @@ function stepOverworld(dt, now) {
       conversations.bark(b.mind, b.moment, b.mouth, headTmp)
       if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked)), b.feet)
     }
+    if (conversations !== null) for (const t of castleFolk.chatter(headTmp, clock.seconds)) {
+      const [moment, ids] = t.step.split(': ')
+      conversations.bark(t.mind, moment, t.mouth, headTmp, { only: ids === undefined ? null : ids.split(' ') })
+    }
   }
   if (giants) {
     giants.dread = HAND_KEYS.some((key) => hands.holding(key)?.kind === 'spider') || herLantern

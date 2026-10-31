@@ -2,7 +2,7 @@
 // console.warn, console.error, uncaught error and unhandled rejection is also
 // POSTed to /__log (vite.config.js, dev only), which appends it to
 // tmp/client-log.txt on the machine serving the world -- readable afterwards
-// with `curl -sk https://localhost:5173/__log?tail=50`.
+// with `curl -sk https://localhost:6283/__log?tail=50`.
 //
 // The console itself is untouched: each wrapper calls the original first, so
 // the desktop devtools see exactly what they always did, and a failure to ship
