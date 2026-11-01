@@ -147,6 +147,22 @@ for (const l of good) for (const st of shaftsOf(l).storeys) for (const c of room
 }
 check(drumRooms.length === 0, 'no spiral drum stands inside a room', drumRooms.slice(0, 4).join(' '))
 
+// A spiral's top or bottom storey with no doorway is a dead end, unless a ladder climbs on from its drum to the roof; a link's
+// tunnel meets one back from the drum beside it.
+const deadDrums = []
+for (const l of good) {
+  const { storeys } = shaftsOf(l)
+  for (const st of storeys) {
+    const ladder = l.edges.some((e) => e.ladder && e.ladder.k === st.k && Math.hypot(e.ladder.x * CASTLE.scale - st.x, e.ladder.z * CASTLE.scale - st.z) < SPIRAL.well)
+    if (st.role !== 'pass' && !st.exits.length && !ladder) deadDrums.push(`${l.seed}:${st.gx},${st.gz}@${st.k}`)
+    for (const e of st.exits) if (e.kind === 'link') {
+      const [sx, sz] = [[1, 0], [0, 1], [-1, 0], [0, -1]][e.c], back = storeys.find((q) => q.k === st.k && q.gx === st.gx + sx && q.gz === st.gz + sz)
+      if (!back || !back.exits.some((f) => f.kind === 'link' && f.c === (e.c + 2) % 4)) deadDrums.push(`${l.seed}:${st.gx},${st.gz}@${st.k} link ${e.c}`)
+    }
+  }
+}
+check(deadDrums.length === 0, "every spiral's top and bottom storey opens onto a door, a room, the drum beside it or a roof ladder", deadDrums.slice(0, 4).join(' '))
+
 check(sunk.window[1] === 0 && sunk.hanging[1] <= sunk.hanging[0] * 0.03, 'every window pane, and nearly every tapestry and banner, stands 1 cm proud of its wall', `${sunk.window[1]}/${sunk.window[0]} panes, ${sunk.hanging[1]}/${sunk.hanging[0]} hangings sunk ${sunkAt.slice(0, 4).join(' ')}`)
 
 // Two same-facing triangles sharing a plane z-fight; only a colour difference makes it visible. The straight (unwarped) shell is

@@ -11,7 +11,7 @@ export const SEG = Math.PI / 8
 export const SPIRAL = { well: 1.75, wall: 0.12, square: 2.1, post: 0.3, steps: 15, treads: 2, door: 2.8, cap: 1.3 }
 // Stone fills a shaft storey's cell round its drum out to `box` (half a partition past the cell line). A doorway's tunnel runs from
 // the drum to a door's reveal at `reveal`, or `room` wide each side and `roomH` high to the box's face onto the rest of the room,
-// which stands as a partition from `partition` out.
+// which stands as a partition from `partition` out, or as wide and high to the cell line, where a link meets the drum beside's.
 export const SHAFT = { box: 4.2, reveal: 2.95, room: 1.2, roomH: 3, partition: 3.8 }
 const SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]]
 
@@ -43,6 +43,7 @@ export function shaftsOf(lay) {
         const lat = (px, pz) => (px - x) * tx + (pz - z) * tz
         let w0, w1, jamb, h
         if (ex.kind === 'room') [w0, w1, jamb, h] = [-SHAFT.room, SHAFT.room, SHAFT.box, SHAFT.roomH]
+        else if (ex.kind === 'link') [w0, w1, jamb, h] = [-SHAFT.room, SHAFT.room, CASTLE.cell / 2 * S, SHAFT.roomH]
         else if (st.node === null) {
           const d = dungeonPlan(lay).door, w = lat(d.x, d.z)
           ;[w0, w1, jamb, h] = [w - d.hw, w + d.hw, 4, d.hi - d.lo]

@@ -434,7 +434,7 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
   }
 
   // Each run's storeys: the doors in its cell's faces, and the parts of its room no shaft seals that it must open onto.
-  const shafts = runs.map((r) => {
+  const pers = runs.map((r) => {
     const per = []
     for (let k = r.ks[0]; k <= r.ks.at(-1) + 1; k++) {
       const n = r.rooms.get(k), role = k === r.ks[0] ? 'bottom' : k === r.ks.at(-1) + 1 ? 'top' : 'pass'
@@ -467,8 +467,22 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
       }
       const ladder = drumLadders.get(sk(r.gx, r.gz, k)) ?? null
       if (ladder && role !== 'top') throw new Error(`castle ${seed}: a ladder stands in a shaft's ${role} storey`)
-      per.push({ k, role, node: n, doors, turn, comps, ladder })
+      per.push({ k, role, node: n, doors, turn, comps, ladder, links: [] })
     }
+    return per
+  })
+  // A top or bottom storey walled in by its room's other shafts tunnels through to the drum beside it, which opens back onto it.
+  const storeyAt = new Map(runs.flatMap((r, i) => pers[i].map((p) => [sk(r.gx, r.gz, p.k), p])))
+  runs.forEach((r, i) => pers[i].forEach((p) => {
+    if (p.role === 'pass' || p.node === null || p.doors.size || p.comps.length || p.ladder) return
+    const c = SIDES.findIndex(([sx, sz]) => contains(p.node, r.gx + sx, r.gz + sz) && storeyAt.has(sk(r.gx + sx, r.gz + sz, p.k)))
+    if (c < 0) throw new Error(`castle ${seed}: the ${p.role} storey ${p.k} of the shaft in cell ${r.gx},${r.gz} has no way out`)
+    p.links.push(c)
+    storeyAt.get(sk(r.gx + SIDES[c][0], r.gz + SIDES[c][1], p.k)).links.push((c + 2) % 4)
+  }))
+
+  const shafts = runs.map((r, ri) => {
+    const per = pers[ri]
     let best = null
     for (const hand of [1, -1]) {
       const plan = solveShaft(per, hand)
@@ -499,11 +513,12 @@ function windowOf(role, a, L) {
   return [a + lo, a + hi + (role === 'pass' ? L : 0)]
 }
 
-/** Storey `p`'s doorways for hand `hand` and window [lo, hi]: each door's cardinal c and its doorway's centre segment o, and per
- * part of the room the cardinal onto it nearest the window's middle; null when one falls outside. */
+/** Storey `p`'s doorways for hand `hand` and window [lo, hi]: each door's or link's cardinal c and its doorway's centre segment o,
+ * and per part of the room the cardinal onto it nearest the window's middle; null when one falls outside. */
 function exitsOf(p, hand, lo, hi) {
   const off = (o) => mod16(hand * o - lo), mid = (hi - lo) / 2
   const exits = [...p.doors].map(([c, doors]) => ({ c, o: mod16(4 * c + p.turn.get(c)), kind: 'door', doors }))
+  for (const c of p.links) if (!exits.some((x) => x.c === c)) exits.push({ c, o: 4 * c, kind: 'link' })
   if (exits.some((x) => off(x.o) > hi - lo)) return null
   for (const faces of p.comps) {
     const c = faces.filter((f) => off(4 * f) <= hi - lo).sort((u, v) => Math.abs(off(4 * u) - mid) - Math.abs(off(4 * v) - mid))[0]
@@ -582,6 +597,20 @@ function pickMaze(seed, nodes, rooms, cands, entry, summit) {
     for (const e of order) if (!join(e)) spare.push(e)
     const unused = new Set(), deg = degrees(pick)
     for (const e of [...pick]) for (const n of [e.a, e.b]) if (n.kind === 'roof' && deg.get(n) === 1 && r() < 0.6) { pick.delete(e); unused.add(n) }
+    // A one-cell room its spiral's drum fills (planShafts) is a dead end when the stair is all that reaches it: it takes one of its
+    // other ways in instead, or stands closed when it has none, and the room it led from may become such a dead end in turn.
+    for (let more = true; more;) {
+      more = false
+      for (const n of rooms) {
+        if (unused.has(n) || n.w * n.d !== 1) continue
+        const mine = [...pick].filter((e) => e.a === n || e.b === n)
+        if (mine.length !== 1 || !mine[0].stair) continue
+        const alts = free.filter((e) => !e.stair && (e.a === n || e.b === n) && !unused.has(e.a === n ? e.b : e.a))
+        pick.delete(mine[0])
+        if (alts.length) pick.add(alts[Math.floor(r() * alts.length)]); else unused.add(n)
+        more = true
+      }
+    }
     let route = path(pick, entry, summit)
     const floor = Math.max(CASTLE.minRoute, route.edges.length * 0.85)
     let loops = 0

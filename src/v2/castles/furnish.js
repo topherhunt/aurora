@@ -206,7 +206,7 @@ function nodePortals(lay, n) {
 const plans = new WeakMap()
 /**
  * A layout's room plan: `chambers` { node, k, rect (its air, interior metres), cells, round, role, portals } and `walls` { k, axis,
- * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. A room node's cells less those
+ * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. A used room node's cells less those
  * its shafts fill (spiral.js) are split into the largest rectangles first, walled from each other where they meet; each is then cut
  * on cell lines (a partition is then 2.4 interior metres off any ladder, and its doorway between the cells' doors), the throne's
  * node into pieces of 6 cells at most, the mess's 4, the rest 2 or 1.
@@ -214,7 +214,7 @@ const plans = new WeakMap()
 export function roomPlan(lay) {
   if (plans.has(lay)) return plans.get(lay)
   const rng = mulberry32(lay.seed * 7333 + 11), PT = PARTITION.t
-  const nodes = lay.nodes.filter((n) => n.kind === 'room')
+  const nodes = lay.nodes.filter((n) => n.kind === 'room' && !n.unused)
   const cells = (n) => n.w * n.d
   const biggest = (list) => list.reduce((a, b) => (cells(b) > cells(a) ? b : a), list[0])
   const throneNode = biggest(nodes.filter((n) => n.sec.kind === 'keep' && n.k === 1))
@@ -401,7 +401,10 @@ export function courtProps(lay) {
       spots.push([cx + du * o, cz + dv * o, wall ? 2 : 0])
     }
   }
-  const free = spots.filter(([x, z]) => portals.every((p) => Math.hypot(p[0] - x, p[1] - z) > CLEAR + T.clear)
+  // None stands under a bridge, whose deck glow.js's height grid takes for stone right down to the ground.
+  const bridges = lay.edges.filter((e) => e.bridge).map((e) => e.bridge)
+  const under = (x, z) => bridges.some((b) => { const [u, v] = b.axis === 'x' ? [x, z] : [z, x]; return Math.abs(v - b.c) < 1.1 + T.clear && u > Math.min(b.a0, b.a1) - 0.3 && u < Math.max(b.a0, b.a1) + 0.3 })
+  const free = spots.filter(([x, z]) => !under(x, z) && portals.every((p) => Math.hypot(p[0] - x, p[1] - z) > CLEAR + T.clear)
     && out.every((o) => o.kind === 'yard' || Math.hypot(o.x - x, o.z - z) > Math.hypot(o.w, o.d) / 2 + (o.kind === 'well' ? 2.6 : T.clear)))
   const torches = []
   for (let n = cells.length < T.big ? T.few : T.many; torches.length < n && free.length > 0;) {
