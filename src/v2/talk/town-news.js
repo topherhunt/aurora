@@ -207,7 +207,7 @@ const KINDS = {
     told: [
       (f) => `${f.n[0]} and ${f.n[1]} were seen ${f.did} together.`,
       (f) => `Guess who was caught ${f.did}? ${f.n[0]} and ${f.n[1]}!`,
-      (f) => `${f.n[0]} has been ${f.did} with ${f.n[1]}. Every evening.`,
+      (f) => `${f.n[0]} has been ${f.did} with ${f.n[1]} every evening.`,
     ],
     mine: (f, i) => `Yes, ${f.n[1 - i]} and I were ${f.did}. What of it?`,
     kin: (f, i) => `Our ${f.n[i]} is sweet on ${f.n[1 - i]}. We're all pretending not to notice.`,

@@ -27,6 +27,24 @@ const NOISE = {
   'chains rattling': "The door's locked, and nobody has the key.",
   scratching: 'Rats, the cook says. Very big rats.',
 }
+// Each room a beast can move into, and what the castle has done about it: true of any beast in that room.
+const LODGE = {
+  armoury: ['It sleeps in a helmet now.', 'The guards salute it on the way past.'],
+  chapel: ['The chaplain says it is a sign and will not let anyone touch it.', 'It sits in the front pew for prayers.'],
+  'bell tower': ['Nobody has rung the bell since, in case it minds.', 'It has a name now. Gerald.'],
+  'wine cellar': ["It's been at the wine, or so the steward says.", 'The lord says it has better taste than the steward.'],
+  'bread oven': ['The cook bakes round it now.', "The bread's been late all week."],
+  privy: ["Everyone's been using the bushes.", 'It has a name now. Gerald. Knock first.'],
+}
+// Who came calling, and what each did.
+const VISIT = {
+  'a pedlar': 'sold the cook a ladle from our own kitchen',
+  'a knight in rusty armour': 'squeaked all the way up the stairs',
+  'a man selling bells': 'rang every one of them until the lord bought one',
+  'a lady with nine cats': 'left with ten',
+  'a very tall monk': 'hit his head on every door in the place',
+  'a bard with no lute': 'sang for supper anyway, until the lord paid for some quiet',
+}
 
 // Each kind: `pools` its fills, `roll` them and its `parties` (roles), the rest as gossip.js tellStory takes them. `hint` kinds
 // tell of something there to find: the dungeon key (layout.js keySpot: the lord's throne room, treasury or bedchamber), the
@@ -79,7 +97,7 @@ const KINDS = {
     muddle: 'thing',
   },
   pet: {
-    pools: { beast: ['hound', 'cat', 'falcon', 'goat', 'pig', 'ferret'], did: ['ate a boot', 'chewed the tapestry', "stole the steward's hat", 'slept on the throne', 'got into the larder', 'bit the bishop', 'fell in the well'] },
+    pools: { beast: ['hound', 'cat', 'goose', 'goat', 'pig', 'ferret'], did: ['chewed a boot', 'chewed the tapestry', "stole the steward's hat", 'slept on the throne', 'got into the larder', 'bit the chaplain', 'fell in the well'] },
     roll: (r, P) => ({ parties: ['lord'], f: { beast: pick(r, P.beast), did: pick(r, P.did) } }),
     told: [
       (f) => `The lord's ${f.beast} ${f.did} again.`,
@@ -91,8 +109,11 @@ const KINDS = {
     as: (v) => `the ${v}`,
   },
   nest: {
-    pools: { beast: ['crow', 'owl', 'family of bats', 'badger', 'swan', 'hedgehog'], room: ['armoury', 'chapel', 'bell tower', 'wine cellar', 'bread oven', 'privy'], twist: ['It has a helmet now.', "It won't leave.", 'Nobody dares move it.', 'It bites.', 'The guards salute it.', 'It has a name now. Gerald.'] },
-    roll: (r, P) => ({ parties: [], f: { beast: pick(r, P.beast), room: pick(r, P.room), twist: pick(r, P.twist) } }),
+    pools: { beast: ['crow', 'owl', 'bat', 'badger', 'swan', 'hedgehog'], room: Object.keys(LODGE) },
+    roll: (r, P) => {
+      const room = pick(r, P.room)
+      return { parties: [], f: { beast: pick(r, P.beast), room, twist: pick(r, LODGE[room]) } }
+    },
     told: [
       (f) => `${cap(an(f.beast))} has moved into the ${f.room}. ${f.twist}`,
       (f) => `We have a new lodger: ${an(f.beast)}, in the ${f.room}. ${f.twist}`,
@@ -114,14 +135,13 @@ const KINDS = {
     muddle: 'sound',
   },
   visitor: {
-    pools: { who: ['a pedlar', 'a knight in rusty armour', 'a man selling bells', 'a lady with nine cats', 'a very tall monk', 'a bard with no lute'], then: ['left without a word', 'is still in the guest room', 'took a spoon on the way out', 'asked for the lord and then hid', 'has been here a week now'] },
-    roll: (r, P) => ({ parties: [], f: { who: pick(r, P.who), then: pick(r, P.then) } }),
+    pools: { who: Object.keys(VISIT) },
+    roll: (r, P) => ({ parties: [], f: { who: pick(r, P.who) } }),
     told: [
-      (f) => `${cap(f.who)} came to the gate yesterday, and ${f.then}.`,
-      (f) => `We had a visitor. ${cap(f.who)}. ${cap(f.then)}.`,
-      (f) => `${cap(f.who)} turned up the other day. ${cap(f.then)}.`,
+      (f) => `${cap(f.who)} came to the gate yesterday and ${VISIT[f.who]}.`,
+      (f) => `We had a guest the other day, ${f.who}, who ${VISIT[f.who]}.`,
+      (f) => `${cap(f.who)} stayed the night and ${VISIT[f.who]}.`,
     ],
-    muddle: 'who',
   },
   broke: {
     pools: { thing: ['well rope', 'kitchen bell', 'gate chain', 'big soup pot', 'throne leg', 'chapel door'], after: ['Nobody will own up.', 'Everybody blames everybody.', 'The new one cost a fortune.', "It's tied up with string for now."] },
@@ -141,10 +161,10 @@ const KINDS = {
     told: [
       (f, p) => `${cap(R(p[0]))} and ${R(p[1])} were seen ${f.did} together.`,
       (f, p) => `Guess who was caught ${f.did}? ${cap(R(p[0]))} and ${R(p[1])}!`,
-      (f, p) => `${cap(R(p[0]))} has been ${f.did} with ${R(p[1])}. Every evening.`,
+      (f, p) => `${cap(R(p[0]))} has been ${f.did} with ${R(p[1])} every evening.`,
     ],
     mine: (f, i, p) => `Yes, ${R(p[1 - i])} and I were ${f.did}. What of it?`,
-    side: (f, i, p) => `I always said ${R(p[i])} was sweet on them.`,
+    side: (f, i, p) => `${cap(R(p[i]))} has been mooning about for months, if you ask me.`,
     muddle: 'did',
   },
 }

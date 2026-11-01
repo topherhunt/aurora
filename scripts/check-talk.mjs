@@ -42,9 +42,11 @@ const check = (ok, label, detail = '') => {
 }
 
 // A muddled teller's second thought (gossip.js HEDGE): true when it names a detail of story `x` the telling before it got wrong.
-const HEDGED = /I forget|One of those/
+const HEDGED = /I forget|One of those|No, wait/
+// A telling that stumbles: a hedge cutting a question off from its answer, or two leads each ending ", but".
+const CLUMSY = /\? (Or was it|Or [^.?!]+\. One of those|No, wait)|, but [^.?!]*, but /
 const hedgeTrue = (x, text) => {
-  const m = /Or was it ([^?]+)\? I forget\.|Or ([^.]+)\. One of those\.|(?:^|[.?!] )([^.?!]+), maybe\. I forget which\./.exec(text)
+  const m = /Or was it ([^?]+)\? I forget\.|Or ([^.]+)\. One of those\.|No, wait\. It was ([^.]+), I think\./.exec(text)
   if (m === null) return false
   const named = (m[1] ?? m[2] ?? m[3]).toLowerCase(), before = text.slice(0, m.index).toLowerCase()
   return Object.values(x.f).some((v) => typeof v === 'string' && named.includes(v.toLowerCase()) && !before.includes(v.toLowerCase()))
@@ -1057,7 +1059,8 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const roll = mulberry32(3)
   const told = Array.from({ length: 40 }, (_, seed) => castleNews(seed)).flat().flatMap((x) => ['cook', 'yard', 'traveller'].flatMap((who) => Array.from({ length: 6 }, (_, k) => [x, tellCastle(x, { who, ...castleTemper(who, `castle:${k}:${who}`) }, roll)])))
   const hedged = told.filter(([, t]) => HEDGED.test(t))
-  check(hedged.length > 0 && told.every(([, t]) => !/\ba [aeiou]/i.test(t)) && hedged.every(([x, t]) => hedgeTrue(x, t)), 'castle gossip never says "a owl", and a muddled teller\'s second thought names the true detail', hedged.find(([x, t]) => !hedgeTrue(x, t))?.[1] ?? hedged[0]?.[1])
+  const clumsy = told.find(([, t]) => CLUMSY.test(t) || /\ba [aeiou]/i.test(t))
+  check(hedged.length > 0 && clumsy === undefined && hedged.every(([x, t]) => hedgeTrue(x, t)), 'castle gossip never says "a owl", stacks two leads or hedges between a question and its answer, and a muddled teller\'s second thought names the true detail', clumsy?.[1] ?? hedged.find(([x, t]) => !hedgeTrue(x, t))?.[1] ?? hedged[0]?.[1])
   const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17 }, { salt: 7 })
   sent.open()
   let pushed = null
@@ -1123,9 +1126,9 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
     const text = tellTown(s, { ...m, h: strHash(m.id) + k }, mulberry32(k))
     n++
     if (HEDGED.test(text)) hedges++
-    if (!/^[\x20-\x7e]+$/.test(text) || captionRows(text) > CAPTION.rows || /undefined|null/.test(text) || /\ba [aeiou]/i.test(text) || (HEDGED.test(text) && !hedgeTrue(s, text))) bad.push(text)
+    if (!/^[\x20-\x7e]+$/.test(text) || captionRows(text) > CAPTION.rows || /undefined|null/.test(text) || /\ba [aeiou]/i.test(text) || CLUMSY.test(text) || (HEDGED.test(text) && !hedgeTrue(s, text))) bad.push(text)
   }
-  check(bad.length === 0 && n > 500 && hedges > 0, 'every town story, told by anyone, fits the caption in plain text, never says "a owl", and any second thought names the true detail', `${n} tellings, ${hedges} with second thoughts: ${bad[0]}`)
+  check(bad.length === 0 && n > 500 && hedges > 0, 'every town story, told by anyone, fits the caption in plain text, never says "a owl", never stumbles, and any second thought names the true detail', `${n} tellings, ${hedges} with second thoughts: ${bad[0]}`)
 
   // Asked in conversation: the missing child first, then each story heard, never twice, then nothing more; its hints unlock lore.
   const qt = nw.towns.find((t) => [...quests.values()].some((q) => q.kind === 'missing-child' && q.town === t.index))

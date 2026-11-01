@@ -88,7 +88,7 @@ export const CAVE_TAPS = [[0.07, 0.5], [0.13, 0.45], [0.23, 0.4]]
 export const CAVE_LP = 3000
 export const CAVE_LEVEL = 0.5
 // A stone hall's echo (setIndoors `stone`, a castle): `send` of everything on `near` into taps as the cave's, a little longer for the bigger rooms, returned straight to master: back onto `near` it would feed itself.
-export const HALL = { taps: [[0.11, 0.45], [0.19, 0.4], [0.31, 0.35]], lp: 2500, send: 0.5, level: 0.5 }
+export const HALL = { taps: [[0.11, 0.45], [0.19, 0.4], [0.31, 0.35]], lp: 2500, send: 0.5, level: 0.25 }
 // The world outside heard through a house's walls: `air`'s low-pass cutoff (Hz) and level indoors, eased over `tau` seconds. Crickets and songbirds are nearly all above 2.5 kHz: a cutoff much lower than this silences them outright.
 export const INDOORS = { lp: 1100, gain: 0.25, tau: 0.3 }
 // `walled` on a shot, while indoors: a further low-pass and level on top of INDOORS, so a voice outside (leafkin chatter) comes dark and low where the walls' own cutoff stays up for the crickets.

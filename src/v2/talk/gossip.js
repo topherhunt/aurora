@@ -31,7 +31,7 @@ const LEADS = {
 // The gossip.lead clips that suit any story: not someones-missing.
 export const NEWS_CLIPS = ['listen', 'hear-that', 'did-you-hear', 'never-guess', 'between-us', 'listen-this']
 // A spacey teller's afterthought, naming the true detail (`v`, a noun phrase) they swapped out.
-const HEDGE = [(v) => `Or was it ${v}? I forget.`, (v) => `Or ${v}. One of those.`, (v) => `${cap(v)}, maybe. I forget which.`]
+const HEDGE = [(v) => `Or was it ${v}? I forget.`, (v) => `Or ${v}. One of those.`, (v) => `No, wait. It was ${v}, I think.`]
 const DONE = ['That is all I have heard.', "You've had all my news.", "Nothing more, I'm afraid.", 'That is the lot.']
 
 /** Temper `traits` ({ chattiness, accuracy, wariness, kindness, boast }) as a tone: whichever lean is strongest. */
@@ -60,10 +60,12 @@ export function tellStory(K, s, teller, rand, rel = () => null) {
   if (K.muddle === undefined || rand() >= (1 - teller.traits.accuracy) * GOSSIP.muddle) return told(K, s, teller, rand, ties, [pick(rand, K.told)(f)])
   const wrong = pick(rand, K.pools[K.muddle].filter((v) => v !== f[K.muddle]))
   const hedge = pick(rand, HEDGE)((K.as ?? ((v) => v))(f[K.muddle], f))
-  // The hedge follows the sentence it corrects; anywhere later it reads as a second thought about something else.
+  // The hedge follows the sentence it corrects (anywhere later it reads as a second thought about something else), or a
+  // question's answer, which it must not cut off.
   const said = pick(rand, K.told)({ ...f, [K.muddle]: wrong }).split(/(?<=[.!?]) /)
-  const at = said.findIndex((x) => new RegExp(`\\b${wrong}\\b`, 'i').test(x))
+  let at = said.findIndex((x) => new RegExp(`\\b${wrong}\\b`, 'i').test(x))
   if (at < 0) throw new Error(`gossip: ${s.kind} told without its muddled ${K.muddle} "${wrong}": ${said.join(' ')}`)
+  if (said[at].endsWith('?') && at + 1 < said.length) at++
   const hedged = [...said.slice(0, at + 1), hedge, ...said.slice(at + 1)].join(' ')
   return told(K, s, teller, rand, ties, [fits(hedged) ? hedged : said.join(' ')])
 }
@@ -77,8 +79,9 @@ function told(K, s, teller, rand, ties, body) {
     else if (rand() < GOSSIP.side) body.push(K.side(s.f, mulberry32(hash32(teller.h, SALT.side, s.key))() < 0.5 ? 0 : 1))
   }
   const lead = rand() < GOSSIP.lead ? pick(rand, LEADS[toneOf(teller.traits)]) : null
-  // A body that opens "Did you hear?" is its own lead, and a question lead before a question is one question too many.
-  return fitted(body, /^Did you hear\?/.test(body[0]) || (lead !== null && lead.endsWith('?') && /^[^.!]*\?/.test(body[0])) ? null : lead)
+  // A body that opens "Did you hear?" or with its own "..., but" is its own lead, and a question lead before a question is one question too many.
+  const own = /^Did you hear\?|^[^.!?]*, but /.test(body[0]) || (lead !== null && lead.endsWith('?') && /^[^.!]*\?/.test(body[0]))
+  return fitted(body, own ? null : lead)
 }
 
 // Opening words a run-in lead lowercases; anything else (a name) keeps its capital. check-talk walks every story's first word against it.
