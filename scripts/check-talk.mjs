@@ -13,7 +13,7 @@ import { Layers } from '../src/v2/layers/layers.js'
 import { planTowns } from '../src/v2/layers/towns.js'
 import { TRAITS, VOICE, castMinds, villageMinds } from '../src/v2/talk/mind.js'
 import { LORE, TOPICS, TRUST, expertise, expertBody } from '../src/v2/talk/lore.js'
-import { DialogGrid } from '../src/v2/talk/grid.js'
+import { DialogGrid, NEXT } from '../src/v2/talk/grid.js'
 import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
 import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
 import { TalkWorld, compass } from '../src/v2/talk/world.js'
@@ -31,7 +31,8 @@ import { ITEMS } from '../src/v2/items.js'
 import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
 import { walkTalks } from './lib/talk-walk.mjs'
 import { CastleChat, VIEW, allCastleLines, castleTemper } from '../src/v2/talk/castle.js'
-import { castleNews, tellCastle } from '../src/v2/talk/castle-news.js'
+import { allCastleBodies, castleNews, tellCastle } from '../src/v2/talk/castle-news.js'
+import { COMMON } from '../src/v2/talk/gossip.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
@@ -40,6 +41,14 @@ const check = (ok, label, detail = '') => {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? `   ${detail}` : ''}`)
 }
 
+// A muddled teller's second thought (gossip.js HEDGE): true when it names a detail of story `x` the telling before it got wrong.
+const HEDGED = /I forget|One of those/
+const hedgeTrue = (x, text) => {
+  const m = /Or was it ([^?]+)\? I forget\.|Or ([^.]+)\. One of those\.|(?:^|[.?!] )([^.?!]+), maybe\. I forget which\./.exec(text)
+  if (m === null) return false
+  const named = (m[1] ?? m[2] ?? m[3]).toLowerCase(), before = text.slice(0, m.index).toLowerCase()
+  return Object.values(x.f).some((v) => typeof v === 'string' && named.includes(v.toLowerCase()) && !before.includes(v.toLowerCase()))
+}
 const root = new URL('../public/world/', import.meta.url)
 const hm = await Heightmap.read({ path: new URL('height.png', root), metaPath: new URL('height.json', root) })
 const layers = Layers.deserialize(JSON.parse(readFileSync(new URL('layers.json', root), 'utf8')))
@@ -544,8 +553,11 @@ check(left.ended && left.alone >= CHAT.alone.bye && lctx.rapport.standing(calm[0
 const octx = ctxAt(fire(world.townOf(calm[0])))
 const pest = new Chat(as(calm[0], { chattiness: 0, kindness: 0, wariness: 1 }), octx)
 let pestLast = null
-for (let i = 0; i < 40 && !pest.ended; i++) pestLast = pest.ask('talk:town')
-check(pest.ended && octx.rapport.standing(calm[0].id) < 0, 'pushing past someone\'s patience until sent off cools them', pestLast.text)
+for (let i = 0; i < 40 && pest.parting === null; i++) pestLast = pest.ask('talk:town')
+check(pest.parting !== null && !pestLast.ended && octx.rapport.standing(calm[0].id) < 0, 'pushing past someone\'s patience until sent off cools them', pestLast.text)
+const pestMenu = pest.menu()
+const pestOff = pest.ask(NEXT.topic)
+check(pestMenu.length === 1 && pestMenu[0] === NEXT && !pestLast.text.includes(pestOff.text) && pestOff.ended && pestOff.moment === 'bye.curt', 'sent off, her only chip is the arrow, and the sign-off comes alone on the page after', `${pestLast.text} -> ${pestOff.text}`)
 
 // --- the dialog grid ---
 const menuCtx = ctxAt(fire(t0), { known: new Set(Object.keys(TOPICS)) })
@@ -593,8 +605,9 @@ const wild = new Chat(leaf[0], ctxAt({ x: 0, z: 0 }), { trusted: false }).open()
 check(wild.ended && wild.moment === 'refuse.wary', 'a leafkin that does not trust her will not talk', wild.text)
 const terse = new Chat(as(cheery, { chattiness: 0, kindness: 0, wariness: 1 }), ctxAt(fire(world.townOf(cheery))))
 let turns = 0, last = null
-while (!terse.ended && turns < 40) { last = terse.ask('talk:town'); turns++ }
-check(terse.ended && turns <= terse.patience && last.alone > 0, 'a curt person runs out of patience and sends her off', `${turns} questions: ${last.text}`)
+while (terse.parting === null && turns < 40) { last = terse.ask('talk:town'); turns++ }
+const terseOff = terse.ask(NEXT.topic)
+check(terse.parting !== null && turns <= terse.patience && last.alone > 0 && terseOff.ended, 'a curt person runs out of patience and sends her off', `${turns} questions: ${last.text} -> ${terseOff.text}`)
 const byeChat = new Chat(cheery, ctxAt(fire(world.townOf(cheery))))
 const bye = byeChat.ask('bye')
 check(bye.ended && bye.moment === 'bye.warm' && bye.alone >= CHAT.alone.bye, 'goodbye ends it warmly, and they leave her be after', bye.text)
@@ -893,16 +906,20 @@ let armedBad = ''
 for (const m of armedAll) {
   const chat = new Chat(m, armedCtx(m), { trusted: true, salt: 1 })
   const o = chat.open()
-  const menu = new Conversation(m, armedCtx(m)).menu()
-  if (!(o.ended && o.moment === 'refuse.wary' && /uncouth|rude|manners|bad people|sword/i.test(o.text) && o.text.split(/(?<=[.!?])\s+/).length >= 3)) armedBad = `${m.id}: ${o.text}`
-  else if (menu.length !== 1 || !/bye|good/i.test(menu[0].label + menu[0].topic)) armedBad = `${m.id} menu ${menu.map((c) => c.topic).join(' ')}`
+  const menu = chat.menu()
+  if (!(!o.ended && o.moment === 'refuse.wary' && /uncouth|rude|manners|bad people|sword/i.test(o.text) && o.text.split(/(?<=[.!?])\s+/).length >= 2)) armedBad = `${m.id}: ${o.text}`
+  else if (menu.length !== 1 || menu[0] !== NEXT) armedBad = `${m.id} menu ${menu.map((c) => c.topic).join(' ')}`
+  else {
+    const off = chat.ask(NEXT.topic)
+    if (!off.ended || off.moment !== 'bye.curt' || o.text.includes(off.text)) armedBad = `${m.id}: ${o.text} -> ${off.text}`
+  }
   if (armedBad) break
 }
-check(armedBad === '', 'armed in town, anyone she hails calls her uncouth, tells her off, ends it, and offers only goodbye', armedBad)
+check(armedBad === '', 'armed in town, anyone she hails calls her uncouth and tells her off, offers only the arrow, and ends it on the page after', armedBad)
 const armedLines = new Set(armedAll.map((m) => new Chat(m, armedCtx(m), { trusted: true, salt: 2 }).open().text))
 check(armedLines.size >= 12, 'armed-in-town refusals vary by person', `${armedLines.size} wordings`)
 const armedConv = new Conversation(armedAll[0], armedCtx(armedAll[0]))
-const armedA = armedConv.refuseArmed().text, armedB = armedConv.refuseArmed().text
+const armedA = armedConv.refuseArmed().said.text, armedB = armedConv.refuseArmed().said.text
 check(armedA !== armedB, 'the same person does not refuse twice in the same words')
 const unarmed = new Chat(armedAll[0], ctxAt(fire(world.townOf(armedAll[0]))), { trusted: true, salt: 1 }).open()
 check(!/uncouth/i.test(unarmed.text), 'unarmed she is greeted normally')
@@ -997,7 +1014,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
     const id = `castle:1:${who}:${salt}`
     const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17 }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
-    for (const { topic } of chat.conv.menu()) if (!chat.ended) lines.push(chat.ask(topic))
+    for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
     for (const l of lines) {
       if (moments[l.moment] === undefined) unvoiced.push(`${who}: ${l.moment}`)
       if (captionRows(l.text) > CAPTION.rows) unvoiced.push(`${who} too long: ${l.text}`)
@@ -1012,7 +1029,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   // Gossip: each castle has its own stories, and every teller puts the one all of them know their own way.
   const newses = Array.from({ length: 20 }, (_, seed) => castleNews(seed + 1)), sets = new Set(newses.map((n) => JSON.stringify(n)))
   check(sets.size === 20, 'castles have their own news, not one shared list', `${sets.size} distinct sets of news in 20 castles`)
-  check(newses.every((n) => ['key', 'hoard', 'summit'].includes(n[0].kind)) && new Set(newses.map((n) => n[0].kind)).size === 3, "the story all a castle's folk know hints at the dungeon key, the dungeon chest or the summit chest", newses.map((n) => n[0].kind).join(' '))
+  check(newses.every((n) => ['key', 'hoard', 'summit', 'noise'].includes(n[0].kind)) && new Set(newses.map((n) => n[0].kind)).size === 4, "the story all a castle's folk know hints at the dungeon key, the dungeon chest, the summit chest or the dungeon itself", newses.map((n) => n[0].kind).join(' '))
   const story = castleNews(1)[0], tellings = new Set(), tempers = new Set()
   for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let i = 0; i < 4; i++) {
     const id = `castle:1:${who}:${i}`, mind = { who, ...castleTemper(who, id) }
@@ -1029,6 +1046,24 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
     else if (owned.length < 3) owned.push(text)
   }
   check(owned.length > 0 && owned.every((t) => !t.startsWith('NOT OWNED')), 'whoever a story is about tells it as their own', owned.join(' || '))
+  const noise = Array.from({ length: 200 }, (_, seed) => castleNews(seed)).flat().filter((x) => x.kind === 'noise')
+  const guardSays = noise.map((x) => tellCastle(x, { who: 'guard', ...castleTemper('guard', 'castle:9:guard') }, mulberry32(x.key)))
+  check(noise.length > 0 && guardSays.every((t) => /^On night watch I hear/.test(t)), 'a guard tells of noises in the dungeon as one who stands the night watch herself', guardSays[0])
+  const ends = new Map()
+  for (const x of noise) ends.set(x.f.sound, new Set([...(ends.get(x.f.sound) ?? []), tellCastle(x, { who: 'cook', ...castleTemper('cook', 'castle:9:cook') }, mulberry32(1)).split(/(?<=[.!?]) /).at(-1)]))
+  check(ends.size >= 4 && [...ends.values()].every((e) => e.size === 1) && new Set([...ends.values()].map((e) => [...e][0])).size === ends.size, 'each noise in the dungeon is followed by its own remark', [...ends].map(([k, e]) => `${k}: ${[...e][0]}`).join(' | '))
+  const bodies = allCastleBodies().filter((b) => !/^(I|My|On|Yes)\b/.test(b))
+  check(bodies.every((b) => COMMON.test(b)), 'every castle story opens on a word a run-in lead knows to lowercase', bodies.find((b) => !COMMON.test(b)))
+  const roll = mulberry32(3)
+  const told = Array.from({ length: 40 }, (_, seed) => castleNews(seed)).flat().flatMap((x) => ['cook', 'yard', 'traveller'].flatMap((who) => Array.from({ length: 6 }, (_, k) => [x, tellCastle(x, { who, ...castleTemper(who, `castle:${k}:${who}`) }, roll)])))
+  const hedged = told.filter(([, t]) => HEDGED.test(t))
+  check(hedged.length > 0 && told.every(([, t]) => !/\ba [aeiou]/i.test(t)) && hedged.every(([x, t]) => hedgeTrue(x, t)), 'castle gossip never says "a owl", and a muddled teller\'s second thought names the true detail', hedged.find(([x, t]) => !hedgeTrue(x, t))?.[1] ?? hedged[0]?.[1])
+  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17 }, { salt: 7 })
+  sent.open()
+  let pushed = null
+  for (let i = 0; i < 20 && sent.parting === null; i++) pushed = sent.ask(sent.menu().find((c) => c.topic !== 'bye').topic)
+  const sentMenu = sent.menu(), sentOff = sent.ask(NEXT.topic)
+  check(sent.parting !== null && !pushed.ended && pushed.alone > 0 && sentMenu.length === 1 && sentMenu[0] === NEXT && sentOff.ended && sentOff.moment === 'bye.curt' && !pushed.text.includes(sentOff.text), 'a castle guard pushed past patience answers, then sends her off on a page of its own', `${pushed.text} -> ${sentOff.text}`)
 }
 
 // Town gossip: each town's own happenings among its own folk, told from where each teller stands, with true places and hints in it.
@@ -1083,13 +1118,14 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
 
   // Every telling by every townsperson fits, in plain text.
   const bad = []
-  let n = 0
+  let n = 0, hedges = 0
   for (const t of nw.towns) for (const s of nw.news(t.index)) for (const m of t.minds) for (let k = 0; k < 3; k++) {
     const text = tellTown(s, { ...m, h: strHash(m.id) + k }, mulberry32(k))
     n++
-    if (!/^[\x20-\x7e]+$/.test(text) || captionRows(text) > CAPTION.rows || /undefined|null/.test(text)) bad.push(text)
+    if (HEDGED.test(text)) hedges++
+    if (!/^[\x20-\x7e]+$/.test(text) || captionRows(text) > CAPTION.rows || /undefined|null/.test(text) || /\ba [aeiou]/i.test(text) || (HEDGED.test(text) && !hedgeTrue(s, text))) bad.push(text)
   }
-  check(bad.length === 0 && n > 500, 'every town story, told by anyone, fits the caption in plain text', `${n} tellings: ${bad[0]}`)
+  check(bad.length === 0 && n > 500 && hedges > 0, 'every town story, told by anyone, fits the caption in plain text, never says "a owl", and any second thought names the true detail', `${n} tellings, ${hedges} with second thoughts: ${bad[0]}`)
 
   // Asked in conversation: the missing child first, then each story heard, never twice, then nothing more; its hints unlock lore.
   const qt = nw.towns.find((t) => [...quests.values()].some((q) => q.kind === 'missing-child' && q.town === t.index))

@@ -5,11 +5,12 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
+import { SPIRAL, spiralStart } from './spiral.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3
-// Half the side of a spiral's square well (shell.js SPIRAL.R + 0.05) with a margin.
-const WELL = 2.25
+// Half the side of a spiral's slab square with a margin.
+const WELL = SPIRAL.square + 0.15
 // Partitions: thickness, and the doorway each has at one cell's middle along it.
 export const PARTITION = { t: 0.4, door: 1.6, doorH: 3 }
 // Footprints [w, d] in metres; the mesher in shell.js draws each kind.
@@ -189,17 +190,26 @@ export function propFlames(records) {
   return out
 }
 
-/** The doorways, ladders and spiral foot or hole a room node `n` has at its storey, as interior plan points. */
+/** The doorways, ladders and spiral wells a room node `n` has at its storey, as interior plan points. */
 function nodePortals(lay, n) {
-  const out = [], disc = (x, z) => { for (let i = 0; i < 7; i++) out.push([x * S + (i && Math.cos(i * Math.PI / 3) * 1.2), z * S + (i && Math.sin(i * Math.PI / 3) * 1.2)]) }
-  const down = dungeonPlan(lay).stair
-  if (down.node === n) disc(down.x, down.z)
+  const out = [], wells = new Map(), down = dungeonPlan(lay).stair
+  // A well keeps its drum's disc clear, and the way out of it: a landing's doorway, or the open half round the helix's last hole.
+  const well = (st, foot) => {
+    const key = `${st.x},${st.z}`
+    if (!wells.has(key)) wells.set(key, { x: st.x * S, z: st.z * S, foot: false })
+    if (foot) wells.get(key).foot = true
+  }
+  if (down.node === n) well(down, false)
   for (const e of lay.edges) {
     if (e.a !== n && e.b !== n) continue
     for (const d of e.doors) if (Math.abs(d.y - n.k * H) < 0.1) out.push([d.x * S, d.z * S])
-    // A spiral climbs from its foot room and arrives in the one above through its hole; both keep its disc and a way round it clear.
-    if (e.stair) disc(e.stair.x, e.stair.z)
+    if (e.stair) well(e.stair, e.a === n)
     if (e.ladder) out.push([e.ladder.x * S, e.ladder.z * S])
+  }
+  for (const { x, z, foot } of wells.values()) {
+    for (let i = 0; i < 7; i++) out.push([x + (i && Math.cos(i * Math.PI / 3) * 1.2), z + (i && Math.sin(i * Math.PI / 3) * 1.2)])
+    const a = spiralStart(lay, x, z) + (foot ? -1 : 3) * Math.PI / 8, r = SPIRAL.well + SPIRAL.wall + 0.6
+    out.push([x + Math.cos(a) * r, z + Math.sin(a) * r])
   }
   return out
 }

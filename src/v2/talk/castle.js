@@ -9,6 +9,7 @@ import { fits } from './caption.js'
 import { QUIRKS, quirkLines } from './quirks.js'
 import { castleNews, tellCastle, allCastleBodies } from './castle-news.js'
 import { heardOf, nothingMore, NEWS_CLIPS } from './gossip.js'
+import { NEXT } from './grid.js'
 
 export const CASTLE_TALK = {
   // Questions answered before they send her off; the summit guard never tires of her.
@@ -126,7 +127,7 @@ const ghostTale = (of, then) => `Old stories say the dungeon is haunted by the f
 
 /**
  * Her conversation with castle folk `mind` ({ id, name, who, castle, h, traits, mood }, `castle` its castle's seed): `open()` their greeting, `ask(topic)` the answer to a grid sentence,
- * `conv.menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms; `approached` whether they came to her.
+ * `menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms; `approached` whether they came to her.
  */
 export class CastleChat {
   constructor(mind, { rooms }, { approached = false, salt = 0 } = {}) {
@@ -136,6 +137,8 @@ export class CastleChat {
     this.rand = mulberry32(hash32(strHash(mind.id), salt))
     this.turns = 0
     this.ended = false
+    // Their sign-off once they have had enough, said on its own page when she presses NEXT, or null.
+    this.parting = null
     this.used = new Set()
     const stories = castleNews(mind.castle)
     this.news = heardOf(stories.length, mind.h, (i) => stories[i].parties.includes(mind.who)).map((i) => stories[i])
@@ -171,6 +174,7 @@ export class CastleChat {
   }
 
   menu() {
+    if (this.parting !== null) return [NEXT]
     const chips = [['self', ['Tell me about', 'yourself.']], ['castle', ['Tell me about', 'this castle.']], ['news', ['Any news?']]]
     if (this.mind.who === 'lore') chips.push(['tale', ['Tell me', 'a tale.']], ['ghost', ['Is the dungeon', 'haunted?']], ['count', ['How big', 'is this castle?']], ['view', ['What can you', 'see from here?']])
     else chips.push(['see', ['Is there anything', 'worth seeing?']])
@@ -190,12 +194,17 @@ export class CastleChat {
   /** Her sentence `topic` answered. */
   ask(topic) {
     if (this.ended) throw new Error(`CastleChat: ${this.mind.id} has already ended the conversation`)
+    if (this.parting !== null) {
+      if (topic !== NEXT.topic) throw new Error(`CastleChat: ${this.mind.id} is parting and takes only ${NEXT.topic}, not ${topic}`)
+      return this._end(this.parting, 'dismissed')
+    }
     if (topic === 'bye') return this._end(line(this._mood(this._pick(BYE), 'bye'), 'wave', { moment: 'bye.warm' }), 'bye')
     this.turns++
     const said = this._answer(topic)
     if (this.turns < this.patience) return said
-    const off = this._pick(OFF)
-    return this._end(fits(`${said.text} ${off}`) ? { ...said, text: `${said.text} ${off}` } : said, 'dismissed')
+    // She is left alone from now, even if she walks off before the sign-off.
+    this.parting = line(this._pick(OFF), 'talk-shrug', { moment: 'bye.curt' })
+    return { ...said, alone: CASTLE_TALK.alone.dismissed }
   }
 
   _answer(topic) {

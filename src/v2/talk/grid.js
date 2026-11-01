@@ -6,6 +6,8 @@
 export const GRID = { cols: 4, rows: 4 }
 const CELLS = GRID.cols * GRID.rows
 const MORE = '...more'
+/** The only chip while a speaker who has had enough holds back their sign-off for its own page (chat.js `parting`). */
+export const NEXT = { topic: 'next', label: '→', path: ['→'] }
 
 export class DialogGrid {
   constructor() {

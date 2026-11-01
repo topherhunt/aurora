@@ -8,6 +8,7 @@ import { Conversation, strHash } from './speak.js'
 import { OPEN_TOPICS, TOPICS } from './lore.js'
 import { MANNERS } from './manners.js'
 import { fits } from './caption.js'
+import { NEXT } from './grid.js'
 
 export const CHAT = {
   // Questions they will answer before they have had enough: base, plus chattiness and standing (each 0..1) times these.
@@ -32,7 +33,8 @@ const rollOf = (...parts) => mulberry32(hash32(...parts.map((p) => (typeof p ===
 
 /**
  * Her conversation with `mind`. `open()` is their answer to her hail: a greeting, or a refusal that ends it.
- * `ask(topic)` answers a grid sentence. A line with `ended` true is their last; `alone` is how many seconds to leave them be.
+ * `ask(topic)` answers a grid sentence. A line with `ended` true is their last; a line with `alone` set is how many seconds to
+ * leave them be. One who has had enough holds their sign-off back for its own page (`parting`), and `menu()` offers only NEXT.
  */
 export class Chat {
   /** `ctx` as speak.js Conversation's; `trusted` whether a leafkin trusts her (trust.js), `busy` whether they are about something, `approached` whether they came to her. */
@@ -45,6 +47,8 @@ export class Chat {
     this.salt = salt
     this.turns = 0
     this.ended = false
+    // `{ line, why }`: the sign-off they say when she presses NEXT, or null.
+    this.parting = null
     const T = mind.traits
     this.patience = Math.max(2, Math.round(CHAT.patience.base + T.chattiness * CHAT.patience.chatty + Math.max(0, this.conv._standing()) * CHAT.patience.standing))
   }
@@ -55,14 +59,27 @@ export class Chat {
 
   _end(line, why) {
     this.ended = true
-    if (why === 'dismissed') this.conv.ctx.rapport.warm(this.mind.id, MANNERS.overstay)
     return { ...line, ended: true, alone: CHAT.alone[why] }
+  }
+
+  /** `said` with sign-off `off` held back for the next page. She is left alone from now, even if she walks off before it. */
+  _part(said, off, why) {
+    if (why === 'dismissed') this.conv.ctx.rapport.warm(this.mind.id, MANNERS.overstay)
+    this.parting = { line: off, why }
+    return { ...said, alone: CHAT.alone[why] }
+  }
+
+  menu() {
+    return this.parting !== null ? [NEXT] : this.conv.menu()
   }
 
   open() {
     const { mind, conv } = this
     const T = mind.traits
-    if (conv.ctx.armed) return this._end(conv.refuseArmed(), 'declined')
+    if (conv.ctx.armed) {
+      const { said, leave } = conv.refuseArmed()
+      return this._part(said, leave, 'declined')
+    }
     if (mind.kind === 'leafkin' && conv.ctx.wronged) {
       const fury = conv.opener()
       return fury.fury > 1 || this._roll('fury') < CHAT.furyEnds ? this._end(fury, 'declined') : fury
@@ -100,6 +117,10 @@ export class Chat {
   /** Her sentence `topic` (grid.js) answered. */
   ask(topic) {
     if (this.ended) throw new Error(`Chat: ${this.mind.id} has already ended the conversation`)
+    if (this.parting !== null) {
+      if (topic !== NEXT.topic) throw new Error(`Chat: ${this.mind.id} is parting and takes only ${NEXT.topic}, not ${topic}`)
+      return this._end(this.parting.line, this.parting.why)
+    }
     if (topic === 'bye') return this._end(this.conv.bye(), 'bye')
     if (topic === 'nice:leave') return this._end(this.conv.say(topic), 'bye')
     this.turns++
@@ -112,8 +133,7 @@ export class Chat {
     const line = this.conv.say(topic)
     if (this.turns < this.patience && this._roll('dismiss') >= CHAT.dismiss[this.conv.tone]) return line
     const off = this.mind.kind === 'leafkin' ? this.conv._lk('off') : this.conv._pick('off', ["That's enough questions.", 'I must get on.', 'Well. I have things to do.', 'No more questions now.'])
-    // A line too long to add it to ends on the empty grid and their turning away.
-    return this._end(fits(`${line.text} ${off}`) ? { ...line, text: `${line.text} ${off}` } : line, 'dismissed')
+    return this._part(line, this.conv._line(off, 'talk-shrug', { moment: 'bye.curt', mood: 'cold', plain: true }), 'dismissed')
   }
 }
 

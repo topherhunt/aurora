@@ -169,7 +169,7 @@ export function castleLayout(seed) {
     }
   }
   // A spiral stair climbs about its cell's centre, so stairs stacked in one cell make one helix. A roof ladder stands in a corner,
-  // or in a round room on an axis, either way clear of a spiral's hole in its cell (shell.js SPIRAL).
+  // or in a round room on an axis, either way clear of a spiral's drum in its cell (spiral.js SPIRAL).
   for (const s of solid) for (let k = 0; k < s.floors; k++) for (const r of s.rooms[k]) {
     const cx = int(r.x0, r.x0 + r.w - 1), cz = int(r.z0, r.z0 + r.d - 1), c = int(0, 3)
     const up = k + 1 < s.floors ? roomAt(s, k + 1, cx, cz) : s.roof

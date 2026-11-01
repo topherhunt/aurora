@@ -433,7 +433,7 @@ export class Conversations {
     const i = this.panel.indexAt(hit)
     if (i < 0) return false
     if (this.chat.closing !== null) return true
-    const menu = this.chat.chat.conv.menu()
+    const menu = this.chat.chat.menu()
     const topic = this.grid.press(menu, i)
     if (topic === null) this.panel.setCells(this.grid.cells(menu))
     else this._answer(this.chat.chat.ask(topic), head)
@@ -443,11 +443,11 @@ export class Conversations {
   _answer(line, head) {
     const { p, chat } = this.chat
     this._say(p, line, head)
+    if (line.alone !== undefined) this.alone.set(p.mind.id, this.now + line.alone)
     if (line.ended) {
-      this.alone.set(p.mind.id, this.now + line.alone)
       this.chat.closing = this.now + TALK.linger + line.text.split(' ').length / TALK.wordsPerS
       this.panel.show(p.mind.name, line.text, EMPTY)
-    } else this.panel.show(p.mind.name, line.text, this.grid.cells(chat.conv.menu()))
+    } else this.panel.show(p.mind.name, line.text, this.grid.cells(chat.menu()))
   }
 
   /** `line` said by `p`: its gesture, and its moment in their voice where she stands. */

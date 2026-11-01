@@ -3,7 +3,8 @@
 // the stairwell, shadowed through the grid, so the maze is dark between them. Interior metres, as shell.js.
 import { DUNGEON, dungeonCell, dungeonPlan } from './dungeon.js'
 import { dungeonProps, propFlames } from './furnish.js'
-import { Mesher, interiorWarp, leaves, prop, rgb, spiralSteps } from './shell.js'
+import { Mesher, interiorWarp, leaves, prop, rgb, spiralSteps, wellWarp } from './shell.js'
+import { spiralStart } from './spiral.js'
 import { faceShade } from './light.js'
 
 const ROCK = rgb(0x77716a), FLOOR = rgb(0x5f5a52), SILT = rgb(0x4a4a3c), WATER = rgb(0x24403f), MOSS = rgb(0x4d6338), IRON = rgb(0x3a3836)
@@ -54,7 +55,9 @@ export function dungeonGeometry(lay) {
       wall(Math.max(roof[o] ? hi[o] : -0.3, y0), y1)
     }
   }
-  spiralSteps(m, g.foot.x, g.foot.z, F, !lay.edges.some((e) => e.stair && e.stair.k === 0 && e.stair.x === g.stair.x && e.stair.z === g.stair.z))
+  const stair = m.bufs.map((b) => b.p.length)
+  spiralSteps(m, g.foot.x, g.foot.z, F, spiralStart(lay, g.foot.x, g.foot.z), !lay.edges.some((e) => e.stair && e.stair.k === 0 && e.stair.x === g.stair.x && e.stair.z === g.stair.z), DUNGEON.foot.slab)
+  const stairEnd = m.bufs.map((b) => b.p.length)
 
   // Props drawn where they stand, so they bake against the grid; each moves with its own origin after.
   const records = dungeonProps(lay), moved = []
@@ -83,8 +86,9 @@ export function dungeonGeometry(lay) {
   })
   for (const b of wm.bufs) for (let v = 0; v < b.p.length; v += 3) b.l.push(...lightAt(g, lights, [b.p[v], b.p[v + 1], b.p[v + 2]], [0, 1, 0]))
 
-  // Warp: walls bent as the castle's and their high parts jittered, but never by the foot or door, whose stone meets other meshes.
-  const warp = interiorWarp(lay), [fi0, fj0, fi1, fj1] = g.foot.cells, { door } = g
+  // Warp: walls bent as the castle's and their high parts jittered, but never by the foot or door, whose stone meets other meshes;
+  // the spiral bends as the ground room's slab square over it does.
+  const warp = interiorWarp(lay), well = wellWarp(warp, g.foot.x, g.foot.z), [fi0, fj0, fi1, fj1] = g.foot.cells, { door } = g
   const near = [[x0 + fi0, z0 + fj0, x0 + fi1, z0 + fj1], [door.x - 1.5, door.z - 1.5, door.x + 1.5, door.z + 1.5]]
   const jitter = (x, y, z) => {
     const d = Math.min(...near.map(([a, b, c, e]) => Math.hypot(Math.max(a - x, 0, x - c), Math.max(b - z, 0, z - e))))
@@ -99,7 +103,7 @@ export function dungeonGeometry(lay) {
   m.bufs.forEach((b, s) => {
     for (let v = 0; v < b.p.length; v += 3) {
       if (isProp[s][v / 3]) continue
-      const [x, y, z] = b.p.slice(v, v + 3), [wx, , wz] = warp(x, y, z)
+      const [x, y, z] = b.p.slice(v, v + 3), [wx, , wz] = (v >= stair[s] && v < stairEnd[s] ? well : warp)(x, y, z)
       b.p[v] = wx; b.p[v + 1] = y + jitter(x, y, z); b.p[v + 2] = wz
     }
   })

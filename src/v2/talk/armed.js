@@ -88,7 +88,7 @@ export function swordWarning(mind, r) {
   return { text: pick(r, WARN[temper(mind)]), moment: 'refuse.wary' }
 }
 
-/** What `mind` says when she hails them or they hail her while she is armed in town: calls her uncouth, tells her off and ends it, `r` a roll 0..1: `{ text, moment }`. */
+/** What `mind` says when she hails them or they hail her while she is armed in town, `r` a roll 0..1: `{ text, leave, moment }`, `text` calling her uncouth and telling her off, `leave` the line that ends it. */
 export function armedRefusal(mind, r) {
   if (typeof r !== 'number') throw new Error('armed: armedRefusal needs a roll r')
   const t = temper(mind)
@@ -97,5 +97,5 @@ export function armedRefusal(mind, r) {
   const own = SCOLD_BY[mind.body]
   const scold = set !== null ? set.scold : own !== undefined && sub(r, 1) < 0.5 ? own : SCOLD[t]
   const leave = set === null ? LEAVE[t] : set.leave
-  return { text: `${pick(sub(r, 2), uncouth)} ${pick(sub(r, 3), scold)} ${pick(sub(r, 4), leave)}`, moment: 'refuse.wary' }
+  return { text: `${pick(sub(r, 2), uncouth)} ${pick(sub(r, 3), scold)}`, leave: pick(sub(r, 4), leave), moment: 'refuse.wary' }
 }

@@ -238,7 +238,6 @@ export class Conversation {
 
   /** What she may say: `{ topic, label, path }`, `path` the fragments the dialog grid (grid.js) builds it from. Gated lore shows once she has heard of it (`ctx.known`). */
   menu() {
-    if (this.ctx.armed) return [{ topic: 'bye', label: 'Goodbye.', path: ['Goodbye.'] }]
     const nice = this._niceties()
     const chips = [...trade.chips(this), ...this._followUps(), ...nice.lead]
     chips.push(['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']], ...nice.rest)
@@ -480,10 +479,18 @@ export class Conversation {
     return this._line(text, warm ? 'wave' : 'talk-shrug', { moment: warm ? 'bye.warm' : 'bye.curt', mood: warm ? 'warm' : 'cold', plain: true })
   }
 
-  /** Their refusal to talk to an armed stranger (armed.js), another wording each time. */
+  /** Their refusal to talk to an armed stranger (armed.js), another wording each time: `{ said, leave }`, the telling-off and the line that ends it. */
   refuseArmed() {
-    const text = this._fresh('armed', (n) => armedRefusal(this.mind, (this._roll('armed') + n * 0.6180339887) % 1).text)
-    return this._line(text, 'talk-shrug', { mood: 'cold', moment: 'refuse.wary', plain: true })
+    let leave = null
+    const text = this._fresh('armed', (n) => {
+      const r = armedRefusal(this.mind, (this._roll('armed') + n * 0.6180339887) % 1)
+      leave = r.leave
+      return r.text
+    })
+    return {
+      said: this._line(text, 'talk-shrug', { mood: 'cold', moment: 'refuse.wary', plain: true }),
+      leave: this._line(leave, 'talk-shrug', { mood: 'cold', moment: 'bye.curt', plain: true }),
+    }
   }
 
   /** Their first line, when they hail her or she hails them: a parent with an untaken quest pleads, the rest greet her by how they stand with her. */

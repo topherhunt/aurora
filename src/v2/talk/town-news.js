@@ -36,12 +36,11 @@ const KINDS = {
       (f) => `There's a strider at the rail that ${f.mood} all night, facing ${f.dir}. It's in love with one in ${f.town}.`,
     ],
     pools: { mood: ['sulks', 'sighs', 'stamps', 'sings'] },
-    muddle: 'mood',
   },
   dragon: {
     place: true,
     when: (c) => c.roost !== null,
-    roll: (r, c) => one(r, grown(c), { dir: c.roost.dir, far: c.roost.far, lost: pick(r, ['eyebrows', 'hat', 'beard', 'boots']) }),
+    roll: (r, c) => one(r, grown(c), { dir: c.roost.dir, far: c.roost.far, lost: pick(r, KINDS.dragon.pools.lost) }),
     told: [
       (f) => `${f.n[0]} went ${f.dir} to the dragon's roost after an egg. ${cap(f.far)} there and back, and ${f.p[0].he} came home without ${f.p[0].his} ${f.lost}.`,
       (f) => `Did you hear? ${f.n[0]} climbed to the dragon's roost, ${f.far} ${f.dir} of here. Lost ${f.p[0].his} ${f.lost}, and no egg.`,
@@ -49,8 +48,9 @@ const KINDS = {
     ],
     mine: (f) => `I went for the egg at the dragon's roost, ${f.far} ${f.dir} of here. I lost my ${f.lost}. I'll go again.`,
     kin: (f) => `Our ${f.n[0]} went for a dragon's egg, ${f.dir} of here, and came home without ${f.p[0].his} ${f.lost}. Never again, I said.`,
-    pools: { lost: ['eyebrows', 'hat', 'beard', 'boots'] },
+    pools: { lost: ['eyebrows', 'hat', 'cloak', 'boots'] },
     muddle: 'lost',
+    as: (v, f) => `${f.p[0].his} ${v}`,
     unlocks: ['dragons'],
   },
   cave: {
@@ -219,13 +219,14 @@ const KINDS = {
     roll: (r, c) => one(r, grown(c), { beast: pick(r, KINDS.goat.pools.beast), did: pick(r, KINDS.goat.pools.did) }),
     pools: { beast: ['goat', 'goose', 'pig', 'hen', 'cat'], did: ['ate the washing', 'got onto the roof', 'chased the jarl', 'fell in the well', 'slept in the bread oven', 'won a race'] },
     told: [
-      (f) => `${f.n[0]}'s ${f.beast} ${f.did}. Again.`,
+      (f) => `${f.n[0]}'s ${f.beast} ${f.did} again.`,
       (f) => `Have you met ${f.n[0]}'s ${f.beast}? It ${f.did} this morning.`,
       (f) => `Don't tell ${f.n[0]} I said, but ${f.p[0].his} ${f.beast} ${f.did}.`,
     ],
     mine: (f) => `My ${f.beast} ${f.did}. Somehow this is my fault.`,
     kin: (f) => `Our ${f.beast} ${f.did}. ${f.n[0]} won't hear a word against it.`,
     muddle: 'beast',
+    as: (v) => `the ${v}`,
   },
 }
 

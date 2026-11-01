@@ -2,7 +2,7 @@
 // last line, over the 4x4 grid of fragments (talk/grid.js). It stands between her and the speaker, below their face,
 // turned to her. Two meshes, two canvases, drawn over the world like the quest menu.
 import THREE from '../../three-instance.js'
-import { GRID } from '../talk/grid.js'
+import { GRID, NEXT } from '../talk/grid.js'
 import { CAPTION, wrap } from '../talk/caption.js'
 
 export const DIALOG = {
@@ -120,7 +120,7 @@ export class DialogPanel {
       ctx.fillRect(x, y, cw, ch)
       if (!cell.text || cell.kind === 'empty') return
       ctx.fillStyle = '#ffffff'
-      ctx.font = SERIF(cell.kind === 'back' ? 44 : 26)
+      ctx.font = SERIF(cell.kind === 'back' || cell.text === NEXT.label ? 44 : 26)
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       const lines = wrap(ctx, cell.text, cw - 16).slice(0, 2)

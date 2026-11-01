@@ -51,7 +51,7 @@ export function walkTalks(world, seed, n, hear) {
       let line = chat.open()
       hear(mind, who, null, line)
       for (let turn = 0; turn < 8 && !line.ended; turn++) {
-        const topic = pick(chat.conv.menu().filter((c) => c.topic !== 'bye' || turn > 5)).topic
+        const topic = pick(chat.menu().filter((c) => c.topic !== 'bye' || turn > 5)).topic
         line = chat.ask(topic)
         hear(mind, who, topic, line)
       }
