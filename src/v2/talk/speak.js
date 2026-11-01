@@ -12,6 +12,8 @@ import { fits } from './caption.js'
 import * as trade from './trade.js'
 import { armedRefusal } from './armed.js'
 import { QUIRKS, quirkLines } from './quirks.js'
+import { heardOf, nothingMore, NEWS_CLIPS } from './gossip.js'
+import { storyNames, tellTown, tie } from './town-news.js'
 
 export const SPEAK = {
   // A claimed place within this of the truth is the truth (a told belief, a check).
@@ -139,6 +141,9 @@ export class Conversation {
     this.heardWork = false
     // Whether they have listed what they trade (trade.js): their deals then all show as chips.
     this.offered = false
+    // Keys of the town stories (town-news.js) told in this talk, and whether the missing child has been.
+    this.toldNews = new Set()
+    this.toldMissing = false
   }
 
   get leafkin() {
@@ -238,7 +243,7 @@ export class Conversation {
     const chips = [...trade.chips(this), ...this._followUps(), ...nice.lead]
     chips.push(['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']], ...nice.rest)
     if (!this.leafkin) {
-      chips.push(['talk:town', ['Tell me about', 'this town.']], ['where:here', ['Where', 'am I?']], ['where:home', ['Where', 'do you live?']])
+      chips.push(['talk:town', ['Tell me about', 'this town.']], ['talk:news', ['Any', 'news?']], ['where:here', ['Where', 'am I?']], ['where:home', ['Where', 'do you live?']])
       for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, ['Where', 'is the', `${title === 'potionmaster' ? 'potion master' : title}?`]])
       if (!trade.isSmith(this.mind)) chips.push(['where:gear', ['Where can I get', 'weapons, armour', 'and gear?']])
     }
@@ -525,10 +530,10 @@ export class Conversation {
     return this._line(said, gesture, { ...more, quirked: q !== '' })
   }
 
-  /** A line: `{ text, gesture, toward, claim, mood, moment, unlocks, about }`, `moment` what its voice clip says (lines.js), `about` what it names for follow-ups (`_followUps`). */
+  /** A line: `{ text, gesture, toward, claim, mood, moment, only, unlocks, about }`, `moment` what its voice clip says (lines.js) and `only` which of its clips, `about` what it names for follow-ups (`_followUps`). */
   _line(text, gesture = 'talk-gesture', more = {}) {
     if (more.moment === undefined) throw new Error(`Conversation: no voice moment for "${text}"`)
-    return { text, gesture, toward: null, claim: null, mood: 'neutral', unlocks: [], about: [], ...more }
+    return { text, gesture, toward: null, claim: null, mood: 'neutral', unlocks: [], about: [], only: null, ...more }
   }
 
   // --- the pipeline ------------------------------------------------------
@@ -854,6 +859,7 @@ export class Conversation {
       // A traveller tells the town as a fact, not as their home.
       return this._line(text, 'talk-gesture', { moment: mind.cls === 'travel' ? 'answer.sure' : 'talk.town', about })
     }
+    if (arg === 'news') return this._gossip()
     if (arg === 'needs') {
       const line = this._needs()
       if (this.leafkin || !this._warmBy('help') || line.mood !== 'neutral') return line
@@ -970,6 +976,36 @@ export class Conversation {
     const some = want.startsWith('a ') ? want : `some ${want}`
     const text = this.leafkin ? this._lk('want', { want }) : this._pick('wish', [`I could use ${some}, if you come by any.`, `If you come by ${some}, I'd take it off your hands.`, `I'm short of ${some}, if you see any.`])
     return this._line(text, 'talk-gesture', { want, moment: 'needs.yes', unlocks: this._unlock(topics), about: [{ kind: 'want', item: want }, ...this._named(topics)] })
+  }
+
+  /** Asked for news: a missing child first, then each town story (town-news.js) they have heard, once a talk, in their own way. */
+  _gossip() {
+    const { mind, ctx } = this
+    if (this._standing() < mind.traits.wariness - 0.85) return this._line(this._refuse(), 'talk-shrug', { mood: 'cold', moment: 'refuse.wary' })
+    if (!this.toldMissing) {
+      this.toldMissing = true
+      const missing = this.news()
+      if (missing !== null) return missing
+    }
+    const t = this.town, stories = ctx.world.news(t.index), h = strHash(mind.id)
+    const heard = heardOf(stories.length, h, (i) => stories[i].parties.some((p) => ['me', 'kin'].includes(tie(mind, p)))).map((i) => stories[i])
+    const s = heard.find((x) => !this.toldNews.has(x.key))
+    const rand = mulberry32(hash32(h, this.salt, this.ask))
+    if (s === undefined) return this._line(nothingMore(rand), 'talk-shrug', { moment: 'answer.spent' })
+    this.toldNews.add(s.key)
+    const names = storyNames(ctx.world, t, s), about = this._named(names.unlocks)
+    for (const p of names.people) if (p !== mind.index) {
+      const o = t.minds[p]
+      this._mention(`ask:person:${o.id}`, o.name)
+      about.push({ kind: 'person', id: o.id })
+    }
+    if (names.town !== null) {
+      this._mention(`ask:town:${names.town}`, ctx.world.towns[names.town].name)
+      about.push({ kind: 'town', index: names.town })
+    }
+    const more = { moment: 'gossip.lead', only: NEWS_CLIPS, plain: true, unlocks: this._unlock(names.unlocks), about }
+    if (names.toward !== null) return this._line(tellTown(s, { ...mind, h }, rand), 'talk-point', { ...more, toward: names.toward })
+    return this._line(tellTown(s, { ...mind, h }, rand), 'talk-gesture', more)
   }
 
   /** The town's bad news, told plainly to her unasked, or null: a missing child not their own. */

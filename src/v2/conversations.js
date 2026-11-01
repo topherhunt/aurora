@@ -458,7 +458,7 @@ export class Conversations {
     else this.villagers.gesture(p.c.id, line.gesture, this.now, line.toward)
     if (this.picker === null || this.voices === null && !this._voices()) return
     const tier = p.kind === 'village' ? leafkinTier(this.chat.trusted, this.rapport.standing(p.mind.id)) : 'native'
-    const pick = this.picker.pick(p.mind, line.moment, { now: this.now, tier, force: true })
+    const pick = this.picker.pick(p.mind, line.moment, { now: this.now, tier, force: true, only: line.only })
     if (pick === null) return
     this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true, outside: this._outside(p) })
   }

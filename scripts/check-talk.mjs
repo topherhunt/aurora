@@ -16,11 +16,12 @@ import { LORE, TOPICS, TRUST, expertise, expertBody } from '../src/v2/talk/lore.
 import { DialogGrid } from '../src/v2/talk/grid.js'
 import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
 import { LinePicker, leafkinTier, LEAFKIN_ATOM } from '../src/v2/talk/lines.js'
-import { TalkWorld } from '../src/v2/talk/world.js'
+import { TalkWorld, compass } from '../src/v2/talk/world.js'
+import { storyNames, tellTown } from '../src/v2/talk/town-news.js'
 import { Rapport } from '../src/v2/talk/rapport.js'
 import { QuestLog, questsFor, missingChild, hideouts, MESSAGES, GHOST_WORDS, QUESTS, ODD } from '../src/v2/talk/quests.js'
 import { ghostSays } from '../src/v2/talk/ghost.js'
-import { Conversation, SPEAK, gossip } from '../src/v2/talk/speak.js'
+import { Conversation, SPEAK, gossip, strHash } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
 import * as trade from '../src/v2/talk/trade.js'
@@ -30,7 +31,7 @@ import { ITEMS } from '../src/v2/items.js'
 import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
 import { walkTalks } from './lib/talk-walk.mjs'
 import { CastleChat, VIEW, allCastleLines, castleTemper } from '../src/v2/talk/castle.js'
-import { castleNews, tellStory } from '../src/v2/talk/castle-news.js'
+import { castleNews, tellCastle } from '../src/v2/talk/castle-news.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
@@ -1009,24 +1010,109 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   check(ghosts.length > 0, "the summit guard tells of the dungeon's forlorn ghost", ghosts[0])
 
   // Gossip: each castle has its own stories, and every teller puts the one all of them know their own way.
-  const firsts = new Set(Array.from({ length: 20 }, (_, seed) => JSON.stringify(castleNews(seed + 1)[0])))
-  check(firsts.size >= 15, 'castles have their own news, not one shared list', `${firsts.size} distinct lead stories in 20 castles`)
+  const newses = Array.from({ length: 20 }, (_, seed) => castleNews(seed + 1)), sets = new Set(newses.map((n) => JSON.stringify(n)))
+  check(sets.size === 20, 'castles have their own news, not one shared list', `${sets.size} distinct sets of news in 20 castles`)
+  check(newses.every((n) => ['key', 'hoard', 'summit'].includes(n[0].kind)) && new Set(newses.map((n) => n[0].kind)).size === 3, "the story all a castle's folk know hints at the dungeon key, the dungeon chest or the summit chest", newses.map((n) => n[0].kind).join(' '))
   const story = castleNews(1)[0], tellings = new Set(), tempers = new Set()
   for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let i = 0; i < 4; i++) {
     const id = `castle:1:${who}:${i}`, mind = { who, ...castleTemper(who, id) }
     tempers.add(mind.mood)
-    tellings.add(tellStory(story, mind, mulberry32(mind.h)))
+    tellings.add(tellCastle(story, mind, mulberry32(mind.h)))
   }
   check(tellings.size >= 30 && tempers.size === 4, 'one story is told in many ways across a castle, by folk of every mood', `${tellings.size} tellings of 44, moods ${[...tempers].join(' ')}: ${[...tellings].slice(0, 3).join(' || ')}`)
   const owned = []
   for (let seed = 1; seed < 60 && owned.length < 3; seed++) for (const s of castleNews(seed)) {
-    const party = ['lord', 'steward', 'cook', 'maid'].find((r) => r === s.f.a || r === s.f.b)
-    if (party === undefined || !['feud', 'pet', 'broke', 'sweet'].includes(s.kind)) continue
-    const id = `castle:${seed}:${party}`, text = tellStory(s, { who: party, ...castleTemper(party, id) }, mulberry32(seed))
+    const party = ['lord', 'steward', 'cook', 'maid'].find((r) => s.parties.includes(r))
+    if (party === undefined || !['key', 'feud', 'pet', 'broke', 'sweet'].includes(s.kind)) continue
+    const id = `castle:${seed}:${party}`, text = tellCastle(s, { who: party, ...castleTemper(party, id) }, mulberry32(seed))
     if (!/\b(I|my|My)\b/.test(text)) owned.push(`NOT OWNED ${party}: ${text}`)
     else if (owned.length < 3) owned.push(text)
   }
   check(owned.length > 0 && owned.every((t) => !t.startsWith('NOT OWNED')), 'whoever a story is about tells it as their own', owned.join(' || '))
+}
+
+// Town gossip: each town's own happenings among its own folk, told from where each teller stands, with true places and hints in it.
+{
+  const nw = new TalkWorld(SEED, towns)
+  nw.seatHideouts(hideouts(towns, fakeCaves, fakeKeeps))
+  // A roost 900 m north of every other town.
+  const roostAt = (t) => ({ x: t.town.x, z: t.town.z - 900 })
+  nw.seatDeer(nw.towns.filter((t) => t.index % 2 === 0).map(roostAt))
+  const newses = nw.towns.map((t) => nw.news(t.index))
+  check(new Set(newses.map((n) => JSON.stringify(n))).size === nw.towns.length && new Set(newses.map((n) => n.map((s) => s.kind).join())).size >= nw.towns.length / 2, 'every town has its own news, not one list', newses.slice(0, 4).map((n) => n.map((s) => s.kind).join(' ')).join(' | '))
+  check(newses.every((n) => ['lover', 'dragon', 'cave', 'castle'].includes(n[0].kind)), 'the story a whole town knows tells of a place near it', newses.map((n) => n[0].kind).join(' '))
+  const wrong = []
+  for (const t of nw.towns) for (const s of nw.news(t.index)) {
+    const names = storyNames(nw, t, s)
+    if (s.kind === 'lover') {
+      const near = nw.nearestTown(t.town.x, t.town.z, t.index)
+      if (s.f.town !== near.name || s.f.dir !== compass(near.town.x - t.town.x, near.town.z - t.town.z) || names.town !== near.index) wrong.push(`${t.name} lover: ${JSON.stringify(s.f)}`)
+    }
+    if (s.kind === 'dragon') {
+      const d = (o) => Math.hypot(o.x - t.town.x, o.z - t.town.z), roost = nw.roosts.reduce((a, o) => (d(o) < d(a) ? o : a))
+      if (s.f.dir !== compass(roost.x - t.town.x, roost.z - t.town.z) || names.toward.x !== roost.x || names.toward.z !== roost.z) wrong.push(`${t.name} dragon: ${JSON.stringify(s.f)}`)
+    }
+    if (s.kind === 'cave' && s.f.cave !== nw.hideouts[t.index].label) wrong.push(`${t.name} cave: ${s.f.cave}`)
+  }
+  check(wrong.length === 0, 'a place in the news lies where they say: the next town, the roost and the cave by their true direction', wrong[0])
+  check(newses.some((n) => n.some((s) => s.kind === 'dragon')) && newses.some((n) => n.some((s) => s.kind === 'lover')), 'towns tell of both a roost and the next town over', newses.map((n) => n[0].kind).join(' '))
+
+  // Perspective: a feud as the two parties, their kin, their friends and a bystander tell it.
+  let feud = null
+  for (const t of nw.towns) for (const s of nw.news(t.index)) if (feud === null && s.kind === 'feud') feud = { t, s }
+  check(feud !== null, 'some town is feuding')
+  const { t: ft, s: fs } = feud
+  const [a, b] = fs.parties.map((p) => ft.minds[p])
+  const told = (m, k = 0) => tellTown(fs, { ...m, h: strHash(m.id) + k }, mulberry32(k + 1))
+  const blames = (m, who) => Array.from({ length: 12 }, (_, k) => told(m, k)).some((x) => x.includes(`${who.name} started it`))
+  const friendOf = (x, y) => ft.minds.find((m) => m.friends.includes(x.index) && !m.friends.includes(y.index) && m.rival !== x.index && m !== y && !m.household.includes(x.index) && !m.household.includes(y.index))
+  const fa = friendOf(a, b), fb = friendOf(b, a)
+  check(/\bI\b/.test(told(a)) && /\bI\b/.test(told(b)) && told(a).includes(b.name) && told(b).includes(a.name), 'each party to a feud tells it as their own', `${told(a)} || ${told(b)}`)
+  check(fa !== undefined && fb !== undefined && blames(fa, b) && !blames(fa, a) && blames(fb, a) && !blames(fb, b), "a friend of either side blames the other one", `${fa?.name}: ${told(fa)} || ${fb?.name}: ${told(fb)}`)
+  const kinOf = (x) => ft.minds.find((m) => m.household.includes(x.index))
+  const ka = kinOf(a) ?? kinOf(b)
+  check(ka === undefined || /^Our /.test(told(ka)), "a party's household tells it as family", ka === undefined ? 'no kin' : told(ka))
+
+  // The pumpkins: the child owns up, the farmer complains, and both are true of the knife and the striders.
+  let pump = null
+  for (const t of nw.towns) for (const s of nw.news(t.index)) if (pump === null && s.kind === 'pumpkins') pump = { t, s }
+  check(pump !== null, 'some town tells of the carved pumpkins')
+  const [kid, farmer] = pump.s.parties.map((p) => pump.t.minds[p])
+  const kidSays = tellTown(pump.s, { ...kid, h: strHash(kid.id) }, mulberry32(1)), farmerSays = tellTown(pump.s, { ...farmer, h: strHash(farmer.id) }, mulberry32(1))
+  check(kid.cls === 'child' && farmer.trade === 'farm' && /knife/.test(kidSays) && /my pumpkins/.test(farmerSays) && /fish/.test(farmerSays), "the child who carved a farmer's pumpkins owns to the smith's knife, and the farmer learnt striders only eat fish", `${kidSays} || ${farmerSays}`)
+
+  // Every telling by every townsperson fits, in plain text.
+  const bad = []
+  let n = 0
+  for (const t of nw.towns) for (const s of nw.news(t.index)) for (const m of t.minds) for (let k = 0; k < 3; k++) {
+    const text = tellTown(s, { ...m, h: strHash(m.id) + k }, mulberry32(k))
+    n++
+    if (!/^[\x20-\x7e]+$/.test(text) || captionRows(text) > CAPTION.rows || /undefined|null/.test(text)) bad.push(text)
+  }
+  check(bad.length === 0 && n > 500, 'every town story, told by anyone, fits the caption in plain text', `${n} tellings: ${bad[0]}`)
+
+  // Asked in conversation: the missing child first, then each story heard, never twice, then nothing more; its hints unlock lore.
+  const qt = nw.towns.find((t) => [...quests.values()].some((q) => q.kind === 'missing-child' && q.town === t.index))
+  const q = [...quests.values()].find((x) => x.kind === 'missing-child' && x.town === qt.index)
+  const asker = qt.minds.find((m) => m.id !== q.parent && m.id !== q.child && m.cls !== 'child')
+  const nctx = ctxAt(fire(qt), { world: nw })
+  const c = new Conversation(asker, nctx)
+  const said = []
+  check(c.menu().some((x) => x.topic === 'talk:news'), 'townsfolk can be asked for news')
+  for (let i = 0; i < 8; i++) said.push(c.say('talk:news'))
+  const stories = said.filter((l) => l.moment === 'gossip.lead')
+  check(said[0].about.some((a) => a.kind === 'missing') && stories.length >= 2 && new Set(stories.map((l) => l.text)).size === stories.length && said[7].moment === 'answer.spent', 'asked for news, they tell of the missing child, then each story they know once, then have no more', said.map((l) => l.text).join(' || '))
+  const voiced = new LinePicker(table, SEED), clips = stories.slice(1).flatMap((l) => Array.from({ length: 12 }, (_, i) => voiced.pick(asker, l.moment, { now: 1e4 + i, force: true, only: l.only }).line))
+  check(clips.length > 0 && clips.every((l) => !l.startsWith('someones-missing')), "a story is never voiced as someone's missing", [...new Set(clips)].join(' '))
+  const opened = stories.flatMap((l) => l.unlocks)
+  check(opened.some((u) => TOPICS[u].gated) && opened.every((u) => nctx.known.has(u)), 'a hint in the news opens its lore to ask about', opened.join(' '))
+  const pointed = stories.filter((l) => l.gesture === 'talk-point')
+  check(pointed.length > 0 && pointed.every((l) => l.toward !== null), 'telling of a place, they point toward it', pointed.map((l) => l.text).join(' || '))
+
+  if (process.argv.includes('--news')) for (const t of nw.towns.slice(0, 6)) {
+    console.log(`\n${t.name}`)
+    for (const s of nw.news(t.index)) for (const m of t.minds.slice(0, 3)) console.log(`  ${m.name.padEnd(8)} ${tellTown(s, { ...m, h: strHash(m.id) }, mulberry32(strHash(m.id)))}`)
+  }
 }
 
 if (process.argv.includes('--transcript')) {

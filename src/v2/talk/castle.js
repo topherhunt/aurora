@@ -7,7 +7,8 @@ import { hash32 } from '../../sim/score.js'
 import { strHash } from './speak.js'
 import { fits } from './caption.js'
 import { QUIRKS, quirkLines } from './quirks.js'
-import { castleNews, heardOf, tellStory, nothingMore, allStoryBodies } from './castle-news.js'
+import { castleNews, tellCastle, allCastleBodies } from './castle-news.js'
+import { heardOf, nothingMore, NEWS_CLIPS } from './gossip.js'
 
 export const CASTLE_TALK = {
   // Questions answered before they send her off; the summit guard never tires of her.
@@ -115,7 +116,7 @@ const GHOST = {
 
 /** Every tale the summit guard can tell, for check-talk to walk against the caption. */
 export function allCastleLines() {
-  const out = [...VIEW, ...CASTLE, ...allStoryBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
+  const out = [...VIEW, ...CASTLE, ...allCastleBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
   for (const o of TALE.open) for (const w of TALE.who) for (const [d, t] of TALE.did) out.push(`${o} ${w} ${d}, ${t}`)
   for (const g of GHOST.of) for (const t of GHOST.then) out.push(ghostTale(g, t))
   return out
@@ -137,7 +138,7 @@ export class CastleChat {
     this.ended = false
     this.used = new Set()
     const stories = castleNews(mind.castle)
-    this.news = heardOf(stories, mind.h).map((i) => stories[i])
+    this.news = heardOf(stories.length, mind.h, (i) => stories[i].parties.includes(mind.who)).map((i) => stories[i])
     this.patience = mind.who === 'lore' ? CASTLE_TALK.patience.lore : GUARDS.has(mind.who) ? CASTLE_TALK.patience.guard : CASTLE_TALK.patience.rest
     this.conv = { menu: () => this.menu(), _line: (text, gesture, more) => line(text, gesture, more) }
   }
@@ -209,11 +210,11 @@ export class CastleChat {
       if (fresh.length === 0) return line(nothingMore(this.rand), 'talk-shrug', { moment: 'answer.spent' })
       const s = fresh[(this.rand() * fresh.length) | 0]
       this.used.add(s)
-      return line(this._mood(tellStory(s, this.mind, this.rand), 'aside'), 'talk-nod', { moment: 'gossip.lead' })
+      return line(this._mood(tellCastle(s, this.mind, this.rand), 'aside'), 'talk-nod', { moment: 'gossip.lead', only: NEWS_CLIPS })
     }
     if (topic === 'see') return line(this._pick(VIEW), 'talk-point', { moment: 'observe.marvel' })
     if (topic === 'view') return line(this._pick(VIEW_HERE), 'talk-point', { moment: 'observe.marvel' })
-    if (topic === 'ghost') return line(ghostTale(this._pick(GHOST.of), this._pick(GHOST.then)), 'talk-gesture', { moment: 'gossip.lead' })
+    if (topic === 'ghost') return line(ghostTale(this._pick(GHOST.of), this._pick(GHOST.then)), 'talk-gesture', { moment: 'gossip.lead', only: NEWS_CLIPS })
     if (topic === 'count') return line(`This castle has ${this.rooms} rooms. I have counted ${this.rooms + 1}. Nobody believes me about the extra one.`, 'talk-shrug', { moment: 'answer.boast' })
     if (topic === 'tale') {
       if (this.rand() < CASTLE_TALK.ghost) return this._answer('ghost')
@@ -227,5 +228,5 @@ export class CastleChat {
 /** A line in `Conversation._line`'s shape. */
 function line(text, gesture, more) {
   if (more.moment === undefined) throw new Error(`CastleChat: no voice moment for "${text}"`)
-  return { text, gesture, toward: null, claim: null, mood: 'neutral', unlocks: [], about: [], ...more }
+  return { text, gesture, toward: null, claim: null, mood: 'neutral', unlocks: [], about: [], only: null, ...more }
 }

@@ -3,6 +3,7 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { castMinds, townName } from './mind.js'
+import { townNews } from './town-news.js'
 
 // North is -z (sim/horizon.js), east +x.
 const COMPASS = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest']
@@ -29,21 +30,31 @@ export class TalkWorld {
     this.towns = towns.map((town, index) => ({ town, index, name: townName(seed, index), minds: castMinds(seed, town, index) }))
     this.people = new Map()
     for (const t of this.towns) for (const m of t.minds) this.people.set(m.id, m)
+    this._news = new Map()
     this.seatDeer(null)
     // Each town's missing-child hideout (quests.js hideouts), none until seated.
     this.hideouts = this.towns.map(() => null)
+  }
+
+  /** Town `index`'s gossip (town-news.js), rolled once the hideouts and roosts it tells of are seated. */
+  news(index) {
+    if (!this._news.has(index)) this._news.set(index, townNews(this, this.towns[index]))
+    return this._news.get(index)
   }
 
   /** Seats each town's hideout, `list` as quests.js hideouts returns it, one a town. */
   seatHideouts(list) {
     if (list.length !== this.towns.length) throw new Error(`TalkWorld: ${list.length} hideouts for ${this.towns.length} towns`)
     this.hideouts = list
+    this._news.clear()
   }
 
   /**
-   * Seats the town whose man took credit for a dragon his pet deer fought off: the one nearest any of `sites` (roosts, `{ x, z }`), else a seeded pick. Sets and returns `deer`, `{ town, owner }`, `owner` that town's grown-up of greatest boast.
+   * Seats the roosts near the towns, `sites`, and the town whose man took credit for a dragon his pet deer fought off: the one nearest any of `sites` (roosts, `{ x, z }`), else a seeded pick. Sets and returns `deer`, `{ town, owner }`, `owner` that town's grown-up of greatest boast.
    */
   seatDeer(sites) {
+    this.roosts = sites ?? []
+    this._news.clear()
     let town
     if (sites === null || sites.length === 0) town = Math.min(this.towns.length - 1, (mulberry32(hash32(this.seed, 0xdee7))() * this.towns.length) | 0)
     else {
