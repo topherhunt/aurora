@@ -17,7 +17,7 @@ import { INNER_LIGHT } from './castles.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { flicker } from './fire.js'
 import { bodyVoice, VOICE } from '../talk/mind.js'
-import { castleName } from '../talk/castle.js'
+import { castleName, castleTemper } from '../talk/castle.js'
 
 export const FOLK = {
   size: 1.75,
@@ -260,7 +260,8 @@ export class CastleFolk {
     specs.forEach((spec, i) => {
       const { pack, he } = bodyVoice(spec.body), h = hash32(site.seed, i + 80)
       const voice = { pack, he, rate: 1 + ((h % 201) / 100 - 1) * VOICE.rate, tilt: (((h >>> 8) % 201) / 100 - 1) * VOICE.tilt }
-      const mind = { id: `castle:${site.seed}:${group.name}:${i}`, kind: 'human', voice, who: spec.who, name: castleName(spec.who, he, h >>> 16) }
+      const mind = { id: `castle:${site.seed}:${group.name}:${i}`, kind: 'human', voice, who: spec.who, name: castleName(spec.who, he, h >>> 16), castle: site.seed }
+      Object.assign(mind, castleTemper(spec.who, mind.id))
       const size = FOLK.size * (1 + FOLK.sizeVar * (((hash32(site.seed, i) % 200) / 100) - 1))
       // `greet` while coming to her or waiting there (conversations.js), `held` while she talks with them; `home` where to walk back
       // to after, and `lag` the seconds a pacer or traveller has stood out of its round.

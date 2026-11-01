@@ -1,11 +1,13 @@
-// Her talk with a castle's folk (design/44-castles.md §Garrison): a few topics by who they are, the summit's view pressed on her
-// by most of them, and the summit guard's tall tales. Its lines are `Conversation._line`'s shape, so conversations.js voices
+// Her talk with a castle's folk (design/44-castles.md §Garrison): a few topics by who they are, the castle's gossip told each their
+// own way (castle-news.js), a mood's asides (quirks.js), the summit's view pressed on her by most of them, and the summit guard's tall tales. Its lines are `Conversation._line`'s shape, so conversations.js voices
 // and shows them as a townsperson's. Three-free.
 
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
 import { strHash } from './speak.js'
 import { fits } from './caption.js'
+import { QUIRKS, quirkLines } from './quirks.js'
+import { castleNews, heardOf, tellStory, nothingMore, allStoryBodies } from './castle-news.js'
 
 export const CASTLE_TALK = {
   // Questions answered before they send her off; the summit guard never tires of her.
@@ -23,6 +25,26 @@ const NAMES = [
   ['Osric', 'Bertram', 'Aldo', 'Godric', 'Wulf', 'Edmund', 'Hamo', 'Piers', 'Tobin', 'Ulric', 'Rolf', 'Anselm'],
   ['Hulda', 'Maud', 'Edith', 'Agnes', 'Sigrid', 'Rowena', 'Elsbet', 'Ida', 'Gisla', 'Wenna', 'Alys', 'Brida'],
 ]
+
+// Added to a uniform roll: what each post leans toward.
+const LEAN = {
+  lord: { boast: 0.3, wariness: 0.1 }, steward: { accuracy: 0.25, boast: 0.15 }, cook: { chattiness: 0.2 }, maid: { wariness: 0.25, chattiness: 0.15 },
+  guard: { chattiness: -0.2, wariness: 0.2 }, watch: { chattiness: -0.2, wariness: 0.2 }, gate: { chattiness: -0.25, wariness: 0.25 },
+  lore: { chattiness: 0.4, boast: 0.3, accuracy: -0.2 }, traveller: { chattiness: 0.2, accuracy: -0.1 },
+}
+const TEMPER = ['chattiness', 'accuracy', 'wariness', 'kindness', 'boast']
+const MOOD_SALT = 7123
+
+/** Castle folk `who`'s temper, fixed by their mind `id`: `{ h, traits, mood }`, `h` the id's hash, `mood` a quirks.js mood or 'plain'. */
+export function castleTemper(who, id) {
+  const h = strHash(id), rand = mulberry32(hash32(h, MOOD_SALT))
+  const traits = {}
+  for (const k of TEMPER) traits[k] = Math.max(0, Math.min(1, (rand() + rand()) / 2 + (LEAN[who]?.[k] ?? 0)))
+  const weight = { bitter: 1 - traits.kindness, timid: traits.wariness, adoring: traits.kindness, plain: 1.2 }
+  let r = rand() * Object.values(weight).reduce((a, b) => a + b, 0), mood = 'plain'
+  for (const [k, w] of Object.entries(weight)) if ((r -= w) < 0) { mood = k; break }
+  return { h, traits, mood }
+}
 
 /** The name castle folk `who` (castle-folk.js) goes by, `he` its pronoun, `h` a hash fixing which. */
 export function castleName(who, he, h) {
@@ -61,15 +83,6 @@ const CASTLE = [
   'Mind the walls in the wind. The parapets are good, but the wind is better.',
 ]
 
-const NEWS = [
-  "The cook and the steward aren't speaking. Something about a turnip.",
-  'A traveller says the roads are bad past the river.',
-  "The lord's hound ate a boot. Again. Same boot.",
-  'Someone hears noises below at night. I would not go down there.',
-  'They found a crow nesting in the armoury. It has a helmet now.',
-  'The well rope snapped. We have a new one. It is very proud.',
-]
-
 const VIEW_HERE = [
   'That is the road to town. That speck? A sheep. Or a cloud. Hard to say from up here.',
   'On a clear day you can see the next castle, and its guard waving. I wave back.',
@@ -102,7 +115,7 @@ const GHOST = {
 
 /** Every tale the summit guard can tell, for check-talk to walk against the caption. */
 export function allCastleLines() {
-  const out = [...VIEW, ...CASTLE, ...NEWS, ...VIEW_HERE, ...Object.values(SELF).flat()]
+  const out = [...VIEW, ...CASTLE, ...allStoryBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
   for (const o of TALE.open) for (const w of TALE.who) for (const [d, t] of TALE.did) out.push(`${o} ${w} ${d}, ${t}`)
   for (const g of GHOST.of) for (const t of GHOST.then) out.push(ghostTale(g, t))
   return out
@@ -111,7 +124,7 @@ export function allCastleLines() {
 const ghostTale = (of, then) => `Old stories say the dungeon is haunted by the forlorn ghost of ${of}. ${then}`
 
 /**
- * Her conversation with castle folk `mind` ({ id, name, who }): `open()` their greeting, `ask(topic)` the answer to a grid sentence,
+ * Her conversation with castle folk `mind` ({ id, name, who, castle, h, traits, mood }, `castle` its castle's seed): `open()` their greeting, `ask(topic)` the answer to a grid sentence,
  * `conv.menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms; `approached` whether they came to her.
  */
 export class CastleChat {
@@ -123,6 +136,8 @@ export class CastleChat {
     this.turns = 0
     this.ended = false
     this.used = new Set()
+    const stories = castleNews(mind.castle)
+    this.news = heardOf(stories, mind.h).map((i) => stories[i])
     this.patience = mind.who === 'lore' ? CASTLE_TALK.patience.lore : GUARDS.has(mind.who) ? CASTLE_TALK.patience.guard : CASTLE_TALK.patience.rest
     this.conv = { menu: () => this.menu(), _line: (text, gesture, more) => line(text, gesture, more) }
   }
@@ -142,6 +157,13 @@ export class CastleChat {
     return fits(both) ? both : text
   }
 
+  /** `text` with their mood's word for `where` ('aside', 'greet' or 'bye') after it, when it shows and fits. */
+  _mood(text, where) {
+    if (this.mind.mood === 'plain' || this.rand() >= QUIRKS.odds[where]) return text
+    const both = `${text} ${this._pick(quirkLines({ kind: this.mind.mood })[where])}`
+    return fits(both) ? both : text
+  }
+
   _end(l, why) {
     this.ended = true
     return { ...l, ended: true, alone: CASTLE_TALK.alone[why] }
@@ -158,16 +180,16 @@ export class CastleChat {
   open() {
     const who = this.mind.who
     if (who === 'lore') return line(this._pick(['Welcome to the top! Finest view in the realm, this. Ask me anything about the castle.', 'Up at last! Catch your breath. I know every tale these walls have.']), 'wave', { moment: 'greet.stranger' })
-    if (this.approached) return line(this._urge(this._pick(['Hold there. A visitor? Mind yourself, then.', 'You there. No trouble, now.'])), 'talk-point', { moment: 'castle.halt' })
+    if (this.approached) return line(this._urge(this._mood(this._pick(['Hold there. A visitor? Mind yourself, then.', 'You there. No trouble, now.']), 'greet')), 'talk-point', { moment: 'castle.halt' })
     const hi = { lord: 'castle.lord', steward: 'castle.steward', cook: 'castle.cook', maid: 'castle.maid', servant: 'castle.servant' }[who]
     const text = this._pick(GUARDS.has(who) ? ['Hm. What is it?', 'Keep it short.'] : ['Oh! A visitor.', 'Yes? Can I help?', 'Well met.'])
-    return line(this._urge(text), 'wave', { moment: hi === undefined ? 'greet.stranger' : hi })
+    return line(this._urge(this._mood(text, 'greet')), 'wave', { moment: hi === undefined ? 'greet.stranger' : hi })
   }
 
   /** Her sentence `topic` answered. */
   ask(topic) {
     if (this.ended) throw new Error(`CastleChat: ${this.mind.id} has already ended the conversation`)
-    if (topic === 'bye') return this._end(line(this._pick(BYE), 'wave', { moment: 'bye.warm' }), 'bye')
+    if (topic === 'bye') return this._end(line(this._mood(this._pick(BYE), 'bye'), 'wave', { moment: 'bye.warm' }), 'bye')
     this.turns++
     const said = this._answer(topic)
     if (this.turns < this.patience) return said
@@ -177,9 +199,18 @@ export class CastleChat {
 
   _answer(topic) {
     const who = this.mind.who
-    if (topic === 'self') return line(this._pick(SELF[GUARDS.has(who) && who !== 'lore' ? 'guard' : who]), 'talk-gesture', { moment: 'answer.self' })
-    if (topic === 'castle') return line(this._urge(this._pick(CASTLE)), 'talk-gesture', { moment: 'answer.muse' })
-    if (topic === 'news') return line(this._pick(NEWS), 'talk-nod', { moment: 'gossip.lead' })
+    if (topic === 'self') {
+      const text = this._pick(SELF[GUARDS.has(who) && who !== 'lore' ? 'guard' : who]), more = this.mind.mood === 'plain' ? '' : ` ${quirkLines({ kind: this.mind.mood }).self}`
+      return line(fits(text + more) ? text + more : text, 'talk-gesture', { moment: 'answer.self' })
+    }
+    if (topic === 'castle') return line(this._urge(this._mood(this._pick(CASTLE), 'aside')), 'talk-gesture', { moment: 'answer.muse' })
+    if (topic === 'news') {
+      const fresh = this.news.filter((s) => !this.used.has(s))
+      if (fresh.length === 0) return line(nothingMore(this.rand), 'talk-shrug', { moment: 'answer.spent' })
+      const s = fresh[(this.rand() * fresh.length) | 0]
+      this.used.add(s)
+      return line(this._mood(tellStory(s, this.mind, this.rand), 'aside'), 'talk-nod', { moment: 'gossip.lead' })
+    }
     if (topic === 'see') return line(this._pick(VIEW), 'talk-point', { moment: 'observe.marvel' })
     if (topic === 'view') return line(this._pick(VIEW_HERE), 'talk-point', { moment: 'observe.marvel' })
     if (topic === 'ghost') return line(ghostTale(this._pick(GHOST.of), this._pick(GHOST.then)), 'talk-gesture', { moment: 'gossip.lead' })

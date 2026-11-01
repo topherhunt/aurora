@@ -6,11 +6,12 @@
 // scheduled sample-accurately rather than from the frame loop.
 //
 // THREE BUSES, `air`, `near` and `water`. Every sound of the world above the
-// surface goes through `air`; her own body, the door and the UI through `near`;
-// the underwater loop is the only thing on `water`. Submersion is one gain swap
-// between them, which is what silences a croak already in flight the instant
-// her head goes under, with no per-sound bookkeeping. Indoors, `air` passes
-// through the house's walls (INDOORS): dulled and quietened, `near` untouched.
+// surface goes through `air`; her own body, the door, the UI and anyone inside
+// the walls with her through `near`; the underwater loop is the only thing on
+// `water`. Submersion is one gain swap between them, which is what silences a
+// croak already in flight the instant her head goes under, with no per-sound
+// bookkeeping. Indoors, `air` passes through the house's walls (INDOORS):
+// dulled and quietened, `near` untouched, and in stone ringing (HALL).
 //
 // DIRECTION IS THE PANNER, DISTANCE IS OURS. A positioned sound sits at its
 // true world position so the equal-power pan puts it on the right side of her
@@ -86,6 +87,8 @@ export const ECHO_LEVEL = 0.7
 export const CAVE_TAPS = [[0.07, 0.5], [0.13, 0.45], [0.23, 0.4]]
 export const CAVE_LP = 3000
 export const CAVE_LEVEL = 0.5
+// A stone hall's echo (setIndoors `stone`, a castle): `send` of everything on `near` into taps as the cave's, a little longer for the bigger rooms, returned straight to master: back onto `near` it would feed itself.
+export const HALL = { taps: [[0.11, 0.45], [0.19, 0.4], [0.31, 0.35]], lp: 2500, send: 0.5, level: 0.5 }
 // The world outside heard through a house's walls: `air`'s low-pass cutoff (Hz) and level indoors, eased over `tau` seconds. Crickets and songbirds are nearly all above 2.5 kHz: a cutoff much lower than this silences them outright.
 export const INDOORS = { lp: 1100, gain: 0.25, tau: 0.3 }
 // `walled` on a shot, while indoors: a further low-pass and level on top of INDOORS, so a voice outside (leafkin chatter) comes dark and low where the walls' own cutoff stays up for the crickets.
@@ -193,6 +196,13 @@ export class SoundEngine {
     caveOut.gain.value = CAVE_LEVEL
     caveOut.connect(this.near)
     feedbackTaps(ctx, this.cave, CAVE_TAPS, CAVE_LP, caveOut)
+    this.hall = ctx.createGain()
+    this.hall.gain.value = 0
+    this.near.connect(this.hall)
+    const hallOut = ctx.createGain()
+    hallOut.gain.value = HALL.level
+    hallOut.connect(this.master)
+    feedbackTaps(ctx, this.hall, HALL.taps, HALL.lp, hallOut)
     this.buffers = new Map()
     this.loops = new Set()
     // The one-shots playing, { src, g, nodes, gain }, and the shots lost: under the floor, or to the cap (dropped at it, or displaced by a louder one).
@@ -284,12 +294,14 @@ export class SoundEngine {
     setParam(this.water.gain, wet ? 1 : 0, now, wet ? 0.08 : 0.1)
   }
 
-  /** Put the house's walls between her and `air`, or take them away. */
-  setIndoors(inside) {
+  /** Put the house's walls between her and `air`, or take them away. `stone` walls (a castle) also ring with everything on `near` (HALL). */
+  setIndoors(inside, { stone = false } = {}) {
+    if (stone && !inside) throw new Error('SoundEngine.setIndoors: stone walls need her inside')
     this.inside = inside
     const now = this.ctx.currentTime
     setParam(this.walls.frequency, inside ? INDOORS.lp : LP_MAX, now, INDOORS.tau)
     setParam(this.through.gain, inside ? INDOORS.gain : 1, now, INDOORS.tau)
+    setParam(this.hall.gain, stone ? HALL.send : 0, now, INDOORS.tau)
   }
 
   _panner() {

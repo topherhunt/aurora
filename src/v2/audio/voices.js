@@ -71,13 +71,14 @@ export class Voices {
 
   /**
    * Say `pick` (talk/lines.js `{ pack, line, rate, tilt }`) from `at` {x, y, z}, `d` metres from her. `reply` is a
-   * conversation line, which always plays. Resolves to the seconds it runs, or 0 when it is not heard.
+   * conversation line, which always plays; `outside` a speaker out in the open, behind the walls when she is indoors
+   * (anyone else shares her room, on the engine's `near`). Resolves to the seconds it runs, or 0 when it is not heard.
    */
-  async say(pick, at, d, { reply = false } = {}) {
+  async say(pick, at, d, { reply = false, outside = false } = {}) {
     if (d >= SPEECH.reach || (!reply && this.playing.size >= SPEECH.speaking)) return 0
     const name = await this._decode(pick.pack, pick.line)
-    // Always `bright`: the takes are recorded muffled, and left dull their lows boom.
-    const src = this.engine.play(name, { at, rate: pick.rate, tilt: pick.tilt, gain: Voices.level(d) * (reply ? 1 : SPEECH.aside), distance: d, air: SPEECH.air, bright: true, walled: true })
+    // Only leafkin are `bright`: theirs are muffled recorded takes. The human packs are clean TTS, and brightening them clips and turns them tinny.
+    const src = this.engine.play(name, { at, rate: pick.rate, tilt: pick.tilt, gain: Voices.level(d) * (reply ? 1 : SPEECH.aside), distance: d, air: SPEECH.air, bright: pick.pack === 'leafkin', bus: outside ? 'air' : 'near', walled: outside })
     if (src === null) return 0
     this.playing.add(src)
     src.addEventListener('ended', () => this.playing.delete(src))

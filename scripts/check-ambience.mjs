@@ -29,8 +29,9 @@
 import fs from 'node:fs'
 import {
   SoundEngine, LoopVoice, LOOP_XFADE_S, LOOP_RATE, LOOP_STEP, VOICE_FLOOR, MAX_VOICES,
-  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, CAVE_TAPS, CAVE_LP, CAVE_LEVEL, INDOORS, WALLED,
+  SPEED_OF_SOUND, LP_MAX, LP_MIN, AIR_M, WET_M, WET_MAX, REVERB_S, REVERB_RT60, REVERB_PRE_S, ECHO_TAPS, CAVE_TAPS, CAVE_LP, CAVE_LEVEL, HALL, INDOORS, WALLED,
 } from '../src/v2/audio/sound-engine.js'
+import { Voices } from '../src/v2/audio/voices.js'
 import { WorldSense, SENSE_HZ, SHORE_REACH, FROG_REACH } from '../src/v2/audio/sense.js'
 import { Ambience, SOUNDS, RULES, RATE, FOOTFALLS } from '../src/v2/audio/ambience.js'
 import { SLEET_BAND_M } from '../src/v2/render/precip.js'
@@ -327,6 +328,40 @@ console.log('buses')
   check(engine.oneShots === MAX_VOICES - 1, 'a voice ending on its own frees its slot')
 }
 
+// --- speech (voices.js) ------------------------------------------------------
+console.log('speech')
+{
+  const ctx = fakeCtx()
+  const engine = new SoundEngine({ ctx })
+  engine.unlock()
+  engine.buffers.set('clip', { duration: 1 })
+  const source = ctx.createBufferSource
+  ctx.createBufferSource = () => Object.assign(source(), { addEventListener() {} })
+  const filter = ctx.createBiquadFilter
+  // A shelf's gain, which the shared fake leaves off so `env` finds a shot's own gain.
+  ctx.createBiquadFilter = () => Object.assign(filter(), { gain: { value: 0 } })
+  const voices = new Voices(engine)
+  voices._decode = async () => 'clip'
+  // The bus a shot's dry chain lands on (its first connection at each step; the sends come after).
+  const bus = (src) => { let n = src; while (n !== engine.near && n !== engine.air) n = n.outs[0]; return n }
+  const pick = { pack: 'woman', line: 'x', rate: 1, tilt: 0 }
+  engine.setIndoors(true, { stone: true })
+  await voices.say(pick, { x: 15, y: 0, z: 0 }, 15, { reply: true })
+  const inside = ctx.sources.at(-1)
+  await voices.say(pick, { x: 15, y: 0, z: 0 }, 15, { reply: true, outside: true })
+  const behind = ctx.sources.at(-1)
+  const lowpasses = (src) => { const out = []; for (let n = src; n && n !== engine.near && n !== engine.air; n = n.outs[0]) if (n.type === 'lowpass') out.push(n.frequency.value); return out }
+  check(bus(inside) === engine.near && lowpasses(inside).length === 1 && lowpasses(inside)[0] > LP_MAX / 2, 'one indoors with her is heard on near, past no walls, dulled only by the metres', `${lowpasses(inside).map((f) => f.toFixed(0)).join(', ')} Hz`)
+  check(bus(behind) === engine.air && lowpasses(behind).includes(WALLED.lp), 'one outside while she is indoors is behind the walls')
+  engine.setIndoors(false)
+  await voices.say({ ...pick, pack: 'leafkin' }, { x: 2, y: 0, z: 0 }, 2, { reply: true })
+  const leafkin = ctx.sources.at(-1)
+  await voices.say(pick, { x: 2, y: 0, z: 0 }, 2, { reply: true })
+  const human = ctx.sources.at(-1)
+  const highpassed = (src) => { for (let n = src; n && n.outs.length; n = n.outs[0]) if (n.type === 'highpass') return true; return false }
+  check(highpassed(leafkin) && !highpassed(human), 'only the leafkin takes are brightened')
+}
+
 // --- the far treatment -------------------------------------------------------
 console.log('far')
 {
@@ -351,6 +386,7 @@ console.log('far')
   check(early > 0 && late / early < 0.01 && late / early > 0.0001, `it decays by about 60 dB over RT60 ${REVERB_RT60} s`, `${(20 * Math.log10(late / early)).toFixed(0)} dB`)
   check(L.slice(pre, pre + 1000).some((v, i) => v !== R[pre + i]), 'the two channels are different noise')
   check(engine.reverb.outs.length === 1 && engine.reverb.outs[0].outs.includes(engine.air), 'the reverb returns onto air')
+  const hallDelays = ctx.delays.splice(ECHO_TAPS.length + CAVE_TAPS.length)
   const caveDelays = ctx.delays.splice(ECHO_TAPS.length)
   check(ctx.delays.every((d, i) => d.delayTime.value === ECHO_TAPS[i][0] && d.max >= ECHO_TAPS[i][0]), `${ECHO_TAPS.length} echo taps at ${ECHO_TAPS.map((t) => t[0]).join(' and ')} s`)
   check(ctx.delays.every((d) => engine.echo.outs.includes(d)), 'the echo send feeds every tap')
@@ -362,6 +398,19 @@ console.log('far')
   check(caveDelays.length === CAVE_TAPS.length && caveDelays.every((d, i) => d.delayTime.value === CAVE_TAPS[i][0] && engine.cave.outs.includes(d) && d.outs[0].frequency.value === CAVE_LP), `${CAVE_TAPS.length} cave taps at ${CAVE_TAPS.map((t) => t[0]).join(', ')} s, fed by the cave send`)
   const caveOut = caveDelays[0].outs[0].outs.find((n) => n.gain && !n.outs.includes(caveDelays[0]))
   check(caveOut && caveOut.gain.value === CAVE_LEVEL && caveOut.outs.length === 1 && caveOut.outs[0] === engine.near, 'the cave echo returns onto near, not air')
+  // The stone hall's echo: fed by everything on near, its own taps, returned to master so it never feeds itself; open only within stone walls.
+  check(engine.near.outs.includes(engine.hall) && hallDelays.length === HALL.taps.length && hallDelays.every((d, i) => d.delayTime.value === HALL.taps[i][0] && engine.hall.outs.includes(d) && d.outs[0].frequency.value === HALL.lp), `${HALL.taps.length} hall taps fed by near`)
+  const hallOut = hallDelays[0].outs[0].outs.find((n) => n.gain && !n.outs.includes(hallDelays[0]))
+  check(hallOut && hallOut.gain.value === HALL.level && hallOut.outs.length === 1 && hallOut.outs[0] === engine.master, 'the hall echo returns to master, not near')
+  engine.setIndoors(true)
+  const plainWalls = engine.hall.log.at(-1).v
+  engine.setIndoors(true, { stone: true })
+  const stoneWalls = engine.hall.log.at(-1).v
+  engine.setIndoors(false)
+  check(plainWalls === 0 && stoneWalls === HALL.send && engine.hall.log.at(-1).v === 0, 'near rings only within stone walls', `house ${plainWalls}, castle ${stoneWalls}, out ${engine.hall.log.at(-1).v}`)
+  let outsideStone = false
+  try { engine.setIndoors(false, { stone: true }) } catch { outsideStone = true }
+  check(outsideStone, 'stone walls with her outside throws')
 
   // A shot with no distance is the plain chain; one with a distance is low-passed, sent to the reverb, and started late by the speed of sound.
   const plain = engine.play('clip', { gain: 0.5, at: { x: 1, y: 0, z: 0 } })

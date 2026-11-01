@@ -29,7 +29,9 @@ import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
 import { ITEMS } from '../src/v2/items.js'
 import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
 import { walkTalks } from './lib/talk-walk.mjs'
-import { CastleChat, VIEW, allCastleLines } from '../src/v2/talk/castle.js'
+import { CastleChat, VIEW, allCastleLines, castleTemper } from '../src/v2/talk/castle.js'
+import { castleNews, tellStory } from '../src/v2/talk/castle-news.js'
+import { mulberry32 } from '../src/sim/mathx.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -991,7 +993,8 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   check(long.length === 0, `no castle line runs past the caption's ${CAPTION.rows} rows`, `${long.length}: ${long[0]}`)
   const unvoiced = [], urged = new Set(), ghosts = []
   for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let salt = 0; salt < 40; salt++) {
-    const chat = new CastleChat({ id: `castle:1:${who}`, name: who, who }, { rooms: 17 }, { approached: salt % 4 === 0, salt })
+    const id = `castle:1:${who}:${salt}`
+    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17 }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
     for (const { topic } of chat.conv.menu()) if (!chat.ended) lines.push(chat.ask(topic))
     for (const l of lines) {
@@ -1004,6 +1007,26 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   check(unvoiced.length === 0, 'every castle line is voiced by a recorded moment and fits', unvoiced[0])
   check(['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller'].every((w) => urged.has(w)) && !urged.has('lore'), 'everyone in a castle but the summit guard presses the view from the top of the highest tower', [...urged].join(' '))
   check(ghosts.length > 0, "the summit guard tells of the dungeon's forlorn ghost", ghosts[0])
+
+  // Gossip: each castle has its own stories, and every teller puts the one all of them know their own way.
+  const firsts = new Set(Array.from({ length: 20 }, (_, seed) => JSON.stringify(castleNews(seed + 1)[0])))
+  check(firsts.size >= 15, 'castles have their own news, not one shared list', `${firsts.size} distinct lead stories in 20 castles`)
+  const story = castleNews(1)[0], tellings = new Set(), tempers = new Set()
+  for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let i = 0; i < 4; i++) {
+    const id = `castle:1:${who}:${i}`, mind = { who, ...castleTemper(who, id) }
+    tempers.add(mind.mood)
+    tellings.add(tellStory(story, mind, mulberry32(mind.h)))
+  }
+  check(tellings.size >= 30 && tempers.size === 4, 'one story is told in many ways across a castle, by folk of every mood', `${tellings.size} tellings of 44, moods ${[...tempers].join(' ')}: ${[...tellings].slice(0, 3).join(' || ')}`)
+  const owned = []
+  for (let seed = 1; seed < 60 && owned.length < 3; seed++) for (const s of castleNews(seed)) {
+    const party = ['lord', 'steward', 'cook', 'maid'].find((r) => r === s.f.a || r === s.f.b)
+    if (party === undefined || !['feud', 'pet', 'broke', 'sweet'].includes(s.kind)) continue
+    const id = `castle:${seed}:${party}`, text = tellStory(s, { who: party, ...castleTemper(party, id) }, mulberry32(seed))
+    if (!/\b(I|my|My)\b/.test(text)) owned.push(`NOT OWNED ${party}: ${text}`)
+    else if (owned.length < 3) owned.push(text)
+  }
+  check(owned.length > 0 && owned.every((t) => !t.startsWith('NOT OWNED')), 'whoever a story is about tells it as their own', owned.join(' || '))
 }
 
 if (process.argv.includes('--transcript')) {

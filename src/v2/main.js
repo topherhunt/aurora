@@ -3955,6 +3955,11 @@ const atHome = {
     return into
   },
 }
+/** `bones` (the skeletons) on her side of any walls (`near`), or behind a house's (`air`): they go into a cave or castle with her, but wait outside a house. Each drains them on the frames the other does not. */
+const bonesWithHer = (bones, withHer) => ({
+  bodies: (into) => ((indoors === null) === withHer ? bones.bodies(into) : into),
+  voices: (into) => ((indoors === null) === withHer ? bones.voices(into) : into),
+})
 // Through a house's door: her feet within `side` of the door's middle line (the door's half-width, less a little) and `walk` of its face, heading `into` it, or a teleport landing within `blink`, and outside, her feet within `rise` of the landing (not on the awning over it); the same at the door inside. Outside, her capsule stops up to 0.4 m short of the face across the door's width (the panel is not flat), and inside the wall's stone keeps her 0.3 m off it, so `walk` is the furthest she stops plus a little.
 const HOUSE_DOOR = { walk: 0.5, side: 0.4, blink: 0.5, into: 0.6, rise: 0.6 }
 let doorBusy = false
@@ -4808,7 +4813,7 @@ function openCastle(site, back) {
   const inner = new WalkSurface(flatField(stone.oy - 1), stone, { trunkAt: () => null }, { scale: herScale() })
   inner.flyThrough = true
   inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk }
-  if (sound) sound.setIndoors(true)
+  if (sound) sound.setIndoors(true, { stone: true })
   walk = window.v2walk = inner
   player.setGround(inner)
   peerAvatars.ground(inner)
@@ -6222,8 +6227,8 @@ async function buildRoom(room, at) {
       engine: sound,
       sense: new WorldSense({ field: height, water: waterSurfaces, rocks, frogs, biome: trees.biome }),
       // Whose feet are heard: each herd's walking bodies against the footfalls of its clip library, the fox's yip and the stag's grunt on top; the crabs together hold one loop and a startled spider fires it once; the dragons beat, roar and growl; the fish swoosh as they set off.
-      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, { layer: skeletons, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
-      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, { layer: skeletons, rule: 'villagerVoice' }, { layer: castleGhost, rule: 'villagerVoice', bus: 'near' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
+      herds: [{ layer: wildlife, clips: 'quadruped', calls: { fox: 'foxYip', stag: 'deerGrunt' }, steps: { stag: { sound: 'tread', rule: 'hoof' } } }, { layer: snowmen, clips: 'human', sound: 'tread', rule: 'thud' }, { layer: bonesWithHer(skeletons, true), clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, { layer: bonesWithHer(skeletons, false), clips: 'human', sound: 'footstep', rule: 'villagerStep' }, giants && { layer: giants, clips: 'human', sound: 'tread', rule: 'giantThud' }, leafkin && { layer: leafkin, clips: 'human' }, villagers && { layer: villagers, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, folk && { layer: { bodies: (into) => folk.walkers(into) }, clips: 'human', sound: 'footstep', rule: 'villagerStep' }, { layer: atHome, clips: 'human', bus: 'near', sound: 'footstep', rule: 'villagerStep' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, clips: 'bird', sound: 'tread', rule: 'stride' }, wildStriders && { layer: wildStriders, clips: 'bird', sound: 'tread', rule: 'stride' }].filter(Boolean),
+      voiced: [leafkin && { layer: leafkin, rule: 'voice' }, villagers && { layer: villagers, rule: 'villagerVoice' }, hobs && { layer: hobs, rule: 'hobCry' }, giants && { layer: giants, rule: 'giantScream' }, snowmen && { layer: snowmen, rule: 'giantScream' }, { layer: bonesWithHer(skeletons, true), rule: 'villagerVoice', bus: 'near' }, { layer: bonesWithHer(skeletons, false), rule: 'villagerVoice' }, { layer: castleGhost, rule: 'villagerVoice', bus: 'near' }, townsfolk && { layer: { voices: (into) => townsfolk.screams(into) }, rule: 'humanScream' }, { layer: atHome, rule: 'villagerVoice', bus: 'near' }, townDoors && { layer: townDoors, rule: 'door' }, { layer: frogs, rule: 'frogHop' }, { layer: fishLeap, rule: 'splash' }, townsfolk && townsfolk.striders && { layer: townsfolk.striders, rule: 'striderCall' }, wildStriders && { layer: wildStriders, rule: 'striderCall' }, { layer: wildlife, rule: 'contented' }].filter(Boolean),
       crawlers: [crabs],
       startlers: [spiders],
       dragons,

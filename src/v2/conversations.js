@@ -326,7 +326,7 @@ export class Conversations {
 
   /** A chider's scold at her (villagers.js chide). */
   _scold(v, head) {
-    this._remark({ c: this.villagers.all[v.id], mind: this.village[v.id] }, { text: LK.scold[(Math.random() * LK.scold.length) | 0], moment: 'tell.caught' }, head)
+    this._remark({ kind: 'village', c: this.villagers.all[v.id], mind: this.village[v.id], res: null }, { text: LK.scold[(Math.random() * LK.scold.length) | 0], moment: 'tell.caught' }, head)
   }
 
   /** A passer-by's jeer at her sword in town (talk/armed.js), from someone near who is free and no guard. */
@@ -350,7 +350,7 @@ export class Conversations {
     }
     if (this.picker === null || this.voices === null && !this._voices()) return
     const pick = this.picker.pick(p.mind, line.moment, { now: this.now, tier: 'native', force: true })
-    if (pick !== null) this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true })
+    if (pick !== null) this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true, outside: this._outside(p) })
   }
 
   _keepScold(head, scale, indoors) {
@@ -369,7 +369,7 @@ export class Conversations {
     const pick = this.picker.pick(mind, step.moment, { now: this.now, tier: 'native', only: step.only })
     if (pick === null) return
     this.pairs.set(pair, { at: step.at, time: this.now })
-    this.voices.say(pick, { x, y, z }, Math.hypot(x - head.x, y - head.y, z - head.z))
+    this.voices.say(pick, { x, y, z }, Math.hypot(x - head.x, y - head.y, z - head.z), { outside: true })
   }
 
   _voices() {
@@ -460,12 +460,18 @@ export class Conversations {
     const tier = p.kind === 'village' ? leafkinTier(this.chat.trusted, this.rapport.standing(p.mind.id)) : 'native'
     const pick = this.picker.pick(p.mind, line.moment, { now: this.now, tier, force: true })
     if (pick === null) return
-    this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true })
+    this.voices.say(pick, this._heard(p.c), this._far(p.c, head), { reply: true, outside: this._outside(p) })
   }
 
   /** `c`'s mouth where her ears hear it (`heard`: a house's room is heard out at its door). */
   _heard(c) {
     return this.heard({ x: c.pose.x, y: c.pose.y + TALK.mouth * c.size, z: c.pose.z })
+  }
+
+  /** Whether `p` speaks out in the open, behind the walls when she is indoors: not a house's resident, nor castle folk, whose drawn cast is always the one on her side of the walls. */
+  _outside(p) {
+    if (p.res === undefined) throw new Error(`Conversations: ${p.mind.id} has no res`)
+    return p.res === null && p.kind !== 'castle'
   }
 
   /** Metres from `c`'s mouth to her `head`. */
@@ -556,7 +562,7 @@ export class Conversations {
       if (this.coming.warn) this._remark(p, swordWarning(p.mind, Math.random()), head)
       else if (this.picker !== null && (this.voices !== null || this._voices())) {
         const pick = this.picker.pick(p.mind, 'hail.attention', { now: this.now, force: true })
-        if (pick !== null) this.voices.say(pick, this._heard(p.c), TALK.approach.come)
+        if (pick !== null) this.voices.say(pick, this._heard(p.c), TALK.approach.come, { outside: this._outside(p) })
       }
     }
     if (this.now >= this.coming.until) {
