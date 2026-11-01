@@ -7,8 +7,7 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { makeWarp } from '../../buildings/v2/warp.js'
 import { CASTLE } from './layout.js'
 import { courtProps, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
-import { dungeonPlan } from './dungeon.js'
-import { SPIRAL, spiralStart } from './spiral.js'
+import { SEG, SHAFT, shaftsOf, SPIRAL } from './spiral.js'
 import { castleWindows, faceShade, interiorLight, PANE } from './light.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
@@ -979,33 +978,58 @@ export function wellWarp(w, cx, cz) {
   const Q = SPIRAL.square
   return (x, y, z) => bilinear([w(cx - Q, y, cz - Q), w(cx + Q, y, cz - Q), w(cx + Q, y, cz + Q), w(cx - Q, y, cz + Q)], (x - cx + Q) / (2 * Q), (z - cz + Q) / (2 * Q))
 }
-/** Draws fn with m's warp swapped for its wellWarp round (cx, cz). */
+/** Draws fn with m's warp swapped for its wellWarp round (cx, cz) within the slab square, so the drum bends with its floor while
+ * what reaches out of the square (a tunnel's jambs) meets the walls under the full warp. */
 function inWell(m, cx, cz, fn) {
-  const w = m.warp
-  if (w) m.warp = wellWarp(w, cx, cz)
+  const w = m.warp, Q = SPIRAL.square + 1e-6
+  if (w) { const ww = wellWarp(w, cx, cz); m.warp = (x, y, z) => (Math.abs(x - cx) <= Q && Math.abs(z - cz) <= Q ? ww : w)(x, y, z) }
   fn()
   m.warp = w
 }
 
-/** Drum segments `js` (one run, counted from a0) round (cx, cz) from y0 to y1, faced beneath when `under`, its ends closed. */
-function drum(m, cx, cz, a0, js, y0, y1, col, under = false) {
-  const r0 = SPIRAL.well, r1 = r0 + SPIRAL.wall, P = (a, r, y) => [cx + Math.cos(a) * r, y, cz + Math.sin(a) * r]
-  for (const j of js) {
-    const a = a0 + j * Math.PI / 8, b = a + Math.PI / 8, out = [Math.cos(a + Math.PI / 16), 0, Math.sin(a + Math.PI / 16)]
-    m.quad(P(a, r0, y0), P(b, r0, y0), P(b, r0, y1), P(a, r0, y1), col, out.map((v) => -v))
-    m.quad(P(a, r1, y0), P(b, r1, y0), P(b, r1, y1), P(a, r1, y1), col, out)
-    m.quad(P(a, r0, y1), P(b, r0, y1), P(b, r1, y1), P(a, r1, y1), col, [0, 1, 0])
-    if (under) m.quad(P(a, r0, y0), P(b, r0, y0), P(b, r1, y0), P(a, r1, y0), col, [0, -1, 0])
-  }
-  for (const [a, sg] of [[a0 + js[0] * Math.PI / 8, -1], [a0 + (js[js.length - 1] + 1) * Math.PI / 8, 1]]) {
-    m.quad(P(a, r0, y0), P(a, r1, y0), P(a, r1, y1), P(a, r0, y1), col, [-Math.sin(a) * sg, 0, Math.cos(a) * sg])
+/** Shaft storey st (spiral.js shaftsOf): the drum's inner face, open at each doorway under its lintel, each doorway's tunnel out
+ * through the stone, and a partition on each face onto the rest of the room. `low` stops them at the cut twin's waist height. */
+export function shaftStorey(m, st, low) {
+  const { x: cx, z: cz, y } = st, top = y + (low ? 1.4 : H * V - 0.3), r0 = SPIRAL.well, r1 = r0 + SPIRAL.wall, dy = Math.min(y + SPIRAL.door, top)
+  const P = (a, r, yy) => [cx + Math.cos(a) * r, yy, cz + Math.sin(a) * r], at = (p, yy) => [p[0], yy, p[1]]
+  const doorway = new Set(st.exits.flatMap((e) => [(e.o + 15) % 16, e.o])), wall = m.tint(INNER)
+  inWell(m, cx, cz, () => {
+    for (let j = 0; j < 16; j++) {
+      const a = j * SEG, b = a + SEG, y0 = doorway.has(j) ? dy : y
+      if (y0 < top) m.quad(P(a, r0, y0), P(b, r0, y0), P(b, r0, top), P(a, r0, top), wall, [-Math.cos(a + SEG / 2), 0, -Math.sin(a + SEG / 2)])
+    }
+    for (const e of st.exits) {
+      const a = e.o * SEG, ht = Math.min(y + e.h, top)
+      for (const [b, sg] of [[a - SEG, 1], [a + SEG, -1]]) m.quad(P(b, r0, y), P(b, r1, y), P(b, r1, dy), P(b, r0, dy), wall, [-Math.sin(b) * sg, 0, Math.cos(b) * sg])
+      if (dy < top) for (const b of [a - SEG, a]) {
+        m.quad(P(b, r0, dy), P(b + SEG, r0, dy), P(b + SEG, r1, dy), P(b, r1, dy), wall, [0, -1, 0])
+        if (ht > dy) m.quad(P(b, r1, dy), P(b + SEG, r1, dy), P(b + SEG, r1, ht), P(b, r1, ht), wall, [Math.cos(b + SEG / 2), 0, Math.sin(b + SEG / 2)])
+      }
+      const [A, J1, J2, B] = e.quads[0], inward = (p, q, o) => { const n = [q[1] - p[1], p[0] - q[0]], s = Math.sign(n[0] * (o[0] - p[0]) + n[1] * (o[1] - p[1])), l = Math.hypot(...n); return [s * n[0] / l, 0, s * n[1] / l] }
+      m.quad(at(A, y), at(J1, y), at(J1, ht), at(A, ht), wall, inward(A, J1, B))
+      m.quad(at(B, y), at(J2, y), at(J2, ht), at(B, ht), wall, inward(B, J2, A))
+      if (!low) m.quad(at(A, ht), at(J1, ht), at(J2, ht), at(B, ht), wall, [0, -1, 0])
+    }
+  })
+  // A face onto the room's unsealed cells is a partition, running into the room's wall beside it or to the next partition.
+  const { box, partition, room, roomH } = SHAFT
+  for (let c = 0; c < 4; c++) if (st.open[c]) {
+    const [nx, nz] = [Math.round(Math.cos(c * Math.PI / 2)), Math.round(Math.sin(c * Math.PI / 2))], reach = (q) => (st.same[q] ? box : box - 1.15)
+    const piece = (w0, w1, y0) => {
+      const [x0, z0] = [cx + nx * partition - nz * w0, cz + nz * partition + nx * w0], [x1, z1] = [cx + nx * box - nz * w1, cz + nz * box + nx * w1]
+      if (w1 - w0 > 0.01 && y0 < top) m.box(x0, y0, z0, x1, top, z1, wall, y0 > y)
+    }
+    const w0 = -reach((c + 3) % 4), w1 = reach((c + 1) % 4)
+    if (!st.exits.some((e) => e.c === c)) { piece(w0, w1, y); continue }
+    piece(w0, -room, y); piece(room, w1, y)
+    if (!low) piece(-room, room, y + roomH)
   }
 }
 
-/** A spiral flight about interior (cx, cz) from storey floor y, climbing from bearing a0: its steps and post, and its drum up to
- * wallTop open over the landing's doorway; `last` when none climbs on from its landing. */
-export function spiralSteps(m, cx, cz, y, a0, last, wallTop) {
-  const SH = H * V, { well, post, steps, treads, cap, door } = SPIRAL, n = steps * treads, rise = SH / n, turn = Math.PI / 8 / treads
+/** A spiral flight about interior (cx, cz) from storey floor y, climbing from bearing a0 the way hand `hand` turns: its steps and
+ * post; `last` when none climbs on from its landing. */
+export function spiralSteps(m, cx, cz, y, a0, hand, last) {
+  const SH = H * V, { well, post, steps, treads, cap } = SPIRAL, n = steps * treads, rise = SH / n, turn = hand * SEG / treads
   const P = (ang, rad, yy) => [cx + Math.cos(ang) * rad, yy, cz + Math.sin(ang) * rad]
   inWell(m, cx, cz, () => {
     for (let i = 0; i < n; i++) {
@@ -1022,21 +1046,17 @@ export function spiralSteps(m, cx, cz, y, a0, last, wallTop) {
       const B = [[-q, -q], [q, -q], [q, q], [-q, q]].map(([u, v]) => [cx + u, t + 0.1, cz + v])
       for (let i = 0; i < 4; i++) m.tri(B[i], B[(i + 1) % 4], c, col, [cx, t, cz])
     }
-    const wall = m.tint(INNER)
-    drum(m, cx, cz, a0, Array.from({ length: 14 }, (_, j) => j), y, wallTop, wall)
-    if (y + door < wallTop) drum(m, cx, cz, a0, [14, 15], y + door, wallTop, wall, true)
   })
 }
 
-/** The drum round a helix's last hole, on the storey from floor y: the hole's segments walled up to wallTop, and a spur along the
- * hole's first edge, where the floor over the low steps would drop to the high ones. */
-export function wellTop(m, cx, cz, y, a0, wallTop) {
-  const { hole, steps, well, wall: t } = SPIRAL
+/** The spur along the first edge of a helix's last hole (spiral.js shaftsOf `hole`), on the storey from floor y up to wallTop,
+ * where the floor over the low steps would drop to the high ones. */
+function spur(m, cx, cz, y, hole, wallTop) {
+  const { well, wall: t } = SPIRAL
   inWell(m, cx, cz, () => {
-    const wall = m.tint(INNER), b = a0 + hole * Math.PI / 8, u = [Math.cos(b), Math.sin(b)], v = [Math.sin(b), -Math.cos(b)]
-    drum(m, cx, cz, a0, Array.from({ length: steps - hole }, (_, i) => hole + i), y, wallTop, wall)
+    const b = hole.a0 + hole.hand * hole.lo * SEG, u = [Math.cos(b), Math.sin(b)], v = [hole.hand * Math.sin(b), -hole.hand * Math.cos(b)]
     const q = [[0, 0], [well + t, 0], [well + t, t], [0, t]].map(([r, s]) => [cx + u[0] * r + v[0] * s, cz + u[1] * r + v[1] * s])
-    m.hexa(q.map((p) => at3(p, y)).concat(q.map((p) => at3(p, wallTop))), wall, true)
+    m.hexa(q.map((p) => at3(p, y)).concat(q.map((p) => at3(p, wallTop))), m.tint(INNER))
   })
 }
 
@@ -1079,7 +1099,7 @@ const SEATED = { tapestry: [0, 1.2, 3.4], banner: [0.08, 1.4, 3.3] }
 /** One geometry per storey, so a cut can hide the storeys above it. Interior units are exterior metres times CASTLE.scale. */
 export function interiorGeometries(lay) {
   const { X, Z } = lay
-  const meshers = new Map(), warp = interiorWarp(lay), light = interiorLight(lay), flat = { at: light.at, split: () => 0 }
+  const meshers = new Map(), warp = interiorWarp(lay), light = interiorLight(lay), flat = { at: light.at, split: () => 0 }, shafts = shaftsOf(lay)
   const at = (k) => { if (!meshers.has(k)) meshers.set(k, new Mesher(lay.seed * 31 + k, warp, true, k >= 0 ? light : flat)); return meshers.get(k) }
   const SH = H * V, WT = 0.3, INSET = 0.4
   lay.nodes.forEach((n, ni) => {
@@ -1090,17 +1110,10 @@ export function interiorGeometries(lay) {
       const ex = [X(n.x0), Z(n.z0), X(n.x0 + n.w), Z(n.z0 + n.d)]
       const [ix0, iz0, ix1, iz1] = [(ex[0] + INSET) * S, (ex[1] + INSET) * S, (ex[2] - INSET) * S, (ex[3] - INSET) * S]
       const mine = lay.edges.filter((e) => e.a === n || e.b === n)
-      // The wells this storey's slab is cut round: a hole where a flight arrives from below (the dungeon's into its ground room
-      // too), the floor whole under a flight that only climbs from it.
-      const wells = new Map()
-      const well = (st, hole) => {
-        const key = `${st.x},${st.z}`, w = wells.get(key) ?? { cx: st.x * S, cz: st.z * S, hole: false, foot: false }
-        wells.set(key, w)
-        if (hole) w.hole = true; else w.foot = true
-      }
-      for (const e of mine) if (e.stair) well(e.stair, e.b === n)
-      if (dungeonPlan(lay).stair.node === n) well(dungeonPlan(lay).stair, true)
-      const Q = SPIRAL.square, Rh = SPIRAL.well, floor = m.tint(FLOOR[n.sec.kind]), sq = [...wells.values()]
+      // The shaft storeys this storey's slab is cut round: a hole where a flight arrives from below, whole under one that only
+      // climbs from it.
+      const sq = shafts.storeys.filter((st) => st.node === n).map((st) => ({ st, cx: st.x, cz: st.z, hole: st.hole }))
+      const Q = SPIRAL.square, Rh = SPIRAL.well, floor = m.tint(FLOOR[n.sec.kind])
       // A grid on every square's sides, so each square meets whole edges of the slab cells round it.
       const xs = [...new Set([ix0, ix1, ...sq.flatMap((w) => [w.cx - Q, w.cx + Q])])].sort((p, q) => p - q)
       const zs = [...new Set([iz0, iz1, ...sq.flatMap((w) => [w.cz - Q, w.cz + Q])])].sort((p, q) => p - q)
@@ -1112,7 +1125,7 @@ export function interiorGeometries(lay) {
       // Each square filled, top and under, but over a hole's segments, where its rim lines the hole: square corners fall on segment
       // bearings, so a filled segment is one triangle.
       for (const w of sq) inWell(m, w.cx, w.cz, () => {
-        const { cx, cz } = w, a0 = spiralStart(lay, cx, cz), c = [cx, cz]
+        const { cx, cz, hole } = w, c = [cx, cz]
         const ring = (a, r) => [cx + Math.cos(a) * r, cz + Math.sin(a) * r], toSquare = (a) => ring(a, Q / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a))))
         const both = (q) => {
           for (const [yy, away] of [[y, y - 1], [y - 0.3, y + 1]]) {
@@ -1121,13 +1134,25 @@ export function interiorGeometries(lay) {
           }
         }
         const rim = (p, q, nn) => m.quad(at3(p, y - 0.3), at3(q, y - 0.3), at3(q, y), at3(p, y), floor, nn)
+        // Bearing segment j (j to j+1 sixteenths) is the arriving flight's segment v; a flight turning back reaches it from its far edge.
+        const local = (j) => { const m = (((hole.hand * (j - Math.round(hole.a0 / SEG))) % 16) + 16) % 16; return hole.hand > 0 ? m : (m + 15) % 16 }
+        const holed = (j) => hole && local(j) >= hole.lo && local(j) < SPIRAL.steps
         for (let j = 0; j < 16; j++) {
-          const a = a0 + j * Math.PI / 8, b = a + Math.PI / 8
-          if (!(w.hole && j >= SPIRAL.hole && j < SPIRAL.steps)) { both([c, toSquare(a), toSquare(b)]); continue }
+          const a = j * SEG, b = a + SEG
+          if (w.st.spur && local(j) === hole.lo - 1) {
+            // A slot in the slab under the spur, so her shoulder on the steps below clears the hole's first edge.
+            const bb = hole.a0 + hole.hand * hole.lo * SEG, u = [Math.cos(bb), Math.sin(bb)], v = [hole.hand * Math.sin(bb), -hole.hand * Math.cos(bb)], t = SPIRAL.wall
+            const [E, F] = Math.cos(a - bb) > 0.99 ? [toSquare(a), toSquare(b)] : [toSquare(b), toSquare(a)], f = t / ((F[0] - cx) * v[0] + (F[1] - cz) * v[1])
+            const c1 = [cx + (F[0] - cx) * f, cz + (F[1] - cz) * f], P1 = ring(bb, Rh), P2 = [P1[0] + v[0] * t, P1[1] + v[1] * t]
+            both([c1, F, P2]); both([F, E, P2]); both([E, P1, P2])
+            rim(P1, P2, [-u[0], 0, -u[1]]); rim(P2, c1, [-v[0], 0, -v[1]])
+            continue
+          }
+          if (!holed(j)) { both([c, toSquare(a), toSquare(b)]); continue }
           both([ring(a, Rh), ring(b, Rh), toSquare(b), toSquare(a)])
-          rim(ring(a, Rh), ring(b, Rh), [-Math.cos(a + Math.PI / 16), 0, -Math.sin(a + Math.PI / 16)])
+          rim(ring(a, Rh), ring(b, Rh), [-Math.cos(a + SEG / 2), 0, -Math.sin(a + SEG / 2)])
         }
-        if (w.hole) for (const [j, sg] of [[SPIRAL.hole, 1], [SPIRAL.steps, -1]]) { const a = a0 + j * Math.PI / 8; rim(c, ring(a, Rh), [-Math.sin(a) * sg, 0, Math.cos(a) * sg]) }
+        if (hole) for (const [j, sg] of w.st.spur ? [[SPIRAL.steps, -1]] : [[hole.lo, 1], [SPIRAL.steps, -1]]) { const a = hole.a0 + hole.hand * j * SEG; rim(c, ring(a, Rh), [-Math.sin(a) * sg * hole.hand, 0, Math.cos(a) * sg * hole.hand]) }
       })
       // The top storey's ceiling; below it the next storey's floor slab is the ceiling.
       if (!low && n.k === n.sec.floors - 1) m.box(ix0, y + SH - 0.3, iz0, ix1, y + SH, iz1, m.tint(INNER), true)
@@ -1162,18 +1187,22 @@ export function interiorGeometries(lay) {
           m.hexa(q.map((p) => at3(p, y)).concat(q.map((p) => at3(p, top))), wall)
         }
       }
-      for (const w of sq) if (w.hole && !w.foot) wellTop(m, w.cx, w.cz, y, spiralStart(lay, w.cx, w.cz), top)
-      for (const e of mine) {
-        if (e.stair && e.a === n) {
-          const cx = e.stair.x * S, cz = e.stair.z * S
-          spiralSteps(m, cx, cz, y, spiralStart(lay, cx, cz), !lay.edges.some((o) => o.stair && o.stair.k === e.stair.k + 1 && o.stair.x === e.stair.x && o.stair.z === e.stair.z), top)
-        }
-        if (e.ladder) m.with(WOOD_SLOT, () => {
-          const lx = e.ladder.x * S, lz = e.ladder.z * S
-          for (const o of [-0.3, 0.3]) m.box(lx + o - 0.04, y, lz - 0.04, lx + o + 0.04, y + SH, lz + 0.04, DARKWOOD)
-          for (let r = 0.4; r < SH; r += 0.4) m.box(lx - 0.3, y + r - 0.03, lz - 0.03, lx + 0.3, y + r + 0.03, lz + 0.03, DARKWOOD)
-        }, true)
+      for (const { st } of sq) {
+        shaftStorey(m, st, low)
+        if (st.spur) spur(m, st.x, st.z, y, st.hole, top)
+        const f = shafts.flights.find((q) => q.k === st.k && q.x === st.x && q.z === st.z)
+        if (f) spiralSteps(m, f.x, f.z, y, f.a0, f.hand, f.last)
       }
+      for (const e of mine) if (e.ladder) m.with(WOOD_SLOT, () => {
+        // Rails `yaw` across (a ladder in a drum faces its axis), rungs between them.
+        const lx = e.ladder.x * S, lz = e.ladder.z * S, yaw = e.ladder.yaw ?? 0, c = Math.cos(yaw), s = Math.sin(yaw)
+        const bar = (u0, u1, v, y0, y1, t) => {
+          const q = [[u0, v - t], [u1, v - t], [u1, v + t], [u0, v + t]].map(([u, w]) => [lx + u * c - w * s, lz + u * s + w * c])
+          m.hexa(q.map((p) => at3(p, y0)).concat(q.map((p) => at3(p, y1))), DARKWOOD)
+        }
+        for (const o of [-0.3, 0.3]) bar(o - 0.04, o + 0.04, 0, y, y + SH, 0.04)
+        for (let r = 0.4; r < SH; r += 0.4) bar(-0.3, 0.3, 0, y + r - 0.03, y + r + 0.03, 0.03)
+      }, true)
     }
   })
   // The gap between two rooms' inset walls at a door: a threshold slab and jambs, and a lintel over it. A door out of the

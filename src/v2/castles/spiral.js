@@ -1,66 +1,69 @@
-// A castle's spiral stairs (design/44-castles.md, Layout and Shell), shared by the shell, the collision and the furnishing.
+// A castle's spiral shafts (design/44-castles.md, Spiral shafts) in interior metres, shared by the shell, the collision and the
+// furnishing. layout.js planShafts picks each helix's hand, starts, landings and doorways; this gives them their geometry.
 import { CASTLE } from './layout.js'
 import { dungeonPlan } from './dungeon.js'
 
-const S = CASTLE.scale, INSET = 0.4, WT = 0.3, SEG = Math.PI / 8
-// Interior metres. 15 segments of 1/16 turn round a post, each `treads` steps, the 16th its landing in the storey above, whose slab
-// is open over segments `hole` on. A drum `wall` thick stands round the steps at `well` on each storey a flight climbs from, open
-// over segments 14 and 15 up to `door` high, where she steps off at a landing and onto the next flight; on the storey a helix ends
-// in it walls only the hole's segments, with a spur along the hole's first edge. `square` is the half side of the slab square cut
-// round each well. A post no spiral climbs on from ends in a finial `cap` tall.
-export const SPIRAL = { well: 1.75, wall: 0.12, square: 2.1, post: 0.3, steps: 15, treads: 2, hole: 7, door: 2.8, cap: 1.3 }
-/** Segment (0-15) of bearing a from a helix climbing from a0. */
-export const segmentOf = (a, a0) => Math.floor((((a - a0) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) / SEG) % 16
+const S = CASTLE.scale, V = CASTLE.tall, SH = CASTLE.storey * V
+export const SEG = Math.PI / 8
+// 15 segments of 1/16 turn round a post, each `treads` steps, the 16th its landing in the storey above. A drum `wall` thick walls
+// the steps at `well` on every storey of the shaft, open `door` high at each doorway. `square` is the half side of the slab square
+// cut round each well. A post no spiral climbs on from ends in a finial `cap` tall.
+export const SPIRAL = { well: 1.75, wall: 0.12, square: 2.1, post: 0.3, steps: 15, treads: 2, door: 2.8, cap: 1.3 }
+// Stone fills a shaft storey's cell round its drum out to `box` (half a partition past the cell line). A doorway's tunnel runs from
+// the drum to a door's reveal at `reveal`, or `room` wide each side and `roomH` high to the box's face onto the rest of the room,
+// which stands as a partition from `partition` out.
+export const SHAFT = { box: 4.2, reveal: 2.95, room: 1.2, roomH: 3, partition: 3.8 }
+const SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]]
 
-const starts = new WeakMap()
-/** The bearing the helix about interior (x, z) climbs from, shared by every flight in that cell: a multiple of 1/16 turn, so its
- * segments' corners meet its square. */
-export function spiralStart(lay, x, z) {
-  if (!starts.has(lay)) starts.set(lay, new Map())
-  const memo = starts.get(lay), key = `${x},${z}`
-  if (!memo.has(key)) memo.set(key, bestStart(lay, x, z))
-  return memo.get(key)
-}
+/** Segment (0-15) of bearing a, counted from a0 the way hand `hand` climbs. */
+export const segmentOf = (a, a0, hand) => Math.floor((((hand * (a - a0)) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) / SEG) % 16
 
-/** The start that leaves the most room before each landing's doorway and before the open half of the storey the helix ends in
- * (the least of those first, then the next), keeping that storey's roof ladder on the open half. A way out through a door counts
- * as room enough, so in a one-cell tower she steps from the door straight into the drum rather than edging round it. */
-function bestStart(lay, x, z) {
-  const flights = lay.edges.filter((e) => e.stair && e.stair.x * S === x && e.stair.z * S === z)
-  const down = dungeonPlan(lay).stair, dungeon = down.x * S === x && down.z * S === z
-  if (!flights.length && !dungeon) throw new Error(`castle ${lay.seed}: no spiral at ${x}, ${z}`)
-  const ks = new Set(flights.map((e) => e.stair.k))
-  // [room, bearing from a0 that must open onto it, the ladders that must stand on the open half]
-  const views = flights.map((e) => [e.a, -SEG, []])
-  const ends = flights.filter((e) => !ks.has(e.stair.k + 1)).map((e) => e.b).concat(dungeon && !ks.has(0) ? [down.node] : [])
-  for (const n of ends) views.push([n, 3 * SEG, lay.edges.filter((e) => e.ladder && e.a === n).map((e) => Math.atan2(e.ladder.z * S - z, e.ladder.x * S - x))])
-  const walled = (b, a0) => [b - 0.2, b + 0.2].some((c) => { const j = segmentOf(c, a0); return j >= SPIRAL.hole && j < 15 })
-  let best = null, most = null
-  for (let i = 0; i < 16; i++) {
-    const a0 = i * SEG
-    if (views.some(([, , ladders]) => ladders.some((b) => walled(b, a0)))) continue
-    const score = views.map(([n, off]) => reach(lay, n, x, z, a0 + off)).sort((p, q) => p - q)
-    const j = most && score.findIndex((v, i) => v !== most[i])
-    if (!most || (j >= 0 && score[j] > most[j])) { most = score; best = a0 }
+const memo = new WeakMap()
+/**
+ * Every shaft as interior-metre records: `flights` { k, x, z, a0, hand, last } and `storeys` { k, y, role, node, gx, gz, x, z,
+ * exits, hole, spur, same, open }, plus `sealed`, the keys `gx,gz,k` of the cells they fill. An exit is { c, o, kind, w0, w1,
+ * jamb, h, quads }: the doorway centred on segment o of the drum and its tunnel to face c, lateral w0..w1 at the jamb, h high;
+ * quads are its plan, convex, drum to jamb and (short of the box) jamb on out past it. `hole` { a0, hand, lo } is the slab's
+ * opening over the arriving flight's segments lo-14; `spur` walls its first edge where the helix ends. same[c] / open[c]: the cell across face c is of the same room / of it and unsealed.
+ */
+export function shaftsOf(lay) {
+  if (memo.has(lay)) return memo.get(lay)
+  const flights = [], storeys = [], sealed = new Set()
+  for (const sh of lay.shafts) for (const st of sh.storeys) sealed.add(`${sh.gx},${sh.gz},${st.k}`)
+  const R1 = SPIRAL.well + SPIRAL.wall
+  for (const sh of lay.shafts) {
+    const x = sh.x * S, z = sh.z * S, { hand } = sh
+    sh.flights.forEach((f, i) => flights.push({ k: f.k, x, z, a0: f.s * SEG, hand, last: i === sh.flights.length - 1 }))
+    sh.storeys.forEach((st, i) => {
+      const y = st.k * SH, arriving = st.role === 'bottom' ? null : sh.flights[i - 1]
+      const same = SIDES.map(([sx, sz]) => st.node !== null && contains(st.node, sh.gx + sx, sh.gz + sz))
+      const open = same.map((v, c) => v && !sealed.has(`${sh.gx + SIDES[c][0]},${sh.gz + SIDES[c][1]},${st.k}`))
+      const exits = st.exits.map((ex) => {
+        const [nx, nz] = SIDES[ex.c], tx = -nz, tz = nx, pt = (u, w) => [x + nx * u + tx * w, z + nz * u + tz * w]
+        const lat = (px, pz) => (px - x) * tx + (pz - z) * tz
+        let w0, w1, jamb, h
+        if (ex.kind === 'room') [w0, w1, jamb, h] = [-SHAFT.room, SHAFT.room, SHAFT.box, SHAFT.roomH]
+        else if (st.node === null) {
+          const d = dungeonPlan(lay).door, w = lat(d.x, d.z)
+          ;[w0, w1, jamb, h] = [w - d.hw, w + d.hw, 4, d.hi - d.lo]
+        } else {
+          w0 = Math.min(...ex.doors.map((d) => lat(d.x * S, d.z * S) - d.w * S / 2)); w1 = Math.max(...ex.doors.map((d) => lat(d.x * S, d.z * S) + d.w * S / 2))
+          ;[jamb, h] = [SHAFT.reveal, Math.max(...ex.doors.map((d) => d.h * V))]
+        }
+        const ring = (a) => [x + Math.cos(a) * R1, z + Math.sin(a) * R1], far = SHAFT.box + 0.05
+        const tunnel = [ring((ex.o - 1) * SEG), pt(jamb, w0), pt(jamb, w1), ring((ex.o + 1) * SEG)]
+        const turns = tunnel.map((p, i) => { const q = tunnel[(i + 1) % 4], r = tunnel[(i + 2) % 4]; return (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]) })
+        if (!turns.every((t) => t > 1e-6)) throw new Error(`castle ${lay.seed}: the tunnel from cell ${sh.gx},${sh.gz}'s drum to its doorway on storey ${st.k} is not convex`)
+        const quads = jamb < far ? [tunnel, [pt(jamb, w0), pt(far, w0), pt(far, w1), pt(jamb, w1)]] : [tunnel]
+        return { c: ex.c, o: ex.o, kind: ex.kind, w0, w1, jamb, h, quads }
+      })
+      const hole = arriving && { a0: arriving.s * SEG, hand, lo: st.role === 'top' ? 8 : Math.max(7, arriving.L - 1) }
+      storeys.push({ k: st.k, y, role: st.role, node: st.node, gx: sh.gx, gz: sh.gz, x, z, exits, hole, spur: st.role === 'top', same, open })
+    })
   }
-  if (most === null) throw new Error(`castle ${lay.seed}: no start for the spiral at ${x}, ${z} clears its ladder`)
-  return best
+  const out = { flights, storeys, sealed }
+  memo.set(lay, out)
+  return out
 }
 
-/** How far from interior (x, z) along bearing a room node n's air runs, or THROUGH when the ray leaves by one of its doors. */
-function reach(lay, n, x, z, a) {
-  const ex = [lay.X(n.x0), lay.Z(n.z0), lay.X(n.x0 + n.w), lay.Z(n.z0 + n.d)], ux = Math.cos(a), uz = Math.sin(a)
-  let t
-  if (n.sec.round) {
-    const dx = x - (ex[0] + ex[2]) / 2 * S, dz = z - (ex[1] + ex[3]) / 2 * S, rho = (ex[2] - ex[0] - 2 * INSET) / 2 * S - WT, b = dx * ux + dz * uz
-    t = -b + Math.sqrt(b * b - dx * dx - dz * dz + rho * rho)
-  } else {
-    const r = [(ex[0] + INSET) * S + WT, (ex[1] + INSET) * S + WT, (ex[2] - INSET) * S - WT, (ex[3] - INSET) * S - WT]
-    t = Math.min(ux > 1e-9 ? (r[2] - x) / ux : ux < -1e-9 ? (r[0] - x) / ux : Infinity, uz > 1e-9 ? (r[3] - z) / uz : uz < -1e-9 ? (r[1] - z) / uz : Infinity)
-  }
-  const px = x + ux * t, pz = z + uz * t
-  const out = lay.edges.some((e) => (e.a === n || e.b === n) && e.doors.some((d) => Math.abs(d.y - n.k * CASTLE.storey) < 0.1
-    && Math.abs(d.axis === 'x' ? pz - d.z * S : px - d.x * S) < d.w * S / 2 - 0.3 && Math.abs(d.axis === 'x' ? px - d.x * S : pz - d.z * S) < 1.6))
-  return out ? THROUGH : t
-}
-const THROUGH = 8
+const contains = (n, gx, gz) => gx >= n.x0 && gx < n.x0 + n.w && gz >= n.z0 && gz < n.z0 + n.d

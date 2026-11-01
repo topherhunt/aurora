@@ -7,8 +7,8 @@ import { CASTLE } from './layout.js'
 const C = CASTLE.cell, S = CASTLE.scale, SH = CASTLE.storey * CASTLE.tall
 export const DUNGEON = {
   floor: -SH,
-  // The foot chamber's half-width; its 1 m rim is roofed at `rim`, the rest open to the ground room's slab underside at `slab`.
-  foot: { half: 4, rim: -0.8, slab: -0.3 },
+  // The foot's half-width, open to the ground room's slab underside at `slab`.
+  foot: { half: 4, slab: -0.3 },
   door: { hw: 1, h: 3 },
   step: 8, drain: 6,
   // Floor and water heights over `floor`.
@@ -17,24 +17,6 @@ export const DUNGEON = {
 const F = DUNGEON.floor
 
 const plans = new WeakMap()
-
-/** The ground room the dungeon's spiral climbs into, and the cell centre it climbs about (exterior metres): a corner tower's when one
- * is in use, continuing the helix of a spiral already rising from that room. */
-function stairOf(lay, rng) {
-  const corners = lay.sections.slice(0, 4).filter((s) => s.kind === 'tower' && !s.rooms[0][0].unused)
-  const pool = corners.length ? corners : lay.sections.filter((s) => s.kind !== 'wall' && s.kind !== 'gate' && s.rooms[0].some((r) => !r.unused))
-  if (!pool.length) throw new Error(`castle ${lay.seed}: no ground room for the dungeon stair`)
-  const sec = pool[Math.floor(rng() * pool.length)], room = sec.rooms[0].find((r) => !r.unused)
-  const up = lay.edges.find((e) => e.stair && e.a === room && e.stair.k === 0)
-  if (up) return { node: room, x: up.stair.x, z: up.stair.z }
-  const doors = lay.edges.filter((e) => e.a === room || e.b === room).flatMap((e) => e.doors).filter((d) => d.y === 0)
-  let best = null, far = -1
-  for (let gx = room.x0; gx < room.x0 + room.w; gx++) for (let gz = room.z0; gz < room.z0 + room.d; gz++) {
-    const x = lay.X(gx + 0.5), z = lay.Z(gz + 0.5), d = Math.min(...doors.map((q) => Math.hypot(q.x - x, q.z - z)))
-    if (d > far) { far = d; best = { node: room, x, z } }
-  }
-  return best
-}
 
 /**
  * A layout's dungeon: `stair` { node, x, z } (exterior metres), the grid (`x0`, `z0` its corner, `W` x `D` cells, cell i + j * W
@@ -47,7 +29,9 @@ export function dungeonPlan(lay) {
   const rng = mulberry32(lay.seed * 9151 + 5)
   const int = (a, b) => a + Math.floor(rng() * (b - a + 1))
   const height = (a, b) => Math.round((a + rng() * (b - a)) * 10) / 10
-  const stair = stairOf(lay, rng)
+  // The stair is layout.js's (planShafts), drawn from this stream's first number.
+  const stair = lay.dungeon
+  rng()
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
   for (const s of lay.sections) { minX = Math.min(minX, s.x0); maxX = Math.max(maxX, s.x0 + s.w); minZ = Math.min(minZ, s.z0); maxZ = Math.max(maxZ, s.z0 + s.d) }
   const x0 = lay.X(minX) * S, z0 = lay.Z(minZ) * S, W = (maxX - minX) * C * S, D = (maxZ - minZ) * C * S
@@ -70,13 +54,12 @@ export function dungeonPlan(lay) {
     }
   }
 
-  // The foot chamber about the spiral.
+  // The foot about the spiral, open up to the ground room's slab: the shaft's drum (shell.js) walls it.
   const { half } = DUNGEON.foot, cx = stair.x * S, cz = stair.z * S
   const fi0 = cx - half - x0, fj0 = cz - half - z0
   if (!Number.isInteger(fi0) || !Number.isInteger(fj0)) throw new Error(`castle ${lay.seed}: dungeon stair off the 1 m grid`)
   const foot = [fi0, fj0, fi0 + 2 * half, fj0 + 2 * half]
-  stamp(...foot, F, DUNGEON.foot.rim)
-  stamp(fi0 + 1, fj0 + 1, fi0 + 2 * half - 1, fj0 + 2 * half - 1, F, DUNGEON.foot.slab, 0)
+  stamp(...foot, F, DUNGEON.foot.slab, 0)
 
   // The door, on the foot's side toward the castle's middle. Along/lateral (a, l) cells map to (i, j) by its axis.
   const axis = Math.abs(cx) >= Math.abs(cz) ? 'x' : 'z', side = (axis === 'x' ? cx : cz) > 0 ? -1 : 1

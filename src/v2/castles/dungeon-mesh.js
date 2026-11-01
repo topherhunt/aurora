@@ -3,8 +3,8 @@
 // the stairwell, shadowed through the grid, so the maze is dark between them. Interior metres, as shell.js.
 import { DUNGEON, dungeonCell, dungeonPlan } from './dungeon.js'
 import { dungeonProps, propFlames } from './furnish.js'
-import { Mesher, interiorWarp, leaves, prop, rgb, spiralSteps, wellWarp } from './shell.js'
-import { spiralStart } from './spiral.js'
+import { Mesher, interiorWarp, leaves, prop, rgb, shaftStorey, spiralSteps, wellWarp } from './shell.js'
+import { shaftsOf } from './spiral.js'
 import { faceShade } from './light.js'
 
 const ROCK = rgb(0x77716a), FLOOR = rgb(0x5f5a52), SILT = rgb(0x4a4a3c), WATER = rgb(0x24403f), MOSS = rgb(0x4d6338), IRON = rgb(0x3a3836)
@@ -56,7 +56,10 @@ export function dungeonGeometry(lay) {
     }
   }
   const stair = m.bufs.map((b) => b.p.length)
-  spiralSteps(m, g.foot.x, g.foot.z, F, spiralStart(lay, g.foot.x, g.foot.z), !lay.edges.some((e) => e.stair && e.stair.k === 0 && e.stair.x === g.stair.x && e.stair.z === g.stair.z), DUNGEON.foot.slab)
+  const shafts = shaftsOf(lay), here = (o) => o.k === -1 && o.x === g.foot.x && o.z === g.foot.z
+  const f = shafts.flights.find(here)
+  spiralSteps(m, f.x, f.z, F, f.a0, f.hand, f.last)
+  shaftStorey(m, shafts.storeys.find(here), false)
   const stairEnd = m.bufs.map((b) => b.p.length)
 
   // Props drawn where they stand, so they bake against the grid; each moves with its own origin after.

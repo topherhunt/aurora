@@ -5,12 +5,10 @@
 import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE } from './layout.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
-import { SPIRAL, spiralStart } from './spiral.js'
+import { SHAFT, shaftsOf } from './spiral.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3
-// Half the side of a spiral's slab square with a margin.
-const WELL = SPIRAL.square + 0.15
 // Partitions: thickness, and the doorway each has at one cell's middle along it.
 export const PARTITION = { t: 0.4, door: 1.6, doorH: 3 }
 // Footprints [w, d] in metres; the mesher in shell.js draws each kind.
@@ -112,13 +110,13 @@ function apart(A, B) {
 const frame = (o, u, v) => [o.x + u * Math.cos(o.yaw) + v * Math.sin(o.yaw), o.z - u * Math.sin(o.yaw) + v * Math.cos(o.yaw)]
 
 /** Places props along the inside of rect r [x0, z0, x1, z1] (or a disc when `round`), their backs to the walls, then a centre
- * piece; nothing within CLEAR of a portal, LANE of a lane between portals, or overlapping what is placed. */
+ * piece; no edge within CLEAR of a portal, no corner within LANE of a lane between portals, or overlapping what is placed. */
 function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity) {
   const placed = out.map((o) => cornersOf(o.x, o.z, o.yaw, o.w, o.d)), n0 = out.length
   const lanes = []
   for (let i = 0; i < portals.length; i++) for (let j = i + 1; j < portals.length; j++) lanes.push([portals[i], portals[j]])
-  const free = (pts, cx, cz) => pts.every((p) => portals.every((q) => Math.hypot(p[0] - q[0], p[1] - q[1]) > CLEAR) && lanes.every(([a, b]) => segDist(p, a, b) > LANE))
-    && [[cx, cz], ...pts].every((p) => portals.every((q) => Math.hypot(p[0] - q[0], p[1] - q[1]) > CLEAR))
+  const free = (pts, cx, cz) => pts.every((p) => lanes.every(([a, b]) => segDist(p, a, b) > LANE))
+    && portals.every((q) => Math.hypot(cx - q[0], cz - q[1]) > CLEAR && pts.every((p, i) => segDist(q, p, pts[(i + 1) % 4]) > CLEAR))
     && placed.every((q) => apart(pts, q))
   const put = (kind, x, z, yaw) => {
     const [w, d] = PROP[kind], pts = cornersOf(x, z, yaw, w, d)
@@ -190,26 +188,17 @@ export function propFlames(records) {
   return out
 }
 
-/** The doorways, ladders and spiral wells a room node `n` has at its storey, as interior plan points. */
+/** The doorways, ladders and shaft tunnel mouths a room node `n` has at its storey, as interior plan points. */
 function nodePortals(lay, n) {
-  const out = [], wells = new Map(), down = dungeonPlan(lay).stair
-  // A well keeps its drum's disc clear, and the way out of it: a landing's doorway, or the open half round the helix's last hole.
-  const well = (st, foot) => {
-    const key = `${st.x},${st.z}`
-    if (!wells.has(key)) wells.set(key, { x: st.x * S, z: st.z * S, foot: false })
-    if (foot) wells.get(key).foot = true
-  }
-  if (down.node === n) well(down, false)
+  const out = []
   for (const e of lay.edges) {
     if (e.a !== n && e.b !== n) continue
     for (const d of e.doors) if (Math.abs(d.y - n.k * H) < 0.1) out.push([d.x * S, d.z * S])
-    if (e.stair) well(e.stair, e.a === n)
     if (e.ladder) out.push([e.ladder.x * S, e.ladder.z * S])
   }
-  for (const { x, z, foot } of wells.values()) {
-    for (let i = 0; i < 7; i++) out.push([x + (i && Math.cos(i * Math.PI / 3) * 1.2), z + (i && Math.sin(i * Math.PI / 3) * 1.2)])
-    const a = spiralStart(lay, x, z) + (foot ? -1 : 3) * Math.PI / 8, r = SPIRAL.well + SPIRAL.wall + 0.6
-    out.push([x + Math.cos(a) * r, z + Math.sin(a) * r])
+  for (const st of shaftsOf(lay).storeys) if (st.node === n) for (const ex of st.exits) if (ex.kind === 'room') {
+    const a = ex.c * Math.PI / 2
+    out.push([st.x + Math.round(Math.cos(a)) * SHAFT.box, st.z + Math.round(Math.sin(a)) * SHAFT.box])
   }
   return out
 }
@@ -217,9 +206,10 @@ function nodePortals(lay, n) {
 const plans = new WeakMap()
 /**
  * A layout's room plan: `chambers` { node, k, rect (its air, interior metres), cells, round, role, portals } and `walls` { k, axis,
- * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. Room nodes are cut on cell lines
- * (a partition is then 4 interior metres off any spiral and 2.4 off any ladder, and its doorway between the cells' doors), the
- * throne's node into pieces of 6 cells at most, the mess's 4, the rest 2 or 1.
+ * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. A room node's cells less those
+ * its shafts fill (spiral.js) are split into the largest rectangles first, walled from each other where they meet; each is then cut
+ * on cell lines (a partition is then 2.4 interior metres off any ladder, and its doorway between the cells' doors), the throne's
+ * node into pieces of 6 cells at most, the mess's 4, the rest 2 or 1.
  */
 export function roomPlan(lay) {
   if (plans.has(lay)) return plans.get(lay)
@@ -229,9 +219,43 @@ export function roomPlan(lay) {
   const biggest = (list) => list.reduce((a, b) => (cells(b) > cells(a) ? b : a), list[0])
   const throneNode = biggest(nodes.filter((n) => n.sec.kind === 'keep' && n.k === 1))
   const messNode = biggest(nodes.filter((n) => n !== throneNode && (n.sec.kind === 'keep' || n.sec.kind === 'hall') && n.k <= 2))
-  const chambers = [], walls = []
+  const chambers = [], walls = [], { sealed } = shaftsOf(lay)
   for (const n of nodes) {
-    const air = [(lay.X(n.x0) + INSET) * S + WT, (lay.Z(n.z0) + INSET) * S + WT, (lay.X(n.x0 + n.w) - INSET) * S - WT, (lay.Z(n.z0 + n.d) - INSET) * S - WT]
+    const free = new Set()
+    for (let gx = n.x0; gx < n.x0 + n.w; gx++) for (let gz = n.z0; gz < n.z0 + n.d; gz++) if (!sealed.has(`${gx},${gz},${n.k}`)) free.add(`${gx},${gz}`)
+    if (!free.size) continue
+    if (n.sec.round && free.size < n.w * n.d) throw new Error(`castle ${lay.seed}: round room ${n.id} is part shaft`)
+    const pieces = []
+    while (free.size) {
+      let best = null
+      for (const key of free) {
+        const [gx, gz] = key.split(',').map(Number)
+        for (let w = 1; free.has(`${gx + w - 1},${gz}`); w++) for (let d = 1; ; d++) {
+          let ok = true
+          for (let i = 0; i < w && ok; i++) ok = free.has(`${gx + i},${gz + d - 1}`)
+          if (!ok) break
+          if (!best || w * d > best.w * best.d) best = { x0: gx, z0: gz, w, d }
+        }
+      }
+      for (let i = 0; i < best.w; i++) for (let j = 0; j < best.d; j++) free.delete(`${best.x0 + i},${best.z0 + j}`)
+      pieces.push(best)
+    }
+    // A piece's air stops at the room's walls, or half a partition short of the cell line onto a shaft or another piece.
+    const edge = (g, lo, hi, line, sgn) => (g === lo || g === hi ? (line(g) + sgn * INSET) * S + sgn * WT : line(g) * S + sgn * PARTITION.t / 2)
+    for (const p of pieces) p.r = [edge(p.x0, n.x0, n.x0 + n.w, lay.X, 1), edge(p.z0, n.z0, n.z0 + n.d, lay.Z, 1), edge(p.x0 + p.w, n.x0, n.x0 + n.w, lay.X, -1), edge(p.z0 + p.d, n.z0, n.z0 + n.d, lay.Z, -1)]
+    pieces.forEach((p, i) => pieces.slice(i + 1).forEach((q) => {
+      for (const [a, b] of [[p, q], [q, p]]) {
+        const lx = Math.max(a.z0, b.z0), hx = Math.min(a.z0 + a.d, b.z0 + b.d), lz = Math.max(a.x0, b.x0), hz = Math.min(a.x0 + a.w, b.x0 + b.w)
+        if (a.x0 + a.w === b.x0 && lx < hx) {
+          const mid = lay.Z(lx + Math.floor(rng() * (hx - lx)) + 0.5) * S
+          walls.push({ k: n.k, axis: 'x', at: lay.X(b.x0) * S, lo: Math.max(a.r[1], b.r[1]), hi: Math.min(a.r[3], b.r[3]), door: [mid - PARTITION.door / 2, mid + PARTITION.door / 2], y: n.k * SH })
+        }
+        if (a.z0 + a.d === b.z0 && lz < hz) {
+          const mid = lay.X(lz + Math.floor(rng() * (hz - lz)) + 0.5) * S
+          walls.push({ k: n.k, axis: 'z', at: lay.Z(b.z0) * S, lo: Math.max(a.r[0], b.r[0]), hi: Math.min(a.r[2], b.r[2]), door: [mid - PARTITION.door / 2, mid + PARTITION.door / 2], y: n.k * SH })
+        }
+      }
+    }))
     const cap = n === throneNode ? 6 : n === messNode ? 4 : n.sec.round || (n.sec.kind === 'gate' && n.k === 0) ? Infinity : 2
     const cut = (p) => {
       const many = p.w * p.d
@@ -252,7 +276,7 @@ export function roomPlan(lay) {
         cut({ x0: p.x0, z0: p.z0 + i, w: p.w, d: p.d - i, r: [p.r[0], line + PT / 2, p.r[2], p.r[3]] })
       }
     }
-    cut({ x0: n.x0, z0: n.z0, w: n.w, d: n.d, r: air })
+    for (const p of pieces) cut(p)
   }
   const inRect = (r, [x, z], m) => x > r[0] - m && x < r[2] + m && z > r[1] - m && z < r[3] + m
   for (const c of chambers) {
@@ -433,19 +457,15 @@ export function roofProps(lay) {
 
 /** Every chamber's props, in interior metres; each record also carries its storey `k`. */
 export function roomProps(lay) {
-  const out = [], down = dungeonPlan(lay).stair
+  const out = []
   roomPlan(lay).chambers.forEach((c, ci) => {
     const rng = mulberry32(lay.seed * 4099 + ci), y = c.k * SH, kit = KIT[c.role], list = []
-    // A spiral's square well (its steps below, its hole above) and the dungeon stair's: a rug over one would lie on air.
-    const wells = lay.edges.filter((e) => e.stair && (e.a === c.node || e.b === c.node)).map((e) => e.stair).concat(down.node === c.node ? [down] : [])
-      .map((w) => cornersOf(w.x * S, w.z * S, 0, 2 * WELL, 2 * WELL))
-    const onFloor = (o) => wells.every((q) => apart(cornersOf(o.x, o.z, o.yaw, o.w, o.d), q))
-    if (c.role === 'throne') throneRoom(rng, c, y, list, onFloor)
+    if (c.role === 'throne') throneRoom(rng, c, y, list)
     fillKit(rng, c.rect, c.round, c.portals, kit, y, list)
     if (kit.ware) setTables(rng, list)
     const [cx, cz] = [(c.rect[0] + c.rect[2]) / 2, (c.rect[1] + c.rect[3]) / 2]
     const rug = { kind: 'rug', x: cx, y, z: cz, yaw: c.rect[2] - c.rect[0] >= c.rect[3] - c.rect[1] ? 0 : Math.PI / 2, w: 2.4, d: 1.6 }
-    if (kit.rug && !c.round && !list.some((o) => Math.hypot(o.x - cx, o.z - cz) < 1.6) && onFloor(rug)) list.push(rug)
+    if (kit.rug && !c.round && !list.some((o) => Math.hypot(o.x - cx, o.z - cz) < 1.6)) list.push(rug)
     if (kit.chandelier) list.push({ kind: 'chandelier', x: cx, y, z: cz, yaw: 0, w: 1.2, d: 1.2 })
     let torches = 0
     for (const o of list) if (!TORCHES.has(o.kind) || ++torches <= MAX_TORCHES) out.push({ ...o, k: c.k })
@@ -455,7 +475,7 @@ export function roomProps(lay) {
 
 /** The throne hall's dais against a wall clear of its portals, the throne on it, a carpet running out from it and chandeliers over
  * that, into `list`. */
-function throneRoom(rng, c, y, list, onFloor) {
+function throneRoom(rng, c, y, list) {
   fillRect(rng, c.rect, c.round, c.portals, ['dais'], y, null, list, 1)
   const dais = list[0]
   if (!dais) return
@@ -464,12 +484,10 @@ function throneRoom(rng, c, y, list, onFloor) {
   // The carpet from the dais's front to 1 m short of the far wall.
   const [r0, r1, r2, r3] = c.rect, fx = Math.sin(dais.yaw), fz = Math.cos(dais.yaw)
   const reach = Math.abs(fx) > 0.5 ? (fx > 0 ? r2 - dais.x : dais.x - r0) : (fz > 0 ? r3 - dais.z : dais.z - r1)
-  // It stops short of a well, as it would a wall.
-  let L = reach - dais.d / 2 - 1
-  const run = (L) => { const [x, z] = frame(dais, 0, dais.d / 2 + L / 2); return { kind: 'carpet', x, y, z, yaw: dais.yaw, w: 1.4, d: L } }
-  while (L >= 2 && !onFloor(run(L))) L -= 0.5
+  const L = reach - dais.d / 2 - 1
   if (L < 2) return
-  list.push(run(L))
+  const [x, z] = frame(dais, 0, dais.d / 2 + L / 2)
+  list.push({ kind: 'carpet', x, y, z, yaw: dais.yaw, w: 1.4, d: L })
   for (let i = 0; i < (L > 8 ? 2 : 1); i++) {
     const [hx, hz] = frame(dais, 0, dais.d / 2 + L * (L > 8 ? 0.3 + i * 0.4 : 0.5))
     list.push({ kind: 'chandelier', x: hx, y, z: hz, yaw: 0, w: 1.2, d: 1.2 })
@@ -489,10 +507,8 @@ export function dungeonProps(lay) {
     out.push({ kind: 'sconce', x: x + nx * o, y: floorAt(x + nx * 0.5, z + nz * 0.5), z: z + nz * o, yaw: Math.atan2(nx, nz), w, d, k: -1 })
     return true
   }
-  // Either side of the door inside the foot chamber, and on the passage wall just past it.
+  // On the passage wall just past the door.
   const { door } = g, [ax, az] = door.axis === 'x' ? [1, 0] : [0, 1], [lx, lz] = [az, ax]
-  const face = [door.x - ax * door.side * 0.5, door.z - az * door.side * 0.5]
-  sconce(face[0] + lx * 2.5, face[1] + lz * 2.5, -ax * door.side, -az * door.side)
   const past = [door.x + ax * door.side, door.z + az * door.side]
   if (!sconce(past[0] + lx * door.hw, past[1] + lz * door.hw, -lx, -lz)) sconce(past[0] - lx * door.hw, past[1] - lz * door.hw, lx, lz)
   g.rooms.forEach((r, ri) => {

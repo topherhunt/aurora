@@ -12,7 +12,7 @@ import { Player } from '../src/player.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { castleSolids, interiorSpans, SPANS } from '../src/v2/castles/solids.js'
-import { SPIRAL } from '../src/v2/castles/spiral.js'
+import { SEG, SPIRAL } from '../src/v2/castles/spiral.js'
 import { roomPlan } from '../src/v2/castles/furnish.js'
 
 let failures = 0
@@ -100,13 +100,15 @@ for (let seed = 1; seed <= 5; seed++) {
   }
   for (const col of cols) for (const RAD of RADS) for (const dir of [-1, 1]) {
     runs++
-    const { x: cx, z: cz, a0 } = col[0], lo = col[0].k * SH, hi = (col.at(-1).k + 1) * SH
+    const { x: cx, z: cz, hand } = col[0], lo = col[0].k * SH, hi = (col.at(-1).k + 1) * SH
+    // Up from the first tread's foot; down from the last flight's landing.
+    const a = dir < 0 ? col.at(-1).a0 + hand * 15.5 * SEG : col[0].a0 - hand * SEG / 2
     const start = dir < 0 ? hi : lo, goal = dir < 0 ? lo : hi, p = group.position
-    p.set(cx + Math.cos(a0 - Math.PI / 16) * RAD, start, cz + Math.sin(a0 - Math.PI / 16) * RAD)
+    p.set(cx + Math.cos(a) * RAD, start, cz + Math.sin(a) * RAD)
     player.smoothY = player.standY = start; player._fallTop = null
     let prev = start, pops = 0
     for (let t = 0; t < 700 * col.length && Math.abs(player.standY - goal) > 0.05; t++) {
-      const ang = Math.atan2(p.z - cz, p.x - cx) + dir * LEAD / RAD
+      const ang = Math.atan2(p.z - cz, p.x - cx) + dir * hand * LEAD / RAD
       group.rotation.set(0, Math.atan2(-(cx + Math.cos(ang) * RAD - p.x), -(cz + Math.sin(ang) * RAD - p.z)), 0)
       group.updateMatrixWorld(true)
       at.hint = player.standY

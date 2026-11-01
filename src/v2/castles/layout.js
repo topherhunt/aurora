@@ -296,20 +296,253 @@ export function castleLayout(seed) {
   const best = pickMaze(seed, nodes, rooms, cands, entry, look.roof)
   for (const n of nodes) n.unused = best.unused.has(n)
   const edges = [...best.pick, ...fixed]
+  const planned = planShafts(seed, secs, edges, X, Z, (x, z) => occ.get(key(x, z)) ?? null, isCourt, claimed)
   const onRoute = new Set(best.route.edges)
   for (const e of edges) e.onRoute = onRoute.has(e)
   const count = (list, f) => list.reduce((m, x) => ((m[f(x)] = (m[f(x)] ?? 0) + 1), m), {})
   return {
-    seed, cw, cd, sections: secs, nodes, edges, X, Z,
+    seed, cw, cd, sections: secs, nodes, edges, X, Z, shafts: planned && planned.shafts, dungeon: planned && planned.dungeon,
     route: best.route,
     occAt: (x, z) => occ.get(key(x, z)) ?? null,
     stats: {
-      ok: best.ok, trial: best.trial, rooms: rooms.length, outdoor: nodes.filter((n) => n.out && !n.unused).length,
+      ok: best.ok && planned !== null, trial: best.trial, rooms: rooms.length, outdoor: nodes.filter((n) => n.out && !n.unused).length,
       candidates: cands.length, edges: best.pick.size, loops: best.loops, routeEdges: best.route.edges.length,
       switches: best.switches, descents: best.descents, deadEnds: best.deadEnds, stranded: best.stranded,
       sections: count(secs, (s) => s.kind), kinds: count([...best.pick], (e) => e.kind), ms: performance.now() - t0,
     },
   }
+}
+
+// Cardinal c faces SIDES[c]: +x, +z, -x, -z, at bearing c * 90 deg (4c of a helix's 16 segments).
+const SIDES = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+const mod16 = (v) => ((v % 16) + 16) % 16
+// Where a doorway's centre may sit on a shaft storey, in segments from the start of the flight arriving (pass, top) or leaving
+// (bottom), counted the way it climbs: past its low treads' head room, short of where the floor gives way to its hole.
+const WINDOW = { bottom: [7, 18], pass: [14, 17], top: [13, 23] }
+const LANDING_MAX = 9
+
+/**
+ * The spiral shafts (design/44-castles.md, Spiral shafts). Every storey a helix climbs from or to is sealed round its cell: she
+ * meets the drum only through a doorway, from a door in the cell's face or from the rest of her room. Each stair moves to the cell of
+ * its room with the fewest doors on its faces (staying stacked on the stair below where it can), the dungeon's stair takes a ground
+ * room's, then the doors that can slide along their face and the ladders leave sealed cells; a ladder whose room is all shaft stands
+ * in the drum. Each helix then picks its hand, its first flight's start and the length of each landing (1-9 segments) so every
+ * doorway falls in its window; null when no helix fits some cell's doorways. Mutates the stairs', doors' and ladders' positions in
+ * `edges`.
+ */
+function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
+  const cellAt = (x, z) => [Math.round((x - X(0)) / C - 0.5), Math.round((z - Z(0)) / C - 0.5)]
+  const centreOf = (gx, gz) => [X(gx + 0.5), Z(gz + 0.5)]
+  const cellsOf = (n) => { const out = []; for (let x = n.x0; x < n.x0 + n.w; x++) for (let z = n.z0; z < n.z0 + n.d; z++) out.push([x, z]); return out }
+  const doorsOf = (n, k) => edges.filter((e) => e.a === n || e.b === n).flatMap((e) => e.doors).filter((d) => Math.abs(d.y - k * H) < 0.1 && d.look !== 'barred')
+  /** The cardinal of cell (gx, gz)'s face door d stands in, or -1. */
+  const faceOf = (gx, gz, d) => {
+    const [x, z] = centreOf(gx, gz)
+    return SIDES.findIndex(([sx, sz]) => d.axis === (sx ? 'x' : 'z') && Math.abs((sx ? (d.x - x) * sx : (d.z - z) * sz) - C / 2) < 0.01 && Math.abs(sx ? d.z - z : d.x - x) < C / 2 - 0.01)
+  }
+  const moveStair = (e, gx, gz) => {
+    const [x, z] = centreOf(gx, gz)
+    Object.assign(e.stair, { x, z })
+    e.pts[1] = [x, e.pts[1][1], z]; e.pts[2] = [x, e.pts[2][1], z]
+  }
+
+  const stairs = edges.filter((e) => e.stair).sort((p, q) => p.stair.k - q.stair.k)
+  for (const e of stairs) {
+    const r = e.a, up = e.b, k = e.stair.k, below = stairs.find((q) => q.b === r)
+    const doors = [...doorsOf(r, k), ...doorsOf(up, k + 1)]
+    let best = null
+    for (const [gx, gz] of cellsOf(r)) {
+      if (!contains(up, gx, gz)) continue
+      const [x, z] = centreOf(gx, gz)
+      const cost = doors.filter((d) => faceOf(gx, gz, d) >= 0).length * 10 + (x === e.stair.x && z === e.stair.z ? 0 : 1)
+        + (below && !(x === below.stair.x && z === below.stair.z) ? 5 : 0)
+      if (!best || cost < best.cost) best = { cost, gx, gz }
+    }
+    moveStair(e, best.gx, best.gz)
+  }
+
+  // The dungeon's stair: in a corner tower's ground room when one is in use, continuing a spiral that rises from it, else in the
+  // cell farthest from its doors. Drawn from the stream dungeonPlan goes on with.
+  const drng = mulberry32(seed * 9151 + 5)
+  const corners = secs.slice(0, 4).filter((s) => s.kind === 'tower' && !s.rooms[0][0].unused)
+  const pool = corners.length ? corners : secs.filter((s) => s.kind !== 'wall' && s.kind !== 'gate' && s.rooms[0].some((r) => !r.unused))
+  if (!pool.length) throw new Error(`castle ${seed}: no ground room for the dungeon stair`)
+  const droom = pool[Math.floor(drng() * pool.length)].rooms[0].find((r) => !r.unused)
+  const rising = stairs.find((e) => e.a === droom && e.stair.k === 0)
+  let dungeon = rising ? { node: droom, x: rising.stair.x, z: rising.stair.z } : null
+  if (!dungeon) {
+    const doors = doorsOf(droom, 0)
+    let far = -1
+    for (const [gx, gz] of cellsOf(droom)) {
+      const [x, z] = centreOf(gx, gz), d = Math.min(...doors.map((q) => Math.hypot(q.x - x, q.z - z)))
+      if (d > far) { far = d; dungeon = { node: droom, x, z } }
+    }
+  }
+
+  // Runs of stacked flights per cell; the dungeon's is flight k -1.
+  const byCell = new Map()
+  const run = (x, z) => { const kk = `${x},${z}`; if (!byCell.has(kk)) byCell.set(kk, { ks: new Set(), rooms: new Map() }); return byCell.get(kk) }
+  for (const e of stairs) { const c = run(e.stair.x, e.stair.z); c.ks.add(e.stair.k); c.rooms.set(e.stair.k, e.a); c.rooms.set(e.stair.k + 1, e.b) }
+  { const c = run(dungeon.x, dungeon.z); c.ks.add(-1); c.rooms.set(-1, null); c.rooms.set(0, dungeon.node) }
+  const runs = [], sealed = new Set(), sk = (gx, gz, k) => `${gx},${gz},${k}`
+  for (const [kk, c] of byCell) {
+    const [x, z] = kk.split(',').map(Number), [gx, gz] = cellAt(x, z)
+    for (const k of [...c.ks].sort((p, q) => p - q)) {
+      const last = runs.at(-1)
+      if (last && last.gx === gx && last.gz === gz && last.ks.at(-1) === k - 1) last.ks.push(k)
+      else runs.push({ gx, gz, x, z, ks: [k], rooms: c.rooms })
+    }
+  }
+  for (const r of runs) for (let k = r.ks[0]; k <= r.ks.at(-1) + 1; k++) sealed.add(sk(r.gx, r.gz, k))
+
+  // Doors that can slide along their face to a cell no shaft seals, keeping the same rooms either side.
+  const owns = (n, gx, gz) => (n.kind === 'room' ? contains(n, gx, gz) : n.kind === 'court' ? isCourt(gx, gz) : occAt(gx, gz) === n.sec)
+  for (const e of edges) if (e.kind === 'door') {
+    const d = e.doors[0], k = Math.round(d.y / H), alongX = d.axis === 'z'
+    const sideCell = (t, s) => (d.axis === 'x' ? cellAt(d.x + s * C / 2, Z(t + 0.5)) : cellAt(X(t + 0.5), d.z + s * C / 2))
+    const ok = (t) => [-1, 1].every((s) => {
+      const [gx, gz] = sideCell(t, s), n = [e.a, e.b].find((q) => owns(q, gx, gz))
+      return n && !(n.kind === 'room' && sealed.has(sk(gx, gz, k)))
+    }) && [e.a, e.b].every((n) => [-1, 1].some((s) => owns(n, ...sideCell(t, s))))
+    const t0 = cellAt(d.x, d.z)[alongX ? 0 : 1]
+    if (ok(t0)) continue
+    for (let m = 1; m < 6; m++) {
+      const t = [t0 - m, t0 + m].find((q) => ok(q) && !(k === 0 && claimed.some((c) => {
+        const [px, pz] = alongX ? [X(q + 0.5), d.z] : [d.x, Z(q + 0.5)]
+        return px > c[0] - 0.9 && px < c[2] + 0.9 && pz > c[1] - 0.9 && pz < c[3] + 0.9
+      })))
+      if (t === undefined) continue
+      const old = [d.x, d.y + 1.2, d.z]
+      if (alongX) d.x = X(t + 0.5); else d.z = Z(t + 0.5)
+      const i = e.pts.findIndex((p) => p[0] === old[0] && p[1] === old[1] && p[2] === old[2])
+      if (i < 0) throw new Error(`castle ${seed}: door edge ${e.a.id}|${e.b.id} has no waypoint at its door`)
+      e.pts[i] = [d.x, d.y + 1.2, d.z]
+      break
+    }
+  }
+  // Ladders leave sealed cells for the nearest cell of their room no shaft seals, keeping their corner; else stand in the drum.
+  const drumLadders = new Map()
+  for (const e of edges) if (e.ladder) {
+    const l = e.ladder, [gx, gz] = cellAt(l.x, l.z)
+    if (!sealed.has(sk(gx, gz, l.k))) continue
+    const free = cellsOf(e.a).filter(([x, z]) => !sealed.has(sk(x, z, l.k))).sort((p, q) => Math.abs(p[0] - gx) + Math.abs(p[1] - gz) - Math.abs(q[0] - gx) - Math.abs(q[1] - gz))
+    if (free.length) {
+      const [nx, nz] = free[0]
+      l.x += X(nx) - X(gx); l.z += Z(nz) - Z(gz)
+      e.pts[1] = [l.x, e.pts[1][1], l.z]; e.pts[2] = [l.x, e.pts[2][1], l.z]
+    } else drumLadders.set(sk(gx, gz, l.k), e)
+  }
+
+  // Each run's storeys: the doors in its cell's faces, and the parts of its room no shaft seals that it must open onto.
+  const shafts = runs.map((r) => {
+    const per = []
+    for (let k = r.ks[0]; k <= r.ks.at(-1) + 1; k++) {
+      const n = r.rooms.get(k), role = k === r.ks[0] ? 'bottom' : k === r.ks.at(-1) + 1 ? 'top' : 'pass'
+      const doors = new Map(), comps = [], turn = new Map()
+      if (n === null) {
+        const [x, z] = centreOf(r.gx, r.gz)
+        const c = Math.abs(x) >= Math.abs(z) ? (x > 0 ? 2 : 0) : (z > 0 ? 3 : 1)
+        doors.set(c, []); turn.set(c, 0)
+      } else {
+        for (const d of doorsOf(n, k)) { const c = faceOf(r.gx, r.gz, d); if (c >= 0) doors.set(c, [...(doors.get(c) ?? []), d]) }
+        // A door off its face's middle (an outstair's) turns its doorway toward it by whole segments.
+        const [x, z] = centreOf(r.gx, r.gz)
+        for (const [c, ds] of doors) {
+          const [sx, sz] = SIDES[c], lat = (d) => (d.x - x) * -sz + (d.z - z) * sx
+          const mid = (Math.min(...ds.map((d) => lat(d) - d.w / 2)) + Math.max(...ds.map((d) => lat(d) + d.w / 2))) / 2
+          turn.set(c, Math.round(Math.atan2(mid, C / 2) / (Math.PI / 8)))
+        }
+        const open = cellsOf(n).filter(([x, z]) => !sealed.has(sk(x, z, k))), seen = new Set()
+        for (const [x0, z0] of open) {
+          if (seen.has(`${x0},${z0}`)) continue
+          const comp = [[x0, z0]]
+          seen.add(`${x0},${z0}`)
+          for (let i = 0; i < comp.length; i++) for (const [sx, sz] of SIDES) {
+            const q = [comp[i][0] + sx, comp[i][1] + sz]
+            if (!seen.has(`${q}`) && open.some(([x, z]) => x === q[0] && z === q[1])) { seen.add(`${q}`); comp.push(q) }
+          }
+          const faces = SIDES.map(([sx, sz], c) => (comp.some(([x, z]) => x === r.gx + sx && z === r.gz + sz) ? c : -1)).filter((c) => c >= 0)
+          if (faces.length) comps.push(faces)
+        }
+      }
+      const ladder = drumLadders.get(sk(r.gx, r.gz, k)) ?? null
+      if (ladder && role !== 'top') throw new Error(`castle ${seed}: a ladder stands in a shaft's ${role} storey`)
+      per.push({ k, role, node: n, doors, turn, comps, ladder })
+    }
+    let best = null
+    for (const hand of [1, -1]) {
+      const plan = solveShaft(per, hand)
+      if (plan && (!best || plan.cost < best.cost)) best = { ...plan, hand }
+    }
+    if (!best) return null
+    const { hand, A, L } = best
+    const flights = r.ks.map((k, i) => ({ k, s: mod16(hand * A[i]), L: L[i] ?? 0 }))
+    const storeys = per.map((p, i) => {
+      const a = p.role === 'bottom' ? A[0] : A[i - 1], exits = exitsOf(p, hand, ...windowOf(p.role, a, L[i - 1]))
+      if (p.ladder) {
+        const b = hand * ladderSeg(exits, hand, a) * Math.PI / 8, l = p.ladder.ladder, [x, z] = centreOf(r.gx, r.gz)
+        Object.assign(l, { x: x + Math.cos(b) * 0.55, z: z + Math.sin(b) * 0.55, yaw: b + Math.PI / 2 })
+        p.ladder.pts[1] = [l.x, p.ladder.pts[1][1], l.z]; p.ladder.pts[2] = [l.x, p.ladder.pts[2][1], l.z]
+        // The summit's chest stands across the drum from the hatch; its pos is shared by reference with every edge's waypoints.
+        if (p.ladder.b.kind === 'summit') { const top = p.ladder.b.pos; top[0] = x - Math.cos(b) * 0.9; top[2] = z - Math.sin(b) * 0.9 }
+      }
+      return { k: p.k, role: p.role, node: p.node, exits }
+    })
+    return { gx: r.gx, gz: r.gz, x: r.x, z: r.z, hand, flights, storeys }
+  })
+  return shafts.includes(null) ? null : { shafts, dungeon }
+}
+
+/** A storey's doorway window [lo, hi] in the helix's own (handed) segments, from its flight's start `a` and its landing `L`. */
+function windowOf(role, a, L) {
+  const [lo, hi] = WINDOW[role]
+  return [a + lo, a + hi + (role === 'pass' ? L : 0)]
+}
+
+/** Storey `p`'s doorways for hand `hand` and window [lo, hi]: each door's cardinal c and its doorway's centre segment o, and per
+ * part of the room the cardinal onto it nearest the window's middle; null when one falls outside. */
+function exitsOf(p, hand, lo, hi) {
+  const off = (o) => mod16(hand * o - lo), mid = (hi - lo) / 2
+  const exits = [...p.doors].map(([c, doors]) => ({ c, o: mod16(4 * c + p.turn.get(c)), kind: 'door', doors }))
+  if (exits.some((x) => off(x.o) > hi - lo)) return null
+  for (const faces of p.comps) {
+    const c = faces.filter((f) => off(4 * f) <= hi - lo).sort((u, v) => Math.abs(off(4 * u) - mid) - Math.abs(off(4 * v) - mid))[0]
+    if (c === undefined) return null
+    if (!exits.some((x) => x.c === c)) exits.push({ c, o: 4 * c, kind: 'room' })
+  }
+  return exits
+}
+
+/** Where a top storey's ladder stands in the drum, in handed segments: over the floor (1-6 past the arriving flight's start `a`),
+ * two clear of every doorway, nearest the floor's middle; null when no such bearing. */
+function ladderSeg(exits, hand, a) {
+  const gap = (v, o) => { const d = mod16(v - hand * o); return Math.min(d, 16 - d) }
+  return [4, 3, 5, 2, 6, 1].map((u) => a + u).find((v) => exits.every((x) => gap(v, x.o) >= 2)) ?? null
+}
+
+/** The least total landing over a run's storeys `per` that opens every door and each part of the room within its storey's window,
+ * with a top storey's drum ladder clear of them, for helix hand `hand`: { cost, A (each flight's start), L (each landing) }, or null. */
+function solveShaft(per, hand) {
+  const fits = (p, lo, hi, a) => { const ex = exitsOf(p, hand, lo, hi); return ex !== null && (!p.ladder || ladderSeg(ex, hand, a) !== null) }
+  // State: the start of the flight leaving the storey reached, and the cheapest way there.
+  let states = new Map()
+  for (let a = 0; a < 16; a++) if (fits(per[0], ...windowOf('bottom', a))) states.set(a, { cost: 0, A: [a], L: [] })
+  for (const p of per.slice(1)) {
+    const next = new Map()
+    for (const [a, s] of states) {
+      if (p.role === 'top') {
+        if (fits(p, ...windowOf('top', a), a) && (!next.has(-1) || s.cost < next.get(-1).cost)) next.set(-1, s)
+        continue
+      }
+      for (let L = 1; L <= LANDING_MAX; L++) {
+        if (!fits(p, ...windowOf('pass', a, L))) continue
+        const a2 = mod16(a + 15 + L), v = { cost: s.cost + L, A: [...s.A, a + 15 + L], L: [...s.L, L] }
+        if (!next.has(a2) || v.cost < next.get(a2).cost) next.set(a2, v)
+      }
+    }
+    states = next
+  }
+  return [...states.values()].sort((p, q) => p.cost - q.cost)[0] ?? null
 }
 
 /** Random spanning trees over the candidates, leaf roofs dropped, loops added back while the gate-to-summit route stays long; the best of CASTLE.trials. */

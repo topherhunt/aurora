@@ -6,7 +6,7 @@ import { CASTLE } from './layout.js'
 import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
 import { COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, wallRails } from './shell.js'
-import { segmentOf, SPIRAL, spiralStart } from './spiral.js'
+import { SEG, shaftsOf, SHAFT, SPIRAL } from './spiral.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
@@ -104,13 +104,22 @@ function interiorSolids(lay) {
       airs.push({ k: n.k, poly: convex(offsetLoop(O, edgeNormals(O), -WT)), lo: y, hi: y + SH - 0.3 })
     } else airs.push({ k: n.k, rect: [(ex[0] + INSET) * S + WT, (ex[1] + INSET) * S + WT, (ex[2] - INSET) * S - WT, (ex[3] - INSET) * S - WT], lo: y, hi: y + SH - 0.3 })
   }
-  for (const e of [...lay.edges, { stair: { k: -1, x: g.stair.x, z: g.stair.z }, doors: [] }]) {
-    if (e.stair) {
-      const { k } = e.stair, x = e.stair.x * S, z = e.stair.z * S, a0 = spiralStart(lay, x, z), Rh = SPIRAL.well
-      spirals.push({ k, x, z, a0, top: !lay.edges.some((o) => o.stair && o.stair.k === k + 1 && o.stair.x === e.stair.x && o.stair.z === e.stair.z) })
-      const arc = Array.from({ length: SPIRAL.steps - SPIRAL.hole + 1 }, (_, i) => [x + Math.cos(a0 + (SPIRAL.hole + i) * Math.PI / 8) * Rh, z + Math.sin(a0 + (SPIRAL.hole + i) * Math.PI / 8) * Rh])
-      airs.push({ k, poly: convex([[x, z], ...arc]), lo: k * SH, hi: (k + 1) * SH })
+  const sh = shaftsOf(lay)
+  for (const f of sh.flights) spirals.push({ k: f.k, x: f.x, z: f.z, a0: f.a0, hand: f.hand, top: f.last })
+  // Each shaft storey: the stone round its drum, cut by its doorways' tunnels, and its slab's hole over the flight arriving.
+  const shafts = sh.storeys.map((st) => {
+    if (st.hole) {
+      const { a0, hand, lo } = st.hole, arc = Array.from({ length: SPIRAL.steps - lo + 1 }, (_, i) => a0 + hand * (lo + i) * SEG)
+      airs.push({ k: st.k - 1, poly: convex([[st.x, st.z], ...arc.map((a) => [st.x + Math.cos(a) * SPIRAL.well, st.z + Math.sin(a) * SPIRAL.well])]), lo: st.y - SH, hi: st.y })
     }
+    const spur = st.spur && { b: st.hole.a0 + st.hole.hand * st.hole.lo * SEG, hand: st.hole.hand }
+    if (spur) {
+      const u = [Math.cos(spur.b), Math.sin(spur.b)], v = [spur.hand * Math.sin(spur.b), -spur.hand * Math.cos(spur.b)], t = SPIRAL.wall, R = SPIRAL.well
+      airs.push({ k: st.k - 1, poly: convex([[0, 0], [R, 0], [R, t], [0, t]].map(([p, q]) => [st.x + u[0] * p + v[0] * q, st.z + u[1] * p + v[1] * q])), lo: st.y - SH, hi: st.y })
+    }
+    return { k: st.k, x: st.x, z: st.z, y: st.y, exits: st.exits.map((e) => ({ o: e.o, h: e.h, quads: e.quads.map(convex) })), spur }
+  })
+  for (const e of lay.edges) {
     for (const d of e.doors) {
       if (d.look === 'barred') continue
       const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w * S / 2
@@ -130,7 +139,7 @@ function interiorSolids(lay) {
     const put = (u0, u1, lo) => boxes.push(w.axis === 'x' ? box(w.at - t, u0, w.at + t, u1, lo, top) : box(u0, w.at - t, u1, w.at + t, lo, top))
     put(w.lo - 0.15, w.door[0], w.y); put(w.door[1], w.hi + 0.15, w.y); put(w.door[0], w.door[1], w.y + PARTITION.doorH)
   }
-  return { airs, spirals, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, unlocked: false }
+  return { airs, spirals, shafts, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, unlocked: false }
 }
 
 const inBox = (b, x, z) => { const dx = x - b.x, dz = z - b.z; return Math.abs(dx * b.c - dz * b.s) <= b.hu && Math.abs(dx * b.s + dz * b.c) <= b.hv }
@@ -261,20 +270,28 @@ export function interiorSpans(it, x, z, ref) {
   }
   LO[n] = top; HI[n++] = FAR
   if (air.length) {
-    // Each flight's post, treads and drum (spiral.js SPIRAL), and over a helix's last flight the drum and spur round its hole.
+    // Each flight's post and treads (spiral.js SPIRAL).
     for (const s of it.spirals) {
       if (s.k < k0 - 1 || s.k > k1) continue
-      const dx = x - s.x, dz = z - s.z, r = Math.hypot(dx, dz), y = s.k * SH, rise = SH / SPIRAL.steps / SPIRAL.treads, roof = y + SH - 0.3
+      const r = Math.hypot(x - s.x, z - s.z), y = s.k * SH, rise = SH / SPIRAL.steps / SPIRAL.treads
       if (r < SPIRAL.post) { LO[n] = y; HI[n++] = y + SH + (s.top ? SPIRAL.cap : 0) }
-      else if (r < SPIRAL.well) { const j = treadOf(s, x, z, r); if (j >= 0) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise } }
-      else if (r < SPIRAL.well + SPIRAL.wall) {
-        const j = segmentOf(Math.atan2(dz, dx), s.a0)
-        LO[n] = j < 14 ? y : y + SPIRAL.door; HI[n++] = roof
-        if (s.top && j >= SPIRAL.hole && j < SPIRAL.steps) { LO[n] = y + SH; HI[n++] = roof + SH }
+      else { const j = treadOf(s, x, z, r); if (j >= 0) { LO[n] = y + j * rise; HI[n++] = y + (j + 1) * rise } }
+    }
+    // Each shaft storey's drum, open at its doorways, the stone round it but in their tunnels, and the spur where a helix ends.
+    for (const t of it.shafts) {
+      if (t.k < k0 || t.k > k1) continue
+      const dx = x - t.x, dz = z - t.z, r = Math.hypot(dx, dz), roof = t.y + SH - 0.3, R1 = SPIRAL.well + SPIRAL.wall
+      if (t.spur) {
+        const { b, hand } = t.spur, along = dx * Math.cos(b) + dz * Math.sin(b), off = hand * (dx * Math.sin(b) - dz * Math.cos(b))
+        if (along >= 0 && along <= R1 && off >= 0 && off <= SPIRAL.wall) { LO[n] = t.y; HI[n++] = roof }
       }
-      if (s.top) {
-        const b = s.a0 + SPIRAL.hole * Math.PI / 8, along = dx * Math.cos(b) + dz * Math.sin(b), off = dx * Math.sin(b) - dz * Math.cos(b)
-        if (along >= 0 && along <= SPIRAL.well + SPIRAL.wall && off >= 0 && off <= SPIRAL.wall) { LO[n] = y + SH; HI[n++] = roof + SH }
+      if (r < SPIRAL.well || Math.abs(dx) > SHAFT.box || Math.abs(dz) > SHAFT.box) continue
+      if (r < R1) {
+        const a = Math.atan2(dz, dx), door = t.exits.some((e) => Math.abs(Math.atan2(Math.sin(a - e.o * SEG), Math.cos(a - e.o * SEG))) < SEG)
+        LO[n] = t.y + (door ? SPIRAL.door : 0); HI[n++] = roof
+      } else {
+        const tunnel = t.exits.find((e) => e.quads.some((q) => outOf(q, x, z) <= 0))
+        LO[n] = t.y + (tunnel ? tunnel.h : 0); HI[n++] = roof
       }
     }
     for (const b of it.boxes) if (!(b.lock && it.unlocked) && inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
@@ -285,7 +302,7 @@ export function interiorSpans(it, x, z, ref) {
 /** Spiral `s`'s tread over interior (x, z) at `r` from its axis, from 0 up, or -1 off its treads, which run out to its drum. */
 function treadOf(s, x, z, r) {
   if (r < SPIRAL.post || r >= SPIRAL.well) return -1
-  const j = Math.floor((((Math.atan2(z - s.z, x - s.x) - s.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 8 / SPIRAL.treads))
+  const j = Math.floor((((s.hand * (Math.atan2(z - s.z, x - s.x) - s.a0)) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / (SEG / SPIRAL.treads))
   return j < SPIRAL.steps * SPIRAL.treads ? j : -1
 }
 

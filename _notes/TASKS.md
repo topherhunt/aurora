@@ -86,6 +86,11 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ---
 
+- Gen a few more music tries
+  - Deep Keep (the eeriest):
+    - Ancient, eerie acoustic music deep inside a primordial stone keep, haunting and luminous. A steady heartbeat underbeat of deep frame drum and soft struck stone, ringing in vast reverb. An open drone-based progression in F-sharp Phrygian, dark with a sudden flash of major. A shakuhachi plays a lonely, breathy melody with long bends; a kalimba answers in fragile, glinting figures. A low wordless male choir hums far below, and a didgeridoo drones beneath. Around 82 BPM, raw and human, mysterious rather than menacing -- something old is listening. A brief swell of cello and horn rises near the end, then recedes. No fade-out; loopable.
+  - Lantern Hall (piano-led, the most anime)
+    - Luminous, wistful acoustic music in a lantern-lit castle hall built over something far older. A gentle handpan underbeat with brushed frame drum and a warm upright bass. A modal progression in C-sharp minor lifting to its relative major, flowing and cyclic. A solo piano plays a tender, singing melody with space between phrases, doubled now and then by a breathy bamboo flute; a bowed erhu adds a rough, aching countermelody. Glassy bells shimmer in the reverb. Around 86 BPM, colorful and bittersweet, anime-RPG warmth, earthy and acoustic, curious and a little uncanny. Strings and wordless voices swell once near the close, then recede. No fade-out; loopable.
 - Questline: Resurrected behemoths
   - See the old notes about yetis below. Recast the yetis as an eerie but ultimately relatable snowbound race of giant hominids. You need to solve the puzzle to figure out how to enter their clan village, then be wary to not get caught. 
   - Something to do with a shaman who, once you earn his trust, he offers riches to you if you retrieve certain artifacts from deep forbidden places. He gives you a tool with which you can ward off the creatures of darkness, without it they will not leave you in peace. So you delve deep into caves, confront and ward off the shadowkin, and retrieve some eerie gems glowing with a soft blue flame. The shaman needs three. He duly rewards you by.... calling the guards and getting you kicked out of the village. 

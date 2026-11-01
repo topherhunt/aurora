@@ -14,11 +14,11 @@ import { readFileSync } from 'node:fs'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, interiorWarp, LEAD_SLOT, rayHit, STONE_SLOT, warpedProp, warpOf, WOOD_SLOT } from '../src/v2/castles/shell.js'
 import { castleWindows } from '../src/v2/castles/light.js'
-import { SPIRAL } from '../src/v2/castles/spiral.js'
+import { SHAFT, SPIRAL, shaftsOf } from '../src/v2/castles/spiral.js'
 import { castleSolids, exteriorSpans, interiorSpans, spiralTreadAt, SPANS, SPAN_CAP } from '../src/v2/castles/solids.js'
 import { dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
-import { courtProps, dungeonProps, roomProps } from '../src/v2/castles/furnish.js'
+import { courtProps, dungeonProps, roomPlan, roomProps } from '../src/v2/castles/furnish.js'
 import { courtGlow, GLOW } from '../src/v2/castles/glow.js'
 import { FOLK_CHAT, FOLK_SAYS, folkMoment, insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
 import { fits } from '../src/v2/talk/caption.js'
@@ -128,17 +128,24 @@ for (const l of good.slice(0, 12)) {
 }
 check(leaky.length === 0, 'every doorway has stone facing down over it', `${leaky.length} leaks ${leaky.slice(0, 4).join(' ')}`)
 
-// A rug or carpet over a spiral's well or the dungeon stair lies on air: no rug corner or edge midpoint within its square.
+// A rug or carpet reaching into a shaft's cell lies in its stone: no rug corner or edge midpoint within a shaft storey's box.
 const airRugs = []
 for (const l of good) {
-  const S = CASTLE.scale, wells = l.edges.filter((e) => e.stair).map((e) => [e.stair, [e.a, e.b]]).concat([[dungeonPlan(l).stair, null]])
+  const { storeys } = shaftsOf(l)
   for (const r of roomProps(l).filter((r) => r.kind === 'rug' || r.kind === 'carpet')) {
     const c = Math.cos(r.yaw), s = Math.sin(r.yaw), pts = [-1, 0, 1].flatMap((u) => [-1, 0, 1].map((v) => [r.x + u * r.w / 2 * c + v * r.d / 2 * s, r.z - u * r.w / 2 * s + v * r.d / 2 * c]))
-    const k = Math.round(r.y / (CASTLE.storey * CASTLE.tall))
-    for (const [w, ns] of wells) if ((ns === null ? k === 0 : ns.some((n) => n.k === k)) && pts.some(([x, z]) => Math.max(Math.abs(x - w.x * S), Math.abs(z - w.z * S)) < SPIRAL.square)) airRugs.push(`${l.seed}:${r.kind}@${r.x.toFixed(1)},${r.z.toFixed(1)}`)
+    for (const st of storeys) if (st.k === r.k && pts.some(([x, z]) => Math.max(Math.abs(x - st.x), Math.abs(z - st.z)) < SHAFT.box - 0.01)) airRugs.push(`${l.seed}:${r.kind}@${r.x.toFixed(1)},${r.z.toFixed(1)}`)
   }
 }
-check(airRugs.length === 0, 'no rug or carpet lies over a stair well', airRugs.slice(0, 4).join(' '))
+check(airRugs.length === 0, "no rug or carpet reaches into a stair shaft's cell", airRugs.slice(0, 4).join(' '))
+
+// A spiral stands outside every room: no chamber's air overlaps a shaft storey's cell.
+const drumRooms = []
+for (const l of good) for (const st of shaftsOf(l).storeys) for (const c of roomPlan(l).chambers) {
+  const r = c.rect, h = SHAFT.box - 0.01
+  if (c.k === st.k && r[0] < st.x + h && r[2] > st.x - h && r[1] < st.z + h && r[3] > st.z - h) drumRooms.push(`${l.seed}:${c.node.id}@${st.gx},${st.gz}`)
+}
+check(drumRooms.length === 0, 'no spiral drum stands inside a room', drumRooms.slice(0, 4).join(' '))
 
 check(sunk.window[1] === 0 && sunk.hanging[1] <= sunk.hanging[0] * 0.03, 'every window pane, and nearly every tapestry and banner, stands 1 cm proud of its wall', `${sunk.window[1]}/${sunk.window[0]} panes, ${sunk.hanging[1]}/${sunk.hanging[0]} hangings sunk ${sunkAt.slice(0, 4).join(' ')}`)
 
@@ -290,21 +297,25 @@ const lobThrough = []
 for (const l of good.slice(0, 20)) {
   const it = castleSolids(l).it, SH = CASTLE.storey * CASTLE.tall, rise = SH / SPIRAL.steps / SPIRAL.treads
   for (const sp of it.spirals) for (let j = 0; j < SPIRAL.steps * SPIRAL.treads; j++) for (const r of [0.5, 1.2, SPIRAL.well - 0.05]) for (const phase of [0, 0.09, 0.18]) {
-    const a = sp.a0 + (j + 0.5) * Math.PI / 8 / SPIRAL.treads, x = sp.x + Math.cos(a) * r, z = sp.z + Math.sin(a) * r, top = sp.k * SH + (j + 1) * rise
+    const a = sp.a0 + sp.hand * (j + 0.5) * Math.PI / 8 / SPIRAL.treads, x = sp.x + Math.cos(a) * r, z = sp.z + Math.sin(a) * r, top = sp.k * SH + (j + 1) * rise
     let hit = null
     for (let y = top + 0.9 - phase; y > top - 1 && hit === null; y -= 0.26) hit = spiralTreadAt(it, x, y, z)
     if (hit === null || Math.abs(hit - top) > 1e-6) lobThrough.push(`${l.seed}:${sp.k}:${j}`)
   }
 }
-// Just inside a spiral's drum she stands on the tread under her, and just outside it on the slab, never falling past either.
+// Just inside a spiral's drum, under its hole, she stands on the tread under her, never falling past it.
 const sliver = []
 for (const l of good.slice(0, 20)) {
   const it = castleSolids(l).it, SH = CASTLE.storey * CASTLE.tall, rise = SH / SPIRAL.steps / SPIRAL.treads
-  for (const sp of it.spirals) for (let t = SPIRAL.hole * SPIRAL.treads; t < SPIRAL.steps * SPIRAL.treads; t += 0.25) for (const r of [SPIRAL.well - 0.05, SPIRAL.well - 0.01, SPIRAL.well + SPIRAL.wall + 0.02]) {
-    const a = sp.a0 + (t + 0.125) * Math.PI / 8 / SPIRAL.treads, j = Math.floor(t + 0.125), n = interiorSpans(it, sp.x + Math.cos(a) * r, sp.z + Math.sin(a) * r, (sp.k + 1) * SH)
+  const { storeys } = shaftsOf(l)
+  for (const sp of it.spirals) {
+    const { lo } = storeys.find((st) => st.k === sp.k + 1 && st.x === sp.x && st.z === sp.z).hole
+    for (let t = lo * SPIRAL.treads; t < SPIRAL.steps * SPIRAL.treads; t += 0.25) for (const r of [SPIRAL.well - 0.05, SPIRAL.well - 0.01]) {
+    const a = sp.a0 + sp.hand * (t + 0.125) * Math.PI / 8 / SPIRAL.treads, j = Math.floor(t + 0.125), n = interiorSpans(it, sp.x + Math.cos(a) * r, sp.z + Math.sin(a) * r, (sp.k + 1) * SH)
     let floor = -Infinity
     for (let i = 0; i < n; i++) if (SPANS.HI[i] <= (sp.k + 1) * SH + 0.05) floor = Math.max(floor, SPANS.HI[i])
     if (floor < sp.k * SH + (j + 1) * rise - 0.01) sliver.push(`${l.seed}:${sp.k}:${j}@${r}`)
+    }
   }
 }
 check(sliver.length === 0, "no sliver round a spiral's hole drops past its treads", `${sliver.length}: ${sliver.slice(0, 6).join(' ')}`)
