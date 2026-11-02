@@ -86,6 +86,13 @@ Claude: Do NOT modify this file. This is Topher's notes. You can suggest tasks, 
 
 ---
 
+- Bugs
+  - if you have a rabbit and a fox following you as pets and then you go into a cave, they don't follow you the way that they were supposed to.\
+    - \[ \] when you talk to people inside a house, they'll greet you, but they won't actually open the dialogue or the dialogue doesn't render or something.\
+    - \[ \] spiral staircases should never block pads. So if there's going to be a door exit, or like a tunnel out of the stairway barrel, there needs to be a flat landing leading to it. So you never have to kind of crouch and hop down the outside of stairs to get to a doorway. Also, the castle doorways from the interior are way too large. Even the exterior ones should be 20%. And it's smaller. And the interior doorways should be the same size as that. It shouldn't be expanded in size.\
+    - \[ \] you can't put a ladder directly in front of a door or within three meters of a door.\
+    - \[ \] a large kitchen and feasting area downstairs somewhere in castles relatively central.\
+    - \[ \] also, the top of a ladder when viewed from inside needs to have the wooden trap door shown at the top so that you can see that that's the same trap door that you come out of.
 - Gen a few more music tries
   - Deep Keep (the eeriest):
     - Ancient, eerie acoustic music deep inside a primordial stone keep, haunting and luminous. A steady heartbeat underbeat of deep frame drum and soft struck stone, ringing in vast reverb. An open drone-based progression in F-sharp Phrygian, dark with a sudden flash of major. A shakuhachi plays a lonely, breathy melody with long bends; a kalimba answers in fragile, glinting figures. A low wordless male choir hums far below, and a didgeridoo drones beneath. Around 82 BPM, raw and human, mysterious rather than menacing -- something old is listening. A brief swell of cello and horn rises near the end, then recedes. No fade-out; loopable.

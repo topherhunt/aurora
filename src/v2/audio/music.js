@@ -110,6 +110,8 @@ export class Music {
     this.following = false
     // The followed song's `pool/song@startS` since she came into the owner's pool, so one that has ended here is not started again while the owner still says it plays.
     this.heard = null
+    // performance.now() when the last song ended or began its fade, for the traces (snapshot).
+    this.stoppedAt = null
   }
 
   setVolume(gain) {
@@ -162,6 +164,28 @@ export class Music {
     g.linearRampToValueAtTime(0, now + FADE_OUT_S)
     this.fading.push({ track, until: now + FADE_OUT_S })
     this.playing = null
+    this.stoppedAt = performance.now()
+  }
+
+  /** For the ambient traces: the song and where it is, the silence left, seconds since the last song stopped, and how many of the made elements are sounding. */
+  snapshot() {
+    const p = this.playing
+    const r1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null)
+    let live = 0
+    for (const t of this.tracks.values()) if (!t.el.paused) live++
+    return {
+      pool: this.pool,
+      song: p === null ? null : POOLS[p.pool][p.song],
+      at: p === null ? null : r1(p.track.el.currentTime),
+      left: p === null ? null : r1(p.track.el.duration - p.track.el.currentTime),
+      ready: p === null ? null : p.track.el.readyState,
+      following: this.following,
+      silenceLeft: p === null && !this.following ? r1(this.silence) : null,
+      sinceStop: this.stoppedAt === null ? null : r1((performance.now() - this.stoppedAt) / 1000),
+      elements: this.tracks.size,
+      live,
+      fading: this.fading.length,
+    }
   }
 
   /** What the pose carries: `[pool, song or -1, startS]`. */
@@ -195,6 +219,7 @@ export class Music {
       if (el.error) console.error(`[music] ${url} failed to load:`, el.error)
       if (el.error || el.ended) {
         this.playing = null
+        this.stoppedAt = performance.now()
         this.silence = this._rollPause()
       } else if (this.playing.pool !== pool) {
         this._fade()

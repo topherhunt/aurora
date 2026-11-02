@@ -23,6 +23,7 @@ export class Mic {
     this.last = -Infinity
     this.state = 'off'
     this.error = null
+    this.stream = null
   }
 
   /** Ask for the mic; call from a user gesture. Resolves once it is listening, or with `state` 'denied'. */
@@ -31,6 +32,7 @@ export class Mic {
     this.state = 'asking'
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } })
+      this.stream = stream
       const src = this.ctx.createMediaStreamSource(stream)
       this.analyser = this.ctx.createAnalyser()
       this.analyser.fftSize = 1024
@@ -45,6 +47,13 @@ export class Mic {
       this.error = e
       console.warn('Mic: no microphone, a key stands in --', e)
     }
+  }
+
+  /** For the ambient traces: 'off' / 'asking' / 'denied', or the capture track's readyState, with ' muted' when the device mutes it. */
+  status() {
+    if (this.stream === null) return this.state
+    const [track] = this.stream.getAudioTracks()
+    return `${track.readyState}${track.muted ? ' muted' : ''}`
   }
 
   /** The level now, 0..1 RMS. */

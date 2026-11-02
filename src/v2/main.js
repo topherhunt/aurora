@@ -7593,6 +7593,21 @@ const ambientTrace = new AmbientTrace({
   context: () => ({ ...perfTrace.host.context(), peers: netplay.peers.size }),
   pulse: questPulse,
   audio: () => sound === null ? null : sound.ctx,
+  sound: () => sound === null ? null : {
+    music: music === null ? null : music.snapshot(),
+    mic: talkMic === null ? 'none' : talkMic.status(),
+    oneShots: sound.oneShots,
+    loops: sound.loops.size,
+    sampleRate: sound.ctx.sampleRate,
+    baseMs: Math.round(sound.ctx.baseLatency * 1000),
+    outMs: sound.ctx.outputLatency === undefined ? null : Math.round(sound.ctx.outputLatency * 1000),
+  },
+  mem: () => ({
+    heapMb: performance.memory === undefined ? null : Math.round(performance.memory.usedJSHeapSize / 1048576),
+    geometries: renderer.info.memory.geometries,
+    textures: renderer.info.memory.textures,
+    programs: renderer.info.programs.length,
+  }),
   env: () => {
     const p = player.rig.position
     const out = !indoors && cave === null

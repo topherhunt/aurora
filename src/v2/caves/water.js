@@ -114,9 +114,26 @@ function settle(p, graph, field) {
     else if (floor[c] === Infinity) s[c] = 0
     else s[c] = Math.max(floor[c] - level - TUCK, 0)
   }
-  p.shore = refine({ x0, z0, nx, nz, cell: CELL, s, floor }, field, level, refAt)
+  // Refined over the wet corners' box and CROP round it, not the whole home: that runs the length of every passage off the pool, mostly dry rock, and two 0.25 m grids over it held up to 460 MB a system (per thread). Its corner is even, so shoreMesh's SHORE_STRIDE lattice keeps its phase.
+  let i0 = nx, i1 = -1, k0 = nz, k1 = -1
+  for (let c = 0; c < s.length; c++) {
+    if (!(s[c] < 0)) continue
+    const i = c % nx, k = (c - i) / nx
+    i0 = Math.min(i0, i); i1 = Math.max(i1, i); k0 = Math.min(k0, k); k1 = Math.max(k1, k)
+  }
+  i0 = Math.max(0, i0 - CROP) & ~1; k0 = Math.max(0, k0 - CROP) & ~1
+  i1 = Math.min(nx - 1, i1 + CROP); k1 = Math.min(nz - 1, k1 + CROP)
+  const cx = i1 - i0 + 1, cz = k1 - k0 + 1, cs = new Float32Array(cx * cz), cf = new Float32Array(cx * cz)
+  for (let k = 0; k < cz; k++) {
+    const from = (k0 + k) * nx + i0
+    cs.set(s.subarray(from, from + cx), k * cx)
+    cf.set(floor.subarray(from, from + cx), k * cx)
+  }
+  p.shore = refine({ x0: x0 + i0 * CELL, z0: z0 + k0 * CELL, nx: cx, nz: cz, cell: CELL, s: cs, floor: cf }, field, level, refAt)
   return true
 }
+// Flood cells kept dry round the wet ones: past a refined cell's corners and a whole SHORE_STRIDE mesh cell.
+const CROP = 3
 
 // The shore at half the flood's cell: interpolated inside the water and on dry ground, sampled afresh only in the cells the shoreline crosses, where a dip between two corners would leave the plane's edge in the air.
 function refine(sh, field, level, refAt) {

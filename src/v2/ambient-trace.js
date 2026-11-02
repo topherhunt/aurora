@@ -62,6 +62,8 @@ export class AmbientTrace {
    * host: TraceWindows' host, plus {
    *   active() -> bool (in XR, nothing open or running that skews a frame), context(), pulse(hand, intensity, ms),
    *   audio() -> the sound's AudioContext, or null while it has none,
+   *   sound() -> { music, mic, ... } (main.js), or null while there is no sound,
+   *   mem() -> { heapMb, geometries, textures, programs },
    *   env() -> { room: 'overworld' | 'glade' | 'house' | 'hut' | 'cave', town: bool, trunks, agl, dayness, precip, snow }
    * }
    */
@@ -128,6 +130,8 @@ export class AmbientTrace {
     sample.env = this.env.key
     sample.audio = this.audioClock(now)
     sample.pressure = this.probe.pressure
+    sample.sound = this.host.sound()
+    sample.mem = this.host.mem()
     this.ring.push(sample)
     if (this.ring.length > RING) this.ring.shift()
     this.fastWindows = sample.flying && speed > FAST_MPS ? this.fastWindows + 1 : 0
