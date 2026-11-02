@@ -194,6 +194,14 @@ export const NIGHT_REST = 2
 export const TURN_RATE = 8
 // Body lengths ahead a live follower tests the next seat at.
 const AHEAD = 1.5
+// How far over her floor the ground she came down a slope from is looked for, for a warp.
+const CAVE_BACK_UP = 3
+// How deep a ford in a cave a pet follows her through.
+const CAVE_WADE_M = 0.5
+// The most a cave floor may rise or fall between one ground probe and the next before it is taken for rock or a void.
+const CAVE_PROBE_DY = 2
+// Metres over a cave floor that a pet's body is seen at.
+const CAVE_EYE = 0.4
 // A planned walk is sampled against the seat test every this many metres along it, and clipped this short of the first sample that fails; the straight line home from where it ends is sampled the same way, so the chapter's way home is on ground it can walk. A metre, because a trunk is under two across and the samples must not straddle one.
 export const SAMPLE_M = 1
 // A roam whose walk would be shorter than this many ticks is a stand instead.
@@ -349,6 +357,15 @@ function along(pts, m) {
   }
   return pts[pts.length - 1]
 }
+/** Whether cave rock stands between her head and (x, y, z), sampled every half metre. */
+function rockBetween(cave, head, x, y, z) {
+  const n = Math.ceil(Math.hypot(x - head.x, y - head.y, z - head.z) / 0.5)
+  for (let i = 1; i < n; i++) {
+    const u = i / n
+    if (cave.field.at(head.x + (x - head.x) * u, head.y + (y - head.y) * u, head.z + (z - head.z) * u) > 0) return true
+  }
+  return false
+}
 /** Seconds on the tick grid: every phrase and step is a whole number of ticks, so a walk's length in ticks is a count and not a rounding. */
 const ticksOf = (s) => Math.round(s * TICK_HZ)
 const onGrid = (s) => ticksOf(s) * TICK_S
@@ -453,6 +470,8 @@ export class Wildlife {
     this.leads = null
     // The cave walk the animal being stepped stands on, for seat; null on the overworld.
     this._in = null
+    // Her feet's height in the cave, while hintY is at the floor of the animal being stepped.
+    this._floor = NaN
     // Whether the animals near her come for her (madden).
     this.maddened = false
     // Her size, a multiple of her full height (sized).
@@ -670,13 +689,25 @@ export class Wildlife {
     return y
   }
 
-  /** seat in the cave this._in about her feet: floor within a step up or a drop down, gentle, dry and clear of stone. */
+  /** Whether ground she walked at (x, z) in cave `w` is one to warp a pet onto: a seat read from her floor, or from up to CAVE_BACK_UP m over it where she came down a slope. */
+  _standsBehind(w, x, z) {
+    const own = w.hintY
+    let ok = false
+    for (let up = 0; up <= CAVE_BACK_UP && !ok; up += 1.5) {
+      w.hintY = this._floor + up
+      ok = this.seat(x, z) !== null
+    }
+    w.hintY = own
+    return ok
+  }
+
+  /** seat in the cave this._in about the animal's feet: floor within a step up or a drop down, gentle, no deeper under water than CAVE_WADE_M and clear of stone. */
   _caveSeat(x, z) {
     const w = this._in, y0 = w.hintY
     const y = w.heightAt(x, z, y0)
     if (y > y0 + 0.6 || y < y0 - 1.5) return null
     const level = w.trueWaterAt(x, z, y0)
-    if (level !== null && level > y) return null
+    if (level !== null && level > y + CAVE_WADE_M) return null
     if (w.obstacleAt(x, z, _stone) !== null) return null
     w.normalAt(x, z, undefined, _norm, y0)
     if (Math.acos(Math.min(1, _norm.y)) > MAX_SLOPE) return null
@@ -1920,8 +1951,13 @@ export class Wildlife {
     this._move(c, k)
     // Underground, one waiting at the mouth keeps no pace with her.
     if (this.her !== null && (this.cave === null || c.under)) {
-      const to = this.her.keepUp(c.way, c.sx, c.sz, c.act !== 'eat' && dist > c.near + RESUME_M, now, (x, z) => this.seat(x, z) !== null)
+      // Under with her, a pet behind a bend is unseen however it lies to her gaze, and is never out of her ken.
+      const w = this._in, far = c.act !== 'eat' && dist > c.near + RESUME_M
+      const to = w === null
+        ? this.her.keepUp(c.way, c.sx, c.sz, far, now, (x, z) => this.seat(x, z) !== null)
+        : this.her.keepUp(c.way, c.sx, c.sz, far, now, (x, z) => this._standsBehind(w, x, z), (x, z) => this.her.sees(x, z) && !rockBetween(w, this._head, x, c.y + CAVE_EYE, z), Infinity)
       if (to !== null) {
+        if (w !== null) c.y = w.hintY = this._floor
         c.sx = c.lx = to.x
         c.sz = c.lz = to.z
         c.sh = c.lh = bearing(to, h)
@@ -2390,12 +2426,15 @@ export class Wildlife {
     }
 
     const want = tickOf(now)
+    // Each animal under with her is stepped with the cave's hintY at its own floor, so a pet above or below her reads the ground it stands on; hintY is hers again after.
+    this._floor = this.cave === null ? NaN : this.cave.walk.hintY
     for (const t of this._stepped()) {
       for (const s of t.spawns) {
         if (now < s.deadUntil) continue
         if (t !== this.waits && this.lost.has(s.key)) continue
         const under = s.slot !== null && s.slot.under
         this._in = under ? this.cave.walk : null
+        if (under) this._in.hintY = s.slot.y
         this.head = this.cave === null || under ? this._head : this.cave.apron
         // Asleep, it is measured from home; awake, from wherever the score has walked it -- and past its card, not stepped, from where the score has it now, as a joiner waking it would.
         const live = s.slot
@@ -2477,9 +2516,13 @@ export class Wildlife {
         const probing = (this.frame + c.id) % PROBE_EVERY[tier] === 0 || Number.isNaN(c.px)
         const ground = under ? this._in : this.walk
         if (probing && (c.x !== c.px || c.z !== c.pz)) {
-          c.y = ground.heightAt(c.x, c.z)
+          const y = ground.heightAt(c.x, c.z)
           ground.normalAt(c.x, c.z, undefined, _norm)
-          c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
+          // Against a wall, in rock or over a void the cave answers a sheer normal or WALL or DEEP away: the animal keeps its floor and plane until it is clear or warped.
+          if (!under || (Math.abs(y - c.y) <= CAVE_PROBE_DY && Math.acos(Math.min(1, _norm.y)) <= MAX_SLOPE)) {
+            c.y = y
+            c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
+          }
           c.px = c.x; c.pz = c.z
         } else {
           c.y -= (c.nx * (c.x - wasX) + c.nz * (c.z - wasZ)) / c.ny
@@ -2522,6 +2565,7 @@ export class Wildlife {
       }
     }
     this.head = this._head
+    if (this.cave !== null) this.cave.walk.hintY = this._floor
     this._in = null
 
     // The felled, on their dead clip where they fell: pulsing red, then black, then dissolving. carry() hangs a body GRIP of its height under the matrix, so the matrix is raised that much.

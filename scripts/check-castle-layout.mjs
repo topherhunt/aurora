@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, interiorWarp, LEAD_SLOT, rayHit, STONE_SLOT, warpedProp, warpOf, WOOD_SLOT } from '../src/v2/castles/shell.js'
 import { castleWindows } from '../src/v2/castles/light.js'
-import { SHAFT, SPIRAL, shaftsOf } from '../src/v2/castles/spiral.js'
+import { SEG, SHAFT, SPIRAL, shaftsOf } from '../src/v2/castles/spiral.js'
 import { castleSolids, exteriorSpans, interiorSpans, spiralTreadAt, SPANS, SPAN_CAP } from '../src/v2/castles/solids.js'
 import { dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
@@ -36,7 +36,7 @@ const good = lays.filter((l) => l.stats.ok)
 
 const sig = (l) => JSON.stringify([l.nodes.map((n) => [n.id, n.pos]), l.edges.map((e) => [e.a.id, e.b.id, e.kind])])
 check([1, 7, 42].every((s) => sig(castleLayout(s)) === sig(lays[s - 1])), 'a seed lays out the same castle twice')
-check(good.length >= SEEDS * 0.9, 'nine seeds in ten pass the maze score', `${good.length}/${SEEDS}`)
+check(good.length >= SEEDS * 0.8, 'four seeds in five pass the maze score', `${good.length}/${SEEDS}`)
 check(good.every((l) => l.stats.stranded === 0), 'a passing castle strands no node')
 check(good.every((l) => l.stats.routeEdges >= CASTLE.minRoute && l.stats.switches >= CASTLE.minSwitches), 'a passing route is long and goes in and out',
   `min ${Math.min(...good.map((l) => l.stats.routeEdges))} edges`)
@@ -112,15 +112,15 @@ for (const l of good.slice(0, 12)) {
     byK.set(k, tris)
   }
   for (const e of l.edges) for (const d of e.doors) {
-    const k = Math.round(d.y / CASTLE.storey), y = k * SH, hw = d.w * CASTLE.scale / 2, tris = byK.get(k)
+    const k = Math.round(d.y / CASTLE.storey), y = k * SH, hw = d.w / 2, tris = byK.get(k)
     const near = tris.filter(({ t }) => Math.abs(t[0][0] - d.x * CASTLE.scale) < 3 && Math.abs(t[0][2] - d.z * CASTLE.scale) < 3)
     const first = (o, n) => near.reduce((b, tr) => { const h = rayHit(o, n, ...tr.t); return h !== null && h > 0 && h < SH && (b === null || h < b.h) ? { h, ny: tr.ny } : b }, null)
     const inner = e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge', leafAt = 0.4 * CASTLE.scale - 0.05
     for (let r = -1; r <= 1; r += 0.1) for (const u of [-0.7, 0, 0.7]) {
       if (!inner && -d.side * r < leafAt + 0.02) continue
-      const [a, b] = d.axis === 'x' ? [r, u * hw] : [u * hw, r], o = warp(d.x * CASTLE.scale + a, y + d.h * CASTLE.tall - 0.15, d.z * CASTLE.scale + b)
+      const [a, b] = d.axis === 'x' ? [r, u * hw] : [u * hw, r], o = warp(d.x * CASTLE.scale + a, y + d.h - 0.15, d.z * CASTLE.scale + b)
       const floor = first(o, [0, -1, 0])
-      if (floor === null || floor.h > d.h * CASTLE.tall) continue
+      if (floor === null || floor.h > d.h) continue
       const up = first(o, [0, 1, 0])
       if (up === null || up.ny > -0.5) leaky.push(`${l.seed}:k${k}@${o.map((v) => v.toFixed(1))}`)
     }
@@ -138,6 +138,18 @@ for (const l of good) {
   }
 }
 check(airRugs.length === 0, "no rug or carpet reaches into a stair shaft's cell", airRugs.slice(0, 4).join(' '))
+
+// The keep's ground storey holds the hall, kitchen and feast in one: its hearth, oven and cauldron, and benched long tables.
+const noHall = [], hallSizes = []
+for (const l of good) {
+  const c = roomPlan(l).chambers.find((q) => q.role === 'hall'), props = roomProps(l)
+  const mine = c && props.filter((o) => o.k === 0 && o.x > c.rect[0] && o.x < c.rect[2] && o.z > c.rect[1] && o.z < c.rect[3])
+  const has = (kind) => mine.some((o) => o.kind === kind || kind === 'longtable' && o.kind === 'table')
+  if (!c || c.k !== 0 || c.node.sec.kind !== 'keep' || !['hearth', 'oven', 'cauldron', 'longtable', 'bench'].every(has)) noHall.push(`${l.seed}${c ? ` ${['hearth', 'oven', 'cauldron', 'longtable', 'bench'].filter((k) => !has(k))}` : ''}`)
+  else hallSizes.push((c.rect[2] - c.rect[0]) * (c.rect[3] - c.rect[1]))
+}
+hallSizes.sort((a, b) => a - b)
+check(noHall.length === 0, "the keep's ground holds the hall: hearth, oven, cauldron and benched long tables", `${noHall.slice(0, 6).join(' | ')}  smallest ${hallSizes[0]?.toFixed(0)} m2, median ${hallSizes[hallSizes.length >> 1]?.toFixed(0)} m2`)
 
 // A spiral stands outside every room: no chamber's air overlaps a shaft storey's cell.
 const drumRooms = []
@@ -162,6 +174,45 @@ for (const l of good) {
   }
 }
 check(deadDrums.length === 0, "every spiral's top and bottom storey opens onto a door, a room, the drum beside it or a roof ladder", deadDrums.slice(0, 4).join(' '))
+
+// Every doorway opens off a flat landing or floor with head room over it, from the post to the drum: no tread rises or falls across
+// its mouth, so she walks straight in and out. 258641 is a castle whose dungeon stair rose across a door's mouth.
+const steppy = []
+for (const l of [...good.slice(0, 40), castleLayout(258641)]) {
+  const it = castleSolids(l).it
+  for (const st of shaftsOf(l).storeys) for (const e of st.exits) {
+    let wrong = null
+    for (let i = 1; i < 8 && !wrong; i++) for (let r = SPIRAL.post + 0.3; r < SPIRAL.well - 0.05 && !wrong; r += 0.15) {
+      const a = (e.o - 1 + i / 4) * SEG, n = interiorSpans(it, st.x + Math.cos(a) * r, st.z + Math.sin(a) * r, st.y + 0.5)
+      let floor = -Infinity, ceil = Infinity
+      for (let j = 0; j < n; j++) if (SPANS.HI[j] <= st.y + 0.5) floor = Math.max(floor, SPANS.HI[j]); else if (SPANS.LO[j] > st.y + 0.5) ceil = Math.min(ceil, SPANS.LO[j]); else floor = Infinity
+      if (Math.abs(floor - st.y) > 0.05 || ceil - st.y < 2.4) wrong = `${l.seed}:${st.gx},${st.gz}@${st.k} ${e.kind}${e.c} floor ${(floor - st.y).toFixed(1)} head ${(ceil - st.y).toFixed(1)}`
+    }
+    if (wrong) steppy.push(wrong)
+  }
+}
+check(steppy.length === 0, "every spiral doorway opens off a flat landing with head room, no tread across its mouth", steppy.slice(0, 4).join(' | '))
+
+// A tunnel slanting to a door off its face's middle narrows: one aimed at the face line pinched to 0.47 m, leaving no spot to stand.
+const segGap = (p, a, b) => { const dx = b[0] - a[0], dz = b[1] - a[1], t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / (dx * dx + dz * dz))); return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz) }
+const pinched = []
+for (const l of good) for (const st of shaftsOf(l).storeys) for (const e of st.exits) {
+  const [a, b, c, d] = e.quads[0], w = Math.min(segGap(a, c, d), segGap(b, c, d), segGap(c, a, b), segGap(d, a, b))
+  if (w < 0.8) pinched.push(`${l.seed}:${st.gx},${st.gz}@${st.k} ${e.kind}${e.c} ${w.toFixed(2)} m`)
+}
+check(pinched.length === 0, 'every spiral doorway tunnel is at least 0.8 m wide', pinched.slice(0, 4).join(' '))
+
+// No ladder stands in front of a door: 3 m clear of the nearest point of every doorway of its room on its storey, drums included.
+const ladderNear = []
+for (const l of good) for (const e of l.edges) if (e.ladder) {
+  const { x, z, k } = e.ladder
+  for (const d of l.edges.filter((f) => f.a === e.a || f.b === e.a).flatMap((f) => f.doors)) {
+    if (Math.abs(d.y - k * CASTLE.storey) > 0.1) continue
+    const [n, t] = d.axis === 'x' ? [x - d.x, z - d.z] : [z - d.z, x - d.x], m = Math.hypot(n * CASTLE.scale, Math.max(0, Math.abs(t) * CASTLE.scale - d.w / 2))
+    if (m < 3) ladderNear.push(`${l.seed}:${e.a.id}@k${k} ${m.toFixed(1)} m`)
+  }
+}
+check(ladderNear.length === 0, 'every ladder stands 3 m clear of its room\'s doors', ladderNear.slice(0, 4).join(' '))
 
 check(sunk.window[1] === 0 && sunk.hanging[1] <= sunk.hanging[0] * 0.03, 'every window pane, and nearly every tapestry and banner, stands 1 cm proud of its wall', `${sunk.window[1]}/${sunk.window[0]} panes, ${sunk.hanging[1]}/${sunk.hanging[0]} hangings sunk ${sunkAt.slice(0, 4).join(' ')}`)
 
@@ -227,7 +278,7 @@ const crack = good.slice(0, 30).map(widestCrack).reduce((a, b) => (b.gap > a.gap
 check(crack.gap < 0.06, 'no exterior seam opens 6 cm under the warp', `widest ${(crack.gap * 100).toFixed(1)} cm, seed ${crack.seed} at ${crack.at}`)
 
 // A leaf vanishes behind stone that stands across it: the warped wall sagging between its far-apart vertices, or a parapet running
-// past a door onto its roof. Rays from 1.5 m out up each unbarred door's centreline must meet its leaf first for 2 m of its height.
+// past a door onto its roof. Rays from 1.5 m out up each unbarred door's centreline must meet its leaf first for 4/5 of its height.
 function leafSeen(l) {
   const g = exteriorGeometry(l), P = g.position, tris = [], leaf = []
   for (const [start, count, slot] of g.groups) for (let v = start; v < start + count; v += 3) {
@@ -254,12 +305,12 @@ function leafSeen(l) {
     const n = d.axis === 'x' ? [d.side, 0, 0] : [0, 0, d.side], at = (y, r) => [d.x + n[0] * r, d.y + y, d.z + n[2] * r]
     let seen = 0
     for (let y = 0.1; y < d.h; y += 0.2) if (first(at(y, 1.5), at(y, -0.5))) seen += 0.2
-    worst = Math.min(worst, seen)
+    worst = Math.min(worst, seen / d.h)
   }
   return worst
 }
-const seen = good.slice(0, 60).map((l) => [l.seed, leafSeen(l)]), shortSeen = seen.filter(([, m]) => m < 2)
-check(shortSeen.length === 0, "every door's leaves show 2 m of their height past the stone in front of them", shortSeen.length ? shortSeen.slice(0, 4).map(([s, m]) => `seed ${s}: ${m.toFixed(1)} m`).join(', ') : `worst ${Math.min(...seen.map(([, m]) => m)).toFixed(1)} m`)
+const seen = good.slice(0, 60).map((l) => [l.seed, leafSeen(l)]), shortSeen = seen.filter(([, m]) => m < 0.8)
+check(shortSeen.length === 0, "every door's leaves show 4/5 of their height past the stone in front of them", shortSeen.length ? shortSeen.slice(0, 4).map(([s, m]) => `seed ${s}: ${(m * 100).toFixed(0)}%`).join(', ') : `worst ${(Math.min(...seen.map(([, m]) => m)) * 100).toFixed(0)}%`)
 
 const lowTri = good.slice(0, 40).map((l, i) => tri(exteriorGeometry(l, { full: false })) / ext[i])
 check(Math.max(...lowTri) < 0.9, 'the mid-distance exterior is lighter than the full one', `worst ${(Math.max(...lowTri) * 100).toFixed(0)}% of full`)

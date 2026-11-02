@@ -37,9 +37,8 @@ const FLAMES = {
 // What each role holds: `must` placed first (one each), then `wall` kinds round it, a `centre` piece, tableware on its tables.
 const KIT = {
   throne: { wall: ['banner', 'tapestry', 'tapestry', 'brazier', 'sconce', 'sconce', 'chest', 'shelf', 'chair', 'chair'] },
-  kitchen: { must: ['hearth', 'oven', 'cauldron'], wall: ['barrel', 'sacks', 'shelf', 'herbs', 'herbs', 'crate', 'cask', 'bucket', 'basket', 'sconce', 'veg', 'jars', 'hams', 'coal'], centre: ['table'], ware: true },
+  hall: { must: ['hearth', 'oven', 'cauldron'], wall: ['barrel', 'sacks', 'shelf', 'herbs', 'cask', 'bucket', 'sconce', 'jars', 'hams', 'banner', 'brazier', 'dresser', 'kegs', 'bench'], ware: true },
   pantry: { wall: ['barrel', 'sacks', 'grain', 'veg', 'veg', 'crate', 'cask', 'kegs', 'jars', 'jars', 'basket', 'herbs', 'hams', 'sconce'] },
-  mess: { wall: ['bench', 'shelf', 'brazier', 'banner', 'sconce', 'sconce', 'cask', 'barrel', 'kegs', 'dresser'], centre: ['longtable', 'table'], ware: true, chandelier: true },
   guard: { must: ['rack'], wall: ['rack', 'bench', 'chest', 'barrel', 'sconce', 'shields', 'chair', 'kegs'], centre: ['table'], ware: true },
   passage: { wall: ['brazier', 'sconce', 'sconce', 'barrel', 'stack3', 'stack5', 'stand3', 'stand5'] },
   armoury: { must: ['anvil', 'grind'], wall: ['rack', 'rack', 'shields', 'shields', 'armour', 'armour', 'arrows', 'chest', 'crate', 'sconce'] },
@@ -111,10 +110,10 @@ const frame = (o, u, v) => [o.x + u * Math.cos(o.yaw) + v * Math.sin(o.yaw), o.z
 
 /** Places props along the inside of rect r [x0, z0, x1, z1] (or a disc when `round`), their backs to the walls, then a centre
  * piece; no edge within CLEAR of a portal, no corner within LANE of a lane between portals, or overlapping what is placed. */
-function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity) {
+function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity, laned = true) {
   const placed = out.map((o) => cornersOf(o.x, o.z, o.yaw, o.w, o.d)), n0 = out.length
   const lanes = []
-  for (let i = 0; i < portals.length; i++) for (let j = i + 1; j < portals.length; j++) lanes.push([portals[i], portals[j]])
+  if (laned) for (let i = 0; i < portals.length; i++) for (let j = i + 1; j < portals.length; j++) lanes.push([portals[i], portals[j]])
   const free = (pts, cx, cz) => pts.every((p) => lanes.every(([a, b]) => segDist(p, a, b) > LANE))
     && portals.every((q) => Math.hypot(cx - q[0], cz - q[1]) > CLEAR && pts.every((p, i) => segDist(q, p, pts[(i + 1) % 4]) > CLEAR))
     && placed.every((q) => apart(pts, q))
@@ -129,7 +128,7 @@ function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity)
   const inside = round ? (p) => Math.hypot(p[0] - cx, p[1] - cz) < (x1 - x0) / 2 * Math.cos(Math.PI / 12) - 0.02
     : (p) => p[0] > x0 - 0.01 && p[0] < x1 + 0.01 && p[1] > z0 - 0.01 && p[1] < z1 + 0.01
   const tries = Math.round(((x1 - x0) + (z1 - z0)) * 0.8)
-  for (let t = 0; t < tries; t++) {
+  for (let t = 0; kinds.length && t < tries; t++) {
     const kind = kinds[Math.floor(rng() * kinds.length)], [w, d] = PROP[kind]
     if (round) {
       const R = (x1 - x0) / 2, a = rng() * Math.PI * 2, rr = R - d / 2 - 0.1
@@ -147,7 +146,7 @@ function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity)
     const along = x1 - x0 >= z1 - z0, yaw = along ? 0 : Math.PI / 2
     for (const kind of centre) if (put(kind, cx, cz, yaw)) {
       if (kind === 'longtable' || kind === 'table') {
-        const [w, d] = PROP[kind], off = d / 2 + 0.35
+        const [w, d] = PROP[kind], off = d / 2 + GAP + PROP.bench[1] / 2 + 0.02
         for (const s of [-1, 1]) put('bench', cx + (along ? 0 : s * off), cz + (along ? s * off : 0), yaw)
       }
       break
@@ -155,9 +154,10 @@ function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity)
   }
 }
 
-/** `must` kinds one each, then `wall` kinds, `centre`, and `wall` kinds again, into `out`. */
+/** `must` kinds one each (six rounds clear of the lanes, then six against a wall across them: she walks round), then `wall` kinds,
+ * `centre`, and `wall` kinds again, into `out`. */
 function fillKit(rng, r, round, portals, kit, y, out) {
-  for (const kind of kit.must ?? []) fillRect(rng, r, round, portals, [kind], y, null, out, 1)
+  for (const kind of kit.must ?? []) for (let t = 0, n = out.length; t < 12 && out.length === n; t++) fillRect(rng, r, round, portals, [kind], y, null, out, 1, t < 6)
   fillRect(rng, r, round, portals, kit.wall, y, kit.centre ?? null, out)
   fillRect(rng, r, round, portals, kit.wall, y, null, out)
 }
@@ -209,7 +209,7 @@ const plans = new WeakMap()
  * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. A used room node's cells less those
  * its shafts fill (spiral.js) are split into the largest rectangles first, walled from each other where they meet; each is then cut
  * on cell lines (a partition is then 2.4 interior metres off any ladder, and its doorway between the cells' doors), the throne's
- * node into pieces of 6 cells at most, the mess's 4, the rest 2 or 1.
+ * node into pieces of 6 cells at most, the rest 2 or 1; the keep's ground (the hall's) is left whole.
  */
 export function roomPlan(lay) {
   if (plans.has(lay)) return plans.get(lay)
@@ -218,7 +218,8 @@ export function roomPlan(lay) {
   const cells = (n) => n.w * n.d
   const biggest = (list) => list.reduce((a, b) => (cells(b) > cells(a) ? b : a), list[0])
   const throneNode = biggest(nodes.filter((n) => n.sec.kind === 'keep' && n.k === 1))
-  const messNode = biggest(nodes.filter((n) => n !== throneNode && (n.sec.kind === 'keep' || n.sec.kind === 'hall') && n.k <= 2))
+  const hallNode = biggest(nodes.filter((n) => n.sec.kind === 'keep' && n.k === 0))
+  if (hallNode === undefined) throw new Error(`castle ${lay.seed}: no keep room on the ground for the hall`)
   const chambers = [], walls = [], { sealed } = shaftsOf(lay)
   for (const n of nodes) {
     const free = new Set()
@@ -256,7 +257,7 @@ export function roomPlan(lay) {
         }
       }
     }))
-    const cap = n === throneNode ? 6 : n === messNode ? 4 : n.sec.round || (n.sec.kind === 'gate' && n.k === 0) ? Infinity : 2
+    const cap = n === throneNode ? 6 : n === hallNode || n.sec.round || (n.sec.kind === 'gate' && n.k === 0) ? Infinity : 2
     const cut = (p) => {
       const many = p.w * p.d
       if (many <= 1 || many <= cap && !(cap === 2 && many === 2 && rng() < 0.5)) {
@@ -301,9 +302,8 @@ export function roomPlan(lay) {
   const gateRoom = chambers.find((c) => c.node.sec.kind === 'gate' && c.k === 0)
   for (const c of chambers) if (c.node.sec.kind === 'gate') c.role = c.k === 0 ? 'passage' : 'guard'
   const throne = take('throne', free((c) => c.node === throneNode && !c.round), (c) => -area(c))
-  const kitchen = take('kitchen', free((c) => c.k === 0 && !c.round), (c) => dist(c, throne))
-  take('pantry', free((c) => c.k === 0), (c) => dist(c, kitchen))
-  take('mess', free((c) => c.k <= 2 && (c.node.sec.kind === 'keep' || c.node.sec.kind === 'hall') && !c.round), (c) => -area(c))
+  const hall = take('hall', free((c) => c.node === hallNode), (c) => -area(c))
+  take('pantry', free((c) => c.k === 0), (c) => dist(c, hall))
   for (let i = 1 + Math.floor(rng() * 2); i > 0; i--) take('armoury', free((c) => c.k >= 1), (c) => dist(c, gateRoom))
   for (let i = 2 + Math.floor(rng() * 2); i > 0; i--) take('barracks', free((c) => c.k >= 1 && c.k < c.node.sec.floors - 1), (c) => -area(c) + rng() * 20)
   const top = (c) => c.k === c.node.sec.floors - 1
@@ -465,6 +465,7 @@ export function roomProps(lay) {
     const rng = mulberry32(lay.seed * 4099 + ci), y = c.k * SH, kit = KIT[c.role], list = []
     if (c.role === 'throne') throneRoom(rng, c, y, list)
     fillKit(rng, c.rect, c.round, c.portals, kit, y, list)
+    if (c.role === 'hall') feastTables(rng, c, y, list)
     if (kit.ware) setTables(rng, list)
     const [cx, cz] = [(c.rect[0] + c.rect[2]) / 2, (c.rect[1] + c.rect[3]) / 2]
     const rug = { kind: 'rug', x: cx, y, z: cz, yaw: c.rect[2] - c.rect[0] >= c.rect[3] - c.rect[1] ? 0 : Math.PI / 2, w: 2.4, d: 1.6 }
@@ -474,6 +475,24 @@ export function roomProps(lay) {
     for (const o of list) if (!TORCHES.has(o.kind) || ++torches <= MAX_TORCHES) out.push({ ...o, k: c.k })
   })
   return out
+}
+
+/** The hall's long tables down its length, each with a bench either side and a chandelier over it, in rows 3.4 m apart and 5.4 m
+ * end to end, nearest its middle first; into `list`. 2 m in from the walls leaves an aisle round them past the deepest wall kind,
+ * so they may stand across the lanes between its portals. */
+function feastTables(rng, c, y, list) {
+  const [x0, z0, x1, z1] = c.rect, along = x1 - x0 >= z1 - z0, [u0, v0, u1, v1] = along ? [x0, z0, x1, z1] : [z0, x0, z1, x1]
+  const span = (lo, hi, m) => { const a = lo + 2 + m, b = hi - 2 - m; if (a > b) return [(lo + hi) / 2]; const out = []; for (let t = a; t <= b + 1e-6; t += 0.4) out.push(t); return out }
+  const um = (u0 + u1) / 2, vm = (v0 + v1) / 2, set = []
+  const spots = span(u0, u1, 2.2).flatMap((u) => span(v0, v1, 1.25).map((v) => [u, v])).sort((p, q) => Math.hypot(p[0] - um, p[1] - vm) - Math.hypot(q[0] - um, q[1] - vm))
+  for (const [u, v] of spots) for (const kind of ['longtable', 'table']) {
+    if (set.some(([a, b]) => Math.abs(a - u) < 5.4 && Math.abs(b - v) < 3.4)) break
+    const [x, z] = along ? [u, v] : [v, u], n = list.length, h = PROP[kind][0] / 2 + 0.1
+    fillRect(rng, along ? [x - h, z - 1.25, x + h, z + 1.25] : [x - 1.25, z - h, x + 1.25, z + h], false, c.portals, [], y, [kind], list, Infinity, false)
+    if (list.length < n + 3) { list.length = n; continue }
+    set.push([u, v])
+    list.push({ kind: 'chandelier', x, y, z, yaw: 0, w: 1.2, d: 1.2 })
+  }
 }
 
 /** The throne hall's dais against a wall clear of its portals, the throne on it, a carpet running out from it and chandeliers over

@@ -1159,15 +1159,21 @@ export function interiorGeometries(lay) {
       const doors = mine.flatMap((e) => e.doors).filter((d) => d.axis === 'x' ? Math.abs(d.x - ex[0]) < 1e-6 || Math.abs(d.x - ex[2]) < 1e-6 : Math.abs(d.z - ex[1]) < 1e-6 || Math.abs(d.z - ex[3]) < 1e-6)
       const wall = m.tint(INNER), top = y + (low ? 1.4 : SH - 0.3)
       if (n.sec.round) {
-        // Twelve slabs round the room; the slab a door faces keeps only its lintel. Edge i is centred on bearing (i + 1) * 30 deg.
+        // Twelve slabs round the room; the slab a door faces opens the door's width under a lintel. Edge i is centred on bearing (i + 1) * 30 deg.
         const cx = (ex[0] + ex[2]) / 2 * S, cz = (ex[1] + ex[3]) / 2 * S, R = (ex[2] - ex[0] - 2 * INSET) / 2 * S / Math.cos(Math.PI / 12)
         const O = Array.from({ length: 12 }, (_, i) => [cx + Math.cos((i + 0.5) * Math.PI / 6) * R, cz + Math.sin((i + 0.5) * Math.PI / 6) * R])
         const I = offsetLoop(O, edgeNormals(O), -WT)
         for (let i = 0; i < 12; i++) {
           const i2 = (i + 1) % 12, b = (i + 1) * Math.PI / 6
           const d = doors.find((dd) => Math.abs(Math.atan2(Math.sin(Math.atan2(dd.z * S - cz, dd.x * S - cx) - b), Math.cos(Math.atan2(dd.z * S - cz, dd.x * S - cx) - b))) < 0.1)
-          const y0 = d ? y + d.h * V : y
-          if (y0 < top) m.hexa([O[i], O[i2], I[i2], I[i]].map((p) => at3(p, y0)).concat([O[i], O[i2], I[i2], I[i]].map((p) => at3(p, top))), wall)
+          const slab = (o0, o1, i0, i1, y0) => y0 < top && m.hexa([o0, o1, i1, i0].map((p) => at3(p, y0)).concat([o0, o1, i1, i0].map((p) => at3(p, top))), wall)
+          if (!d) { slab(O[i], O[i2], I[i], I[i2], y); continue }
+          const cut = (P, Q) => {
+            const ex = Q[0] - P[0], ez = Q[1] - P[1], l2 = ex * ex + ez * ez, t = ((d.x * S - P[0]) * ex + (d.z * S - P[1]) * ez) / l2, h = d.w / 2 / Math.sqrt(l2)
+            return [t - h, t + h].map((v) => [P[0] + ex * v, P[1] + ez * v])
+          }
+          const [oa, ob] = cut(O[i], O[i2]), [ia, ib] = cut(I[i], I[i2])
+          slab(O[i], oa, I[i], ia, y); slab(ob, O[i2], ib, I[i2], y); slab(oa, ob, ia, ib, y + d.h)
         }
       } else {
         // Walls round the room's inset rect, broken by its doors, each corner cut by an askew facet slab.
@@ -1175,7 +1181,7 @@ export function interiorGeometries(lay) {
         const [c00, c10, c11, c01] = cut
         for (const [axis, plane, lo, hi, t0, t1] of [['x', ex[0], iz0 + c00[1], iz1 - c01[1], ix0, ix0 + WT], ['x', ex[2], iz0 + c10[1], iz1 - c11[1], ix1 - WT, ix1], ['z', ex[1], ix0 + c00[0], ix1 - c10[0], iz0, iz0 + WT], ['z', ex[3], ix0 + c01[0], ix1 - c11[0], iz1 - WT, iz1]]) {
           const gaps = doors.filter((d) => d.axis === axis && Math.abs((axis === 'x' ? d.x : d.z) - plane) < 1e-6)
-            .map((d) => [(axis === 'x' ? d.z : d.x) * S - d.w * S / 2, (axis === 'x' ? d.z : d.x) * S + d.w * S / 2, d.h * V]).sort((p, q) => p[0] - q[0])
+            .map((d) => [(axis === 'x' ? d.z : d.x) * S - d.w / 2, (axis === 'x' ? d.z : d.x) * S + d.w / 2, d.h]).sort((p, q) => p[0] - q[0])
           const piece = (u0, u1, y0, y1) => (u1 - u0 > 0.01) && (axis === 'x' ? m.box(t0, y0, u0, t1, y1, u1, wall, y0 > y) : m.box(u0, y0, t0, u1, y1, t1, wall, y0 > y))
           let u = lo
           for (const [g0, g1, gh] of gaps) { piece(u, g0, y, top); if (y + gh < top) piece(g0, g1, y + gh, top); u = g1 }
@@ -1194,14 +1200,19 @@ export function interiorGeometries(lay) {
         if (f) spiralSteps(m, f.x, f.z, y, f.a0, f.hand, f.last)
       }
       for (const e of mine) if (e.ladder) m.with(WOOD_SLOT, () => {
-        // Rails `yaw` across (a ladder in a drum faces its axis), rungs between them.
-        const lx = e.ladder.x * S, lz = e.ladder.z * S, yaw = e.ladder.yaw ?? 0, c = Math.cos(yaw), s = Math.sin(yaw)
-        const bar = (u0, u1, v, y0, y1, t) => {
-          const q = [[u0, v - t], [u1, v - t], [u1, v + t], [u0, v + t]].map(([u, w]) => [lx + u * c - w * s, lz + u * s + w * c])
-          m.hexa(q.map((p) => at3(p, y0)).concat(q.map((p) => at3(p, y1))), DARKWOOD)
+        // Rails `yaw` across (a ladder in a drum faces its axis), rungs between them, up to the roof hatch's trap door under the
+        // ceiling: planks in a frame, two iron straps and a ring.
+        const lx = e.ladder.x * S, lz = e.ladder.z * S, yaw = e.ladder.yaw ?? 0, c = Math.cos(yaw), s = Math.sin(yaw), trap = y + SH - 0.38
+        const bar = (u0, u1, v0, v1, y0, y1, col = DARKWOOD) => {
+          const q = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, w]) => [lx + u * c - w * s, lz + u * s + w * c])
+          m.hexa(q.map((p) => at3(p, y0)).concat(q.map((p) => at3(p, y1))), col)
         }
-        for (const o of [-0.3, 0.3]) bar(o - 0.04, o + 0.04, 0, y, y + SH, 0.04)
-        for (let r = 0.4; r < SH; r += 0.4) bar(-0.3, 0.3, 0, y + r - 0.03, y + r + 0.03, 0.03)
+        for (const o of [-0.3, 0.3]) bar(o - 0.04, o + 0.04, -0.04, 0.04, y, trap)
+        for (let r = 0.4; r < trap - y; r += 0.4) bar(-0.3, 0.3, -0.03, 0.03, y + r - 0.03, y + r + 0.03)
+        bar(-0.6, 0.6, -0.6, 0.6, trap, trap + 0.08, PLANK)
+        for (const [u0, u1, v0, v1] of [[-0.66, 0.66, -0.66, -0.56], [-0.66, 0.66, 0.56, 0.66], [-0.66, -0.56, -0.56, 0.56], [0.56, 0.66, -0.56, 0.56]]) bar(u0, u1, v0, v1, trap - 0.02, trap + 0.08)
+        for (const v of [-0.3, 0.3]) bar(-0.56, 0.56, v - 0.05, v + 0.05, trap - 0.03, trap, IRON)
+        bar(-0.08, 0.08, -0.12, -0.08, trap - 0.12, trap, IRON)
       }, true)
     }
   })
@@ -1211,7 +1222,7 @@ export function interiorGeometries(lay) {
   // through the wall to where the slab's inner face really is, or the sky shows between them.
   const G = INSET * S, walls = new Map([...meshers].filter(([k]) => k >= 0).map(([k, m]) => [k, m.bufs[STONE_SLOT].p.slice()]))
   for (const e of lay.edges) for (const d of e.doors) {
-    const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w * S / 2, top = y + SH - 0.3, dh = d.h * V
+    const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w / 2, top = y + SH - 0.3, dh = d.h
     const along = (a0, a1, b0, b1, y0, y1, col, m) => (d.axis === 'x' ? m.box(cx + a0, y0, cz + b0, cx + a1, y1, cz + b1, col, y0 > y + 0.5) : m.box(cx + b0, y0, cz + a0, cx + b1, y1, cz + a1, col, y0 > y + 0.5))
     const reach = (sg, base) => {
       const round = [e.a, e.b].some((n) => n.kind === 'room' && n.sec.round && Math.sign(d.axis === 'x' ? lay.X(n.x0) + lay.X(n.x0 + n.w) - 2 * d.x : lay.Z(n.z0) + lay.Z(n.z0 + n.d) - 2 * d.z) === sg)
@@ -1229,12 +1240,12 @@ export function interiorGeometries(lay) {
         if (y + dh < wtop) along(-r0, r1, -hw, hw, y + dh, wtop, m.tint(INNER), m)
       } else {
         const o = -d.side * (G - 0.05), n = d.axis === 'x' ? [-d.side, 0, 0] : [0, 0, -d.side], s = -d.side
-        leaves(m, d.axis === 'x' ? [cx + o, y, cz] : [cx, y, cz + o], n, hw, d.h * V, d.look === 'gate', m.tint(INNER))
+        leaves(m, d.axis === 'x' ? [cx + o, y, cz] : [cx, y, cz + o], n, hw, dh, d.look === 'gate', m.tint(INNER))
         // A frame from behind the leaves into the room's wall, lapping their edges, or the void past the wall shows round them.
         const [a0, a1] = [s * (G - 0.15), s * back].sort((p, q) => p - q), lap = 0.06
         along(a0, a1, -hw - 0.1, hw + 0.1, y - 0.3, y + 0.01, m.tint(FLOOR.gate), m)
-        for (const sgn of [-1, 1]) along(a0, a1, sgn > 0 ? hw - lap : -hw - 0.1, sgn > 0 ? hw + 0.1 : -hw + lap, y, Math.min(wtop, y + d.h * V + 0.1), m.tint(INNER), m)
-        if (y + d.h * V < wtop) along(a0, a1, -hw - 0.1, hw + 0.1, y + d.h * V - lap, Math.min(wtop, y + d.h * V + 0.1), m.tint(INNER), m)
+        for (const sgn of [-1, 1]) along(a0, a1, sgn > 0 ? hw - lap : -hw - 0.1, sgn > 0 ? hw + 0.1 : -hw + lap, y, Math.min(wtop, y + dh + 0.1), m.tint(INNER), m)
+        if (y + dh < wtop) along(a0, a1, -hw - 0.1, hw + 0.1, y + dh - lap, Math.min(wtop, y + dh + 0.1), m.tint(INNER), m)
       }
     }
   }

@@ -49,6 +49,8 @@ import { LitterCards, cardPicture } from '../src/v2/render/litter-cards.js'
 import { PROP_FADE_SECONDS, getPropClock } from '../src/material.js'
 import { SHIELD, SINGE, SWORD, shielded } from '../src/v2/singe.js'
 import { Her, KEEP_UP } from '../src/v2/keep-up.js'
+import { planCave } from '../src/v2/caves/build.js'
+import { CaveWalk } from '../src/v2/caves/walk.js'
 import { hash32 } from '../src/sim/score.js'
 
 // These gates read the skinned Puppet's own parts (its bones, its IK, its tier meshes); check-baked-puppet.mjs covers the baked body.
@@ -1367,6 +1369,62 @@ const differ = (p, q) => {
     }
     const ends = apron.x + 5.8 * (Math.ceil(runS / dt) - 1) * dt
     check([fox, hare, stag].every((c) => c.live?.mode === 'tame' && Math.hypot(c.sx - ends, c.sz - apron.z) < KEEP_UP.m && a.kept.spawns.includes(c.spawn)), `run ${((RADIUS + 2 * TILE) / TILE).toFixed(1)} tiles from home, her pets are still awake at her heel, their spawns kept`, `${[fox, hare, stag].map((c) => `${c.sp.key} ${c.live?.mode} ${Math.hypot(c.sx - ends, c.sz - apron.z).toFixed(1)} m`).join(', ')}; ${a.kept.spawns.length} kept`)
+    a.dispose()
+  }
+  {
+    // She walks the longest way on foot through a real cave from its mouth: her fox and hare, taken down with her, are never left behind or off her floor.
+    const OY = -2000
+    const sys = planCave({ seed: 12, entries: [{ x: 0, z: 0, dx: 0, dz: 1 }] })
+    const cw = new CaveWalk(sys.field, sys.graph, sys.props.obstacles, OY)
+    const g = sys.graph
+    const mouth = g.nodes.find((n) => n.kind === 'mouth')
+    const dist = new Map([[mouth.i, 0]]), via = new Map()
+    for (let todo = [mouth.i]; todo.length > 0;) {
+      const n = todo.shift()
+      for (const e of g.edges) {
+        if (e.kind !== 'walk' || e.choke !== null || (e.a !== n && e.b !== n)) continue
+        const m = e.a === n ? e.b : e.a
+        if (!dist.has(m)) { dist.set(m, dist.get(n) + e.pts[e.pts.length - 1].s); via.set(m, { e, from: n }); todo.push(m) }
+      }
+    }
+    let far = mouth.i
+    for (const [i, d] of dist) if (d > dist.get(far)) far = i
+    const line = []
+    for (let i = far; i !== mouth.i; i = via.get(i).from) {
+      const { e, from } = via.get(i)
+      line.unshift(...(e.a === from ? e.pts : [...e.pts].reverse()).map((p) => ({ x: p.x, y: p.y, z: p.z })))
+    }
+    line.forEach((p, i) => { p.s = i === 0 ? 0 : line[i - 1].s + Math.hypot(p.x - line[i - 1].x, p.z - line[i - 1].z) })
+    const door = sys.doors[0]
+    const a = make(7, { walk: plain, water: noWater })
+    a.place(0, 0)
+    a.her = new Her()
+    const [fox, hare] = ['fox', 'hare'].map((k) => beside(a, k))
+    for (const c of [fox, hare]) a._golive(c, 'tame', null, null, timeOf(a))
+    const apron = { x: fox.sx, y: GROUND, z: fox.sz }
+    a._setDown(hare, apron.x, GROUND, apron.z + 1, 0, timeOf(a))
+    cw.hintY = door.y + OY
+    a.goUnder(cw, apron, { x: door.x, y: door.y + OY, z: door.z, dx: door.dx, dz: door.dz }, timeOf(a))
+    const dt = 1 / 30, t0 = timeOf(a), SPEED = 2
+    let at = 0, seg = 1, worst = 0, worstDy = 0, lastY = door.y + OY
+    for (let f = 0; seg < line.length; f++) {
+      at += SPEED * dt
+      while (seg < line.length - 1 && at > line[seg].s) seg++
+      if (at > line[line.length - 1].s) break
+      const p = line[seg - 1], q = line[seg], u = (at - p.s) / (q.s - p.s)
+      const hx = p.x + (q.x - p.x) * u, hz = p.z + (q.z - p.z) * u
+      cw.hintY = lastY
+      lastY = cw.heightAt(hx, hz, lastY)
+      cw.hintY = lastY
+      a.her.update(hx, hz, q.x - p.x, q.z - p.z, t0 + f * dt)
+      if (f % 30 === 0) {
+        const here = { x: hx, z: hz }
+        a.leads = { treasure: [here, ...line.slice(seg)], exit: [here, ...line.slice(0, seg).reverse()] }
+      }
+      step(a, hx, lastY + 1.6, hz, dt)
+      if (f > 3 / dt) for (const c of [fox, hare]) { worst = Math.max(worst, Math.hypot(c.sx - hx, c.sz - hz)); worstDy = Math.max(worstDy, Math.abs(c.y - lastY)) }
+    }
+    check(at > 100 && worst < KEEP_UP.m && worstDy < 5, `down ${at.toFixed(0)} m of a real cave her fox and hare are never ${KEEP_UP.m} m off her, nor 5 m off her floor`, `${at.toFixed(0)} m walked, worst ${worst.toFixed(1)} m off her, ${worstDy.toFixed(1)} m off her floor`)
     a.dispose()
   }
   const h = new Her()

@@ -67,12 +67,14 @@ export class Her {
    * Where a follower at (x, z) is warped to keep up, or null to walk on.
    * `way` is its own { d, t }: the nearest it has come to her since `t`;
    * `far` whether it is out of reach of her and should be closing. A warp
-   * only ever brings it nearer.
+   * only ever brings it nearer. `seen(x, z)` is whether she sees the spot
+   * (her gaze, unless rock stands between) and `ken` how far out of reach
+   * she still warps it from.
    */
-  keepUp(way, x, z, far, now, stands) {
+  keepUp(way, x, z, far, now, stands, seen = (px, pz) => this.sees(px, pz), ken = KEEP_UP.m) {
     const d = Math.hypot(x - this.x, z - this.z)
     if (!far || d <= KEEP_UP.near || !(d > way.d - KEEP_UP.moveM)) { way.d = d; way.t = now }
-    if (d > KEEP_UP.m || now - way.t <= KEEP_UP.stallS || this.sees(x, z)) return null
+    if (d > ken || now - way.t <= KEEP_UP.stallS || seen(x, z)) return null
     const to = this.behind(stands)
     if (to === null || Math.hypot(to.x - this.x, to.z - this.z) >= d) return null
     way.d = Math.hypot(to.x - this.x, to.z - this.z)

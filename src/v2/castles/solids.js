@@ -122,12 +122,12 @@ function interiorSolids(lay) {
   for (const e of lay.edges) {
     for (const d of e.doors) {
       if (d.look === 'barred') continue
-      const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w * S / 2
+      const k = Math.round(d.y / H), y = k * SH, cx = d.x * S, cz = d.z * S, hw = d.w / 2
       const inner = e.a.kind === 'room' && e.b.kind === 'room' && e.kind !== 'bridge'
       // Between two rooms the way runs through both walls; out of the castle it runs from the room to the leaves.
       const [a0, a1] = inner ? [-(G + WT + 0.05), G + WT + 0.05] : [-d.side * (G + WT + 0.05), -d.side * (G - 0.05)].sort((p, q) => p - q)
       const rect = d.axis === 'x' ? [cx + a0, cz - hw, cx + a1, cz + hw] : [cx - hw, cz + a0, cx + hw, cz + a1]
-      airs.push({ k, rect, lo: y, hi: y + d.h * V })
+      airs.push({ k, rect, lo: y, hi: y + d.h })
     }
   }
   for (const o of [...roomProps(lay), ...dungeonProps(lay)]) if (solid(o)) boxes.push(propBox(o, o.y))

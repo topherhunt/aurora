@@ -63,9 +63,9 @@ const TORCH_BEARERS = new Set(['watch', 'gate'])
 const INSIDE = [
   { who: 'lord', body: 'jarlsthane', rooms: ['throne'], by: 'dais', clip: 'idle' },
   { who: 'steward', body: 'skald', rooms: ['throne'], by: 'steward', clip: 'talk-gesture' },
-  { who: 'cook', body: 'farmer', rooms: ['kitchen'], by: ['hearth', 'oven', 'cauldron'], clip: 'gather' },
-  { who: 'maid', body: 'innkeeper', rooms: ['kitchen'], by: ['table'], clip: 'idle' },
-  { who: 'servant', body: 'shepherd', rooms: ['mess', 'library'], by: ['dresser', 'shelf', 'longtable', 'table'], clip: 'gather' },
+  { who: 'cook', body: 'farmer', rooms: ['hall'], by: ['hearth', 'oven', 'cauldron'], clip: 'gather' },
+  { who: 'maid', body: 'innkeeper', rooms: ['hall'], by: ['longtable'], clip: 'idle' },
+  { who: 'servant', body: 'shepherd', rooms: ['library', 'hall'], by: ['dresser', 'shelf', 'longtable', 'table'], clip: 'gather' },
   { who: 'servant', body: 'herbalist', rooms: ['bedchamber', 'guest'], by: ['fourposter', 'wardrobe', 'bed'], clip: 'gather' },
   { who: 'servant', body: 'healer', rooms: ['pantry', 'cellar', 'store', 'granary'], by: ['barrel', 'sacks', 'grain', 'cask'], clip: 'gather' },
   { who: 'guard', body: 'guard', rooms: ['barracks', 'armoury', 'guard'], by: ['rack', 'anvil', 'grind', 'bunk'], clip: 'idle' },

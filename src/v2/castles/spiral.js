@@ -48,8 +48,8 @@ export function shaftsOf(lay) {
           const d = dungeonPlan(lay).door, w = lat(d.x, d.z)
           ;[w0, w1, jamb, h] = [w - d.hw, w + d.hw, 4, d.hi - d.lo]
         } else {
-          w0 = Math.min(...ex.doors.map((d) => lat(d.x * S, d.z * S) - d.w * S / 2)); w1 = Math.max(...ex.doors.map((d) => lat(d.x * S, d.z * S) + d.w * S / 2))
-          ;[jamb, h] = [SHAFT.reveal, Math.max(...ex.doors.map((d) => d.h * V))]
+          w0 = Math.min(...ex.doors.map((d) => lat(d.x * S, d.z * S) - d.w / 2)); w1 = Math.max(...ex.doors.map((d) => lat(d.x * S, d.z * S) + d.w / 2))
+          ;[jamb, h] = [SHAFT.reveal, Math.max(...ex.doors.map((d) => d.h))]
         }
         const ring = (a) => [x + Math.cos(a) * R1, z + Math.sin(a) * R1], far = SHAFT.box + 0.05
         const tunnel = [ring((ex.o - 1) * SEG), pt(jamb, w0), pt(jamb, w1), ring((ex.o + 1) * SEG)]

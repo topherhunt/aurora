@@ -5099,11 +5099,12 @@ function closeCave() {
   cave = null
 }
 
-/** Fills `keep` with the scene children that draw under any roof: her rig, hands, held things, peers, effects, the lights, the panel, and the baked bodies' batches (bakedRoot), which draw the residents and skip any body whose own group is hidden. */
+/** Fills `keep` with the scene children that draw under any roof: her rig, hands, held things, peers, effects, the lights, the quest and dialog panels, and the baked bodies' batches (bakedRoot), which draw the residents and skip any body whose own group is hidden. */
 function keepUnderRoof(keep) {
   keep.add(rig).add(heldLayer).add(bakedRoot).add(hands.batch).add(peerAvatars.group).add(flares.mesh).add(sparks.mesh).add(visions.mesh).add(shotFlash.mesh).add(sun).add(sun.target).add(hemi)
   for (const d of [wildfire.flames, wildfire.torches]) if (d.group) keep.add(d.group)
   if (questPanelGroup !== null) keep.add(questPanelGroup)
+  if (conversations !== null) keep.add(conversations.panel.group)
   if (questPointer !== null) keep.add(questPointer.dot).add(questPointer.line)
   if (teleportGfx !== null) keep.add(teleportGfx.ring).add(teleportGfx.arc)
   return keep
