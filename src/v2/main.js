@@ -4810,7 +4810,7 @@ async function castlePortal(act) {
 function openCastle(site, back) {
   const stone = castles.openInterior(site)
   if (loot.taken(place('k', castleKey(site)), DUNGEON_BITS.unlocked)) castles.unlock(site)
-  const inner = new WalkSurface(flatField(stone.oy - 1), stone, { trunkAt: () => null }, { scale: herScale() })
+  const inner = new WalkSurface(flatField(stone.base), stone, { trunkAt: () => null }, { scale: herScale() })
   inner.flyThrough = true
   inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk }
   if (sound) sound.setIndoors(true, { stone: true })

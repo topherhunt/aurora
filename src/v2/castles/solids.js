@@ -139,7 +139,10 @@ function interiorSolids(lay) {
     const put = (u0, u1, lo) => boxes.push(w.axis === 'x' ? box(w.at - t, u0, w.at + t, u1, lo, top) : box(u0, w.at - t, u1, w.at + t, lo, top))
     put(w.lo - 0.15, w.door[0], w.y); put(w.door[1], w.hi + 0.15, w.y); put(w.door[0], w.door[1], w.y + PARTITION.doorH)
   }
-  return { airs, spirals, shafts, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, unlocked: false }
+  // `base`: the walk's flat field, a metre under the lowest floor (the dungeon's, a storey down); any higher, she stands on air in its spiral.
+  let floor = 0
+  for (const v of g.lo) if (v < floor) floor = v
+  return { airs, spirals, shafts, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, base: floor - 1, unlocked: false }
 }
 
 const inBox = (b, x, z) => { const dx = x - b.x, dz = z - b.z; return Math.abs(dx * b.c - dz * b.s) <= b.hu && Math.abs(dx * b.s + dz * b.c) <= b.hv }

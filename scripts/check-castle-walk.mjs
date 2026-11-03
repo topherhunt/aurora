@@ -5,7 +5,7 @@
 // A flood of her steps from every door and ladder foot, through the walk's own climb and head-room tests, that leaves a chamber
 // unentered or the dungeon's key or (unlocked) chest unreached; and a spiral she cannot drive down or up end to end, along the post,
 // the middle of the treads or the drum, or that pops her up onto a landing's slab on the way down. The flood is slow, so it sweeps
-// few seeds: ones whose one-cell towers are entered only by their spirals.
+// few seeds: ones whose one-cell towers are entered only by their spirals, and 258641, whose dungeon is reached only by one.
 
 import THREE from '../src/three-instance.js'
 import { Player } from '../src/player.js'
@@ -33,7 +33,7 @@ function rig(it) {
     },
     deckAt: () => true,
   }
-  const surface = new WalkSurface({ heightAt: () => -100 }, stone, { trunkAt: () => false })
+  const surface = new WalkSurface({ heightAt: () => it.base }, stone, { trunkAt: () => false })
   const group = new THREE.Group(), cam = new THREE.PerspectiveCamera()
   cam.position.y = 1.6; group.add(cam)
   return { at, surface, group, player: new Player(group, cam, surface) }
@@ -42,7 +42,7 @@ function rig(it) {
 // Flood: 0.4 m grid cells crossed in 0.1 m steps, each step one the walk would take.
 const G = 0.4, SUB = 0.1, N8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
 const missed = [], unkeyed = [], unlooted = []
-for (const seed of [1, 3, 8]) {
+for (const seed of [1, 3, 8, 258641]) {
   const lay = castleLayout(seed)
   if (!lay.stats.ok) throw new Error(`castle ${seed} fails its maze score; pick a seed that passes`)
   const sol = castleSolids(lay), { at, surface, player } = rig(sol.it)

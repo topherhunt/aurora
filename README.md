@@ -32,10 +32,10 @@ npm install
 npm start
 ```
 
-`npm start` serves plain HTTP on port 6283; `npm run dev` serves the same thing with a self-signed certificate, which the Quest over LAN needs (WebXR needs a secure context, and only `localhost` counts as one without HTTPS).
+`npm start` serves plain HTTP on `localhost:6283`; `npm run dev` serves the same thing with a self-signed certificate. Neither is reachable from other machines on the network.
 
 - **Desktop:** `npm start`, then open `http://localhost:6283/`. Move with WASD or the arrow keys, `T` teleports, `G` grabs, `E` drops. Space and Shift fly up and down for surveying the map; click plants a measuring beam.
-- **Quest, over LAN:** `npm run dev`, then open `https://<your-lan-ip>:6283/` in Quest Browser, click through "Advanced" then "Proceed", and press Enter VR.
+- **Quest:** deploy, then open the deployed page in Quest Browser and press Enter VR.
 - **Quest, over USB (no cert warning):** enable developer mode, run `adb reverse tcp:6283 tcp:6283`, and open `http://localhost:6283` on the headset.
 
 `/` is the world, and `/?editor` is the same world with the authoring panel over it.
@@ -44,8 +44,8 @@ npm start
 
 | Command | What it does |
 | --- | --- |
-| `npm start` | Dev server on `0.0.0.0:6283` (HTTP, no HMR; reload the page) |
-| `npm run dev` | The same dev server over HTTPS, for the Quest over LAN |
+| `npm start` | Dev server on `localhost:6283` (HTTP, no HMR; reload the page) |
+| `npm run dev` | The same dev server over HTTPS |
 | `npm run build` | Production build into `dist/`. Run it after every code change to confirm nothing broke |
 | `npm run preview` | Serve the built `dist/` |
 | `npm run check` | The full gate suite, roughly 75 headless Node scripts in `scripts/check-*.mjs` |

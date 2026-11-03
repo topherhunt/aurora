@@ -650,6 +650,7 @@ export class CastleInteriorStone {
   constructor(c) {
     this.c = c
     this.oy = c.site.y + CASTLE_RISE
+    this.base = this.oy + c.solids.it.base
     this.hint = 0
   }
 

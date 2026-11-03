@@ -162,9 +162,9 @@ function propOriginals() {
 // deployed build has no filesystem to write to and the panel falls back to its
 // Export button there.
 //
-// The path is fixed rather than taken from the request. A dev server bound to
-// `host: true` is reachable from the LAN, and an endpoint that writes to a
-// caller-supplied path is an arbitrary file write to anyone on the wifi.
+// The path is fixed rather than taken from the request. Any web page open in
+// the browser can POST to localhost, so an endpoint that writes to a
+// caller-supplied path is an arbitrary file write for any site you visit.
 function worldDoc() {
   return {
     name: 'aurora:world-doc',
@@ -282,8 +282,8 @@ function worldPlan() {
 // reads it back from any shell, which is what makes a warning seen once in
 // the headset reviewable from the desk afterwards.
 //
-// Fixed path, `apply: 'serve'`, and a body cap, on /__world's argument: the
-// server is on the LAN. The file is capped too -- a warning firing every frame
+// Fixed path, `apply: 'serve'`, and a body cap, on /__world's argument: any
+// page in the browser can reach it. The file is capped too -- a warning firing every frame
 // is exactly the case this exists for, and it must not fill the disk while it
 // is being caught: past LOG_CAP bytes the older half is dropped, and the
 // client side rate-limits itself as well (see log-ship.js).
@@ -364,7 +364,7 @@ function clientLog() {
 // src/v2/perf-trace.js POSTs one JSON run here; it is written to
 // tmp/traces/<time>.json with the git commit it ran against, and read back with
 // `node scripts/trace-report.mjs`. GET lists the files. Server-chosen names and
-// a body cap, on /__log's argument: the server is on the LAN.
+// a body cap, on /__log's argument.
 function perfTraces() {
   return {
     name: 'aurora:perf-traces',
@@ -437,8 +437,8 @@ function perfTraces() {
 // re-bake would replace an afternoon of sculpting with the JPEG and say nothing.
 //
 // Same fixed path and `apply: 'serve'` as /__world, and for the same reason: a
-// dev server on `host: true` is on the LAN, and a caller-supplied path here
-// would be an arbitrary file write to anyone on the wifi.
+// caller-supplied path here would be an arbitrary file write for any site you
+// visit.
 function worldHeight() {
   return {
     name: 'aurora:world-height',
@@ -505,7 +505,7 @@ function worldHeight() {
 // The rig-override route takes an `id` from the request, unlike /__world and
 // /__height's fixed paths, so it validates against an existing character
 // directory first -- an unchecked id would be an arbitrary file write to
-// anyone on the wifi, same risk /__world's fixed path was written to avoid.
+// any site you visit, same risk /__world's fixed path was written to avoid.
 function charactersSave() {
   const readBody = (req, maxBytes) => new Promise((resolve, reject) => {
     const chunks = []
@@ -1072,8 +1072,8 @@ function creatureGen() {
       // Free, local: opens the creature's work directory in Finder with the
       // file Blender should import already selected, so the round-trip starts
       // from a folder rather than a path to retype. `open` is spawned with an
-      // argument array and never a shell string: the id is validated, but this
-      // endpoint is reachable from the LAN (server.host) and a shell here would
+      // argument array and never a shell string: the id is validated, but any
+      // web page can POST to this endpoint and a shell here would
       // be one careless edit away from arbitrary execution.
       server.middlewares.use('/__creature-reveal', json(async (req) => {
         postOnly(req)
@@ -1522,7 +1522,7 @@ function propGen() {
 
       // Free, local: the work directory in Finder with the picked mesh
       // selected. `open` is spawned with an argument array, never a shell
-      // string: the server is LAN-bound and the id reaches the filesystem.
+      // string: any web page can POST here and the id reaches the filesystem.
       server.middlewares.use('/__prop-reveal', json(async (req) => {
         postOnly(req)
         if (process.platform !== 'darwin') throw new Error(`reveal-in-Finder is macOS-only, and this server is on ${process.platform}`)
@@ -1647,14 +1647,12 @@ function bareRoutes() {
   }
 }
 
-// WebXR requires a secure context. Three ways to get one on the Quest:
+// The dev server listens on localhost only. WebXR requires a secure context;
+// two ways to get one on the Quest:
 //
-//   1. `npm run dev` -> https://<your-lan-ip>:6283 (self-signed; Quest Browser will
-//      show a warning you must click through: "Advanced" -> "Proceed").
-//   2. USB + developer mode, then `adb reverse tcp:6283 tcp:6283` and open
-//      http://localhost:6283 on the headset. localhost counts as a secure context,
-//      so there is no cert warning. Cleanest dev loop if you have a cable.
-//   3. `npm run build` and deploy dist/ to GitHub Pages.
+//   1. USB + developer mode, then `adb reverse tcp:6283 tcp:6283` and open
+//      http://localhost:6283 on the headset. localhost counts as a secure context.
+//   2. `npm run build` and deploy dist/.
 //
 // `base` is relative so the built output works from any subpath, including
 // topherhunt.com/games/aurora.
@@ -1705,8 +1703,7 @@ function appBanner() {
   }
 }
 
-// HTTPS by default: WebXR on the Quest over LAN needs a secure context, and
-// gate scripts that spawn vite navigate to https://. `npm start` sets
+// HTTPS by default: gate scripts that spawn vite navigate to https://. `npm start` sets
 // AURORA_HTTP=1 for plain http://localhost on desktop (no cert warning).
 const useHttps = process.env.AURORA_HTTP !== '1'
 
@@ -1745,7 +1742,7 @@ export default defineConfig({
   //
   // Set `hmr: true` for the old behaviour: page reload on save, and Vite's own
   // config-dependency restart back with it.
-  server: { host: true, port: 6283, hmr: false },
+  server: { port: 6283, hmr: false },
   worker: { format: 'es', plugins: () => [noThreeInWorkers()] },
   build: {
     // es2022 for three-instance.js's top-level await.
