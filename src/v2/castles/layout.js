@@ -2,6 +2,7 @@
 // from those paths. Pure and deterministic per seed; positions are exterior metres about the castle's centre, and the interior is the
 // same layout at CASTLE.scale across and CASTLE.tall upward about that centre, so a door inside lands on its door outside.
 import { mulberry32 } from '../../sim/mathx.js'
+import { planWards } from './wards.js'
 
 // `raise`: how far the castle's floor (y 0) stands above the ground it is sited on (design/44-castles.md, Siting).
 // `scale` and `tall`: interior metres per exterior metre, in plan and upward.
@@ -299,16 +300,27 @@ export function castleLayout(seed) {
   const best = pickMaze(seed, nodes, rooms, cands, entry, look.roof)
   for (const n of nodes) n.unused = best.unused.has(n)
   const edges = [...best.pick, ...fixed]
+  // A castle too short of doors between rooms for its wards takes spare ones from the candidates, one at a time.
+  const summitNode = look.roof, spare = cands.filter((e) => !best.pick.has(e) && e.kind === 'door' && e.a.kind === 'room' && e.b.kind === 'room' && !e.a.unused && !e.b.unused)
+  let wards = planWards(seed, nodes, edges, entry, summitNode, [])
+  for (let i = 0; !wards && i < spare.length; i++) { edges.push(spare[i]); wards = planWards(seed, nodes, edges, entry, summitNode, []) }
   const planned = planShafts(seed, secs, edges, X, Z, (x, z) => occ.get(key(x, z)) ?? null, isCourt, claimed)
+  // A room every cell of which a shaft seals has no floor for a book or a gem; the wards plan round any the first plan used.
+  if (wards && planned) {
+    const sealed = new Map()
+    for (const sh of planned.shafts) for (const st of sh.storeys) if (st.node) sealed.set(st.node, (sealed.get(st.node) ?? 0) + 1)
+    const drum = [...sealed].filter(([n, c]) => c >= n.w * n.d).map(([n]) => n)
+    if (wards.books.some((b) => drum.includes(b.node)) || wards.wards.some((w) => drum.includes(w.gem))) wards = planWards(seed, nodes, edges, entry, summitNode, drum)
+  }
   const onRoute = new Set(best.route.edges)
   for (const e of edges) e.onRoute = onRoute.has(e)
   const count = (list, f) => list.reduce((m, x) => ((m[f(x)] = (m[f(x)] ?? 0) + 1), m), {})
   return {
     seed, cw, cd, sections: secs, nodes, edges, X, Z, shafts: planned && planned.shafts, dungeon: planned && planned.dungeon,
-    route: best.route,
+    route: best.route, wards: wards && wards.wards, books: wards && wards.books,
     occAt: (x, z) => occ.get(key(x, z)) ?? null,
     stats: {
-      ok: best.ok && planned !== null, trial: best.trial, rooms: rooms.length, outdoor: nodes.filter((n) => n.out && !n.unused).length,
+      ok: best.ok && planned !== null && wards !== null, wardsToSummit: wards && wards.toSummit, trial: best.trial, rooms: rooms.length, outdoor: nodes.filter((n) => n.out && !n.unused).length,
       candidates: cands.length, edges: best.pick.size, loops: best.loops, routeEdges: best.route.edges.length,
       switches: best.switches, descents: best.descents, deadEnds: best.deadEnds, stranded: best.stranded,
       sections: count(secs, (s) => s.kind), kinds: count([...best.pick], (e) => e.kind), ms: performance.now() - t0,

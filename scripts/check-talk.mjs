@@ -32,6 +32,8 @@ import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
 import { walkTalks } from './lib/talk-walk.mjs'
 import { CastleChat, VIEW, allCastleLines, castleTemper } from '../src/v2/talk/castle.js'
 import { allCastleBodies, castleNews, tellCastle } from '../src/v2/talk/castle-news.js'
+import { maidSays } from '../src/v2/render/castle-folk.js'
+import { castleLayout } from '../src/v2/castles/layout.js'
 import { COMMON } from '../src/v2/talk/gossip.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
@@ -1014,7 +1016,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const unvoiced = [], urged = new Set(), ghosts = []
   for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let salt = 0; salt < 40; salt++) {
     const id = `castle:1:${who}:${salt}`
-    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17 }, { approached: salt % 4 === 0, salt })
+    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17, warded: salt % 2 === 0 }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
     for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
     for (const l of lines) {
@@ -1024,6 +1026,21 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
       if (who === 'lore' && l.text.includes('forlorn ghost')) ghosts.push(l.text)
     }
   }
+  const distress = (text) => /locked down|sealed half|shut up by sorcery|trapped in the walls|stuck in the walls|unknot/.test(text)
+  const seen = { warded: [], plain: [] }
+  for (const warded of [true, false]) for (const who of ['lord', 'maid', 'guard', 'lore']) for (let salt = 0; salt < 40; salt++) {
+    const id = `castle:2:${who}:${salt}`
+    const chat = new CastleChat({ id, name: who, who, castle: 2, ...castleTemper(who, id) }, { rooms: 17, warded }, { approached: salt % 4 === 0, salt })
+    const lines = [chat.open()]
+    for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
+    for (const l of lines) if (distress(l.text)) seen[warded ? 'warded' : 'plain'].push(l.text)
+  }
+  check(seen.warded.length > 0 && seen.plain.length === 0, 'castle folk speak in distress of the locked keep while a ward is unopened, and not once all are open', `${seen.warded.length} warded, ${seen.plain.length} plain: ${seen.warded[0]}`)
+  check(seen.warded.some((t) => /grateful/.test(t)) && seen.warded.some((t) => /careful|mind yourself|take care/i.test(t)), 'the distress warns her of being trapped and promises gratitude', '')
+  check(maidSays(castleLayout(1), false, true, true).includes('locked down') && !maidSays(castleLayout(1), false, true, false).includes('locked down') && maidSays(castleLayout(1), false, true, true).includes('dungeons'), 'the kitchen maid tells of the locked keep only while a ward is unopened, and still tells her tale', '')
+  let threw = false
+  try { new CastleChat({ id: 'castle:3:lord:0', name: 'x', who: 'lord', castle: 3, ...castleTemper('lord', 'castle:3:lord:0') }, { rooms: 17 }) } catch { threw = true }
+  check(threw, 'a castle chat built without a warded flag fails explicitly', '')
   check(unvoiced.length === 0, 'every castle line is voiced by a recorded moment and fits', unvoiced[0])
   check(['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller'].every((w) => urged.has(w)) && !urged.has('lore'), 'everyone in a castle but the summit guard presses the view from the top of the highest tower', [...urged].join(' '))
   check(ghosts.length > 0, "the summit guard tells of the dungeon's forlorn ghost", ghosts[0])
@@ -1061,7 +1078,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const hedged = told.filter(([, t]) => HEDGED.test(t))
   const clumsy = told.find(([, t]) => CLUMSY.test(t) || /\ba [aeiou]/i.test(t))
   check(hedged.length > 0 && clumsy === undefined && hedged.every(([x, t]) => hedgeTrue(x, t)), 'castle gossip never says "a owl", stacks two leads or hedges between a question and its answer, and a muddled teller\'s second thought names the true detail', clumsy?.[1] ?? hedged.find(([x, t]) => !hedgeTrue(x, t))?.[1] ?? hedged[0]?.[1])
-  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17 }, { salt: 7 })
+  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17, warded: false }, { salt: 7 })
   sent.open()
   let pushed = null
   for (let i = 0; i < 20 && sent.parting === null; i++) pushed = sent.ask(sent.menu().find((c) => c.topic !== 'bye').topic)

@@ -1,6 +1,6 @@
 # Castles
 
-Procedural castles: a 3D path graph of rooms and edges (`src/v2/castles/layout.js`), the exterior and interior shells it implies (`shell.js`), previewed in `gen-castle.html`. Gated by `scripts/check-castle-layout.mjs` and, for walking the interior with the real player, `scripts/check-castle-walk.mjs`.
+Procedural castles: a 3D path graph of rooms and edges (`src/v2/castles/layout.js`), the exterior and interior shells it implies (`shell.js`), previewed in `gen-castle.html`. Gated by `scripts/check-castle-layout.mjs` and, for walking the interior with the real player, `scripts/check-castle-walk.mjs`. Its warded doors and runebooks: `46-castle-wards.md`.
 
 ## Layout
 

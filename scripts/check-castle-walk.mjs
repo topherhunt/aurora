@@ -5,13 +5,14 @@
 // A flood of her steps from every door and ladder foot, through the walk's own climb and head-room tests, that leaves a chamber
 // unentered or the dungeon's key or (unlocked) chest unreached; and a spiral she cannot drive down or up end to end, along the post,
 // the middle of the treads or the drum, or that pops her up onto a landing's slab on the way down. The flood is slow, so it sweeps
-// few seeds: ones whose one-cell towers are entered only by their spirals, and 258641, whose dungeon is reached only by one.
+// few seeds: ones whose one-cell towers are entered only by their spirals, and 258641, whose dungeon is reached only by one; the flood
+// runs with every ward open. And a shut ward that lets her step through its doorway, or an opened one that does not.
 
 import THREE from '../src/three-instance.js'
 import { Player } from '../src/player.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
-import { castleSolids, interiorSpans, SPANS } from '../src/v2/castles/solids.js'
+import { castleSolids, interiorSpans, SPANS, wardFrame } from '../src/v2/castles/solids.js'
 import { SEG, SPIRAL } from '../src/v2/castles/spiral.js'
 import { roomPlan } from '../src/v2/castles/furnish.js'
 
@@ -46,6 +47,7 @@ for (const seed of [1, 3, 8, 258641]) {
   const lay = castleLayout(seed)
   if (!lay.stats.ok) throw new Error(`castle ${seed} fails its maze score; pick a seed that passes`)
   const sol = castleSolids(lay), { at, surface, player } = rig(sol.it)
+  sol.it.open = (1 << lay.wards.length) - 1
   const seen = new Map(), queue = []
   const push = (x, z, y) => {
     const i = Math.round(x / G), j = Math.round(z / G), k = `${i},${j},${Math.round(y * 20)}`
@@ -84,6 +86,31 @@ for (const seed of [1, 3, 8, 258641]) {
 check(!missed.length, 'she can walk into every chamber from the doors and ladder feet', missed.join(' '))
 check(!unkeyed.length, "she can walk to the dungeon's key", unkeyed.join(' '))
 check(!unlooted.length, "she can walk to the dungeon's chest once its door is unlocked", unlooted.join(' '))
+
+// Wards: from 0.6 m before each one on its gem side, straight through its doorway 1.5 m, with it shut and then opened.
+const leaky = [], stuck = []
+for (const seed of [1, 3, 8]) {
+  const lay = castleLayout(seed), it = castleSolids(lay).it, { at, surface, player } = rig(it)
+  lay.wards.forEach((w, i) => {
+    const m = wardFrame(w), [ux, uz] = m.axis === 'x' ? [m.sgn, 0] : [0, m.sgn]
+    const through = () => {
+      let x = m.axis === 'x' ? m.a - m.sgn * 0.6 : m.c, z = m.axis === 'x' ? m.c : m.a - m.sgn * 0.6, y = m.y
+      for (let s = 0; s < 15; s++) {
+        at.hint = y
+        const h = player._walkable(x, z, y, ux * 0.1, uz * 0.1, 0.1)
+        if (Number.isNaN(h) || !surface.fits(x + ux * 0.1, z + uz * 0.1, Math.max(y, h))) return false
+        x += ux * 0.1; z += uz * 0.1; y = surface.heightAt(x, z, y)
+      }
+      return true
+    }
+    it.open = 0
+    if (through()) leaky.push(`${seed}:${i}`)
+    it.open = 1 << i
+    if (!through()) stuck.push(`${seed}:${i}`)
+  })
+}
+check(!leaky.length, 'a shut ward stops her in its doorway', leaky.join(' '))
+check(!stuck.length, 'an opened ward lets her walk through its doorway', stuck.join(' '))
 
 // Drive: forward only (as in VR), steering a lead point round the helix at radius RAD, down from each column's top and up from its foot.
 const LEAD = 0.6, RADS = [SPIRAL.post + 0.35, (SPIRAL.post + SPIRAL.well) / 2, SPIRAL.well - 0.25]

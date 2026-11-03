@@ -16,6 +16,8 @@ export const CASTLE_TALK = {
   patience: { lore: 40, guard: 4, rest: 5 },
   // Odds a greeting, or an answer about the castle, goes on to the summit's view.
   view: 0.55,
+  // Odds a greeting, while any of the castle's wards is unopened, is their distress about it.
+  distress: 0.7,
   // Of the summit guard's tales, the odds it is the dungeon's ghost.
   ghost: 0.3,
   alone: { bye: 60, dismissed: 45, declined: 30 },
@@ -85,6 +87,18 @@ const CASTLE = [
   'Mind the walls in the wind. The parapets are good, but the wind is better.',
 ]
 
+// While any ward in the castle is unopened: the keep half locked down, folk trapped in the walls, her warned and begged.
+const WARDED_GREET = [
+  'Oh, a visitor! Half the keep is locked down by an enchantment, and some of us are trapped in the walls.',
+  'Please, mind yourself. An enchantment has sealed half the keep, and folk are stuck in the walls.',
+  'Thank goodness. Half the keep is shut up by sorcery, and people are trapped inside the walls.',
+]
+const WARDED_CASTLE = [
+  'Half the keep is locked down by an enchantment. If you go in, be careful, or you will be trapped in the walls too.',
+  'Some of us are trapped in the walls. Mind yourself in there, lest you be caught as well.',
+  'If you can unknot this enchantment, we will be deeply grateful. Only take care it does not trap you too.',
+]
+
 const VIEW_HERE = [
   'That is the road to town. That speck? A sheep. Or a cloud. Hard to say from up here.',
   'On a clear day you can see the next castle, and its guard waving. I wave back.',
@@ -117,7 +131,7 @@ const GHOST = {
 
 /** Every tale the summit guard can tell, for check-talk to walk against the caption. */
 export function allCastleLines() {
-  const out = [...VIEW, ...CASTLE, ...allCastleBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
+  const out = [...VIEW, ...CASTLE, ...WARDED_GREET, ...WARDED_CASTLE, ...allCastleBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
   for (const o of TALE.open) for (const w of TALE.who) for (const [d, t] of TALE.did) out.push(`${o} ${w} ${d}, ${t}`)
   for (const g of GHOST.of) for (const t of GHOST.then) out.push(ghostTale(g, t))
   return out
@@ -127,12 +141,14 @@ const ghostTale = (of, then) => `Old stories say the dungeon is haunted by the f
 
 /**
  * Her conversation with castle folk `mind` ({ id, name, who, castle, h, traits, mood }, `castle` its castle's seed): `open()` their greeting, `ask(topic)` the answer to a grid sentence,
- * `menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms; `approached` whether they came to her.
+ * `menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms, `ctx.warded` whether any of its wards is unopened; `approached` whether they came to her.
  */
 export class CastleChat {
-  constructor(mind, { rooms }, { approached = false, salt = 0 } = {}) {
+  constructor(mind, { rooms, warded }, { approached = false, salt = 0 } = {}) {
+    if (typeof warded !== 'boolean') throw new Error(`CastleChat: ${mind.id} needs ctx.warded as a boolean, not ${warded}`)
     this.mind = mind
     this.rooms = rooms
+    this.warded = warded
     this.approached = approached
     this.rand = mulberry32(hash32(strHash(mind.id), salt))
     this.turns = 0
@@ -184,6 +200,7 @@ export class CastleChat {
 
   open() {
     const who = this.mind.who
+    if (this.warded && this.rand() < CASTLE_TALK.distress) return line(this._pick(WARDED_GREET), 'talk-gesture', { moment: this.approached ? 'castle.halt' : who === 'lore' ? 'greet.stranger' : { lord: 'castle.lord', steward: 'castle.steward', cook: 'castle.cook', maid: 'castle.maid', servant: 'castle.servant' }[who] ?? 'greet.stranger' })
     if (who === 'lore') return line(this._pick(['Welcome to the top! Finest view in the realm, this. Ask me anything about the castle.', 'Up at last! Catch your breath. I know every tale these walls have.']), 'wave', { moment: 'greet.stranger' })
     if (this.approached) return line(this._urge(this._mood(this._pick(['Hold there. A visitor? Mind yourself, then.', 'You there. No trouble, now.']), 'greet')), 'talk-point', { moment: 'castle.halt' })
     const hi = { lord: 'castle.lord', steward: 'castle.steward', cook: 'castle.cook', maid: 'castle.maid', servant: 'castle.servant' }[who]
@@ -213,6 +230,7 @@ export class CastleChat {
       const text = this._pick(SELF[GUARDS.has(who) && who !== 'lore' ? 'guard' : who]), more = this.mind.mood === 'plain' ? '' : ` ${quirkLines({ kind: this.mind.mood }).self}`
       return line(fits(text + more) ? text + more : text, 'talk-gesture', { moment: 'answer.self' })
     }
+    if (topic === 'castle' && this.warded) return line(this._pick(WARDED_CASTLE), 'talk-gesture', { moment: 'answer.muse' })
     if (topic === 'castle') return line(this._urge(this._mood(this._pick(CASTLE), 'aside')), 'talk-gesture', { moment: 'answer.muse' })
     if (topic === 'news') {
       const fresh = this.news.filter((s) => !this.used.has(s))

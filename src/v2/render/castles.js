@@ -16,6 +16,7 @@ import { GLASS } from '../castles/light.js'
 import { TORCHES } from '../../lighting.js'
 import { WorldProbe, WORLD_PROBE } from '../../world-probe.js'
 import { WATER, RIPPLE_GLSL } from '../../water.js'
+import { WardSet } from './castle-wards.js'
 
 // Metres from the site: built within `build`, dropped past `drop`; its meshes drawn within `mesh` (the card past it), the full
 // exterior within `full` and the mid-distance one past `low`.
@@ -204,6 +205,8 @@ export class Castles {
     this.courtMaterial = patch(glowed(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), this.glow), 'v2-castle-court')
     Object.assign(this, interiorMaterials(this.maps, uTorch))
     this.probeHidden = probeHidden
+    this.runes = new THREE.TextureLoader().load('/buildings/runes.png')
+    this.runes.colorSpace = THREE.SRGBColorSpace
     this.ropeMaterial = patch(new THREE.MeshLambertMaterial({ map: ropeTexture() }), 'v2-castle-rope')
     // Sites whose summit rope she has let down, for the session.
     this.ropesDown = new Set()
@@ -232,6 +235,7 @@ export class Castles {
     this._held = []
     this._job = 0
     this.inside = null
+    this._eye = new THREE.Vector3()
     this.stats = { built: 0, live: 0, full: 0, low: 0, cards: 0 }
   }
 
@@ -335,6 +339,10 @@ export class Castles {
       skyThroughGlass(dayness, this.innerUniforms.uSky.value)
       this.innerUniforms.uFlicker.value = flicker
       this.waterUniforms.uTime.value = t % 1024
+      const w = this.inside.wardSet, m = this.inside.innerMesh
+      this._eye.set(eye.x, eye.y, eye.z)
+      w.update(t, Math.min(0.1, Math.max(0, t - (this._wardT ?? t))), m.worldToLocal(this._eye))
+      this._wardT = t
     }
     if (cards) this._placeCards()
     this.stats.live = this.live.size
@@ -497,6 +505,46 @@ export class Castles {
     return c.innerFlames === null ? [c.innerMesh] : [c.innerMesh, c.innerFlames.group]
   }
 
+  /** Built castle site `id`'s count of wards and runebooks. */
+  wardsOf(id) {
+    const c = this.live.get(id)
+    if (c === undefined || c.state !== 'ready') throw new Error(`Castles: the wards of castle ${id}, not built`)
+    return { wards: c.solids.portals.wards.length, books: c.solids.portals.books.length }
+  }
+
+  /** The castle she is in: wards `open` and books `spent` (bitmasks, from the loot ledger), set without their dissolve. */
+  setWards(open, spent) {
+    const c = this.inside, P = c.solids.portals
+    c.wardSet.group.removeFromParent()
+    c.wardSet.dispose()
+    c.wardSet = new WardSet(P, this.runes, open, spent)
+    c.innerMesh.add(c.wardSet.group)
+    c.solids.it.open = open
+  }
+
+  /** The shut ward in the castle she is in whose gem the world ray from `origin` along unit `dir` passes near within `maxDist`: its
+   * index and the gem's world spot, or null. */
+  wardOn(origin, dir, maxDist) {
+    const c = this.inside
+    if (c === null) return null
+    const m = c.innerMesh, o = m.worldToLocal(origin.clone()), d = dir.clone().transformDirection(m.matrixWorld.clone().invert())
+    const i = c.wardSet.gemOn(o, d, maxDist)
+    return i < 0 ? null : { i, at: m.localToWorld(c.wardSet.gemAt(i).clone()) }
+  }
+
+  /** The runebooks' codes in the castle she is in, by index. */
+  bookCodes() { return this.inside.wardSet.books.map((b) => b.code) }
+
+  /** Ward `i` of the castle she is in opens on book `j`'s code: it dissolves and stops nothing; the ledger is main.js's. */
+  openWard(i, j) {
+    const c = this.inside
+    c.wardSet.open(i, j)
+    c.solids.it.open |= 1 << i
+  }
+
+  /** Ward `i` of the castle she is in rejects a code: it shimmers and bursts. */
+  failWard(i) { this.inside.wardSet.fail(i) }
+
   /** The drawn castle site nearest world `p` ({ x, z }) within `maxD` m, or null. */
   nearestDrawn(p, maxD) {
     let best = null, bestD = maxD
@@ -541,6 +589,9 @@ export class Castles {
       this.waterUniforms.uMirrorA.value = c.probe.textureA
       this.waterUniforms.uMirrorB.value = c.probe.textureB
     }
+    c.solids.it.open = 0
+    c.wardSet = new WardSet(c.solids.portals, this.runes, 0, 0)
+    mesh.add(c.wardSet.group)
     c.innerStone = new CastleInteriorStone(c)
     this._zone = null
     return c.innerStone
@@ -554,7 +605,8 @@ export class Castles {
     if (c.doorMesh !== null) c.doorMesh.geometry.dispose()
     if (c.innerFlames !== null) { c.innerFlames.group.removeFromParent(); c.innerFlames.dispose() }
     if (c.waterMesh !== null) { c.waterMesh.geometry.dispose(); c.probe.dispose() }
-    c.innerMesh = c.innerStone = c.innerFlames = c.doorMesh = c.waterMesh = c.probe = null
+    c.wardSet.dispose()
+    c.innerMesh = c.innerStone = c.innerFlames = c.doorMesh = c.waterMesh = c.probe = c.wardSet = null
     this.inside = null
     this._zone = null
   }

@@ -123,11 +123,12 @@ const frame = (o, u, v) => [o.x + u * Math.cos(o.yaw) + v * Math.sin(o.yaw), o.z
 const facing = (nx, nz) => Math.atan2(-nz, nx)
 
 /** What the kitchen maid says in castle `lay`: the ghost she has seen when it `haunted`, the noises below, and while the dungeon is
- * still locked where its key is said to be (keyChamber). */
-export function maidSays(lay, haunted, unlocked) {
-  if (unlocked) return 'You went down the dungeons? Rather you than me. I still hear it, some nights.'
+ * still locked where its key is said to be (keyChamber); first, while a ward is unopened (`warded`), what has befallen the keep. */
+export function maidSays(lay, haunted, unlocked, warded) {
+  const ward = warded ? 'Half the keep is locked down by an enchantment, and some are trapped in the walls! Be careful in there, and unknot it if you can. ' : ''
+  if (unlocked) return `${ward}You went down the dungeons? Rather you than me. I still hear it, some nights.`
   const hint = { throne: 'The lord keeps its key about his hall.', treasury: 'Its key lies in the treasury, they say.', bedchamber: 'The lord keeps its key in his bedchamber.' }[keyChamber(lay).c.role]
-  return `${haunted ? 'I saw a ghost, all white and drifting! ' : ''}Things scratch and moan behind the dungeon door at night. ${hint}`
+  return `${ward}${haunted ? 'I saw a ghost, all white and drifting! ' : ''}Things scratch and moan behind the dungeon door at night. ${hint}`
 }
 
 /** A stand in chamber `c` of the props `props`: the clear floor point nearest `want` (interior [x, z]), kept from `taken`. */
@@ -218,13 +219,14 @@ const _v = new THREE.Vector3()
 
 export class CastleFolk {
   /** `castles` render/castles.js Castles; `ground(x, z)` the overworld's ground or stone top; `patch(material, cacheKey)` the
-   * lighting's vertex patch; `trails` the keep trails' road records (layers/castles.js planCastles, `{ id, pts }`). */
-  constructor(scene, { castles, ground, patch, trails }) {
+   * lighting's vertex patch; `trails` the keep trails' road records (layers/castles.js planCastles, `{ id, pts }`); `warded(site)` whether any ward in castle `site` is unopened. */
+  constructor(scene, { castles, ground, patch, trails, warded }) {
     this.scene = scene
     this.castles = castles
     this.ground = ground
     this.patch = patch
     this.trails = trails
+    this.warded = warded
     this.bodies = new Map()
     this.hailAt = -Infinity
     this.inner = new THREE.Group()
@@ -265,7 +267,7 @@ export class CastleFolk {
       const size = FOLK.size * (1 + FOLK.sizeVar * (((hash32(site.seed, i) % 200) / 100) - 1))
       // `greet` while coming to her or waiting there (conversations.js), `held` while she talks with them; `home` where to walk back
       // to after, and `lag` the seconds a pacer or traveller has stood out of its round.
-      const p = { spec, obj: null, mixer: null, actions: null, clip: null, mind, near: false, spoke: 0, chatAt: null, tiers: null, lod: -1, size, pose: { x: 0, y: 0, z: 0 }, rooms, greet: null, held: false, home: null, lag: 0, gestureUntil: 0, torch: null }
+      const p = { spec, obj: null, mixer: null, actions: null, clip: null, mind, near: false, spoke: 0, chatAt: null, tiers: null, lod: -1, size, pose: { x: 0, y: 0, z: 0 }, rooms, site, greet: null, held: false, home: null, lag: 0, gestureUntil: 0, torch: null }
       cast.people.push(p)
       this._body(spec.body).then((gltf) => {
         if (group.userData.cast !== cast) return
@@ -345,7 +347,7 @@ export class CastleFolk {
         let moment = folkMoment(p.spec.who, p.spoke === 0, Math.random)
         if (moment !== null && seconds - this.hailAt < FOLK.hailGapS) moment = null
         if (moment !== null) this.hailAt = seconds
-        if (moment !== null || p.spec.who === 'maid') out.push({ who: p.spec.who, mind: p.mind, moment, feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
+        if (moment !== null || p.spec.who === 'maid') out.push({ who: p.spec.who, warded: this.warded(cast.site), mind: p.mind, moment, feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
         p.spoke++
       }
       if (close) p.near = true

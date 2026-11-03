@@ -407,7 +407,7 @@ export class Conversations {
       if (warmth < RAPPORT.fed) this.rapport.warm(p.mind.id, RAPPORT.fed - warmth)
     }
     this._hold(p)
-    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
+    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms, warded: this.castle().warded(p.c.site) }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
     const [lo, hi] = TALK.answer
     this.chat = { p, chat, closing: null, trusted, answerAt: approached ? this.now : this.now + lo + Math.random() * (hi - lo) }
     this.grid.reset()

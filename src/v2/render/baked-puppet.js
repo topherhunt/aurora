@@ -14,9 +14,15 @@ import { TIER_TINTS, tierTintOn } from './critters.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32, keyHash } from '../../sim/score.js'
 
-// Samples per second of clip, lowered per skeleton until its rows fit MAX_ROWS.
-const FPS = 30
+// Clip sample rates, coarsest first: a clip takes the first whose blend between rows stays within TOL of its RATES[last] samples.
+const RATES = [5, 10, 15, 30]
+// Of the body's pose-sphere radius, on a per-bone bound that overstates the vertex error: on townsfolk it costs at most 0.4% of body height.
+const TOL = 0.025
 const MAX_ROWS = 4096
+// A skeleton none of whose puppets is in the scene this long gives its texture back; the next to show re-bakes it.
+const EVICT_S = 30
+// Bakes a flush may run; a body whose skeleton is still waiting is drawn from the next flush on.
+const BAKES_PER_FLUSH = 1
 const MODE_KEY = 'v2.puppets'
 const IDENTITY = new THREE.Matrix4()
 
@@ -92,29 +98,84 @@ export function tintOf(key, roll, out) {
 }
 
 // ---------------------------------------------------------------------------
-// THE BAKE, once per skeleton. Each clip is n+1 rows at duration/n apart, the
-// last row the clip's end, so a sample between two rows never wraps. A row is
-// three texels a bone: the top three rows of bone.matrixWorld x boneInverse.
-// `world` keeps the bones' own creature-space matrices on the CPU for the
-// layers that read a bone (a saddle, a wrist, a grip).
+// THE BAKE, once per skeleton, on the first flush that draws one of its
+// bodies. Each clip is n+1 rows at duration/n apart, the last row the clip's
+// end, so a sample between two rows never wraps; n is set by the clip's own
+// rate (RATES). A row is three half-float texels a bone: the top three rows of
+// bone.matrixWorld x boneInverse. A layer reading a bone gets that times the
+// bone's bind matrix, so no creature-space copy is kept.
 // ---------------------------------------------------------------------------
 const vats = new WeakMap()
+const baked = new Set()
 
+/** A skeleton's layout, known before its bake: clip lengths, bones, feet, sphere. `clips` rows (start, n) are filled by the bake. */
 function vatFor(asset) {
   let v = vats.get(asset.skeleton)
   if (!v) {
-    v = bakeVat(asset)
+    const src = asset.skeleton
+    const rig = cloneBones(asset.root, new Map())
+    rig.updateMatrixWorld(true)
+    const nb = src.bones.length
+    const bind = new Float32Array(nb * 16)
+    src.boneInverses.forEach((m, j) => _m4.copy(m).invert().toArray(bind, j * 16))
+    v = {
+      asset, texture: null, data: null, uVat: { value: null }, nb, rows: 0, usedAt: 0, bind,
+      clips: new Map(asset.clips.map((c) => [c.name, { start: -1, n: 0, duration: c.duration }])),
+      feet: asset.legs ? restFeet(rig, asset.legs) : null,
+      sphere: poseSphere(asset.tiers),
+      names: src.bones.map((b) => b.name),
+    }
     vats.set(asset.skeleton, v)
-    // Off the GPU with the tiers; the data stays, so a later draw re-uploads it.
-    asset.tiers[0].addEventListener('dispose', () => v.texture.dispose())
+    asset.tiers[0].addEventListener('dispose', () => evict(v))
   } else if (v.clips.size !== asset.clips.length || asset.clips.some((c) => v.clips.get(c.name)?.duration !== c.duration)) {
     throw new Error('BakedPuppet: two assets share a skeleton but not their clips')
   }
   return v
 }
 
-function bakeVat(asset) {
+const _m4 = new THREE.Matrix4()
+
+/** Each bone's furthest bind-pose vertex from the origin, over every tier: how far a bone-matrix error can carry a vertex. */
+function boneReach(asset, nb) {
+  const reach = new Float32Array(nb)
+  const p = new THREE.Vector3()
+  for (const g of asset.tiers) {
+    const pos = g.getAttribute('position'), si = g.getAttribute('skinIndex'), sw = g.getAttribute('skinWeight')
+    for (let i = 0; i < pos.count; i++) {
+      const r = p.fromBufferAttribute(pos, i).length()
+      for (let k = 0; k < 4; k++) if (sw.getComponent(i, k) > 0) { const j = si.getComponent(i, k); if (r > reach[j]) reach[j] = r }
+    }
+  }
+  return reach
+}
+
+/**
+ * The worst distance a vertex strays when `clip`'s 3x4 rows `got` (n+1 of them) are blended at the
+ * times of `truth` (m+1 rows over the same clip): per bone, the row error's translation plus its
+ * linear part's Frobenius norm times the bone's reach.
+ */
+function blendError(got, n, truth, m, nb, reach) {
+  let worst = 0
+  for (let f = 0; f <= m; f++) {
+    const x = (f / m) * n, r0 = Math.min(Math.floor(x), n), r1 = Math.min(r0 + 1, n), s = x - r0
+    for (let j = 0; j < nb; j++) {
+      const a = (r0 * nb + j) * 12, b = (r1 * nb + j) * 12, t = (f * nb + j) * 12
+      let lin = 0, mov = 0
+      for (let k = 0; k < 12; k++) {
+        const d = got[a + k] + (got[b + k] - got[a + k]) * s - truth[t + k]
+        if (k % 4 === 3) mov += d * d
+        else lin += d * d
+      }
+      const e = Math.sqrt(mov) + Math.sqrt(lin) * reach[j]
+      if (e > worst) worst = e
+    }
+  }
+  return worst
+}
+
+function bake(v) {
   const t0 = performance.now()
+  const { asset, nb } = v
   const src = asset.skeleton
   const copies = new Map()
   const rig = cloneBones(asset.root, copies)
@@ -123,52 +184,81 @@ function bakeVat(asset) {
     if (!c) throw new Error(`BakedPuppet: bone ${b.name} is not under the root`)
     return c
   })
-  const nb = bones.length
-  let fps = FPS
-  const rowCount = (f) => asset.clips.reduce((s, c) => s + Math.max(1, Math.ceil(c.duration * f)) + 1, 0)
-  while (rowCount(fps) > MAX_ROWS && fps > 1) fps--
-  const rows = rowCount(fps)
-  if (rows > MAX_ROWS) throw new Error(`BakedPuppet: ${rows} rows of clip at 1 fps`)
-
-  rig.updateMatrixWorld(true)
-  const feet = asset.legs ? restFeet(rig, asset.legs) : null
-
-  const world = new Float32Array(rows * nb * 16)
-  const data = new Float32Array(rows * nb * 12)
   const mixer = new THREE.AnimationMixer(rig)
-  const clips = new Map()
   const m = new THREE.Matrix4()
-  let row = 0
-  for (const clip of asset.clips) {
-    const n = Math.max(1, Math.ceil(clip.duration * fps))
-    clips.set(clip.name, { start: row, n, duration: clip.duration })
+  /** `clip` at n+1 even times as 3x4 rows. */
+  const sample = (clip, n) => {
+    const out = new Float32Array((n + 1) * nb * 12)
     mixer.stopAllAction()
     const action = mixer.clipAction(clip).reset().play()
-    for (let f = 0; f <= n; f++, row++) {
+    for (let f = 0; f <= n; f++) {
       action.time = (clip.duration * f) / n
       mixer.update(0)
       rig.updateMatrixWorld(true)
       for (let j = 0; j < nb; j++) {
-        bones[j].matrixWorld.toArray(world, (row * nb + j) * 16)
         m.multiplyMatrices(bones[j].matrixWorld, src.boneInverses[j])
-        const e = m.elements, o = (row * nb + j) * 12
+        const e = m.elements, o = (f * nb + j) * 12
         // Rows of the column-major 4x4: the shader rebuilds it with transpose().
-        data[o] = e[0]; data[o + 1] = e[4]; data[o + 2] = e[8]; data[o + 3] = e[12]
-        data[o + 4] = e[1]; data[o + 5] = e[5]; data[o + 6] = e[9]; data[o + 7] = e[13]
-        data[o + 8] = e[2]; data[o + 9] = e[6]; data[o + 10] = e[10]; data[o + 11] = e[14]
+        out[o] = e[0]; out[o + 1] = e[4]; out[o + 2] = e[8]; out[o + 3] = e[12]
+        out[o + 4] = e[1]; out[o + 5] = e[5]; out[o + 6] = e[9]; out[o + 7] = e[13]
+        out[o + 8] = e[2]; out[o + 9] = e[6]; out[o + 10] = e[10]; out[o + 11] = e[14]
       }
     }
+    return out
   }
+  const steps = (clip, fps) => Math.max(1, Math.ceil(clip.duration * fps))
+
+  // A re-bake keeps the rates the first chose.
+  const chosen = asset.clips.map((clip) => {
+    const c = v.clips.get(clip.name)
+    if (c.n > 0) return sample(clip, c.n)
+    const top = RATES[RATES.length - 1]
+    const mTop = steps(clip, top)
+    const truth = sample(clip, mTop)
+    v.reach ??= boneReach(asset, nb)
+    const tol = TOL * v.sphere.radius
+    for (const fps of RATES.slice(0, -1)) {
+      const n = steps(clip, fps)
+      if (n >= mTop) break
+      const got = sample(clip, n)
+      if (blendError(got, n, truth, mTop, nb, v.reach) <= tol) { c.n = n; return got }
+    }
+    c.n = mTop
+    return truth
+  })
   mixer.stopAllAction()
   mixer.uncacheRoot(rig)
 
-  const texture = new THREE.DataTexture(data, nb * 3, rows, THREE.RGBAFormat, THREE.FloatType)
+  let rows = 0
+  for (const clip of asset.clips) { const c = v.clips.get(clip.name); c.start = rows; rows += c.n + 1 }
+  if (rows > MAX_ROWS) throw new Error(`BakedPuppet: ${rows} rows of clip, past ${MAX_ROWS}`)
+  const data = new Uint16Array(rows * nb * 12)
+  let o = 0
+  for (const rowsOf of chosen) for (let k = 0; k < rowsOf.length; k++) data[o++] = THREE.DataUtils.toHalfFloat(rowsOf[k])
+
+  const texture = new THREE.DataTexture(data, nb * 3, rows, THREE.RGBAFormat, THREE.HalfFloatType)
   texture.minFilter = texture.magFilter = THREE.NearestFilter
   texture.generateMipmaps = false
   texture.needsUpdate = true
-  const v = { texture, uVat: { value: texture }, world, nb, rows, fps, clips, feet, sphere: poseSphere(asset.tiers), names: src.bones.map((b) => b.name) }
-  console.log(`[baked-puppet] ${nb} bones x ${rows} rows at ${fps} fps in ${(performance.now() - t0).toFixed(0)} ms`)
-  return v
+  v.data = data
+  v.texture = texture
+  v.uVat.value = texture
+  v.rows = rows
+  baked.add(v)
+  console.log(`[baked-puppet] ${nb} bones x ${rows} rows (${(data.byteLength / 1024).toFixed(0)} KB) in ${(performance.now() - t0).toFixed(0)} ms`)
+}
+
+/** `v` baked, now; its use stamped so it is not evicted under a reader. */
+function ensureBaked(v) {
+  if (!v.data) bake(v)
+  v.usedAt = performance.now()
+}
+
+function evict(v) {
+  if (!v.texture) return
+  v.texture.dispose()
+  v.texture = v.data = v.uVat.value = null
+  baked.delete(v)
 }
 
 /** Each leg's last joint at rest, creature space -- FootIK's `feet`, for a layer to read the ground under. */
@@ -471,9 +561,18 @@ export function flushBaked() {
     _frustum.setFromProjectionMatrix(_pv.multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse))
     _eye.setFromMatrixPosition(view.matrixWorld)
   }
+  const now = performance.now()
+  let bakes = BAKES_PER_FLUSH
   for (const p of active) {
     if (p.done) { active.delete(p); continue }
     if (!drawn(p.group)) continue
+    // Stamped before the frustum test: a body she has only turned from keeps its skeleton's texture.
+    p.vat.usedAt = now
+    if (!p.vat.data) {
+      if (bakes === 0) continue
+      bakes--
+      bake(p.vat)
+    }
     p.group.updateWorldMatrix(true, false)
     if (view && !inView(p)) continue
     const clip = p.current ? p.current._clip : p._rest
@@ -501,6 +600,7 @@ export function flushBaked() {
   }
   live.clear()
   for (const b of touched) live.add(b)
+  for (const v of baked) if (now - v.usedAt > EVICT_S * 1000) evict(v)
 }
 
 /** The batches drawing right now, for a check script: `[{ mesh, n, fade }]`. */
@@ -527,6 +627,10 @@ class BakedAction {
   getClip() { return this._source }
 }
 
+const fromHalf = THREE.DataUtils.fromHalfFloat
+const _skin = new THREE.Matrix4()
+const _bind = new THREE.Matrix4()
+
 class BakedBone {
   constructor(owner, i, name) {
     this.owner = owner
@@ -545,11 +649,20 @@ class BakedBone {
     if (this._at === a && this._t === t) return this._m
     this._at = a
     this._t = t
+    const v = p.vat
+    ensureBaked(v)
     rowsAt(a ? a._clip : p._rest, t, _rows)
-    const w = p.vat.world, nb = p.vat.nb, e = this._m.elements
-    const o0 = (_rows[0] * nb + this.i) * 16, o1 = (_rows[1] * nb + this.i) * 16, s = _rows[2]
-    for (let k = 0; k < 16; k++) e[k] = w[o0 + k] + (w[o1 + k] - w[o0 + k]) * s
-    return this._m
+    const d = v.data, nb = v.nb, e = _skin.elements
+    const o0 = (_rows[0] * nb + this.i) * 12, o1 = (_rows[1] * nb + this.i) * 12, s = _rows[2]
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 4; c++) {
+        const x = fromHalf(d[o0 + r * 4 + c])
+        e[c * 4 + r] = x + (fromHalf(d[o1 + r * 4 + c]) - x) * s
+      }
+    }
+    e[3] = e[7] = e[11] = 0
+    e[15] = 1
+    return this._m.multiplyMatrices(_skin, _bind.fromArray(v.bind, this.i * 16))
   }
 }
 

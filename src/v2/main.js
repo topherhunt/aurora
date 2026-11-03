@@ -89,6 +89,7 @@ import { Skeletons, placeKey } from './render/skeletons.js'
 import { Wisps } from './render/wisps.js'
 import { CastleGhost, GHOST } from './render/ghost.js'
 import { CastleFolk, FOLK, maidSays } from './render/castle-folk.js'
+import { RunePanel } from './ui/rune-panel.js'
 import { Sheets } from './render/sheets.js'
 import { TREAT, Treats, doorOnRay, nightOf } from './treats.js'
 import { Giants } from './render/giants.js'
@@ -2961,13 +2962,60 @@ function syncTrust() {
 let chalkWelcomes = 0
 let lootWelcomes = 0
 
-// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins. A castle's dungeon key is its bit 8, its dungeon chest's coins and gem bits 9 and 10, and bit 16 marks its door unlocked.
+// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins. A castle's dungeon key is its bit 8, its dungeon chest's coins and gem bits 9 and 10, and bit 16 marks its door unlocked; ward i opened is bit 20 + i and runebook j spent bit 40 + j (design/46-castle-wards.md).
 const RINGS_MOST = Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)
 const ALTAR_GEMS = ['diamond', 'sapphire', 'ruby']
 const HOARD = ['diamond', 'sapphire', 'ruby', 'firestone']
 
 const DUNGEON_BITS = { key: 8, coins: 9, gem: 10, unlocked: 16 }
+const WARD_BITS = { ward: 20, book: 40 }
 const castleKey = (s) => { const [rx, rz] = s.id.split(',').map(Number); return (rx + 0x8000) * 0x10000 + (rz + 0x8000) }
+
+/** Built castle `site`'s wards opened and runebooks spent, as bitmasks off the loot ledger. */
+function wardMasks(site) {
+  const k = place('k', castleKey(site)), { wards, books } = castles.wardsOf(site.id)
+  let open = 0, spent = 0
+  for (let i = 0; i < wards; i++) if (loot.taken(k, WARD_BITS.ward + i)) open |= 1 << i
+  for (let j = 0; j < books; j++) if (loot.taken(k, WARD_BITS.book + j)) spent |= 1 << j
+  return { open, spent, wards }
+}
+
+/** Whether any ward in built castle `site` is still shut. */
+function castleWarded(site) {
+  const m = wardMasks(site)
+  return m.open !== (1 << m.wards) - 1
+}
+
+/** A ray from `origin` along unit `dir` onto a shut ward's gem in the castle she is in: the rune panel opens at it. */
+function touchWard(origin, dir) {
+  if (inCastle === null || runePanel.open) return false
+  const g = castles.wardOn(origin, dir, DESK_CLICK_M * herScale())
+  if (g === null) return false
+  runePanel.show(g.i, g.at)
+  runePanel.keep(handsHead(), herScale())
+  updateQuestPointer()
+  if (ambience) sound.play('uiOpen', { bus: 'near', rate: THREE.MathUtils.randFloat(RATE[0], RATE[1]), gain: 0.5 })
+  return true
+}
+
+/** A press `hit` on the rune panel: whether it took it. Its third rune opens the ward on the first unspent runebook with that code,
+ * or the ward bursts on her. */
+function pressRunes(hit) {
+  const r = runePanel.press(hit)
+  if (r === null) return false
+  if (r.code === null) return true
+  const site = inCastle.site, k = place('k', castleKey(site)), j = castles.bookCodes().findIndex((c, j) => c.join() === r.code.join() && !loot.taken(k, WARD_BITS.book + j))
+  if (j < 0) {
+    castles.failWard(r.ward)
+    harm(10, 'ward')
+    return true
+  }
+  loot.take(k, WARD_BITS.ward + r.ward)
+  loot.take(k, WARD_BITS.book + j)
+  castles.openWard(r.ward, j)
+  if (ambience) sound.play('door', { bus: 'near', rate: 1.3, gain: 0.5 })
+  return true
+}
 
 function layLoot() {
   if (castles) {
@@ -3232,6 +3280,10 @@ function buildQuestPanel() {
         questPointerHand = el
         updateQuestPointer()
         if (questPointer.hit !== null && conversations.press(questPointer.hit, handsHead())) return
+      } else if (runePanel !== null && runePanel.open) {
+        questPointerHand = el
+        updateQuestPointer()
+        if (pressRunes(questPointer.hit)) return
       }
       if (!hands) return
       const key = el === leftHandEl ? 'left' : 'right'
@@ -3242,6 +3294,7 @@ function buildQuestPanel() {
       if (el.components.raycaster) {
         const rc = el.components.raycaster
         rc.updateOriginDirection()
+        if (touchWard(rc.raycaster.ray.origin, rc.raycaster.ray.direction)) { questPointerHand = el; return }
         if (pullRope(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction)) return
       }
       if (holdsGun(key) && !hands.wouldStow(key, handsHead())) fireFlare(key)
@@ -3306,7 +3359,7 @@ function buildQuestPanel() {
     } else if (conversations !== null && conversations.open) {
       const hit = raycaster.intersectObject(conversations.panel.mesh)[0]
       if (hit !== undefined && conversations.press(hit, handsHead())) return
-    }
+    } else if (runePanel !== null && runePanel.open && pressRunes(raycaster.intersectObject(runePanel.mesh)[0] ?? null)) return
     if (e.button !== 0 || e.target !== renderer.domElement || !ready || !hands) return
     if (editor && editor.active) return
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > DESK_CLICK_PX) return
@@ -3316,6 +3369,7 @@ function buildQuestPanel() {
     if (bed) { lieDown(bed, false); return }
     if (takeRein((layer, tamed) => layer.leadableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), tamed), 'desk')) return
     if (mountStrider((layer) => layer.mountableOnRay(raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()))) return
+    if (touchWard(raycaster.ray.origin, raycaster.ray.direction)) return
     if (pullRope('desk', raycaster.ray.origin, raycaster.ray.direction)) return
     if (holdsGun('desk')) fireFlare('desk', raycaster.ray.direction)
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
@@ -3369,7 +3423,8 @@ function updateQuestPointer() {
   const dying = vitalsHud !== null && vitalsHud.deathTargets.length > 0
   // With the menu closed, an open conversation's grid takes the pointer.
   const talking = !questPanelGroup.visible && conversations !== null && conversations.open
-  const open = questPanelGroup.visible || dying || talking
+  const warding = !questPanelGroup.visible && !talking && runePanel !== null && runePanel.open
+  const open = questPanelGroup.visible || dying || talking || warding
   for (const el of [leftHandEl, rightHandEl]) {
     // The controller model is never drawn: it loads only to set the pointer's origin and direction.
     const model = el.getObject3D('mesh')
@@ -3389,7 +3444,7 @@ function updateQuestPointer() {
   // disabled and casts nothing.
   const rc = el.components.raycaster
   rc.updateOriginDirection()
-  const hit = rc.raycaster.intersectObjects(dying ? vitalsHud.deathTargets : talking ? [conversations.panel.mesh] : questHitMeshes)[0] || null
+  const hit = rc.raycaster.intersectObjects(dying ? vitalsHud.deathTargets : talking ? [conversations.panel.mesh] : warding ? [runePanel.mesh] : questHitMeshes)[0] || null
   p.hit = hit
   p.line.renderOrder = p.dot.renderOrder = dying ? vitalsHud.pointerOrder : QUEST_POINTER_ORDER
   if (p.line.parent !== el.object3D) el.object3D.add(p.line)
@@ -3881,6 +3936,7 @@ let bridges = null
 let palisades = null
 // The sited castles (render/castles.js), and while she is in one { site, back, stone, outside }.
 let castles = null
+let runePanel = null
 let castleFolk = null
 // The world plan's keep trails (layers/castles.js planCastles records), for the castles' travellers.
 let castleTrails = []
@@ -4810,6 +4866,8 @@ async function castlePortal(act) {
 function openCastle(site, back) {
   const stone = castles.openInterior(site)
   if (loot.taken(place('k', castleKey(site)), DUNGEON_BITS.unlocked)) castles.unlock(site)
+  const wm = wardMasks(site)
+  castles.setWards(wm.open, wm.spent)
   const inner = new WalkSurface(flatField(stone.base), stone, { trunkAt: () => null }, { scale: herScale() })
   inner.flyThrough = true
   inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk }
@@ -4825,6 +4883,7 @@ function openCastle(site, back) {
 /** The castle's interior down and the overworld walk hers again; nothing when she is not in one. */
 function closeCastle() {
   if (!inCastle) return
+  runePanel.hide()
   castles.closeInterior()
   for (const o of castleHidden) o.visible = true
   castleHidden.clear()
@@ -5105,6 +5164,7 @@ function keepUnderRoof(keep) {
   for (const d of [wildfire.flames, wildfire.torches]) if (d.group) keep.add(d.group)
   if (questPanelGroup !== null) keep.add(questPanelGroup)
   if (conversations !== null) keep.add(conversations.panel.group)
+  if (runePanel !== null) keep.add(runePanel.group)
   if (questPointer !== null) keep.add(questPointer.dot).add(questPointer.line)
   if (teleportGfx !== null) keep.add(teleportGfx.ring).add(teleportGfx.arc)
   return keep
@@ -5609,7 +5669,8 @@ async function buildRoom(room, at) {
     castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden })
     castles.update(spawn, fireNow(), lampNight(), dayness)
     window.v2castles = castles // console: `v2castles.stats`
-    castleFolk = new CastleFolk(scene, { castles, ground: (x, z) => walk.heightAt(x, z), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), trails: castleTrails })
+    runePanel = new RunePanel(scene, castles.runes, uploadQuestTexture)
+    castleFolk = new CastleFolk(scene, { castles, ground: (x, z) => walk.heightAt(x, z), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), trails: castleTrails, warded: (site) => castleWarded(site) })
     window.v2castleFolk = castleFolk
   }
 
@@ -9200,11 +9261,12 @@ function stepOverworld(dt, now) {
   wisps.update(dt, clock.seconds, player.originPosition(), { dayness, outdoors: cave === null && inCastle === null && indoors === null, places: wispPlaces, heightAt: (x, z) => walk.heightAt(x, z) })
   const ghostQuest = inCastle !== null && castleGhost.at !== null && conversations !== null ? conversations.ghostOf(inCastle.site.id) : null
   castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale(), () => castleGhost.whisper(clock.seconds)))
+  if (runePanel !== null) runePanel.keep(headTmp, herScale())
   if (castleFolk) {
     castleFolk.update(dt, clock.seconds, headTmp, inCastle === null ? null : inCastle.site, inCastle === null ? 0 : inCastle.stone.oy, lampNight(), fireNow())
     if (conversations !== null) for (const b of castleFolk.barks(headTmp, FOLK.near * herScale(), clock.seconds)) {
       if (b.moment !== null) conversations.bark(b.mind, b.moment, b.mouth, headTmp)
-      if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked)), b.feet)
+      if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked), b.warded), b.feet)
     }
     if (conversations !== null) for (const t of castleFolk.chatter(headTmp, clock.seconds)) {
       const [moment, ids] = t.step.split(': ')

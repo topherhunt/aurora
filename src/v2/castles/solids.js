@@ -133,6 +133,11 @@ function interiorSolids(lay) {
   for (const o of [...roomProps(lay), ...dungeonProps(lay)]) if (solid(o)) boxes.push(propBox(o, o.y))
   const { door } = g, t = 0.1
   boxes.push({ ...(door.axis === 'x' ? box(door.x - t, door.z - door.hw, door.x + t, door.z + door.hw, door.lo, door.hi) : box(door.x - door.hw, door.z - t, door.x + door.hw, door.z + t, door.lo, door.hi)), lock: true })
+  // A ward's slab fills its doorway's tunnel just inside the gem room's wall, till opened (bit `ward` of `open`).
+  lay.wards.forEach((w, i) => {
+    const m = wardFrame(w), a = [m.a - m.sgn * 0.25, m.a].sort((p, q) => p - q), u = [m.c - m.hw - 0.1, m.c + m.hw + 0.1]
+    boxes.push({ ...(m.axis === 'x' ? box(a[0], u[0], a[1], u[1], m.y, m.y + m.h) : box(u[0], a[0], u[1], a[1], m.y, m.y + m.h)), ward: i })
+  })
   // Partitions are solid boxes standing in a room's air, open under their lintels.
   for (const w of roomPlan(lay).walls) {
     const t = PARTITION.t / 2, top = w.y + SH - 0.3
@@ -142,7 +147,34 @@ function interiorSolids(lay) {
   // `base`: the walk's flat field, a metre under the lowest floor (the dungeon's, a storey down); any higher, she stands on air in its spiral.
   let floor = 0
   for (const v of g.lo) if (v < floor) floor = v
-  return { airs, spirals, shafts, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, base: floor - 1, unlocked: false }
+  return { airs, spirals, shafts, boxes, storeys, dungeon: { x0: g.x0, z0: g.z0, W: g.W, D: g.D, lo: g.lo, hi: g.hi }, base: floor - 1, unlocked: false, open: 0 }
+}
+
+/**
+ * Ward `w`'s doorway in interior metres: `axis` its tunnel runs along, `a` along it where the membrane stands (just inside the gem
+ * room's wall face), `c` across, floor `y`, `hw` and `h` its half width and height, `sgn` the way from the gem's room to the far one.
+ */
+export function wardFrame(w) {
+  const d = w.edge.doors[0], sgn = w.gem === w.edge.a ? d.side : -d.side, k = Math.round(d.y / H)
+  const [along, across] = d.axis === 'x' ? [d.x * S, d.z * S] : [d.z * S, d.x * S]
+  return { axis: d.axis, a: along - sgn * (G + WT - 0.05), c: across, y: k * SH, hw: d.w / 2, h: d.h, sgn, k }
+}
+
+/** Where book `b` hovers (interior metres, unwarped): over the floor of its room's chambers farthest from any standing prop and portal. */
+function bookSpot(lay, b, i) {
+  const rng = mulberry32(lay.seed * 9341 + i), y = b.node.k * SH
+  const props = roomProps(lay).filter((o) => o.k === b.node.k && solid(o)), cs = roomPlan(lay).chambers.filter((c) => c.node === b.node)
+  if (!cs.length) throw new Error(`castle ${lay.seed}: book ${i} in room ${b.node.id} with no chamber`)
+  let best = null
+  for (const c of cs) for (let u = 0; u <= 6; u++) for (let v = 0; v <= 6; v++) {
+    const x = c.rect[0] + 0.9 + (c.rect[2] - c.rect[0] - 1.8) * u / 6, z = c.rect[1] + 0.9 + (c.rect[3] - c.rect[1] - 1.8) * v / 6
+    let near = Infinity
+    for (const o of props) near = Math.min(near, Math.hypot(o.x - x, o.z - z) - Math.hypot(o.w, o.d) / 2)
+    for (const [px, pz] of c.portals) near = Math.min(near, Math.hypot(px - x, pz - z) - 1)
+    const score = Math.min(near, 3) + rng() * 0.05
+    if (!best || score > best.score) best = { score, at: [x, y + 1.2 + rng() * 0.25, z] }
+  }
+  return best.at
 }
 
 const inBox = (b, x, z) => { const dx = x - b.x, dz = z - b.z; return Math.abs(dx * b.c - dz * b.s) <= b.hu && Math.abs(dx * b.s + dz * b.c) <= b.hv }
@@ -297,7 +329,7 @@ export function interiorSpans(it, x, z, ref) {
         LO[n] = t.y + (tunnel ? tunnel.h : 0); HI[n++] = roof
       }
     }
-    for (const b of it.boxes) if (!(b.lock && it.unlocked) && inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
+    for (const b of it.boxes) if (!(b.lock && it.unlocked) && !(b.ward >= 0 && it.open & (1 << b.ward)) && inBox(b, x, z) && b.lo >= k0 * SH - 1 && b.lo <= (k1 + 1) * SH) { LO[n] = b.lo; HI[n++] = b.hi }
   }
   return settle(LO, HI, n, [])
 }
@@ -353,7 +385,8 @@ function spotNear(spans, x, y, z, r, fx, fz) {
 const spot = (spans, x, y, z, fx, fz) => standAt(spans, x, y, z) ?? spotNear(spans, x, y, z, 0.5, fx, fz)
 
 /** Every way through the shell: doors between the exterior and the interior (each its leaves' face either side, and where it sets
- * her down), ladders as blinks, the summit's rope and its chest. Exterior points are local, interior points interior metres. */
+ * her down), ladders as blinks, the wards (membrane centre, the way out toward its gem, the gem) and runebooks, the summit's rope
+ * and its chest. Exterior points are local, interior points interior metres; ward, book and dungeon points follow the warp. */
 function portals(lay, ex, it) {
   const exSpans = (x, z) => exteriorSpans(ex, x, z)
   const inSpans = (y) => (x, z) => interiorSpans(it, x, z, y + 0.5)
@@ -383,7 +416,13 @@ function portals(lay, ex, it) {
   const at = ([x, y, z]) => { const [wx, , wz] = warp(x, y, z); return [wx, y, wz] }
   const chest = dungeonProps(lay).find((o) => o.kind === 'chest')
   const dungeon = { door: { x: door.x, y: door.lo, z: door.z, nx, nz, hw: door.hw }, key: at(keySpot(lay)), chest: at([chest.x, chest.y + PROP_TOP.chest, chest.z]) }
-  return { doors, ladders, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice(), dungeon }
+  const wards = lay.wards.map((w) => {
+    const m = wardFrame(w), [x, z] = m.axis === 'x' ? [m.a, m.c] : [m.c, m.a], [nx, nz] = m.axis === 'x' ? [-m.sgn, 0] : [0, -m.sgn]
+    const [wx, , wz] = at([x, m.y + m.h / 2, z])
+    return { x: wx, y: m.y, z: wz, nx, nz, hw: m.hw, h: m.h, gem: at([x + nx * 0.45, m.y + 1.35, z + nz * 0.45]) }
+  })
+  const books = lay.books.map((b, i) => ({ at: at(bookSpot(lay, b, i)), code: b.code.slice() }))
+  return { doors, ladders, wards, books, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice(), dungeon }
 }
 
 /** A layout's collision and portals, as plain data (structured-clonable, for the worker's reply). */

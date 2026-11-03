@@ -73,10 +73,14 @@ console.log('the bake')
 {
   const p = new BakedPuppet(asset, mats())
   const v = p.vat
+  check(v.texture === null && v.data === null && v.clips.get('wave').start === -1, 'nothing is baked until a body is drawn or a bone read')
+  void p.bones[0].matrixWorld
+  const wave = v.clips.get('wave'), drop = v.clips.get('drop')
   check(v.texture.image.width === 5 * 3 && v.nb === 5, 'three texels a bone', `${v.texture.image.width} wide`)
-  check(v.clips.get('wave').n === 30 && v.clips.get('drop').n === 15 && v.rows === 31 + 16, 'each clip is duration x 30 fps rows plus its end row', `${v.rows} rows`)
-  check(v.clips.get('drop').start === 31, 'and the clips are stacked in order')
-  check(v.texture.type === THREE.FloatType && v.texture.magFilter === THREE.NearestFilter && !v.texture.generateMipmaps, 'float texels, read exact')
+  check(wave.start === 0 && drop.start === wave.n + 1 && v.rows === wave.n + drop.n + 2, 'each clip is n+1 rows, stacked in order', `${wave.n}, ${drop.n}`)
+  check(drop.n === 3, 'a clip whose rows blend exactly (a straight slide) takes the coarsest rate, 5 fps', `${drop.n} steps over 0.5 s`)
+  check(wave.n > 5 && wave.n <= 30, 'a clip that turns a limb takes a finer one', `${wave.n} steps over 1 s`)
+  check(v.texture.type === THREE.HalfFloatType && v.data instanceof Uint16Array && v.texture.magFilter === THREE.NearestFilter && !v.texture.generateMipmaps, 'half-float texels, read exact')
   check(new BakedPuppet(asset, mats()).vat === v, 'one bake a skeleton, shared by every puppet over it')
   check(Math.abs(p.feet[0].x - 0.2) < 1e-6 && Math.abs(p.feet[0].z - 0.1) < 1e-6, 'its feet are the legs\' rest feet, as FootIK reads them', JSON.stringify(p.feet[0]))
 }
@@ -132,7 +136,7 @@ function shaderSkin(p, b, inst, geometry, i) {
     const weight = wt.getComponent(i, k)
     if (!weight) continue
     const bone = idx.getComponent(i, k)
-    const row = (r, c) => { const o = (r * w + bone * 3 + c) * 4; return [0, 1, 2, 3].map((j) => data[o + j]) }
+    const row = (r, c) => { const o = (r * w + bone * 3 + c) * 4; return [0, 1, 2, 3].map((j) => THREE.DataUtils.fromHalfFloat(data[o + j])) }
     const m = [0, 1, 2].map((c) => row(r0, c).map((x, j) => x + (row(r1, c)[j] - x) * s))
     out.x += weight * (m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z + m[0][3])
     out.y += weight * (m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z + m[1][3])
@@ -244,6 +248,36 @@ console.log('the batches')
   plain.dispose()
   flushBaked()
   check(bakedRoot.children.length < before && bakedBatches().length === 0, 'disposing the plain drops its look, its batches and its puppets', `${before} -> ${bakedRoot.children.length}`)
+}
+
+console.log('the bake budget and eviction')
+{
+  const realNow = performance.now
+  let t = realNow.call(performance)
+  performance.now = () => t
+  const plain2 = makeSettledMaterial('check-baked-2'), plain3 = makeSettledMaterial('check-baked-3')
+  const a = new BakedPuppet(makeAsset(), makePuppetMaterials('check-baked-2', plain2))
+  const b = new BakedPuppet(makeAsset(), makePuppetMaterials('check-baked-3', plain3))
+  for (const p of [a, b]) { scene.add(p.group); p.show(0, 0); p.play('wave') }
+  flushBaked()
+  const drawnOf = (p) => bakedBatches().filter((x) => x.mesh.material.customProgramCacheKey().startsWith(p.mats.plain.customProgramCacheKey())).reduce((s, x) => s + x.n, 0)
+  check([a, b].filter((p) => p.vat.data).length === 1 && drawnOf(a) + drawnOf(b) === 1, 'one flush bakes one waiting skeleton, and draws only the bodies it can')
+  flushBaked()
+  check(a.vat.data && b.vat.data && drawnOf(a) === 1 && drawnOf(b) === 1, 'the next bakes the other and both are drawn')
+  const rows = a.vat.clips.get('wave').n
+  scene.remove(b.group)
+  t += 29e3
+  flushBaked()
+  check(b.vat.data !== null, 'a skeleton out of the scene keeps its texture for a while')
+  t += 2e3
+  flushBaked()
+  check(b.vat.data === null && b.vat.texture === null && a.vat.data !== null, 'and gives it back past EVICT_S, while one still drawn keeps its own')
+  scene.add(b.group)
+  flushBaked()
+  check(b.vat.data !== null && drawnOf(b) === 1 && b.vat.clips.get('wave').n === rows, 'back in the scene it is baked again, at the rates it had')
+  for (const p of [a, b]) { scene.remove(p.group); p.release() }
+  plain2.dispose(); plain3.dispose()
+  performance.now = realNow
 }
 
 console.log('the colours')

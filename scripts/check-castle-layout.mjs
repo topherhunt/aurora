@@ -7,11 +7,13 @@
 // highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight
 // or crack open under the warp, door leaves hidden behind stone,
 // collision that throws (over a wide seed sweep) or passes the walk's span cap, a castle without its doors, spirals and rope, or a
-// dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget.
+// dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget; wards
+// outside 5-8, a ward order that leaves her facing a gem with no unspent code, or two runebooks sharing a code.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { readFileSync } from 'node:fs'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
+import { WARDS, wardSearch } from '../src/v2/castles/wards.js'
 import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, interiorWarp, LEAD_SLOT, rayHit, STONE_SLOT, warpedProp, warpOf, WOOD_SLOT } from '../src/v2/castles/shell.js'
 import { castleWindows } from '../src/v2/castles/light.js'
 import { SEG, SHAFT, SPIRAL, shaftsOf } from '../src/v2/castles/spiral.js'
@@ -47,6 +49,10 @@ const routeOk = (l) => {
   return es.every((e, i) => l.edges.includes(e) && new Set([e.a, e.b]).has(ns[i]) && new Set([e.a, e.b]).has(ns[i + 1]))
 }
 check(good.every(routeOk), 'the route runs entry to summit along chosen edges')
+check(good.every((l) => l.wards.length >= WARDS.min && l.wards.length <= WARDS.max && l.books.length >= l.wards.length), 'a passing castle has 5-8 wards and a runebook for each', good.filter((l) => !(l.wards.length >= WARDS.min && l.wards.length <= WARDS.max)).map((l) => `${l.seed}:${l.wards.length}`).slice(0, 5).join(' '))
+const stuckWards = good.filter((l) => !wardSearch(l.nodes, l.edges, l.nodes.find((n) => n.kind === 'entry'), l.nodes.find((n) => n.kind === 'summit'), l.wards, l.books).ok)
+check(stuckWards.length === 0, 'in every order she opens wards, she knows an unspent code for a gem she can reach, and ends with every room open', stuckWards.map((l) => l.seed).slice(0, 5).join(' '))
+check(good.every((l) => new Set(l.books.map((b) => b.code.join())).size === l.books.length && l.books.every((b) => new Set(b.code).size === 3)), 'every runebook has its own code of three different runes')
 check(good.every((l) => { const top = l.nodes.find((n) => n.kind === 'summit'); return l.nodes.every((n) => n === top || n.pos[1] < top.pos[1]) }), 'the summit is the highest node')
 
 // A door belongs on the boundary of each room it joins.
