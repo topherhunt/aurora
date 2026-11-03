@@ -24,6 +24,7 @@ import { ghostSays } from '../src/v2/talk/ghost.js'
 import { Conversation, SPEAK, gossip, strHash } from '../src/v2/talk/speak.js'
 import { MANNERS } from '../src/v2/talk/manners.js'
 import { LK } from '../src/v2/talk/leafkin.js'
+import { AIM, aimedAt } from '../src/v2/talk/aim.js'
 import * as trade from '../src/v2/talk/trade.js'
 import { jeer, swordWarning } from '../src/v2/talk/armed.js'
 import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
@@ -1299,6 +1300,21 @@ if (process.argv.includes('--transcript')) {
     for (const topic of ['talk:self', 'talk:town', 'talk:needs', 'where:title:smith', 'where:title:potionmaster', `ask:person:${q.child}`, 'where:here']) console.log(`  [${topic}] ${c.say(topic).text}`)
     console.log(`  chips: ${c.menu().map((x) => x.label).join(' / ')}`)
   }
+}
+
+console.log('aimed hail')
+{
+  const at = (x, z) => ({ c: { pose: { x, z } } })
+  const eye = { x: 0, y: 1.2, z: 0 }, north = { x: 0, y: 0, z: -1 }
+  const near = at(0.2, -2), wide = at(1, -2), behind = at(0, 2), far = at(0, -4)
+  check(aimedAt(eye, north, 3, 1, [wide, near]) === near, 'the trigger picks whom the ray passes nearest')
+  check(aimedAt(eye, north, 3, 1, [wide]) === null, `no one more than ${AIM.side} m off the ray`)
+  check(aimedAt(eye, north, 3, 1, [behind]) === null, 'no one behind the hand')
+  check(aimedAt(eye, north, 3, 1, [far]) === null, 'no one past the reach')
+  check(aimedAt(eye, { x: 0, y: 0.8, z: -0.6 }, 3, 1, [near]) === null, 'a hand pointed at the sky hails no one')
+  check(aimedAt(eye, { x: 0, y: -0.6, z: -0.8 }, 3, 1, [near]) === near, 'a hand pointed down at someone short still reaches them')
+  const beside = at(0.8, -2)
+  check(aimedAt(eye, north, 3, 1, [beside]) === null && aimedAt(eye, north, 3, 2, [beside]) === beside, 'the aim widens with her scale')
 }
 
 console.log(failures === 0 ? '\nall talk checks pass' : `\n${failures} talk check(s) FAILED`)

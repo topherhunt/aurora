@@ -106,7 +106,6 @@ import { ITEMS, SMALL, Items, itemUrl } from './items.js'
 import { SINGE, SWORD, landed, recut, shielded } from './singe.js'
 import { Her } from './keep-up.js'
 import { Conversations } from './conversations.js'
-import { Mic } from './audio/mic.js'
 import { Rapport } from './talk/rapport.js'
 import { QuestLog, hideouts as townHideouts } from './talk/quests.js'
 import { toWorld as castleToWorld } from './layers/castles.js'
@@ -1030,8 +1029,6 @@ const petsIn = new Map()
 let petRoom = null
 // The jack-o'-lanterns left about every room but this one, by petRoom, saved: [netId, slot, pose] as hands.place takes them.
 const lanternsIn = new Map()
-// Her voice as the hail (audio/mic.js), asked for on the first gesture once the sound is open.
-let talkMic = null
 const talkGaze = new THREE.Vector3()
 const talkHead = new THREE.Vector3()
 
@@ -3341,6 +3338,7 @@ function buildQuestPanel() {
           const rc = el.components.raycaster
           rc.updateOriginDirection()
           got = hands.pressRay(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead())
+          if (got === null && conversations !== null && conversations.hailAlong(rc.raycaster.ray.origin, rc.raycaster.ray.direction, herScale())) return
         }
         if (got === 'pick') playPick()
       }
@@ -3967,10 +3965,14 @@ let palisades = null
 let castles = null
 let runePanel = null
 let wardHum = null
-// The ward runes' silhouettes, cut from the room's far cards the first time a castle's wards are built (render/rune-atlas.js).
+// The ward runes' silhouettes, cut from the room's far cards once they are baked (render/rune-atlas.js); null until then.
 let runeTexture = null
-function runeAtlas() {
+function bakedRunes() {
   if (runeTexture === null) runeTexture = buildRuneAtlas({ renderer, litterCards, propTextures, frogs, crabs, wildlife, wildStriders, dragons, castles })
+  return runeTexture
+}
+function runeAtlas() {
+  if (bakedRunes() === null) throw new Error('rune atlas: the far cards are not baked yet')
   return runeTexture
 }
 let castleFolk = null
@@ -5724,7 +5726,7 @@ async function buildRoom(room, at) {
     window.v2palisades = palisades // console: `v2palisades.stats`
   }
   if (layers.castles.list.length) {
-    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden, runes: runeAtlas, spentOf: (site) => wardMasks(site).spent })
+    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden, runes: bakedRunes, spentOf: (site) => wardMasks(site).spent })
     castles.update(spawn, fireNow(), lampNight(), dayness)
     window.v2castles = castles // console: `v2castles.stats`
     runePanel = new RunePanel(scene, runeAtlas, uploadQuestTexture)
@@ -6333,7 +6335,7 @@ async function buildRoom(room, at) {
     const caves = caveSites ? caveSites.mouths.map((m, mouth) => ({ system: m.system, mouth, x: m.x, z: m.z })) : []
     const keeps = layers.castles.list.map((site) => { const [x, z] = castleToWorld(site, site.gate[0], site.gate[1]); return { site: site.id, x, z } })
     const hideouts = townsfolk ? townHideouts(townsfolk.towns, caves, keeps) : null
-    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, mic: () => talkMic, pack, roosts, wrongs: talkWrongs, heard: heardAt, hideouts, castle: () => castleFolk })
+    conversations = new Conversations(scene, { seed: SEED, towns: townsfolk ? townsfolk.towns : [], townsfolk, villagers, villageSeed: villagers ? villageSeed() : 0, known: talkKnown, rapport: talkRapport, log: talkLog, upload: uploadQuestTexture, engine: () => sound, pack, roosts, wrongs: talkWrongs, heard: heardAt, hideouts, castle: () => castleFolk })
   }
   window.v2conversations = conversations
 
@@ -6949,7 +6951,7 @@ const HOTKEYS = [
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
       { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
       { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed, and on safe recalls the flare it is aimed at for a charge back; A / X in the headset' },
-      { keys: 'c', what: 'speak up to the townsperson or leafkin you face, within a few metres -- in the headset (or with a mic allowed), just say something aloud; click the grid that opens to talk' },
+      { keys: 'c', what: 'hail the townsperson or leafkin you face, within a few metres -- in the headset, point an empty hand at them and pull the trigger; click the grid that opens to talk' },
     ],
   },
   {
@@ -7540,10 +7542,6 @@ function updateAmbience(dt, state) {
 function unlockSound() {
   if (!sound) return
   sound.unlock()
-  if (talkMic === null) {
-    talkMic = new Mic(sound.ctx)
-    talkMic.start()
-  }
 }
 for (const ev of ['pointerdown', 'keydown', 'touchend', 'click']) addEventListener(ev, unlockSound, { passive: true })
 renderer.xr.addEventListener('sessionstart', () => {
@@ -7716,7 +7714,6 @@ const ambientTrace = new AmbientTrace({
   audio: () => sound === null ? null : sound.ctx,
   sound: () => sound === null ? null : {
     music: music === null ? null : music.snapshot(),
-    mic: talkMic === null ? 'none' : talkMic.status(),
     oneShots: sound.oneShots,
     loops: sound.loops.size,
     sampleRate: sound.ctx.sampleRate,

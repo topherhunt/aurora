@@ -1,5 +1,5 @@
 // Talking with the townsfolk and the leafkin (_notes/conversation-and-quests.md, "Conversation"): their chatter with
-// each other voiced where they stand, her hail (a spike on the mic, or a key) to whomever she faces, the dialog panel
+// each other voiced where they stand, her hail (a trigger pulled at someone, or a key to whomever she faces), the dialog panel
 // while they talk, and now and then one who comes to her unasked -- outdoors, or the residents of the house she is in.
 // The words are talk/*; this is when and where.
 
@@ -14,6 +14,7 @@ import { epochOf, questsFor } from './talk/quests.js'
 import { RAPPORT } from './talk/rapport.js'
 import { LK } from './talk/leafkin.js'
 import { Voices } from './audio/voices.js'
+import { aimedAt } from './talk/aim.js'
 import { jeer, swordWarning } from './talk/armed.js'
 import { DialogPanel } from './ui/dialog-panel.js'
 import { ghostSays } from './talk/ghost.js'
@@ -48,12 +49,12 @@ export class Conversations {
   /**
    * `towns` planTowns' (the same `townsfolk.towns`); `villagers` the room's leafkin village or null, `villageSeed` its
    * seed. `known`, `rapport` and `log` outlive the room (main.js). `upload` puts a canvas on the GPU; `engine()` is the
-   * SoundEngine once it is open and `mic()` her Mic once asked for, else null. `pack` is what she carries (main.js),
+   * SoundEngine once it is open, else null. `pack` is what she carries (main.js),
    * `roosts` the dragon roosts or null in a village (the deer town stands near one), and `wrongs` the glade she wronged:
    * `{ wronged(): boolean, witness(): villager id or null }`. `heard(p)` puts a point {x, y, z} where her ears hear it, in place.
    * `hideouts` each town's (quests.js hideouts), or null in a village. `castle()` is the castle folk (render/castle-folk.js) or null.
    */
-  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, mic, pack, roosts, wrongs, heard, hideouts, castle }) {
+  constructor(scene, { seed, towns, townsfolk, villagers, villageSeed, known, rapport, log, upload, engine, pack, roosts, wrongs, heard, hideouts, castle }) {
     this.world = new TalkWorld(seed, towns)
     if (hideouts !== null) this.world.seatHideouts(hideouts)
     this.pack = pack
@@ -86,7 +87,7 @@ export class Conversations {
       return r.json()
     }).then((table) => { this.picker = new LinePicker(table, seed) })
     this.voices = null
-    this.mic = mic
+    this.pointed = null
     this.now = 0
     this.epoch = null
     this.quests = null
@@ -111,9 +112,16 @@ export class Conversations {
     this.warned = new Set()
   }
 
-  /** The key's stand-in for her voice. */
+  /** The key's hail, to whomever she faces. */
   hail() {
     this.hailed = true
+  }
+
+  /** A hail along her pointer (a world ray, `dir` unit length): whether it found someone to hail, so the trigger is spent. */
+  hailAlong(origin, dir, scale) {
+    if (this.chat !== null) return false
+    this.pointed = aimedAt(origin, dir, TALK.hail * scale, scale, this._people([]))
+    return this.pointed !== null
   }
 
   get open() {
@@ -303,10 +311,10 @@ export class Conversations {
     if (this.coming && this.coming.p.res !== this._res) { this._unhold(this.coming.p); this.coming = null }
     if (this.chat) this._keep(head, scale, indoors)
     else if (this.scold) this._keepScold(head, scale, away)
-    const mic = this.mic()
-    const spoke = (mic !== null && mic.spike(seconds, dt)) || this.hailed
+    const hailing = this.pointed !== null ? this.pointed : this.hailed ? this._faced(head, gaze, scale, this._people([])) : null
+    this.pointed = null
     this.hailed = false
-    if (spoke && this.chat === null && !indoors) this._hail(head, gaze, scale)
+    if (hailing !== null && this.chat === null && !indoors) this._hail(hailing)
     if (this.townsfolk) for (const t of this.warned) if (!this.townsfolk.alive.has(t)) this.warned.delete(t)
     if (this.chat === null && this.scold === null && !away && Math.floor(seconds / TALK.jeer.every) !== Math.floor((seconds - dt) / TALK.jeer.every)) this._jeer(head, scale)
     if (this.coming) this._wait(head)
@@ -405,9 +413,7 @@ export class Conversations {
     return best
   }
 
-  _hail(head, gaze, scale) {
-    const p = this._faced(head, gaze, scale, this._people([]))
-    if (p === null) return
+  _hail(p) {
     // One who came to her and waits is already facing her, and answers at once.
     const approached = this.coming !== null && this.coming.p.mind === p.mind && this.coming.hailed
     if (this.coming && this.coming.p.mind !== p.mind) this._unhold(this.coming.p)

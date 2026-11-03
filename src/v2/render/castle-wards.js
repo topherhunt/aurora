@@ -78,12 +78,12 @@ function runeStrip(code, w) {
 const BURST = 90
 
 export class WardSet {
-  /** `P` the castle's portals, `runes` the rune atlas texture, `open` and `spent` bitmasks of wards opened and books used. `roof`: draw the tower tops' books rather than the rooms'. */
+  /** `P` the castle's portals, `runes` the rune atlas texture or null until setRunes, `open` and `spent` bitmasks of wards opened and books used. `roof`: draw the tower tops' books rather than the rooms'. */
   constructor(P, runes, open, spent, roof = false) {
     this.group = new THREE.Group()
     this.group.name = 'qa-castle-wards'
     this.halo = haloTexture()
-    this.runeMat = new THREE.MeshBasicMaterial({ map: runes, color: 0x000000, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
+    this.runeMat = new THREE.MeshBasicMaterial({ map: runes, visible: runes !== null, color: 0x000000, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
     this.gemGeo = new THREE.OctahedronGeometry(WARD_LOOK.gem, 0).scale(1, 1.7, 1)
     this.gemMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(...WARD_LOOK.tint).multiplyScalar(1.6), toneMapped: false })
     this.haloMat = new THREE.SpriteMaterial({ map: this.halo, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, color: new THREE.Color(...WARD_LOOK.tint) })
@@ -137,7 +137,14 @@ export class WardSet {
     this.burst = null
   }
 
-  /** Each frame: `t` seconds, `dt` the step, `eye` her eye in the interior's frame (books turn to face it). */
+  /** The rune atlas, for a set built before the far cards were baked: without it the pages are blank rather than black. */
+  setRunes(runes) {
+    this.runeMat.map = runes
+    this.runeMat.visible = true
+    this.runeMat.needsUpdate = true
+  }
+
+  /** Each frame: `t` seconds, `dt` the step, `eye` her eye in the set's frame (books turn to face it). */
   update(t, dt, eye) {
     for (const w of this.wards) {
       if (!w.g.visible) continue

@@ -191,7 +191,7 @@ export function interiorMaterials(maps, uTorch) {
 export class Castles {
   /** `sites` layers/castles.js CastleSites.list; `patch(material, cacheKey)` lighting.js's vertex patch; `uTorch` lighting.js's
    * held torches, shared by reference; `probeHidden` what the dungeon water's probe must not capture (main.js's world probe's);
-   * `runes()` the rune atlas texture (render/rune-atlas.js), asked for when a castle's wards are built; `spentOf(site)` a built
+   * `runes()` the rune atlas texture (render/rune-atlas.js), null until the far cards are baked; `spentOf(site)` a built
    * castle's spent runebooks as a bitmask (main.js wardMasks), read while its tower tops' books are drawn. */
   constructor(scene, sites, { patch, uTorch, probeHidden, runes, spentOf }) {
     if (!uTorch || uTorch.value.length !== TORCHES) throw new Error('Castles: needs lighting.uniforms.uTorch')
@@ -346,6 +346,7 @@ export class Castles {
       this.waterUniforms.uTime.value = t % 1024
       const w = this.inside.wardSet, m = this.inside.innerMesh
       this._eye.set(eye.x, eye.y, eye.z)
+      this._lateRunes(w)
       w.update(t, wardDt, m.worldToLocal(this._eye))
     }
     if (cards) this._placeCards()
@@ -365,8 +366,16 @@ export class Castles {
       c.roofSet = new WardSet({ wards: [], books: c.solids.portals.books }, this.runes(), 0, spent, true)
       c.group.add(c.roofSet.group)
     }
+    this._lateRunes(c.roofSet)
     c.roofSet.catchUp(0, spent)
     c.roofSet.update(t, dt, c.group.worldToLocal(this._eye.set(eye.x, eye.y, eye.z)))
+  }
+
+  /** Rune pages for a WardSet built before the far cards were baked. */
+  _lateRunes(set) {
+    if (set.runeMat.map !== null) return
+    const runes = this.runes()
+    if (runes !== null) set.setRunes(runes)
   }
 
   /** Castle site `id` built, whatever the frame loop has reached: a save wakes her inside it before the first frame. Its site. */
