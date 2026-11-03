@@ -33,7 +33,7 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_EVERY, RADIUS, HUNT, GROW, PET } from '../src/v2/render/crabs.js'
+import { Crabs, SHORE_M, PERCH_MIN, SIZE_M, DEEP_MUL, ROCK_FRACTION, PER_PERCH, SPEED, STRETCH_Y, SINK, WET_ROUGHNESS, HUE, RESEAT_S, SWEEP_M, RADIUS, HUNT, GROW, PET } from '../src/v2/render/crabs.js'
 import { MEAL } from '../src/v2/eating.js'
 import { PERCH_STRIDE } from '../src/v2/render/rocks.js'
 import { CARD_M, CRITTER_GLB, GLINT, hueTurnTint, setTierTint } from '../src/v2/render/critters.js'
@@ -201,7 +201,12 @@ check(crabs.loaded && crabs.mesh.visible && Math.abs(crabs.span - 1) < 1e-6, 'as
 // A perch carries PER_PERCH * (1 + rand * r^2) crabs on average, so any one rock may
 // have none; the placement checks pool SEEDS worlds' worth so each boulder is judged
 // on its expectation, and every crab in the pool on its own terms.
-const alive = (of = crabs) => of.slots.filter((c) => c.perch !== null)
+// A laid crab's slot x, y, z, state and speed are read off its table row at the room's clock here (Crabs._at, the CPU twin of the vertex shader); the GPU draws it without the CPU ever writing them.
+const alive = (of = crabs) => {
+  const l = of.slots.filter((c) => c.perch !== null)
+  for (const c of l) if (c.laid !== null && c.rowSpell !== null && c.hunt === null) of._at(c, of.now)
+  return l
+}
 live = BOULDERS
 const SEEDS = 16
 const pool = []
@@ -278,7 +283,7 @@ for (let i = 0; i < SECONDS / DT; i++) {
   for (const c of alive()) {
     const top = stoneUnder(c)
     if (top === -Infinity) offStone++
-    else if (Math.abs(c.y - top) > 1e-6) floating++
+    else if (Math.abs(c.y - top) > (c.state === 'go' ? 0.02 : 1e-6)) floating++
     if (Math.hypot(c.x - c.perch.x, c.z - c.perch.z) > c.perch.r + 1e-6) offPerch++
     if (c.ny < 0.999) tilted++
     // One sample per spell: a spell is a new pace on a crab.
@@ -301,9 +306,9 @@ check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame
 check(crabs.mesh.count === alive().length && crabs.cardCount === 0, 'the instance count is the live count, and before the bake all of it is the mesh', `${crabs.mesh.count}`)
 
 // --- the stone moving under a seated crab ----------------------------------------
-// A rock re-seated on a re-split chunk drops or rises by more than the drawn top a crab's spell was planned against; a crab follows within RESEAT_EVERY frames either way, sitting or scuttling.
+// A rock re-seated on a re-split chunk drops or rises by more than the drawn top a crab's spell was planned against; a crab follows within RESEAT_S either way, sitting or scuttling.
 {
-  const seated = () => alive().filter((c) => Math.abs(c.y - stoneUnder(c)) < 1e-6).length
+  const seated = () => alive().filter((c) => Math.abs(c.y - stoneUnder(c)) < 0.02).length
   const n = alive().length
   // A frame with one of each, so the re-seat is asked of a crab mid-scuttle and of one sitting still.
   const both = () => alive().some((c) => c.state === 'go') && alive().some((c) => c.state === 'pause')
@@ -312,8 +317,8 @@ check(crabs.mesh.count === alive().length && crabs.cardCount === 0, 'the instanc
     lift += shift
     check(seated() < n * 0.5, `the stone ${shift < 0 ? 'drops' : 'rises'} ${Math.abs(shift)} m and the crabs are left ${shift < 0 ? 'in the air' : 'in the stone'}`, `${seated()} of ${n} seated`)
     const going = alive().filter((c) => c.state === 'go').length
-    for (let i = 0; i < RESEAT_EVERY; i++) crabs.update(15, LEVEL + 1.6, 0, (T += DT))
-    check(seated() === n, `every crab is back on the stone within ${RESEAT_EVERY} frames, the ${going} scuttling and the ${n - going} sitting alike`, `${seated()} of ${n}`)
+    for (let i = 0; i < Math.ceil(RESEAT_S / DT) + 2; i++) crabs.update(15, LEVEL + 1.6, 0, (T += DT))
+    check(seated() === n, `every crab is back on the stone within ${RESEAT_S} s, the ${going} scuttling and the ${n - going} sitting alike`, `${seated()} of ${n}`)
   }
   check(lift === 0 && seated() === n, 'and on it again once the stone is back')
 }
@@ -327,7 +332,7 @@ check(crabs.mesh.count === alive().length && crabs.cardCount === 0, 'the instanc
   const listed = crabs.bodies([])
   check(listed.length === alive().length && listed.includes(walker) && walker.speed > 0, 'every seated crab is listed, the walker at its pace', `${listed.length} of ${alive().length}`)
   check(listed.includes(pauser) && pauser.speed === 0, 'the pauser listed at speed 0')
-  windTo(crabs, () => walker.state !== 'go')
+  windTo(crabs, () => (alive(), walker.state !== 'go'))
   check(walker.state === 'pause' && walker.speed === 0 && crabs.bodies([]).includes(walker), 'its scuttle over, the walker sits down at speed 0 and stays listed')
   crabs.batch.visible = false
   check(crabs.bodies([]).length === 0, 'a hidden layer lists nobody')
@@ -338,18 +343,65 @@ check(crabs.mesh.count === alive().length && crabs.cardCount === 0, 'the instanc
 // The stand-in slab is 0.3 tall at span 1, so a crab sinks SINK * 0.3 * size.
 const sinkOf = (c) => SINK * 0.3 * c.size
 {
-  const e = crabs.mesh.instanceMatrix.array
+  // The GPU composes this matrix from the row; _compose is the one the cards and the CPU-driven crabs use, and poseAt the row's twin.
+  const e = new Array(16)
+  const P = { anim: new Float32Array(4) }
   let seated = 0, stretched = 0
-  alive().forEach((c, i) => {
+  alive().forEach((c) => {
+    crabs.poseAt(c, crabs.now, P)
+    crabs._compose(P.x, P.y, P.z, P.nx, P.ny, P.nz, P.yaw, c.size, e)
     const s = sinkOf(c)
-    const off = Math.hypot(e[i * 16 + 12] - (c.x - c.nx * s), e[i * 16 + 13] - (c.y - c.ny * s), e[i * 16 + 14] - (c.z - c.nz * s))
+    const off = Math.hypot(e[12] - (c.x - c.nx * s), e[13] - (c.y - c.ny * s), e[14] - (c.z - c.nz * s))
     if (off < 1e-4) seated++
-    const sx = Math.hypot(e[i * 16], e[i * 16 + 1], e[i * 16 + 2])
-    const sy = Math.hypot(e[i * 16 + 4], e[i * 16 + 5], e[i * 16 + 6])
+    const sx = Math.hypot(e[0], e[1], e[2])
+    const sy = Math.hypot(e[4], e[5], e[6])
     if (Math.abs(sx - c.size) < 1e-4 && Math.abs(sy / sx - STRETCH_Y) < 1e-4) stretched++
   })
   check(seated === alive().length, `each crab is drawn ${SINK * 100}% of its body height into the stone along its own normal`, `${seated} of ${alive().length}`)
   check(stretched === alive().length, `each crab is drawn ${STRETCH_Y}x taller than its mesh, its footprint its size`, `${stretched} of ${alive().length}`)
+}
+
+// --- the GPU's crab is the CPU's crab -------------------------------------------
+// poseAt is MOTION_GLSL in JS. Every laid crab, at 600 moments across its spell, is held to what Crabs._play and writeAnim give: a sit exactly, a scuttle within the sagitta of its straight pieces.
+{
+  const P = { anim: new Float32Array(4) }
+  const ref = new Float32Array(4)
+  const mt = new Array(16), mc = new Array(16)
+  let samples = 0, go = 0, sitOff = 0, goOff = 0, goPos = 0, stateBad = 0, animBad = 0, weightBad = 0
+  for (const c of alive()) {
+    if (c.laid === null) continue
+    const spell = c.spell
+    for (let s = 0; s < 600; s++) {
+      const t = c.laidStart + ((s + 0.37) / 600) * 32
+      crabs.poseAt(c, t, P)
+      crabs._play(c, t)
+      if (c.spell !== spell) throw new Error('parity sample left the laid spell')
+      crabs._compose(c.x, c.y, c.z, c.nx, c.ny, c.nz, c.side < 0 ? c.yaw + Math.PI : c.yaw, c.size, mc)
+      crabs._compose(P.x, P.y, P.z, P.nx, P.ny, P.nz, P.yaw, c.size, mt)
+      let d = 0
+      for (let i = 0; i < 16; i++) d = Math.max(d, Math.abs(mt[i] - mc[i]))
+      writeAnim(anim, c, ref, 0)
+      samples++
+      if (P.state !== c.state) { stateBad++; continue }
+      if (c.state === 'go') { go++; goOff = Math.max(goOff, d); goPos = Math.max(goPos, Math.hypot(mt[12] - mc[12], mt[13] - mc[13], mt[14] - mc[14])) } else sitOff = Math.max(sitOff, d)
+      if (ref[0] !== P.anim[0] || ref[1] !== P.anim[1] || Math.abs(ref[2] - P.anim[2]) > 0.01) animBad++
+      if (Math.abs(ref[3] - P.anim[3]) > 0.01) weightBad++
+    }
+  }
+  check(samples > 1000 && go > 100 && stateBad === 0, 'the twin and the CPU agree on sitting or scuttling at every sample', `${samples} samples, ${go} scuttling, ${stateBad} differ`)
+  check(sitOff < 1e-5, 'a sitting crab is drawn by the twin as the CPU draws it', `worst matrix element ${sitOff.toExponential(1)}`)
+  check(goPos < 0.02 && goOff < 0.08, 'and a scuttling one within the sagitta of its pieces, its tilt a little behind a stone\'s rim', `worst place ${goPos.toFixed(4)} m, worst matrix element ${goOff.toFixed(4)}`)
+  check(animBad <= samples * 0.01 && weightBad === 0, 'and the twin reads the same clip frames and fade weight as writeAnim', `${animBad} of ${samples} frames differ, ${weightBad} weights`)
+}
+
+// A frame in which no crab changes asks nothing of the GPU: no row, no list, no hue, no matrix, no card.
+{
+  const vers = () => [crabs.table.texture.version, crabs.rows.version, crabs.hue.version, crabs.mesh.instanceMatrix.version, crabs.animAttr.version].join(',')
+  check(windTo(crabs, () => crabs.cardWalkers === 0 && crabs.nextWake - T > 0.6 && !crabs.listDirty), 'some frame has every crab on a phrase for a while yet')
+  crabs.update(15, HEAD_Y(), 0, (T += DT))
+  const v0 = vers()
+  for (let i = 0; i < Math.floor(0.5 / DT); i++) crabs.update(15, HEAD_Y(), 0, (T += DT))
+  check(vers() === v0, 'and half a second of such frames uploads no table row, list, hue, matrix or clip', `versions ${v0} then ${vers()}`)
 }
 
 // --- cling: the normal on a shoulder, at a lip, on a face -----------------------
@@ -380,7 +432,7 @@ const sinkOf = (c) => SINK * 0.3 * c.size
   check(crabs.cardCount === 0 && !crabs.cardReady, 'no card is drawn until its picture is baked')
   // Pooled over seeds again, so both sides of the line are populated: the shelf is a few metres from her, the floor and the beach well past CARD_M.
   const HEAD = [15, LEVEL + 1.6, 0]
-  const dist = (e, i) => Math.hypot(e[i * 16 + 12] - HEAD[0], e[i * 16 + 13] - HEAD[1], e[i * 16 + 14] - HEAD[2])
+  const dist = (c) => Math.hypot(c.x - HEAD[0], c.y - HEAD[1], c.z - HEAD[2])
   let meshN = 0, cardN = 0, liveN = 0, matched = 0
   const tintNear = (p, q) => Math.abs(p.r - q.r) < 1e-6 && Math.abs(p.g - q.g) < 1e-6 && Math.abs(p.b - q.b) < 1e-6
   const near = [], far = []
@@ -392,12 +444,13 @@ const sinkOf = (c) => SINK * 0.3 * c.size
     k.setCard()
     k.place(15, 0)
     k.update(...HEAD, T)
-    const e = k.mesh.instanceMatrix.array
-    for (let i = 0; i < k.mesh.count; i++) near.push(dist(e, i))
-    for (const c of alive(k)) {
+    // The mesh's instances are the rows the sweep listed; each stands at its crab's row at this second.
+    const listed = alive(k)
+    for (let i = 0; i < k.mesh.count; i++) near.push(dist(k.slots[k.rows.array[i] - 1]))
+    for (const c of listed) {
       if (!k.cards.vis[c.id]) continue
       const ce = k.cards.mat
-      far.push(Math.hypot(c.x - HEAD[0], c.y - HEAD[1], c.z - HEAD[2]))
+      far.push(dist(c))
       // The card is the body's matrix, lifted to the body's middle and laid flat: its up is the body's -Z, its right the body's X, centred on the crab's own normal.
       const m = k.cards.getMatrixAt(c.id, new THREE.Matrix4())
       const body = new THREE.Matrix4().fromArray(c.m)
@@ -440,14 +493,18 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   const sunk = alive(k).filter((c) => c.y < c.perch.level)
   const dry = alive(k).filter((c) => !(c.y < c.perch.level))
   check(sunk.every((c) => c.y < LEVEL) && dry.every((c) => c.y >= LEVEL), 'every crab knows its lake level, and whether it is under it', `${sunk.length} sunk, ${dry.length} dry`)
-  const pose = sunk.map((c) => [c, c.x, c.y, c.z, c.elapsed, c.phase])
+  k.update(15, LEVEL + 1.6, 0, (T += DT), false)
+  const _P = { anim: new Float32Array(4) }
+  const animOf = (c) => { k.poseAt(c, k.now, _P); return Array.from(_P.anim).join() }
+  const pose = sunk.map((c) => [c, c.elapsed, c.phase, animOf(c)])
+  const inLists = () => sunk.filter((c) => c.cardOn || Array.from(k.rows.array.subarray(0, k.mesh.count)).includes(c.id + 1)).length
   for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL + 1.6, 0, (T += DT), false)
   check(written() === dry.length, 'with her head in the air only the dry crabs are written', `${written()} of ${alive(k).length}`)
-  check(pose.every(([c, x, y, z, elapsed, phase]) => c.x === x && c.y === y && c.z === z && c.elapsed === elapsed && c.phase === phase), 'and no sunk crab moves or counts the time')
+  check(inLists() === 0 && pose.every(([c, elapsed, phase]) => c.elapsed === elapsed && c.phase === phase), 'and no sunk crab is in the mesh or the card, or has the CPU count the time', `${inLists()} listed`)
   check(k.bodies([]).length === dry.length && !k.bodies([]).some((c) => sunk.includes(c)), 'and the ear is offered the dry crabs alone', `${k.bodies([]).length} listed`)
   for (let i = 0; i < 5 * 72; i++) k.update(15, LEVEL - 1, 0, (T += DT), true)
   check(written() === alive(k).length, 'under, every crab is written again', `${written()} of ${alive(k).length}`)
-  check(pose.some(([c, x, y, z, elapsed]) => c.elapsed !== elapsed), 'and the sunk ones pick their spell back up when she goes under')
+  check(inLists() === sunk.length && pose.some(([c, , , frame]) => animOf(c) !== frame), 'and the sunk ones are drawn again, on the spell the clock has carried them to, when she goes under', `${inLists()} of ${sunk.length} listed`)
   check(k.bodies([]).length === alive(k).length, 'and the ear is offered all of them')
   k.dispose()
 }
@@ -542,6 +599,7 @@ check(alive().length === snapA.length, 'a tile whose rocks landed after the scan
   // The same world again: every crab but that one.
   const again = new Crabs(scene, height, water, { seed, rocks, cards: new LitterCards(4096), assets: asset, anim })
   again.place(15, 0)
+  again.update(head.x, head.y, head.z, T, false)
   const key = (of) => alive(of).map((g) => `${g.x.toFixed(3)},${g.z.toFixed(3)},${g.size.toFixed(3)}`).sort()
   check(JSON.stringify(key(again)) === JSON.stringify(key(k)) && alive(again).length === before - 1, 'the perch regrows without it, and nothing else moved', `${alive(again).length} of ${before}`)
   {

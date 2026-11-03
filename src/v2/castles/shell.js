@@ -1211,8 +1211,8 @@ export function interiorGeometries(lay) {
         const pole = (a, b, r, col) => {
           const d = norm(sub(b, a)), e1 = Math.abs(d[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], e2 = norm(cross(d, e1))
           const out = (t) => [0, 1, 2].map((j) => Math.cos(t) * e1[j] + Math.sin(t) * e2[j])
-          const rim = (p, i) => { const o = out(i * Math.PI / 4); return [p[0] + o[0] * r, p[1] + o[1] * r, p[2] + o[2] * r] }
-          for (let i = 0; i < 8; i++) m.quad(rim(a, i), rim(a, i + 1), rim(b, i + 1), rim(b, i), col, out((i + 0.5) * Math.PI / 4))
+          const rim = (p, i) => { const o = out(i * Math.PI * 2 / 7); return [p[0] + o[0] * r, p[1] + o[1] * r, p[2] + o[2] * r] }
+          for (let i = 0; i < 7; i++) m.quad(rim(a, i), rim(a, i + 1), rim(b, i + 1), rim(b, i), col, out((i + 0.5) * Math.PI * 2 / 7))
         }
         const H3 = (u, h) => at3(plan(u, LADDER.rails), h), wood = m.tint(LADDER_WOOD)
         for (const o of [-LADDER.half, LADDER.half]) pole(H3(o, y), H3(o, trap), 0.035, wood)

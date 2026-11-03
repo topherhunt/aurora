@@ -23,7 +23,8 @@
 // drawn terrain and re-seated when the chunk under it re-splits
 // (Rocks._reground), by tens of centimetres where a far 2 m chunk becomes a
 // near 0.5 m one, and a laid spell would never follow the rock. So every
-// RESEAT_S the spots of every crab's spell are re-read against their stone, and
+// RESEAT_FRAMES frames the spot of every crab's spell that it sits on or walks
+// to is re-read against its stone, a slice of the crabs a frame, and
 // a spell whose stone moved is laid again.
 //
 // THE GPU POSES A CRAB ON ITS ROCK. A spell is laid into one row of a PhraseTable
@@ -123,15 +124,16 @@ const POST_TRIES = 8
 // Drawn STRETCH_Y taller than the mesh (which is squashed flat), and sunk SINK of its height into the stone along the normal, so the legs grip the surface instead of tiptoeing on it.
 export const STRETCH_Y = 1.25
 export const SINK = 0.2
-// Frames between a CPU-driven crab's re-reads of its stone's height, seconds between the re-reads of every laid spell's stone (see the header), and frames per tile rescan.
+// Frames between a CPU-driven crab's re-reads of its stone's height, frames between the re-reads of a laid spell's stone (see the header) and the seconds that is at 72 fps, and frames per tile rescan.
 export const RESEAT_EVERY = 8
-export const RESEAT_S = 0.25
+export const RESEAT_FRAMES = 16
+export const RESEAT_S = RESEAT_FRAMES / 72
 const RESCAN_FRAMES = 4
 // The sweep re-sorts the crabs into mesh and card when her head has moved SWEEP_M, at every phrase turn, and every SWEEP_S while a far card is walking (a card's drift lasts 0.25 s).
 export const SWEEP_M = 0.25
 export const SWEEP_S = 0.2
 // A go phrase is laid as pieces of GO_PIECE_SPAN of the crab's size, at most GO_PIECES_MAX of them (the row holds 31 phrases; the sits take up to 6).
-const GO_PIECE_SPAN = 0.5
+const GO_PIECE_SPAN = 0.25
 const GO_PIECES_MAX = 24
 // Phrase kinds in the row.
 const PAUSE = 0
@@ -167,8 +169,6 @@ const _flat = new THREE.Matrix4()
 const _lay = new THREE.Matrix4().makeRotationX(-Math.PI / 2)
 const _tint = new THREE.Color()
 const _at = { x: 0, y: 0, z: 0, ph: null }
-const _row = new Float32Array(16)
-const _anim = new Float32Array(4)
 const _P = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, heading: 0, state: 'pause', speed: 0, vx: 0, vy: 0, vz: 0, until: 0, anim: new Float32Array(4) }
 
 // The body of gpuMotion (gpu-motion.js) for a crab. Phrase texels: A = start, dur, kind, s (a pause: seconds into its bout at the phrase's start; a go: the walk's cycles at it, phase0 in); B = x, y, z, drawn yaw; C = (pause) clip base, frames, seconds, (go) cycles a second, side, 0, and in both w = seconds from the whole pause or leg to this phrase; D = ground normal, w = the whole pause or leg's seconds. A go phrase runs to the next phrase's B and D. Kind CPU hands the mesh's own matrix and aAnim back.
@@ -365,7 +365,6 @@ export class Crabs {
     this.sweptUnder = true
     this.sweptHead = { x: Infinity, y: Infinity, z: Infinity }
     this.nextWake = -Infinity
-    this.nextReseat = -Infinity
     this.cardWalkers = 0
     this.sweepNo = 0
     // The releases owed to the room (pending), and the drop key of every release made here, hers or a peer's, so one heard twice lets one crab go.
@@ -1308,16 +1307,22 @@ export class Crabs {
     _mat.compose(_pos, _quat, _scl).toArray(out)
   }
 
-  /** Re-read the stone under every laid spell's sits; a spell whose stone moved is planned again and laid at the next sweep. */
+  /** Re-read the stone under the next pause of a laid spell (the one it sits at, or is walking to), for the slice of crabs due this frame; a spell whose stone moved is planned again and laid at the next sweep. */
   _reseat(now) {
-    this.nextReseat = now + RESEAT_S
     for (const t of this.tiles.values()) {
       if (t.live === 0) continue
       for (const p of t.perches.values()) {
         for (const c of p.crabs) {
+          if ((this.frame + c.id) % RESEAT_FRAMES !== 0) continue
           if (c.hunt !== null || c.rowSpell === null || c.rowSpell !== c.spell) continue
-          for (const ph of c.spell.phrases) {
+          const phrases = c.spell.phrases
+          const e = now - c.spell.start
+          let i = phrases.indexOf(Crabs._phraseAt(phrases, e))
+          let seen = 0
+          for (; i < phrases.length && seen < 1; i++) {
+            const ph = phrases[i]
             if (ph.kind !== 'pause') continue
+            seen++
             const top = this.stoneAt(ph.at.x, ph.at.z)
             if (top === -Infinity || top === ph.at.y) continue
             c.spell = null
@@ -1423,7 +1428,7 @@ export class Crabs {
   /**
    * One frame. A crab on its spell is drawn by the GPU off its table row and costs the CPU nothing between
    * the turns of its plan: the sweep (_sweep) runs when she has moved SWEEP_M, a phrase has turned, a far card
-   * is walking (SWEEP_S), or the list of who is drawn changed; the stones are re-read every RESEAT_S. Only a
+   * is walking (SWEEP_S), or the list of who is drawn changed; the stones are re-read a slice of crabs a frame (_reseat). Only a
    * loose crab, a pet and a hunter (and every crab while she is small enough to be hunted) are posed here
    * and written to the mesh after the GPU's crabs, on row 0.
    *
@@ -1464,7 +1469,7 @@ export class Crabs {
       this.cpuAll = small
       this.listDirty = true
     }
-    if (!this.cpuAll && now >= this.nextReseat) this._reseat(now)
+    if (!this.cpuAll) this._reseat(now)
     const sh = this.sweptHead
     if (
       this.listDirty || now < this.sweptAt ||

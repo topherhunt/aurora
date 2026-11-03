@@ -90,6 +90,7 @@ import {
 } from './critters.js'
 import { MEAL } from '../eating.js'
 import { KEEP_UP, headway } from '../keep-up.js'
+import { PhraseTable, ROW_W, motionSplice } from './gpu-motion.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
@@ -172,6 +173,59 @@ export const BOB_AMP = 0.04
 const WALK_M = 4
 // A frog further than this from her head says nothing to the ear: the splash's reach (ambience.js RULES.splash), the farther of its two sounds.
 const HEAR_M = 30
+// A bed frog on its plan is posed in the vertex shader from its row of the phrase table (gpu-motion.js): phrase kinds are a dry sit, a sit afloat, a hop (to the next phrase's spot) and the CPU row, which hands back the instance matrix.
+const SIT = 0
+const SIT_WET = 1
+const HOP = 2
+const CPU = 3
+// The drawn list is re-sorted into tiers when she has moved this far from where it was last sorted, or a frog has begun or ended a phrase and this long has passed.
+export const SWEEP_M = 0.25
+export const SWEEP_S = 0.25
+// The most a frog strays from its home, on its plan: TETHER_M to a post, and a leap's swing off the line to the next.
+const EXCURSION_M = TETHER_M + 4
+
+// The body of gpuMotion (gpu-motion.js) for a frog. Phrase texels: A = start, dur, kind, a hop's rise; B = x, y, z, yaw of the sit or the hop's take-off; D = ground normal there. A hop runs to the NEXT phrase's B (landing spot and yaw) and D (landing normal): a segment always ends in a sit. uFrogPhase is the breath's and the surface bob's phase, a turn of 2 pi each, aBreath the frog's own offset.
+const MOTION_GLSL = /* glsl */ `
+  int p = phraseAt( row, n, e );
+  vec4 A = texel( row, 1 + 4 * p );
+  if ( A.z > 2.5 ) return instanceMatrix;
+  vec4 B = texel( row, 2 + 4 * p );
+  vec3 pos = B.xyz;
+  vec3 nrm = texel( row, 4 + 4 * p ).xyz;
+  float yaw = B.w;
+  vec3 sc = vec3( 1.0 );
+  if ( A.z > 1.5 ) {
+    vec4 T = texel( row, 6 + 4 * p );
+    vec3 nTo = texel( row, 8 + 4 * p ).xyz;
+    float u = A.y > 0.0 ? clamp( ( e - A.x ) / A.y, 0.0, 1.0 ) : 1.0;
+    pos = mix( B.xyz, T.xyz, u );
+    pos.y += 4.0 * A.w * u * ( 1.0 - u );
+    float v = min( 1.0, u * 1.5 );
+    nrm = mix( nrm, nTo, v );
+    vec2 d = T.xz - B.xz;
+    float bear = dot( d, d ) < 1e-18 ? T.w : atan( -d.y, d.x );
+    yaw = bear + atan( sin( T.w - bear ), cos( T.w - bear ) ) * v;
+    float s = sin( 3.14159265 * u );
+    sc = vec3( 1.0 + 0.25 * s, 1.0 - 0.15 * s, 1.0 );
+  } else if ( A.z > 0.5 ) {
+    pos.y += ${BOB_AMP.toFixed(4)} * sin( uFrogPhase.y + aBreath );
+  } else {
+    float s = ${BREATH_AMP.toFixed(4)} * ( 0.5 + 0.5 * sin( uFrogPhase.x + aBreath ) );
+    sc = vec3( 1.0 + s * 0.4, 1.0 + s, 1.0 + s * 0.4 );
+  }
+  nrm = normalize( nrm );
+  vec4 q = normalize( vec4( nrm.z, 0.0, -nrm.x, 1.0 + nrm.y ) );
+  float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z, xw = q.x * q.w, yw = q.y * q.w, zw = q.z * q.w;
+  float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+  mat3 tilt = mat3(
+    1.0 - 2.0 * ( yy + zz ), 2.0 * ( xy + zw ), 2.0 * ( xz - yw ),
+    2.0 * ( xy - zw ), 1.0 - 2.0 * ( xx + zz ), 2.0 * ( yz + xw ),
+    2.0 * ( xz + yw ), 2.0 * ( yz - xw ), 1.0 - 2.0 * ( xx + yy ) );
+  float cy = cos( yaw ), sy = sin( yaw );
+  mat3 R = tilt * mat3( cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy );
+  float k = head.z;
+  return mat4( vec4( R[ 0 ] * ( k * sc.x ), 0.0 ), vec4( R[ 1 ] * ( k * sc.y ), 0.0 ), vec4( R[ 2 ] * ( k * sc.z ), 0.0 ), vec4( pos, 1.0 ) );
+`
 
 /** The room's key for a bed of frogs, its tile; a frog's is the bed's and its candidate index (creature-net.js routes the `fg` prefix here). */
 export const bedKey = (tx, tz) => `fg:${tx},${tz}`
@@ -189,6 +243,21 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _stone = { x: 0, z: 0, r: 0 }
 const _her = new THREE.Vector3()
+
+/** A frog's slot. While the frog is drawn by the GPU (`gpu`) its x, y, z read the plan at the room's clock, so a reader between frames (sense.js, hands.js) sees where the shader draws it. */
+class Frog {
+  constructor(owner, init) {
+    this.owner = owner
+    Object.assign(this, init)
+  }
+
+  get x() { if (this.gpu && this.sat !== this.owner.now) this.owner._sync(this); return this._x }
+  set x(v) { this._x = v }
+  get y() { if (this.gpu && this.sat !== this.owner.now) this.owner._sync(this); return this._y }
+  set y(v) { this._y = v }
+  get z() { if (this.gpu && this.sat !== this.owner.now) this.owner._sync(this); return this._z }
+  set z(v) { this._z = v }
+}
 
 export class Frogs {
   /**
@@ -220,7 +289,18 @@ export class Frogs {
 
     // Wet skin glints: critters.js's glint. One material for every tier; the tiers share the pick's colour map.
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
-    this.material.onBeforeCompile = (shader) => { glint(shader); hueVary(shader) }
+    // Table row of each instance: a frog's is its slot id + 1; row 0 is the CPU row, which the tail of a tier and a held copy (hands.js defaults every instanced attribute to 0) are drawn by.
+    this.table = new PhraseTable(MAX + 1)
+    this.table.write(0, 0, 1, [{ kind: CPU, start: 0, dur: 1, apex: 0, yaw: 0, a: { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }, b: null }])
+    this.uPhase = { value: new THREE.Vector2() }
+    this.material.onBeforeCompile = (shader) => {
+      shader.uniforms.uFrogPhase = this.uPhase
+      // Before the frog's own declarations, which must come ahead of the motion block.
+      motionSplice(shader, this.table, MOTION_GLSL)
+      shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n#ifdef USE_INSTANCING\nuniform vec2 uFrogPhase;\nattribute float aBreath;\n#endif')
+      glint(shader)
+      hueVary(shader)
+    }
     this.material.customProgramCacheKey = () => 'frogs'
     this.tinted = false
     this.tiers = Array.from({ length: LOD_TIERS }, (_, k) => {
@@ -235,6 +315,22 @@ export class Frogs {
       return mesh
     })
     this.hues = this.tiers.map((mesh) => makeHueAttribute(mesh, MAX))
+    this.rowAttrs = this.tiers.map((mesh) => {
+      const a = new THREE.InstancedBufferAttribute(new Float32Array(MAX), 1)
+      a.setUsage(THREE.DynamicDrawUsage)
+      mesh.geometry.setAttribute('aRow', a)
+      return a
+    })
+    this.breathAttrs = this.tiers.map((mesh) => {
+      const a = new THREE.InstancedBufferAttribute(new Float32Array(MAX), 1)
+      a.setUsage(THREE.DynamicDrawUsage)
+      mesh.geometry.setAttribute('aBreath', a)
+      return a
+    })
+    // Per tier: the instances the GPU poses (the head of the tier's arrays) and the CPU-driven tail after them, and this frame's sweep tallies.
+    this.gpuCounts = this.tiers.map(() => 0)
+    this.tails = this.tiers.map(() => 0)
+    this._counts = this.tiers.map(() => 0)
     this.mesh = this.tiers[0]
     this.hue = this.hues[0]
     // The layer toggle flips the group, so it cannot unhide a mesh before its geometry lands.
@@ -245,7 +341,7 @@ export class Frogs {
 
     this.slots = []
     for (let i = 0; i < MAX; i++) {
-      this.slots.push({
+      this.slots.push(new Frog(this, {
         id: i, tile: null, key: '', index: 0, offset: 0,
         x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_TIERS,
         // The ground normal the frog sits along.
@@ -262,9 +358,21 @@ export class Frogs {
         pet: null,
         // A loose frog in the cave she is in (goUnder), sitting on its walk.
         under: false,
-      })
+        // Who poses it: `gpu`, the shader from its row (x, y, z read the plan); `cpu`, this layer each frame (in `this.cpu`); neither, not yet planned. `rowSeg` the segment its row holds, `wake` the second its phrase or segment next turns, `sounded` the phrase _heard has accounted for, `sat` the clock x, y, z were last read at.
+        gpu: false, cpu: false, rowSeg: null, wake: -Infinity, sounded: null, sat: -Infinity,
+      }))
     }
     this.free = this.slots.slice()
+    this.byKey = new Map()
+    this.cpu = new Set()
+    this.cpuTmp = []
+    this.cpuAll = false
+    this.oweTiles = new Set()
+    this.nextWake = -Infinity
+    this.listDirty = true
+    this.hopped = false
+    this.sweptAt = -Infinity
+    this.sweptHead = { x: Infinity, y: Infinity, z: Infinity }
     this.tiles = new Map()
     this.head = { x: 0, z: 0 }
     this.now = 0
@@ -296,6 +404,7 @@ export class Frogs {
     this.stats = { alive: 0, tiles: 0, overflow: 0, segments: 0 }
     // This frame's one-shots for the ear, drained by voices(): { sound, rule, x, y, z }.
     this.calls = []
+    this.mates = []
 
     if (assets) {
       this.setAsset(assets)
@@ -326,6 +435,13 @@ export class Frogs {
       setCritterAsset(this.tiers[k], this.material, { ...asset, map: null }, `frogs lod${k}`)
     }
     this.loaded = true
+    this._relay()
+  }
+
+  /** Every bed frog's row is laid again at the next wake: its scale or its landings changed. */
+  _relay() {
+    for (const t of this.tiles.values()) for (const f of t.frogs) { f.rowSeg = null; f.wake = -Infinity }
+    this.nextWake = -Infinity
   }
 
   _groundFor(x, z, fieldH) {
@@ -345,6 +461,7 @@ export class Frogs {
    */
   _reseat() {
     const spot = (s) => { if (s && !s.wet) s.y = this._groundFor(s.x, s.z, s.h) }
+    this._relay()
     const phrase = (ph) => { if (ph.kind === 'sit') spot(ph.at); else { spot(ph.from); spot(ph.to) } }
     for (const t of this.tiles.values()) {
       for (const f of t.frogs) {
@@ -490,16 +607,33 @@ export class Frogs {
       f.caught = null
       f.calm = -Infinity
       f.pet = null
+      f.gpu = f.cpu = false
+      f.rowSeg = null
+      f.wake = -Infinity
+      f.sounded = null
+      f.sat = -Infinity
+      this.byKey.set(f.key, f)
+      this.nextWake = -Infinity
       t.frogs.push(f)
     }
     return t
+  }
+
+  /** Frog `f` out of the pool's bookkeeping for the GPU and the CPU lists; the drawn list is re-sorted. */
+  _unlist(f) {
+    if (f.gpu || f.cpu) this.listDirty = true
+    f.gpu = f.cpu = false
+    this.cpu.delete(f)
+    this.byKey.delete(f.key)
   }
 
   _leave(t) {
     // A bed her hand had frogs of: the room hears they are let go.
     if (t.luredSent !== '') this.owed.push([t.key, 'fg', null, []])
     this.luredIn.delete(t.key)
+    this.oweTiles.delete(t)
     for (const f of t.frogs) {
+      this._unlist(f)
       f.tile = null
       this.free.push(f)
     }
@@ -507,6 +641,8 @@ export class Frogs {
   }
 
   _drop(f) {
+    this._unlist(f)
+    this.oweTiles.add(f.tile)
     const list = f.tile.frogs
     list.splice(list.indexOf(f), 1)
     f.tile = null
@@ -519,6 +655,7 @@ export class Frogs {
     this.tiles.clear()
     for (const f of this.loose) this.free.push(f)
     this.loose.length = 0
+    this.listDirty = true
     this.overflow = 0
     this.head.x = cx
     this.head.z = cz
@@ -1004,6 +1141,8 @@ export class Frogs {
     const home = f.tile !== null ? { x: f.homeX, z: f.homeZ } : null
     if (f.tile !== null) {
       if (!taken.has('frog', f.homeX, f.homeZ)) taken.add('frog', f.homeX, f.homeZ)
+      this._unlist(f)
+      this.oweTiles.add(f.tile)
       const list = f.tile.frogs
       list.splice(list.indexOf(f), 1)
       f.tile = null
@@ -1153,21 +1292,265 @@ export class Frogs {
     _scl.set(k * sx, k * sy, k * sz)
     _mat.compose(_pos, _quat, _scl)
     const tier = this.tiers[f.lod]
-    const w = counts[f.lod]++
+    const w = this.gpuCounts[f.lod] + counts[f.lod]++
     _mat.toArray(tier.instanceMatrix.array, w * 16)
     const c = tier.instanceColor.array
     c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
     this.hues[f.lod].array[w] = f.hue
   }
 
+  // --- the GPU ----------------------------------------------------------------
+
+  /** Frog `f` posed on its plan at the room's clock; its segment is current. */
+  _sync(f) {
+    f.sat = this.now
+    const e = this.now - f.seg.start
+    const ph = Frogs._phraseAt(f.seg.phrases, e)
+    this._pose(f, ph, e - ph.start)
+  }
+
+  /** `f`'s segment laid into its row of the table: each phrase at its spot, a hop running on to the spot of the phrase after it. */
+  _layRow(f) {
+    const phrases = f.seg.phrases
+    const out = phrases.map((ph, i) => {
+      const hop = ph.kind === 'hop'
+      if (hop && i === phrases.length - 1) throw new Error(`Frogs: segment of ${f.key} ends in a hop`)
+      const at = hop ? ph.from : ph.at
+      return { kind: hop ? HOP : at.wet ? SIT_WET : SIT, start: ph.start, dur: ph.dur, apex: hop ? ph.rise : 0, yaw: at.yaw, a: at, b: null }
+    })
+    this.table.write(f.id + 1, f.seg.start, f.size / this.span, out)
+    f.rowSeg = f.seg
+  }
+
+  /** The second after `now` frog `f`'s plan next turns a phrase or a segment. */
+  static _wakeAfter(seg, now) {
+    const e = now - seg.start
+    for (const ph of seg.phrases) if (ph.start > e) return seg.start + ph.start
+    return seg.start + GRID_S
+  }
+
+  /**
+   * Every frog on its plan whose phrase or segment has turned: the next segment planned and its row laid, the hop it began (or the splash it made) told to the ear. `all`: the clock went back, so every one is due.
+   */
+  _wake(now, all, hx, hy, hz) {
+    let next = Infinity
+    for (const t of this.tiles.values()) {
+      for (let i = t.frogs.length - 1; i >= 0; i--) {
+        const f = t.frogs[i]
+        if (f.cpu) continue
+        if (!all && now < f.wake) {
+          if (f.wake < next) next = f.wake
+          continue
+        }
+        if (f.seg === null || now < f.seg.start || now >= f.seg.start + GRID_S) {
+          const seg = this._segment(f, Math.floor((now - f.offset) / GRID_S))
+          if (seg === null) { this._drop(f); continue }
+          f.seg = seg
+        }
+        if (f.rowSeg !== f.seg) this._layRow(f)
+        this._sync(f)
+        this._heard(f, f.sounded, hx, hy, hz)
+        f.sounded = f.ph
+        if (!f.gpu) { f.gpu = true; this.listDirty = true }
+        f.wake = Frogs._wakeAfter(f.seg, now)
+        if (f.wake < next) next = f.wake
+        this.hopped = true
+      }
+    }
+    this.nextWake = next
+  }
+
+  /** Frog `f`, posed at `now`, taken off the shader: this layer poses it each frame until it is back on its plan. */
+  _toCpu(f, hx, hy, hz) {
+    this._heard(f, f.sounded, hx, hy, hz)
+    f.gpu = false
+    f.cpu = true
+    this.cpu.add(f)
+    this.oweTiles.add(f.tile)
+    this.listDirty = true
+  }
+
+  /** Frog `f` is back on its plan: the shader has it from the next wake. */
+  _toGpu(f) {
+    f.cpu = false
+    this.cpu.delete(f)
+    f.sounded = f.ph
+    f.wake = -Infinity
+    this.nextWake = -Infinity
+    this.listDirty = true
+  }
+
+  /** Every bed frog onto this layer's pose (the tint row swaps the tiers' material for flat colours that know nothing of the table), or back to the shader. */
+  _setCpuAll(on) {
+    this.cpuAll = on
+    this.listDirty = true
+    this.nextWake = -Infinity
+    for (const t of this.tiles.values()) {
+      for (const f of t.frogs) {
+        if (on) {
+          if (f.gpu) { this._sync(f); f.gpu = false }
+          f.cpu = false
+        } else if (f.live !== null || f.caught !== null) {
+          f.cpu = true
+          this.cpu.add(f)
+        } else {
+          f.cpu = false
+          f.wake = -Infinity
+        }
+      }
+    }
+    if (on) {
+      this.cpu.clear()
+      for (let k = 0; k < LOD_TIERS; k++) {
+        this.rowAttrs[k].array.fill(0, 0, this.gpuCounts[k])
+        this.rowAttrs[k].needsUpdate = true
+        this.gpuCounts[k] = 0
+      }
+    }
+  }
+
+  /**
+   * One frame of a frog this layer poses: its plan (or its live phrases) advanced to `now`, a villager's hold, the ear, a lure noticed or lost, a bug eaten. False once the frog is gone (home turned to stone, or eaten and loose now).
+   */
+  _step(f, lures, claims, now, mates, hx, hy, hz) {
+    if (f.seg === null || now < f.seg.start || now >= f.seg.start + GRID_S) {
+      const seg = this._segment(f, Math.floor((now - f.offset) / GRID_S))
+      if (seg === null) { this._drop(f); return false }
+      f.seg = seg
+    }
+    // Posed first, so a lure is measured from where the frog is, on its plan or off it; a lure noticed or lost this frame changes what plays from the next.
+    const prev = f.ph
+    if (f.live === null || !this._live(f, now)) {
+      const ph = Frogs._phraseAt(f.seg.phrases, now - f.seg.start)
+      this._pose(f, ph, now - f.seg.start - ph.start)
+    }
+    const claim = claims.get(f.key)
+    if (claim !== undefined || f.caught !== null) this._caught(f, claim, now)
+    this._heard(f, prev, hx, hy, hz)
+    if (f.caught === null) {
+      this._notice(f, lures, now, mates)
+      // Fed, it is loose now, and drawn with them.
+      if (this._eats(f, now)) return false
+    }
+    return true
+  }
+
+  /** The bed frogs on their plans that a villager's hold in `claims` is on, or a lure in `lures` is near enough to notice, taken off the shader. Frogs far from every lure are not looked at. */
+  _reach(lures, claims, now, mates, hx, hy, hz) {
+    for (const key of claims.keys()) {
+      const f = this.byKey.get(key)
+      if (f !== undefined && !f.cpu) this._toCpu(f, hx, hy, hz)
+    }
+    const reach = LURE_FORGET_M + EXCURSION_M + TILE
+    for (const t of this.tiles.values()) {
+      const cx = (t.tx + 0.5) * TILE, cz = (t.tz + 0.5) * TILE
+      if (!lures.some((l) => LURES.includes(l.kind) && Math.hypot(cx - l.x, cz - l.z) <= reach)) continue
+      for (const f of t.frogs) {
+        if (f.cpu || !f.gpu) continue
+        this._notice(f, lures, now, mates)
+        if (f.lured) this._toCpu(f, hx, hy, hz)
+      }
+    }
+  }
+
+  /** The bed frogs on their plans sorted into the tiers their apparent size calls for, each tier's head of the arrays (row, tint, hue, breath) rewritten if the list changed. */
+  _sweep(hx, hy, hz, now) {
+    this.sweptAt = now
+    this.sweptHead.x = hx; this.sweptHead.y = hy; this.sweptHead.z = hz
+    this.hopped = false
+    const force = this.listDirty
+    this.listDirty = false
+    const counts = this._counts
+    counts.fill(0)
+    const changed = this.tiers.map(() => false)
+    for (const t of this.tiles.values()) {
+      for (const f of t.frogs) {
+        if (!f.gpu) continue
+        if (f.sat !== now) this._sync(f)
+        f.lod = critterTier(f.size, Math.hypot(f._x - hx, f._y - hy, f._z - hz), f.lod, LOD_TIERS)
+        if (f.lod === LOD_TIERS) continue
+        const k = f.lod
+        const i = counts[k]++
+        const rows = this.rowAttrs[k].array
+        if (force || rows[i] !== f.id + 1) {
+          rows[i] = f.id + 1
+          this.breathAttrs[k].array[i] = f.breath
+          this.hues[k].array[i] = f.hue
+          const c = this.tiers[k].instanceColor.array
+          c[i * 3] = f.r; c[i * 3 + 1] = f.g; c[i * 3 + 2] = f.b
+          changed[k] = true
+        }
+      }
+    }
+    for (let k = 0; k < LOD_TIERS; k++) {
+      const rows = this.rowAttrs[k].array
+      for (let i = counts[k]; i < this.gpuCounts[k]; i++) { rows[i] = 0; changed[k] = true }
+      if (changed[k]) {
+        this.rowAttrs[k].needsUpdate = true
+        this.breathAttrs[k].needsUpdate = true
+        this.hues[k].needsUpdate = true
+        this.tiers[k].instanceColor.needsUpdate = true
+      }
+      this.gpuCounts[k] = counts[k]
+    }
+  }
+
+  /** The matrix the shader draws instance `i` of tier `k` with, in doubles from the texels it reads: the JS twin of MOTION_GLSL, for the gates. A CPU row gives the tier's own matrix, an emptied row a zero scale. */
+  matrixAt(k, i, out) {
+    const row = this.rowAttrs[k].array[i]
+    if (row === 0) return out.fromArray(this.tiers[k].instanceMatrix.array, i * 16)
+    const d = this.table.data
+    const o = row * ROW_W * 4
+    if (d[o + 3] === 0) return out.makeScale(0, 0, 0)
+    const T = this.table.uniforms.uMotionT.value
+    const e = (T.x - d[o]) + (T.y - d[o + 1])
+    let p = 0
+    while (p + 1 < d[o + 3] && d[o + 4 + (p + 1) * 16] <= e) p++
+    const q = o + 4 + p * 16
+    const kind = d[q + 2]
+    let x = d[q + 4], y = d[q + 5], z = d[q + 6], yaw = d[q + 7]
+    let nx = d[q + 12], ny = d[q + 13], nz = d[q + 14]
+    let sx = 1, sy = 1, sz = 1
+    const breath = this.uPhase.value.x + this.breathAttrs[k].array[i]
+    if (kind === HOP) {
+      const dur = d[q + 1]
+      const u = dur > 0 ? Math.min(1, Math.max(0, (e - d[q]) / dur)) : 1
+      const tx = d[q + 20], ty = d[q + 21], tz = d[q + 22], tyaw = d[q + 23]
+      x += (tx - x) * u; z += (tz - z) * u
+      y += (ty - y) * u + 4 * d[q + 3] * u * (1 - u)
+      const v = Math.min(1, u * 1.5)
+      nx += (d[q + 28] - nx) * v; ny += (d[q + 29] - ny) * v; nz += (d[q + 30] - nz) * v
+      const ddx = tx - d[q + 4], ddz = tz - d[q + 6]
+      const head = ddx * ddx + ddz * ddz < 1e-18 ? tyaw : Math.atan2(-ddz, ddx)
+      yaw = head + Math.atan2(Math.sin(tyaw - head), Math.cos(tyaw - head)) * v
+      const s = Math.sin(Math.PI * u)
+      sx = 1 + 0.25 * s; sy = 1 - 0.15 * s
+    } else if (kind === SIT_WET) {
+      y += BOB_AMP * Math.sin(this.uPhase.value.y + this.breathAttrs[k].array[i])
+    } else {
+      const s = BREATH_AMP * (0.5 + 0.5 * Math.sin(breath))
+      sx = sz = 1 + s * 0.4
+      sy = 1 + s
+    }
+    const l = Math.hypot(nx, ny, nz)
+    _quat.setFromAxisAngle(UP, yaw)
+    _tilt.set(nz / l, 0, -nx / l, 1 + ny / l).normalize()
+    _quat.premultiply(_tilt)
+    const kk = d[o + 2]
+    return out.compose(_pos.set(x, y, z), _quat, _scl.set(kk * sx, kk * sy, kk * sz))
+  }
+
   /** `now` the room's clock in seconds; `lures`: hands.js lures() this frame and the hobs', the spiders, butterflies, grasshoppers and hobs among them chased; `claims` the villagers' holds on frogs by key; `peers` the peers' heads `{ x, y, z, by }`, which their pets follow. */
   update(hx, hy, hz, now, lures = NO_LURES, claims = NO_CLAIMS, peers = NO_LURES) {
     if (!Number.isFinite(now)) throw new Error(`Frogs.update: bad time ${now}`)
+    const rewound = now < this.now
     this.head.x = hx
     this.head.z = hz
     this.now = now
     this.me.x = hx; this.me.y = hy; this.me.z = hz
-    const mates = [this.me]
+    const mates = this.mates
+    mates.length = 0
+    mates.push(this.me)
     for (const p of peers) mates.push({ kind: 'mate', x: p.x, y: p.y, z: p.z, by: p.by })
     this.calls.length = 0
     if (Math.hypot(hx - this.walkedX, hz - this.walkedZ) > WALK_M) {
@@ -1185,36 +1568,42 @@ export class Frogs {
       this.tinted = tierTintOn()
       this.tiers.forEach((m, k) => { m.material = this.tinted ? TIER_TINTS[k] : this.material })
     }
+    if (this.tinted !== this.cpuAll) this._setCpuAll(this.tinted)
 
     const breath = (now * Math.PI * 2) / BREATH_S
     const bob = (now * Math.PI * 2) / BOB_S
+    this.table.setTime(now)
+    this.uPhase.value.set(breath % (Math.PI * 2), bob % (Math.PI * 2))
     const counts = this.tiers.map(() => 0)
-    for (const t of this.tiles.values()) {
-      // Backwards, because a frog whose home has turned to stone leaves the list mid-walk.
-      for (let i = t.frogs.length - 1; i >= 0; i--) {
-        const f = t.frogs[i]
-        if (f.seg === null || now < f.seg.start || now >= f.seg.start + GRID_S) {
-          const seg = this._segment(f, Math.floor((now - f.offset) / GRID_S))
-          if (seg === null) { this._drop(f); continue }
-          f.seg = seg
+
+    if (this.cpuAll) {
+      for (const t of this.tiles.values()) {
+        // Backwards, because a frog whose home has turned to stone leaves the list mid-walk.
+        for (let i = t.frogs.length - 1; i >= 0; i--) {
+          const f = t.frogs[i]
+          if (this._step(f, lures, claims, now, mates, hx, hy, hz)) this._draw(f, counts, breath, bob, hx, hy, hz)
         }
-        // Posed first, so a lure is measured from where the frog is, on its plan or off it; a lure noticed or lost this frame changes what plays from the next.
-        const prev = f.ph
-        if (f.live === null || !this._live(f, now)) {
-          const ph = Frogs._phraseAt(f.seg.phrases, now - f.seg.start)
-          this._pose(f, ph, now - f.seg.start - ph.start)
-        }
-        const claim = claims.get(f.key)
-        if (claim !== undefined || f.caught !== null) this._caught(f, claim, now)
-        this._heard(f, prev, hx, hy, hz)
-        if (f.caught === null) {
-          this._notice(f, lures, now, mates)
-          // Fed, it is loose now, and drawn with them.
-          if (this._eats(f, now)) continue
-        }
-        this._draw(f, counts, breath, bob, hx, hy, hz)
+        this._owe(t, now)
       }
-      this._owe(t, now)
+    } else {
+      if (rewound || now >= this.nextWake) this._wake(now, rewound, hx, hy, hz)
+      if (lures.length > 0 || claims.size > 0) this._reach(lures, claims, now, mates, hx, hy, hz)
+      const list = this.cpuTmp
+      list.length = 0
+      for (const f of this.cpu) list.push(f)
+      for (const f of list) {
+        if (!this._step(f, lures, claims, now, mates, hx, hy, hz)) continue
+        if (f.live === null && f.caught === null && !f.lured) this._toGpu(f)
+      }
+      // Frogs back on their plans are laid and counted this frame, not the next.
+      if (now >= this.nextWake) this._wake(now, false, hx, hy, hz)
+      const sh = this.sweptHead
+      if (this.listDirty || rewound || Math.hypot(hx - sh.x, hy - sh.y, hz - sh.z) >= SWEEP_M || (this.hopped && now - this.sweptAt >= SWEEP_S)) this._sweep(hx, hy, hz, now)
+      for (const f of this.cpu) this._draw(f, counts, breath, bob, hx, hy, hz)
+      for (const t of this.oweTiles) {
+        this._owe(t, now)
+        if (t.luredSent === '' && !t.frogs.some((f) => f.lured)) this.oweTiles.delete(t)
+      }
     }
     for (let i = this.loose.length - 1; i >= 0; i--) {
       const f = this.loose[i]
@@ -1240,16 +1629,18 @@ export class Frogs {
     }
     this._in = null
     this.me.x = hx; this.me.y = hy; this.me.z = hz
-    // A tier that held nothing and holds nothing is not re-uploaded.
+    // A tier that held nothing in its tail and holds nothing is not re-uploaded.
     this.tiers.forEach((tier, k) => {
-      if (counts[k] > 0 || tier.count > 0) {
+      if (counts[k] > 0 || this.tails[k] > 0) {
         tier.instanceMatrix.needsUpdate = true
         tier.instanceColor.needsUpdate = true
         this.hues[k].needsUpdate = true
       }
-      tier.count = counts[k]
-      tier.visible = counts[k] > 0
+      this.tails[k] = counts[k]
+      tier.count = this.gpuCounts[k] + counts[k]
+      tier.visible = tier.count > 0
     })
+    this.table.flush()
     this.stats.alive = MAX - this.free.length
     this.stats.tiles = this.tiles.size
     this.stats.overflow = this.overflow
@@ -1260,5 +1651,6 @@ export class Frogs {
     for (const tier of this.tiers) tier.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
+    this.table.dispose()
   }
 }

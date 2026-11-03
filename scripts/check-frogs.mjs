@@ -159,9 +159,11 @@ check(frogs.tiers.every((t, k) => t.geometry.index.count === asset[k].idx.length
 check(frogs.tiers.every((t) => t.instanceColor && t.instanceColor.isInstancedBufferAttribute), 'tint rides in instanceColor')
 check(frogs.tiers.every((t, k) => t.geometry.getAttribute('aHue') === frogs.hues[k] && frogs.hues[k].isInstancedBufferAttribute) && frogs.mesh === frogs.tiers[0], 'hue rides in aHue on every tier')
 {
-  const shader = { vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  const shader = { uniforms: {}, vertexShader: 'void main() {\n#include <common>\n#include <begin_vertex>\n}', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
   frogs.material.onBeforeCompile(shader)
   // The hue turn: read per instance, carried across, and applied to the sampled map before it is lit.
+  check(shader.vertexShader.includes('gpuInstanceMatrix = gpuMotion();') && shader.vertexShader.includes('attribute float aBreath;') && shader.vertexShader.includes('uniform vec2 uFrogPhase;') && shader.uniforms.uFrogPhase === frogs.uPhase && shader.uniforms.uMotion.value === frogs.table.texture, 'the vertex shader poses an instance from its row of the phrase table, breathing on the shared phase')
+  check(shader.vertexShader.indexOf('uniform vec2 uFrogPhase;') < shader.vertexShader.indexOf('mat4 gpuMotion()'), 'the frog\'s uniform and attribute are declared ahead of the motion block that reads them')
   check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\s*\{[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
   // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
   check(frogs.material.isMeshStandardMaterial && frogs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && frogs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${frogs.material.type} roughness ${frogs.material.roughness}`)
@@ -224,12 +226,14 @@ const snapB = alive().map((f) => [f.homeX, f.homeZ, f.size, f.r]).sort((a, b) =>
 check(JSON.stringify(snapA) === JSON.stringify(snapB), 'placement is a pure function of position', `${snapA.length} frogs`)
 
 // What is drawn: every tier's instances, each with its distance from `head` and the frog whose seat it stands on.
-const at = (mesh, i) => { const e = mesh.instanceMatrix.array; return [e[i * 16 + 12], e[i * 16 + 13], e[i * 16 + 14]] }
+const _m = new THREE.Matrix4()
+const mat = (tier, i) => frogs.matrixAt(tier, i, _m).elements
+const at = (tier, i) => { const e = mat(tier, i); return [e[12], e[13], e[14]] }
 const drawn = (head) => {
   const out = []
   frogs.tiers.forEach((mesh, tier) => {
     for (let i = 0; i < mesh.count; i++) {
-      const p = at(mesh, i)
+      const p = at(tier, i)
       const f = alive().find((g) => Math.abs(g.x - p[0]) < 1e-4 && Math.abs(g.z - p[2]) < 1e-4)
       out.push({ tier, i, p, f, dist: Math.hypot(p[0] - head[0], p[1] - head[1], p[2] - head[2]) })
     }
@@ -380,10 +384,10 @@ let NOW = T0 + SECONDS + 10
     NOW += DT
     frogs.update(...head, NOW)
     const d = drawn(head).find((e) => e.f === sitter)
-    const e = frogs.tiers[d.tier].instanceMatrix.array
-    sx.push(Math.hypot(e[d.i * 16], e[d.i * 16 + 1], e[d.i * 16 + 2]))
-    sy.push(Math.hypot(e[d.i * 16 + 4], e[d.i * 16 + 5], e[d.i * 16 + 6]))
-    px.push(e[d.i * 16 + 12])
+    const e = mat(d.tier, d.i)
+    sx.push(Math.hypot(e[0], e[1], e[2]))
+    sy.push(Math.hypot(e[4], e[5], e[6]))
+    px.push(e[12])
   }
   const swell = Math.max(...sy) / Math.min(...sy)
   const girth = Math.max(...sx) / Math.min(...sx)
@@ -410,7 +414,7 @@ let NOW = T0 + SECONDS + 10
     NOW += DT
     frogs.update(...head, NOW)
     const d = drawn(head).find((e) => e.f === swimmer)
-    ys.push(frogs.tiers[d.tier].instanceMatrix.array[d.i * 16 + 13])
+    ys.push(mat(d.tier, d.i)[13])
   }
   const span = Math.max(...ys) - Math.min(...ys)
   const level = afloatY(swimmer)
@@ -478,8 +482,8 @@ let NOW = T0 + SECONDS + 10
   let matched = 0
   for (const d of list) {
     const mesh = frogs.tiers[d.tier]
-    const e = mesh.instanceMatrix.array
-    const sx = Math.hypot(e[d.i * 16], e[d.i * 16 + 1], e[d.i * 16 + 2]) * frogs.span
+    const e = mat(d.tier, d.i)
+    const sx = Math.hypot(e[0], e[1], e[2]) * frogs.span
     const c = mesh.instanceColor.array
     const tint = Math.abs(c[d.i * 3] - d.f.r) < 1e-6 && Math.abs(c[d.i * 3 + 1] - d.f.g) < 1e-6 && Math.abs(c[d.i * 3 + 2] - d.f.b) < 1e-6
     if (Math.abs(sx / d.f.size - 1) < 0.3 && tint && Math.abs(frogs.hues[d.tier].array[d.i] - d.f.hue) < 1e-6) matched++
@@ -517,18 +521,18 @@ let NOW = T0 + SECONDS + 10
   tilted.place(0, 0)
   tilted.update(0, GROUND + 1.6, 0, NOW)
   const want = [-GX, 1, 0].map((c) => c / Math.hypot(GX, 1))
-  const upOf = (mesh, i) => { const e = mesh.instanceMatrix.array; const y = [e[i * 16 + 4], e[i * 16 + 5], e[i * 16 + 6]]; const l = Math.hypot(...y); return y.map((c) => c / l) }
+  const upOf = (t, i) => { const e = tilted.matrixAt(t, i, _m).elements; const y = [e[4], e[5], e[6]]; const l = Math.hypot(...y); return y.map((c) => c / l) }
   const live = tilted.slots.filter((f) => f.tile !== null)
   const east = live.filter((f) => f.state === 'sit' && !f.wet && f.x > SEAM), west = live.filter((f) => f.state === 'sit' && !f.wet && f.x < SEAM)
   check(east.length >= 3 && east.every((f) => Math.hypot(f.nx - want[0], f.ny - want[1], f.nz - want[2]) < 1e-9), 'a frog on the sloped bank holds the ground normal', `${east.length} frogs, normal ${want.map((c) => c.toFixed(3))}`)
   check(west.length >= 3 && west.every((f) => f.nx === 0 && f.ny === 1 && f.nz === 0), 'and one on the level ground the world up')
   // The matrix's up column is that normal, on whichever tier the frog is drawn in.
   let tiltedOk = 0, tiltedN = 0
-  for (const mesh of tilted.tiers) {
-    for (let i = 0; i < mesh.count; i++) {
-      const p = at(mesh, i)
-      const f = live.find((g) => Math.abs(g.x - p[0]) < 1e-4 && Math.abs(g.z - p[2]) < 1e-4)
-      const u = upOf(mesh, i)
+  for (let t = 0; t < tilted.tiers.length; t++) {
+    for (let i = 0; i < tilted.tiers[t].count; i++) {
+      const e = tilted.matrixAt(t, i, _m).elements
+      const f = live.find((g) => Math.abs(g.x - e[12]) < 1e-4 && Math.abs(g.z - e[14]) < 1e-4)
+      const u = upOf(t, i)
       tiltedN++
       if (f && Math.hypot(u[0] - f.nx, u[1] - f.ny, u[2] - f.nz) < 1e-5) tiltedOk++
     }
@@ -763,6 +767,55 @@ let NOW = T0 + SECONDS + 10
   const hob = { kind: 'hob', x: g.x - 0.3, y: GROUND + 0.3, z: g.z, by: null }
   for (let i = 0; i < 8 / DT && eaten.length === 2; i++) step([hob])
   check(eaten.length === 3 && eaten[2] === hob, 'a hob held at its face is eaten')
+}
+
+// --- the GPU twin: the shader's matrix against the CPU pose, and a still frame ------------------
+{
+  frogs.place(0, 0)
+  frogs.update(...HEAD, NOW)
+  // GPU parity: the shader's matrix (its JS twin, from the texels) against the CPU pose and _draw maths for every shader-posed instance.
+  {
+    let worst = 0, n = 0
+    const cm = new THREE.Matrix4(), q = new THREE.Quaternion(), tl = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0)
+    let hopping = 0
+    for (let step = 0; step < 60; step++) {
+     if (step > 0) { NOW += 0.37; frogs.update(...HEAD, NOW) }
+     for (let t = 0; t < frogs.tiers.length; t++) {
+      for (let i = 0; i < frogs.tiers[t].count; i++) {
+        const row = frogs.rowAttrs[t].array[i]
+        if (row === 0) continue
+        const f = frogs.slots[row - 1]
+        frogs._sync(f)
+        let sx = 1, sy = 1, sz = 1, lift = 0
+        if (f.state === 'sit') {
+          if (f.wet) lift = BOB_AMP * Math.sin(((NOW * Math.PI * 2) / BOB_S) + f.breath)
+          else { const b = BREATH_AMP * (0.5 + 0.5 * Math.sin(((NOW * Math.PI * 2) / BREATH_S) + f.breath)); sy = 1 + b; sx = sz = 1 + b * 0.4 }
+        } else { const sn = Math.sin(Math.PI * f.u); sx = 1 + 0.25 * sn; sy = 1 - 0.15 * sn }
+        const k = f.size / frogs.span
+        q.setFromAxisAngle(up, f.yaw)
+        tl.setFromUnitVectors(up, new THREE.Vector3(f.nx, f.ny, f.nz))
+        q.premultiply(tl)
+        cm.compose(new THREE.Vector3(f.x, f.y + lift, f.z), q, new THREE.Vector3(k * sx, k * sy, k * sz))
+        const g = frogs.matrixAt(t, i, new THREE.Matrix4()).elements
+        for (let c = 0; c < 16; c++) worst = Math.max(worst, Math.abs(g[c] - cm.elements[c]))
+        n++
+        if (f.state === 'hop') hopping++
+      }
+     }
+    }
+    check(n > 0 && hopping > 0 && worst < 2e-3, 'the shader\'s matrix matches the CPU pose for every shader-posed frog, hopping ones included', `${n} samples, ${hopping} mid-hop, worst element ${worst.toExponential(2)}`)
+  }
+  // A still frame writes nothing: with the clock held and nothing changing, no buffer is flagged and no table row is written.
+  {
+    frogs.update(...HEAD, NOW)
+    const before = frogs.table.pending
+    const flagged = () => frogs.tiers.some((m, k) => m.instanceMatrix.version !== still[k] || frogs.rowAttrs[k].version !== stillRow[k])
+    const still = frogs.tiers.map((m) => m.instanceMatrix.version), stillRow = frogs.rowAttrs.map((a) => a.version)
+    frogs.table.pending = false
+    const nowHeld = NOW
+    for (let i = 0; i < 5; i++) frogs.update(...HEAD, nowHeld)
+    check(!frogs.table.pending && !flagged() && before !== undefined, 'a still frame writes nothing to the shader\'s buffers or table', `table pending ${frogs.table.pending}`)
+  }
 }
 
 // Dry land far from any water: nothing.

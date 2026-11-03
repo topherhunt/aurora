@@ -32,6 +32,9 @@ import { GLINT, glint, hueVary } from '../src/v2/render/critters.js'
 import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
+import { Crabs } from '../src/v2/render/crabs.js'
+import { Frogs, LOD_TIERS } from '../src/v2/render/frogs.js'
+import { CRAB_ANIM_URL, parseCrabAnim } from '../src/v2/render/crab-anim.js'
 import { Wreaths } from '../src/v2/render/wreaths.js'
 import { Precip } from '../src/v2/render/precip.js'
 import { Flames } from '../src/v2/render/fire.js'
@@ -989,6 +992,37 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
   SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
   CROSS_STAGE.push([label, vert, frag])
+}
+
+// --- src/v2/render/crabs.js and frogs.js: the creature's pose built in the vertex shader ---
+//
+// A Standard whose onBeforeCompile is the motion splice (gpu-motion.js), the layer's own declarations, glint and hueVary, under the vertex-mode lighting patch. A silent replace miss leaves the instances posed by the CPU matrix of row 0, so each splice is checked for.
+{
+  const box = new THREE.BoxGeometry(1, 0.5, 0.7).translate(0, 0.25, 0)
+  const boxAsset = { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
+  const flat = { heightAt: () => 0, heightAndSlopeAt: () => ({ h: 0, tan: 0, gx: 0, gz: 0 }), snowLineAt: () => 100 }
+  const water = { levelAt: () => null, shoreDistAt: () => 100, lakeLevelAt: () => null, lakeShoreDistAt: () => 100 }
+  const rocks = { blockTopAt: () => -Infinity, perchesInto: () => 0 }
+  const anim = { ...parseCrabAnim(readFileSync(new URL(`../public/${CRAB_ANIM_URL}`, import.meta.url)).buffer.slice(0)), tiers: [new Array(box.getAttribute('position').count).fill(0)] }
+  const crabs = new Crabs(new THREE.Scene(), flat, water, { seed: 1, rocks, cards: new LitterCards(64), assets: boxAsset, anim })
+  const frogs = new Frogs(new THREE.Scene(), flat, water, { seed: 1, rocks, ground: { groundVersion: 0, groundAt: () => 0 }, assets: Array.from({ length: LOD_TIERS }, () => boxAsset) })
+  for (const [label, material, marks] of [
+    ['crab mesh            ', crabs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform highp sampler2D uCrabAnim;']],
+    ['frog mesh            ', frogs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform vec2 uFrogPhase;']],
+  ]) {
+    new WorldLighting().patch(material, { mode: 'vertex', cacheKey: `check-${label.trim().replace(' ', '-')}` })
+    const lib = THREE.ShaderLib.standard
+    const shader = { uniforms: THREE.UniformsUtils.clone(lib.uniforms), vertexShader: lib.vertexShader, fragmentShader: lib.fragmentShader, defines: {} }
+    material.onBeforeCompile(shader, { capabilities: { isWebGL2: true } })
+    const defines = ['#define USE_INSTANCING', '#define USE_INSTANCING_COLOR', '#define USE_MAP', '#define MAP_UV uv', '#define USE_FOG', '#define FOG_EXP2']
+    const vert = finish(shader.vertexShader)
+    const frag = finish(shader.fragmentShader)
+    SHADERS.push([`${label}  vert`, 'vert', builtinPrologue('vert', defines), vert])
+    SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
+    CROSS_STAGE.push([label, vert, frag])
+    for (const m of marks) if (!vert.includes(m)) MISSING_MARKS.push(`${label} vert: ${m}`)
+    if (!vert.includes('#define instanceMatrix gpuInstanceMatrix')) MISSING_MARKS.push(`${label} vert: the instanceMatrix redirect`)
+  }
 }
 
 // The summit wreaths (wreaths.js): a Lambert billboard with the dithered edge
