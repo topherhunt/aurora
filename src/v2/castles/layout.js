@@ -11,6 +11,11 @@ const C = CASTLE.cell, H = CASTLE.storey
 // A door's width and height, in metres outside and in alike (the interior does not scale doors). 2 m clears her 1.9 m crown over
 // the exterior notch's 6 cm sill.
 const DOOR = [0.96, 2]
+// A roof ladder, with its back to a wall (interior metres but `face` and `lid`): its hatch `hatch` out from the wall's face (`face`
+// exterior metres in from the cell line, solids.js INSET + WT) and `nook` from a side wall's in a corner, the lid on the roof `lid`
+// either side; its rails' plane `rails` behind the hatch, `half` either side, rungs `rung` apart; her foot `foot` ahead of the
+// rails; the trap door `trap` under the ceiling, and her feet `head` under that when her head meets it (climb.js).
+export const LADDER = { face: 0.55, hatch: 0.65, nook: 0.8, lid: 0.35, rails: 0.5, half: 0.3, rung: 0.4, foot: 0.35, trap: 0.38, head: 1.8 }
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i)
@@ -172,8 +177,8 @@ export function castleLayout(seed) {
       cand(a.roof, b.roof, 'step', { pts: [a.roof.pos, [x, a.floors * H + 0.4, z], b.roof.pos] })
     }
   }
-  // A spiral stair climbs about its cell's centre, so stairs stacked in one cell make one helix. A roof ladder stands in a corner,
-  // or in a round room on an axis, either way clear of a spiral's drum in its cell (spiral.js SPIRAL).
+  // A spiral stair climbs about its cell's centre, so stairs stacked in one cell make one helix. A roof ladder starts in a corner, or
+  // in a round room on an axis, and planShafts stands it against a wall.
   for (const s of solid) for (let k = 0; k < s.floors; k++) for (const r of s.rooms[k]) {
     const cx = int(r.x0, r.x0 + r.w - 1), cz = int(r.z0, r.z0 + r.d - 1), c = int(0, 3)
     const up = k + 1 < s.floors ? roomAt(s, k + 1, cx, cz) : s.roof
@@ -339,15 +344,15 @@ const mod16 = (v) => ((v % 16) + 16) % 16
 // grows with L), on a top storey over its floor short of the hole.
 const WINDOW = { bottom: [8, 15], pass: [16, 14], top: [16, 22] }
 const LANDING_MAX = 9, SKEW = 1, GAP = 3
-const LADDER_CLEAR = 3, REVEAL_M = 2.95, REVEAL = REVEAL_M / CASTLE.scale, DRUM_RING = 1.75 + 0.12 // spiral.js SHAFT.reveal, SPIRAL.well + wall
+const LADDER_CLEAR = 3, REVEAL_M = 2.95, REVEAL = REVEAL_M / CASTLE.scale, WELL = 1.75, DRUM_RING = WELL + 0.12 // spiral.js SHAFT.reveal, SPIRAL.well, wall
 
 /**
  * The spiral shafts (design/44-castles.md, Spiral shafts). Every storey a helix climbs from or to is sealed round its cell: she
  * meets the drum only through a doorway, from a door in the cell's face or from the rest of her room. Each stair moves to the cell of
  * its room with the fewest doors on its faces (staying stacked on the stair below where it can), the dungeon's stair takes a ground
- * room's, then the doors that can slide along their face and the ladders leave sealed cells; a ladder whose room is all shaft stands
- * in the drum. Each helix then picks its hand, its first flight's start and the length of each landing (1-9 segments) so every
- * doorway falls in its window; null when no helix fits some cell's doorways. Mutates the stairs', doors' and ladders' positions in
+ * room's, then the doors that can slide along their face and the ladders stand against walls clear of sealed cells; a ladder whose
+ * room is all shaft stands in the drum. Each helix then picks its hand, its first flight's start and the length of each landing (1-9
+ * segments) so every doorway falls in its window; null when no wall takes some ladder or no helix fits some cell's doorways. Mutates the stairs', doors' and ladders' positions in
  * `edges`.
  */
 function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
@@ -440,25 +445,34 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
       break
     }
   }
-  // A ladder stands in a cell of its room no shaft seals, LADDER_CLEAR interior metres from its room's doors on its storey: at a
-  // corner, else on an axis (a round room's first choice), else the cell's centre (4 m from any door in its faces); where it is if
-  // that is clear, else the clear spot nearest; with no unsealed cell, in the drum.
-  const drumLadders = new Map()
+  // A ladder stands with its back to a wall of a cell of its room no shaft seals, facing in, so she walks past it and climbs it only
+  // walking at it (climb.js), LADDER_CLEAR interior metres from its room's doors on its storey: in a corner, else along a wall (a round
+  // room's: on a face of its twelve, toward its middle); the clear spot nearest where it was; with no unsealed cell, in the drum.
+  const drumLadders = new Map(), S = CASTLE.scale
   for (const e of edges) if (e.ladder) {
     const l = e.ladder, [gx, gz] = cellAt(l.x, l.z)
     const free = cellsOf(e.a).filter(([x, z]) => !sealed.has(sk(x, z, l.k)))
     if (!free.length) { drumLadders.set(sk(gx, gz, l.k), e); continue }
     const doors = edges.filter((f) => f.a === e.a || f.b === e.a).flatMap((f) => f.doors).filter((d) => Math.abs(d.y - l.k * H) < 0.1)
-    const clear = ([x, z]) => doors.every((d) => {
+    const clear = ({ x, z }) => doors.every((d) => {
       const [n, t] = d.axis === 'x' ? [x - d.x, z - d.z] : [z - d.z, x - d.x]
-      return Math.hypot(n * CASTLE.scale, Math.max(0, Math.abs(t) * CASTLE.scale - d.w / 2)) >= LADDER_CLEAR
+      return Math.hypot(n * S, Math.max(0, Math.abs(t) * S - d.w / 2)) >= LADDER_CLEAR
     })
-    const q = C / 2 - 1.2, corners = [[-q, -q], [q, -q], [-q, q], [q, q]], axes = [[1.2, 0], [-1.2, 0], [0, 1.2], [0, -1.2]]
-    const tiers = (e.a.sec.round ? [axes, [[0, 0]]] : [corners, axes, [[0, 0]]]).map((offs) => free.flatMap(([x, z]) => offs.map(([u, v]) => [X(x + 0.5) + u, Z(z + 0.5) + v])).filter(clear))
-    const tier = tiers.find((t) => t.length)
-    if (!tier) throw new Error(`castle ${seed}: no spot in ${e.a.id} stands its ladder ${LADDER_CLEAR} m from its doors`)
-    const at = tier.sort((p, q) => Math.hypot(p[0] - l.x, p[1] - l.z) - Math.hypot(q[0] - l.x, q[1] - l.z))[0]
-    ;[l.x, l.z] = at
+    const mine = (x, z) => contains(e.a, x, z), back = C / 2 - LADDER.face - LADDER.hatch / S, side = C / 2 - LADDER.face - LADDER.nook / S
+    const tiers = [[], []]
+    if (e.a.sec.round) {
+      const cx = X(e.a.x0 + e.a.w / 2), cz = Z(e.a.z0 + e.a.d / 2), r = e.a.w * C / 2 - LADDER.face - LADDER.hatch / S
+      for (let i = 0; i < 12; i++) {
+        const ux = -Math.cos(i * Math.PI / 6), uz = -Math.sin(i * Math.PI / 6), x = cx - ux * r, z = cz - uz * r
+        if (free.some(([fx, fz]) => cellAt(x, z).join() === `${fx},${fz}`)) tiers[1].push({ x, z, ux, uz })
+      }
+    } else for (const [x, z] of free) for (const [dx, dz] of DIRS) if (!mine(x + dx, z + dz)) for (const t of [-1, 0, 1]) {
+      const [px, pz] = [-dz, dx], nook = t !== 0 && !mine(x + t * px, z + t * pz)
+      tiers[nook ? 0 : 1].push({ x: X(x + 0.5) + dx * back + t * px * side, z: Z(z + 0.5) + dz * back + t * pz * side, ux: -dx, uz: -dz })
+    }
+    const tier = tiers.map((t) => t.filter(clear)).find((t) => t.length)
+    if (!tier) return null
+    Object.assign(l, tier.sort((p, q) => Math.hypot(p.x - l.x, p.z - l.z) - Math.hypot(q.x - l.x, q.z - l.z))[0])
     e.pts[1] = [l.x, e.pts[1][1], l.z]; e.pts[2] = [l.x, e.pts[2][1], l.z]
   }
 
@@ -526,7 +540,9 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
       const a = p.role === 'bottom' ? A[0] : A[i - 1], exits = exitsOf(p, hand, ...windowOf(p.role, a, L[i - 1]))
       if (p.ladder) {
         const b = hand * ladderSeg(exits, hand, a) * Math.PI / 8, l = p.ladder.ladder, [x, z] = centreOf(r.gx, r.gz)
-        Object.assign(l, { x: x + Math.cos(b) * 0.55, z: z + Math.sin(b) * 0.55, yaw: b + Math.PI / 2 })
+        // Its back to the drum's wall: the hatch as far in from the well as a room's is from its wall.
+        const d = (WELL - LADDER.hatch) / CASTLE.scale
+        Object.assign(l, { x: x + Math.cos(b) * d, z: z + Math.sin(b) * d, ux: -Math.cos(b), uz: -Math.sin(b) })
         p.ladder.pts[1] = [l.x, p.ladder.pts[1][1], l.z]; p.ladder.pts[2] = [l.x, p.ladder.pts[2][1], l.z]
         // The summit's chest stands across the drum from the hatch; its pos is shared by reference with every edge's waypoints.
         if (p.ladder.b.kind === 'summit') { const top = p.ladder.b.pos; top[0] = x - Math.cos(b) * 0.9; top[2] = z - Math.sin(b) * 0.9 }

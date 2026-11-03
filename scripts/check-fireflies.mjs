@@ -10,15 +10,19 @@
 // never gets its fireflies; one under FLY_M[0] or over FLY_M[1] above the
 // ground, or one that leaves its tether; a flash that is not short, a dark
 // spell that is not long, or a swarm that blinks in step; a glow that is on
-// by day or off at midnight, or one the instance does not carry; a frame that
-// costs more than a swarm is allowed to; a sunrise that leaves the swarm up.
+// by day or off at midnight; a steady frame that writes the instance buffer;
+// a frame that costs more than a swarm is allowed to; a sunrise that leaves
+// the swarm up. The motion runs in the vertex shader, so the flight and flash
+// checks read the twin (fireflyPose) off the records the buffer carries;
+// tmp/glow-parity-drive.mjs runs the real GLSL against that twin in a browser.
 //
 // What this can NOT check: whether the flash reads as a firefly's in the
 // dark. That needs eyes, in the world.
 
 import * as THREE from 'three'
 import {
-  DARK_DAY, DENSITY, FLY_M, Fireflies, MAX, NIGHT_DAY, OFF_S, ON_S, RADIUS, SNOW_MARGIN, TETHER, TILE, TREE_M,
+  DARK_DAY, DENSITY, FIELDS, FIREFLY_GLSL, FLASH_LIFT, FLY_M, Fireflies, MAX, NIGHT_DAY, OFF_S, ON_S, PERIOD_S, RADIUS, SLOT_S, SNOW_MARGIN, START_MAX, TETHER, TILE, TREE_M,
+  fireflyFlash, fireflyPose,
 } from '../src/v2/render/fireflies.js'
 
 let failures = 0
@@ -63,7 +67,7 @@ const dt = 1 / 72
 
 // --- construction ---------------------------------------------------------------
 const swarm = make()
-check(swarm.mesh.geometry.getAttribute('aGlow').isInstancedBufferAttribute && swarm.mesh.geometry.index.count === 6, 'one quad a firefly, the glow per instance')
+check(swarm.mesh.geometry.getAttribute('aHome').data.isInstancedInterleavedBuffer && swarm.mesh.geometry.getAttribute('aHome').data.stride === FIELDS && swarm.mesh.geometry.index.count === 6, 'one quad a firefly, its whole flight and flash in one instance record')
 check(swarm.material.transparent && swarm.material.premultipliedAlpha && !swarm.material.depthWrite && swarm.material.fog === false, 'a premultiplied transparent draw that writes no depth')
 check(swarm.material.fragmentShader.includes('gl_FragColor = vec4( uGlow * ( lit * halo ) + uBodyColor * dark, dark )'), 'the halo adds and the body covers, in one fragment')
 
@@ -99,9 +103,8 @@ check(swarm.material.fragmentShader.includes('gl_FragColor = vec4( uGlow * ( lit
   again.update(-10, 11, 0, dt, MIDNIGHT)
   const key = (of) => alive(of).map((b) => `${b.homeX.toFixed(3)},${b.homeZ.toFixed(3)}`).sort().join('|')
   check(key(swarm) === key(again), 'the same seed scatters the same fireflies')
-  check(all.every((b) => b.y >= b.ground + FLY_M[0] - 1e-6 && b.y <= b.ground + FLY_M[1] + 1e-6 && !b.on), 'every firefly starts dark inside FLY_M')
-  const spread = new Set(all.map((b) => Math.round(b.left * 4))).size
-  check(spread > all.length / 4, 'their dark spells are staggered', `${spread} distinct quarter-seconds left over ${all.length}`)
+  const spread = new Set(all.map((b) => Math.round(b.rec[6] / SLOT_S * 8))).size
+  check(spread >= 6, 'their flash clocks are staggered across the slot', `${spread} distinct eighths of a slot over ${all.length}`)
   again.dispose()
 }
 {
@@ -136,56 +139,102 @@ check(swarm.material.fragmentShader.includes('gl_FragColor = vec4( uGlow * ( lit
 
 // --- flight and the flash ------------------------------------------------------
 {
-  const ids = alive(swarm).map((b) => b.id)
-  const flashes = new Map(ids.map((id) => [id, { on: [], off: [], was: false, since: 0 }]))
-  let low = 0, high = 0, far = 0, unwritten = 0, glowOff = 0, frames = 0, maxMs = 0, totalMs = 0
-  let litMax = 0
+  const n = swarm.mesh.count
+  const rec = swarm.data.array
+  const flashes = Array.from({ length: n }, () => ({ on: [], off: [], was: false, since: 0 }))
+  const prev = Array.from({ length: n }, () => null)
+  let low = 0, high = 0, far = 0, litMax = 0, maxMs = 0, totalMs = 0, vyMax = 0, speedSum = 0, speedN = 0
   const onNow = []
+  swarm.update(-10, 11, 0, dt, MIDNIGHT)
+  check(n > 0 && alive(swarm).length === n, 'the buffer carries one record per resident firefly', `${n} records`)
   for (let f = 0; f < 72 * 90; f++) {
     const t0 = performance.now()
     swarm.update(-10, 11, 0, dt, MIDNIGHT)
     const ms = performance.now() - t0
     totalMs += ms
     if (ms > maxMs) maxMs = ms
-    frames++
     let lit = 0
-    const m = swarm.mesh.instanceMatrix.array, g = swarm.glow.array
-    for (const b of alive(swarm)) {
-      const ground = groundAt(b.x, b.z)
-      // The ground under a firefly is read every few frames, so the floor trails the slope by a few millimetres.
-      if (b.y < ground + FLY_M[0] - 0.02) low++
-      if (b.y > ground + FLY_M[1] + 0.5) high++
-      if (Math.hypot(b.x - b.homeX, b.z - b.homeZ) > TETHER + 3) far++
-      if (b.on) lit++
-      if (b.lit > litMax) litMax = b.lit
-      const rec = flashes.get(b.id)
-      rec.since += dt
-      if (b.on !== rec.was) {
-        (rec.was ? rec.on : rec.off).push(rec.since)
-        rec.since = 0
-        rec.was = b.on
+    for (let i = 0; i < n; i++) {
+      const p = fireflyPose(rec, i * FIELDS, swarm.clock)
+      const home = { x: rec[i * FIELDS], z: rec[i * FIELDS + 1] }
+      const over = p.y - groundAt(p.x, p.z)
+      if (over < FLY_M[0] - 1e-3) low++
+      if (over > FLY_M[1] + FLASH_LIFT + 1e-3) high++
+      if (Math.hypot(p.x - home.x, p.z - home.z) > TETHER) far++
+      if (p.glow > litMax) litMax = p.glow
+      const rc = flashes[i]
+      const on = p.glow > 0
+      if (on) lit++
+      rc.since += dt
+      if (on !== rc.was) {
+        (rc.was ? rc.on : rc.off).push(rc.since)
+        rc.since = 0
+        rc.was = on
       }
-      let k = -1
-      for (let i = 0; i < swarm.mesh.count; i++) if (Math.abs(m[i * 16 + 12] - b.x) < 1e-3 && Math.abs(m[i * 16 + 14] - b.z) < 1e-3) { k = i; break }
-      if (k < 0) unwritten++
-      else if (Math.abs(g[k] - b.lit) > 1e-6) glowOff++
+      const q = prev[i]
+      if (q !== null && swarm.clock > dt * 2) {
+        vyMax = Math.max(vyMax, Math.abs(p.y - q.y - (groundAt(p.x, p.z) - groundAt(q.x, q.z)) - FLASH_LIFT * (p.glow - q.glow)) / dt)
+        speedSum += Math.hypot(p.x - q.x, p.z - q.z) / dt
+        speedN++
+      }
+      prev[i] = p
     }
     onNow.push(lit)
   }
-  const n = alive(swarm).length
   check(low === 0, 'never under FLY_M[0] over the ground', `${low} frames`)
   check(high === 0, 'never over FLY_M[1] over the ground', `${high} frames`)
   check(far === 0, 'never past the tether', `${far} frames`)
-  check(unwritten === 0 && glowOff === 0, 'every firefly written with its own glow every frame', `${unwritten} unwritten, ${glowOff} wrong glow`)
-  // Each firefly's first dark spell was partial: it was rolled part way through it.
-  const ons = [...flashes.values()].flatMap((r) => r.on), offs = [...flashes.values()].flatMap((r) => r.off.slice(1))
+  check(vyMax < 0.45, 'climbs no faster than 0.4 m/s', `${vyMax.toFixed(3)} m/s`)
+  check(speedSum / speedN > 0.3 && speedSum / speedN < 0.7, 'flies at the old pace, 0.25..0.7 m/s', `mean ${(speedSum / speedN).toFixed(3)} m/s`)
+  // The run starts mid-spell, so each firefly's first flash and first dark spell are partial.
+  const ons = flashes.flatMap((r) => r.on.slice(1)), offs = flashes.flatMap((r) => r.off.slice(1))
   const within = (list, [lo, hi]) => list.every((s) => s >= lo - 4 * dt && s <= hi + 4 * dt)
   check(ons.length > n * 5 && within(ons, ON_S), 'each flash lasts ON_S', `${ons.length} flashes, ${Math.min(...ons).toFixed(2)}..${Math.max(...ons).toFixed(2)} s`)
   check(offs.length > n * 5 && within(offs, OFF_S), 'each dark spell lasts OFF_S', `${Math.min(...offs).toFixed(2)}..${Math.max(...offs).toFixed(2)} s`)
   const distinct = new Set(ons.map((s) => s.toFixed(2))).size
   check(distinct > 20, 'the flash length is re-rolled every time', `${distinct} distinct`)
   check(litMax > 0.99 && Math.max(...onNow) < n * 0.5, 'a flash reaches full glow and the swarm never flashes in step', `peak lit ${litMax.toFixed(3)}, at most ${Math.max(...onNow)} of ${n} on at once`)
-  check(maxMs < 6 && totalMs / frames < 0.5, `a frame of ${n} costs under half a millisecond`, `mean ${(totalMs / frames).toFixed(3)} ms, max ${maxMs.toFixed(2)} ms`)
+  check(maxMs < 6 && totalMs / (72 * 90) < 0.1, `a frame of ${n} costs under a tenth of a millisecond`, `mean ${(totalMs / (72 * 90)).toFixed(4)} ms, max ${maxMs.toFixed(2)} ms`)
+}
+
+// --- the clock wraps without a seam --------------------------------------------
+{
+  const rec = swarm.data.array
+  let worst = 0
+  for (let i = 0; i < swarm.mesh.count; i++) {
+    const a = fireflyPose(rec, i * FIELDS, 0), b = fireflyPose(rec, i * FIELDS, PERIOD_S)
+    worst = Math.max(worst, Math.abs(a.x - b.x), Math.abs(a.y - b.y), Math.abs(a.z - b.z), Math.abs(a.glow - b.glow))
+  }
+  check(worst < 1e-3, 'the pose at the clock wrap equals the pose at zero (float32 records, so to a millimetre)', `worst gap ${worst.toExponential(2)}`)
+  check(START_MAX > 0 && Math.abs(SLOT_S * Math.round(PERIOD_S / SLOT_S) - PERIOD_S) < 1e-9, 'the flash slots tile the clock exactly')
+}
+
+// --- the shader and its twin ---------------------------------------------------
+{
+  const lit = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x))
+  check([PERIOD_S, SLOT_S, START_MAX, ON_S[0], ON_S[1] - ON_S[0], FLASH_LIFT].every((c) => FIREFLY_GLSL.includes(lit(c))) && swarm.material.vertexShader.includes('fireflyPose( aHome'), 'the shader carries the same constants the twin does and calls the pose')
+  const sum = (seed) => { let g = 0; for (let t = 0; t < 200; t += 0.05) g += fireflyFlash(seed, 0, t); return g }
+  check(fireflyFlash(5, 9, 3) === fireflyFlash(5, 9 + PERIOD_S, 3) && sum(5) !== sum(6), 'the flash repeats every PERIOD_S and differs between seeds')
+  // Over the whole period each firefly flashes once per slot, so SLOTS flashes, none overlapping.
+  let flashes = 0, was = false
+  for (let t = 0; t < PERIOD_S; t += 0.05) {
+    const on = fireflyFlash(12345, 77, t) > 0
+    if (on && !was) flashes++
+    was = on
+  }
+  check(Math.abs(flashes - Math.round(PERIOD_S / SLOT_S)) <= 1, 'one flash a slot', `${flashes} in ${PERIOD_S} s`)
+}
+
+// --- a steady frame writes nothing ---------------------------------------------
+{
+  swarm.update(-10, 11, 0, dt, MIDNIGHT)
+  const writes = () => [swarm.data.version, swarm.mesh.instanceMatrix.version, swarm.mesh.count].join(',')
+  const before = writes()
+  const snapshot = swarm.data.array.slice()
+  for (let f = 0; f < 500; f++) swarm.update(-10, 11, 0, dt, MIDNIGHT)
+  check(writes() === before && swarm.data.array.every((v, i) => v === snapshot[i]), 'a steady frame writes nothing to the instance buffers', `${before} -> ${writes()}`)
+  swarm.update(-30, 11, 0, dt, MIDNIGHT)
+  check(swarm.data.version > Number(before.split(',')[0]), 'and a tile that comes or goes writes it', `${before} -> ${writes()}`)
 }
 
 // --- the tiles follow her ---------------------------------------------------------

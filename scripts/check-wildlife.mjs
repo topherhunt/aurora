@@ -1831,6 +1831,52 @@ const differ = (p, q) => {
   }
 }
 
+// --- a far body glides between its ticks -------------------------------------------
+//
+// On the far body rung a baked puppet is posed only as its tick turns, and the shader carries it at the lerp's own rate meanwhile (Wildlife._glide).
+{
+  setPuppetMode('baked')
+  const dt = 1 / 60
+  let asked = []
+  const counted = { ...walk, normalAt: (x, z, eps, out) => { asked.push(`${x},${z}`); return walk.normalAt(x, z, eps, out) } }
+  const k = make(7, { walk: counted, water, height })
+  k.place(0, 0)
+  const c = beside(k, 'stag'), rung = LOD_RUNGS - 1
+  const d = lodReach(c.spawn.lodSize, rung) * 0.9
+  for (let f = 0; f < 60; f++) step(k, c.x, c.y + d, c.z, dt)
+  walkOn(k, c, c.sh, 'walk', 100000)
+  for (let f = 0; f < 10; f++) step(k, c.x, c.y + d, c.z, dt)
+  const p = c.puppet, glides = [], writes = []
+  const glide = p.glide.bind(p)
+  p.glide = (...v) => { glides.push({ v, x: c.x, y: c.y, z: c.z, h: c.heading, t: timeOf(k) }); glide(...v) }
+  const copy = p.group.matrix.copy.bind(p.group.matrix)
+  p.group.matrix.copy = (m) => { writes.push(timeOf(k)); return copy(m) }
+  let worst = 0, probes = 0, coasted = 0
+  const frames = 600
+  for (let f = 0; f < frames; f++) {
+    const was = writes.length
+    asked = []
+    step(k, c.x, c.y + d, c.z, dt)
+    if (asked.includes(`${c.x},${c.z}`)) probes++
+    if (writes.length === was) {
+      coasted++
+      if (glides.length === 0) continue
+      // Where the shader has it now: the last glide carried on, against the lerp the CPU would have drawn.
+      const g = glides.at(-1), age = timeOf(k) - g.t, a = (timeOf(k) - c.rec.tick * TICK_S) * TICK_HZ
+      const x = c.lx + (c.sx - c.lx) * a, z = c.lz + (c.sz - c.lz) * a
+      worst = Math.max(worst, Math.hypot(g.x + g.v[0] * age - x, g.z + g.v[2] * age - z), Math.abs(g.y + g.v[1] * age - (g.y - (c.nx * (x - g.x) + c.nz * (z - g.z)) / c.ny)))
+    }
+  }
+  check(c.lod === rung && p.baked && coasted > frames / 2 && writes.length + coasted === frames, `on the far body rung a walking stag is drawn only as its tick turns, the shader carrying it between`, `${writes.length} drawn, ${coasted} coasted of ${frames}`)
+  check(worst < 1e-6, 'and where the glide carries it is where the lerp and the ground plane would have put it', `worst ${worst.toExponential(1)} m`)
+  check(Math.abs(probes - frames / PROBE_EVERY[rung]) <= 2, `coasting, it still reads the ground about once every ${PROBE_EVERY[rung]} frames`, `${probes} probes in ${frames} frames`)
+  still(k, c, 'graze', 'eat-loop')
+  for (let f = 0; f < 10; f++) step(k, c.x, c.y + d, c.z, dt)
+  check(glides.at(-1).v.every((v) => v === 0), 'stood still, it glides no more')
+  k.dispose()
+  setPuppetMode('skinned')
+}
+
 // --- past the last rung it is not thought about either -----------------------------
 //
 // The end of the ladder is one rule with two consequences: a creature she cannot

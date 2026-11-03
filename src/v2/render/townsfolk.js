@@ -1293,6 +1293,7 @@ export class Townsfolk {
     this.missing = new Set()
     this.treats = 0
     this.now = 0
+    this.feet = null
     this.outbox = []
     // Every town's hearth draws this one, built at boot on level ground (hearth.js hearthKit).
     this.kit = hearthKit(bank, hash32(seed, 0x4ea7), () => 0, textures, patch, { decimate: false })
@@ -1423,7 +1424,7 @@ export class Townsfolk {
 
   /** `graph` is its town's (townGraph), null for a traveller off the road. */
   _entity(c, graph = null) {
-    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, flee: null, scream: 0, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 }, side: 1, stuck: 0 })
+    return Object.assign(c, { graph, pose: { x: 0, y: 0, z: 0, heading: 0, k: c.k, speed: 0, clip: 'idle', hop: 0 }, lod: LOD_TIERS, puppet: null, greet: null, lag: false, flee: null, scream: 0, saddle: null, cool: 0, gcue: 0, shove: { x: 0, z: 0 }, side: 1, stuck: 0, coast: -1, coasting: false, gliding: false, sim: null })
   }
 
   _wake(i) {
@@ -1471,6 +1472,8 @@ export class Townsfolk {
     this.batch.remove(c.puppet.group)
     this.pools[c.puppet.pool].free.push(c.puppet)
     c.puppet = null
+    c.coast = -1
+    c.coasting = c.gliding = false
   }
 
   /** Once a frame: towns woken and let go by her distance, each alive one stepped to the clock (those catching up sharing the replay budget), the travellers near her on the roads, and all of it drawn nearest first, the striders before their riders; `torches` her lit torch tips, which singe the tied striders (SINGE). */
@@ -1480,6 +1483,7 @@ export class Townsfolk {
       return
     }
     this.now = seconds
+    this.feet = feet
     this.frame++
     this.dread = dread
     this.torches = torches
@@ -1512,7 +1516,10 @@ export class Townsfolk {
           c.lod =critterTier(c.size, Math.hypot(c.x - head.x, c.y - head.y, c.z - head.z), c.lod, LOD_TIERS)
           if (c.lod === LOD_TIERS) continue
         }
-        this._pose(c, life.alpha, feet, seconds, dt)
+        // A coasting body (_glide) is carried by the shader between its sim's ticks: posed and drawn again only when the tick turns.
+        c.coasting = c.coast === life.tick && life.alpha < 1 && c.greet === null && !c.lag && !c.hidden
+        c.sim = life
+        if (!c.coasting) this._pose(c, life.alpha, feet, seconds, dt)
         c.dist = Math.hypot(c.pose.x - head.x, c.pose.y - head.y, c.pose.z - head.z)
         drawn.push(c)
       }
@@ -2212,6 +2219,10 @@ export class Townsfolk {
     if (c.puppet && c.puppet.pool !== c.body) this._release(c)
     // Past its body's pool in nearness, a holder fades out and frees its puppet for someone nearer.
     const want = gone || c.lod === LOD_TIERS || this.ranks[c.body]++ >= TOWNSFOLK.puppets ? -1 : c.lod
+    if (c.coasting) {
+      if (want === c.puppet.to) return
+      this._pose(c, c.sim.alpha, this.feet, this.now, dt)
+    }
     if (want !== -1 && !c.puppet) {
       const p = this.pools[c.body].free.pop()
       if (!p) { this.starved++; return }
@@ -2234,7 +2245,28 @@ export class Townsfolk {
     puppet.step(dt)
     puppet.group.matrix.copy(_mat)
     puppet.group.matrixWorldNeedsUpdate = true
+    this._glide(c, want)
     if (puppet.done) this._release(c)
+  }
+
+  /**
+   * A far, settled body walking its sim's lerp unshoved glides there at the lerp's own
+   * rate until the next tick (`c.coast`); any other body stands where it is drawn.
+   * Travellers (`c.sim` unset) are posed by the road, not a lerp, and never coast.
+   */
+  _glide(c, want) {
+    const life = c.sim, p = c.puppet, s = c.shove
+    c.sim = null
+    c.coast = -1
+    if (!p.baked) return
+    if (life && want === LOD_TIERS - 1 && p.fade >= 1 && life.alpha < 1 && c.greet === null && !c.lag && !c.hidden && c.saddle === null && c.flee === null && c.job === null && c.pose.hop === 0 && Math.abs(s.x) + Math.abs(s.z) < 1e-4) {
+      p.glide((c.x - c.px) * TICK_HZ, (c.y - c.py) * TICK_HZ, (c.z - c.pz) * TICK_HZ, swing(c.ph, c.heading) * TICK_HZ)
+      c.coast = life.tick
+      c.gliding = true
+    } else if (c.gliding) {
+      p.glide(0, 0, 0, 0)
+      c.gliding = false
+    }
   }
 
   /** Each smith and woodcutter drawn on its round with its hammer or axe in the right fist: the handle off the forearm a quarter turn below its line, swung in the body's forward plane as the strike swings the arm. */

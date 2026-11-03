@@ -23,9 +23,10 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Fish, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S, PREY, CURRENT_MPS } from '../src/v2/render/fish.js'
-import { CHAPTER_S, GRID_S, chapterOf, tickOf } from '../src/sim/score.js'
+import { Fish, FISH_ROW_TEXELS, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S, PREY, CURRENT_MPS } from '../src/v2/render/fish.js'
+import { CHAPTER_S, GRID_S, TICK_S, chapterOf, tickOf } from '../src/sim/score.js'
 import { taken } from '../src/v2/taken.js'
+import { TIME_HI } from '../src/v2/render/gpu-motion.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -112,9 +113,14 @@ const scene = new THREE.Scene()
 const fish = new Fish(scene, height, water, { seed: 23, assets })
 check(fish.species.length === 3 && fish.species.every((sp) => sp.loaded), 'three species, all loaded from assets')
 for (const sp of fish.species) {
-  const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <lights_fragment_end>\n#include <dithering_fragment>\n' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <lights_fragment_end>\n#include <dithering_fragment>\n' }
   sp.material.onBeforeCompile(shader)
-  check(shader.vertexShader.includes('attribute vec4 aSwim') && shader.vertexShader.includes('FISH_WAVE_K') && shader.vertexShader.includes('+ aSwim.z') && shader.vertexShader.includes('aBend * aSwim.w'), `${sp.id}: swim wiggle, turn curve and lift spliced into begin_vertex`)
+  check(shader.vertexShader.includes('attribute vec4 aSwim') && shader.vertexShader.includes('FISH_WAVE_K') && shader.vertexShader.includes('+ fishSwim.z') && shader.vertexShader.includes('aBend * fishSwim.w'), `${sp.id}: swim wiggle, turn curve and lift spliced into begin_vertex`)
+  const glsl = shader.vertexShader
+  check(glsl.includes('texelFetch( uRows') && glsl.includes('gpuInstanceMatrix = aRow < 0.5 ? fishHeld() : fishRow( int( aRow + 0.5 ) - 1 );') && glsl.includes('#define instanceMatrix gpuInstanceMatrix') && !glsl.includes('`'), `${sp.id}: the row poses a flight instance and aRow 0 keeps a hand's own matrix and aSwim`)
+  check(shader.uniforms.uRows.value === sp.rows.texture && shader.uniforms.uRowT === sp.rows.uniforms.uRowT, `${sp.id}: the shader reads its own species' rows`)
+  const rowId = sp.mesh.geometry.getAttribute('aRow')
+  check(rowId.isInstancedBufferAttribute && sp.slots.every((f) => rowId.array[f.id] === f.id + 1), `${sp.id}: aRow is the slot id + 1`)
   // Underwater a fish does not glint -- the surface does. A specular term here would be a fish shining as if it were held up in the air.
   check(sp.material.isMeshLambertMaterial && !shader.fragmentShader.includes('directSpecular'), `${sp.id}: Lambert, no specular`, sp.material.type)
   // The hue turn (critters.js hueVary): read per instance, carried across, and applied to the sampled map before it is lit.
@@ -453,6 +459,94 @@ check(alive().every(inWater), 'every refilled fish is in the water')
   for (let i = 0; i < 3 * 72; i++) step(0, LEVEL, 0)
 }
 
+// --- the pose is the shader's ---------------------------------------------
+// A JS twin of the vertex shader's row math (FISH_GLSL), run on the row as the GPU holds it at world time t, against the pose the slot's own fields describe composed with three. Kept in step with the shader.
+const fishPose = (sp, f, t) => {
+  const d = sp.rows.data
+  const o = f.id * FISH_ROW_TEXELS * 4
+  const sc = d[o + 7]
+  if (sc === 0) return null
+  const hi = Math.floor(t / TIME_HI) * TIME_HI
+  const e = Math.max(0, (hi - d[o + 22]) + ((t - hi) - d[o + 3]))
+  const a = Math.min(1, Math.max(0, e * 20))
+  const mix = (u, v) => u + (v - u) * a
+  const p = [mix(d[o], d[o + 4]), mix(d[o + 1], d[o + 5]), mix(d[o + 2], d[o + 6])]
+  const rx = mix(d[o + 10], d[o + 11]), ry = mix(d[o + 8], d[o + 9]), rz = mix(d[o + 12], d[o + 13])
+  const ca = Math.cos(rx), sa = Math.sin(rx), cc = Math.cos(ry), sd = Math.sin(ry), ce = Math.cos(rz), sf = Math.sin(rz)
+  const ccE = cc * ce, ccF = cc * sf, sdE = sd * ce, sdF = sd * sf
+  const r = [ccE + sdF * sa, ca * sf, ccF * sa - sdE, sdE * sa - ccF, ca * ce, sdF + ccE * sa, ca * sd, -sa, ca * cc]
+  const m = [...r.slice(0, 3).map((v) => v * sc), 0, ...r.slice(3, 6).map((v) => v * sc), 0, ...r.slice(6, 9).map((v) => v * sc), 0, ...p, 1]
+  return { m, swim: [d[o + 20] + d[o + 21] * e, mix(d[o + 18], d[o + 19]), mix(d[o + 14], d[o + 15]), mix(d[o + 16], d[o + 17])], a }
+}
+// The pose a slot's fields describe at time t, drawn from the tick it was stamped at (schooled) or at once (loose), composed with three.
+const fishReference = (f, t) => {
+  const loose = f.loose
+  const stamp = loose ? t - 2 * TICK_S : f.school.rec.tick * TICK_S
+  const e = Math.max(0, t - stamp)
+  const a = Math.min(1, Math.max(0, e * 20))
+  const mix = (u, v) => u + (v - u) * a
+  const turn = f.yaw - f.pyaw
+  const yaw0 = f.yaw - (turn - Math.PI * 2 * Math.round(turn / (Math.PI * 2)))
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(mix(f.ppitch, f.pitch), mix(yaw0, f.yaw), mix(f.proll, f.roll), 'YXZ'))
+  const m = new THREE.Matrix4().compose(new THREE.Vector3(mix(f.px, f.x), mix(f.py, f.y), mix(f.pz, f.z)), q, new THREE.Vector3(f.scale, f.scale, f.scale))
+  return { m: m.toArray(), swim: [f.phase + f.rate * (loose ? 0 : e), mix(f.pamp, f.amp), mix(f.pcurve, f.curve), mix(f.plift, f.lift)] }
+}
+const gapOf = (x, y) => Math.max(...x.map((v, i) => Math.abs(v - y[i])))
+const poseGap = (sp, f, t) => {
+  const got = fishPose(sp, f, t)
+  if (got === null) return { pose: Infinity, phase: Infinity }
+  const want = fishReference(f, t)
+  // The tail phase is compared on the circle, the CPU keeping it in [0, TAU); it carries the stamp's float32 rounding times the beat, so it gets a looser bar than the matrix.
+  return { pose: Math.max(gapOf(got.m, want.m), gapOf(got.swim.slice(1), want.swim.slice(1))), phase: Math.abs(Math.sin(got.swim[0] - want.swim[0])) }
+}
+{
+  const live = () => fish.species.flatMap((sp) => sp.slots.filter((f) => f.alive && !f.loose).map((f) => ({ sp, f })))
+  let worst = 0
+  let worstPhase = 0
+  let frames = 0
+  let bad = 0
+  for (let i = 0; i < 4 * 72; i++) {
+    step(0, LEVEL - 1, 0)
+    for (const { sp, f } of live()) {
+      const gap = poseGap(sp, f, clock.seconds)
+      if (!Number.isFinite(gap.pose)) { bad++; continue }
+      worst = Math.max(worst, gap.pose)
+      worstPhase = Math.max(worstPhase, gap.phase)
+      frames++
+    }
+  }
+  check(bad === 0 && frames > 5000 && worst < 2e-3 && worstPhase < 1e-2, 'the shader\'s pose of a fish is the slot\'s own pose composed with three', `${frames} fish-frames, worst gap ${worst.toExponential(2)}, tail phase ${worstPhase.toExponential(2)} rad`)
+  const some = live()[0]
+  const mid = fishPose(some.sp, some.f, clock.seconds)
+  check(mid.a >= 0 && mid.a <= 1 && Math.abs(mid.m[12] - some.f.x) < 1, 'and sits between its last two ticks', `a ${mid.a.toFixed(2)}`)
+  for (const sp of fish.species) check(sp.mesh.count === sp.top && sp.slots.every((f) => f.alive === (sp.rows.data[f.id * FISH_ROW_TEXELS * 4 + 7] !== 0)), `${sp.id}: a row is drawn exactly when its slot is alive, and the mesh covers them`, `${sp.mesh.count} drawn`)
+}
+// Frames between ticks write nothing: a school's rows are written on its tick and the matrix, swim, hue and tint buffers never.
+{
+  let quiet = 0
+  let wrote = 0
+  let tickFrames = 0
+  let tickWrites = 0
+  let leaked = 0
+  for (let i = 0; i < 6 * 72; i++) {
+    const before = fish.species.map((sp) => [sp.rows.writes, sp.rows.texture.version, sp.mesh.instanceMatrix.version, sp.swim.version, sp.hue.version, sp.mesh.instanceColor.version])
+    const was = tickOf(clock.seconds)
+    step(0, LEVEL - 1, 0)
+    const ticked = tickOf(clock.seconds) !== was
+    fish.species.forEach((sp, k) => {
+      const b = before[k]
+      const n = sp.rows.writes - b[0]
+      if (sp.mesh.instanceMatrix.version !== b[2] || sp.swim.version !== b[3] || sp.hue.version !== b[4] || sp.mesh.instanceColor.version !== b[5]) leaked++
+      if (ticked) tickWrites += n
+      else wrote += n + (sp.rows.texture.version !== b[1] ? 1 : 0)
+    })
+    if (ticked) tickFrames++
+    else quiet++
+  }
+  check(quiet > 6 * 72 * 0.5 && wrote === 0, 'frames between ticks write no row and upload no texture', `${quiet} quiet frames, ${wrote} writes`)
+  check(tickFrames >= 6 * 20 - 2 && tickWrites >= fish.stats.alive * tickFrames * 0.9 && leaked === 0, 'a tick frame writes every schooled fish\'s row, and no frame writes the matrix, swim, hue or tint buffers', `${tickFrames} tick frames, ${tickWrites} rows, ${leaked} stray uploads`)
+}
+
 // --- the room: two clients swim the same fish -------------------------------
 // A twin on the same seed, fed the same head on another frame cadence, holds every fish to the bit; a late joiner placed mid-segment is on the same fish after its first frame.
 const twin = new Fish(new THREE.Scene(), height, water, { seed: 23, assets })
@@ -561,6 +655,8 @@ const agree = (a, b) => {
   const out = Math.hypot(loose.x - head.x, loose.z - head.z) - Math.hypot(x0 - head.x, 0)
   check(loose.stun <= 0 && loose.amp > 0 && out > 1, 'awake, it darts away from her', `${out.toFixed(2)} m further from her in 4 s, up to ${STUN_S[1]} s of it stunned`)
   check(fish.pickAt(loose.x, loose.y, loose.z, 0.5, 2)?.f === loose, 'a loose fish can be picked up again')
+  const lg = poseGap(sp, loose, clock.seconds)
+  check(lg.pose < 2e-3 && lg.phase < 1e-2, 'a loose fish\'s row is its pose this frame, written every frame', `gap ${lg.pose.toExponential(2)}, tail ${lg.phase.toExponential(2)}`)
   let frames = 0
   while (loose.alive && frames++ < 60 * 72) step(head.x, head.y, head.z)
   check(!loose.alive && !loose.loose, `and is forgotten past LOOSE_GONE_M ${LOOSE_GONE_M}`, `${(frames / 72).toFixed(1)} s`)

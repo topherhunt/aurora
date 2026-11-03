@@ -2,7 +2,7 @@
 // spans the walk reads from it. Exterior data is castle-local metres with y from the castle floor; interior data is interior metres
 // (CASTLE.scale across, CASTLE.tall upward). Neither follows the warp, which bends the masonry up to about 0.27 m.
 import { mulberry32 } from '../../sim/mathx.js'
-import { CASTLE } from './layout.js'
+import { CASTLE, LADDER } from './layout.js'
 import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
 import { COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, wallRails } from './shell.js'
@@ -79,7 +79,7 @@ function exteriorSolids(lay) {
       put(-1.1, -0.8, b.y, b.y + BAND)
       put(0.8, 1.1, b.y, b.y + BAND)
     }
-    if (e.ladder) { const l = e.ladder, y = (l.k + 1) * H; boxes.push(box(l.x - 0.5, l.z - 0.5, l.x + 0.5, l.z + 0.5, y, y + 0.2)) }
+    if (e.ladder) { const l = e.ladder, y = (l.k + 1) * H, r = LADDER.lid; boxes.push(box(l.x - r, l.z - r, l.x + r, l.z + r, y, y + 0.2)) }
   }
   boxes.push(box(lay.X(0) - COURT_RUN, lay.Z(0) - COURT_RUN, lay.X(lay.cw) + COURT_RUN, lay.Z(lay.cd) + COURT_RUN, -1, 0.05))
   const [sx, sy, sz] = lay.nodes.find((n) => n.kind === 'summit').pos
@@ -394,7 +394,8 @@ function spotNear(spans, x, y, z, r, fx, fz) {
 const spot = (spans, x, y, z, fx, fz) => standAt(spans, x, y, z) ?? spotNear(spans, x, y, z, 0.5, fx, fz)
 
 /** Every way through the shell: doors between the exterior and the interior (each its leaves' face either side, and where it sets
- * her down), ladders as blinks, the wards (membrane centre, the way out toward its gem, the gem) and runebooks, the summit's rope
+ * her down), ladders (hatch, foot, the unit out of its face, the heights she climbs between, where the hatch sets her down inside
+ * and the top her out on the roof), the wards (membrane centre, the way out toward its gem, the gem) and runebooks, the summit's rope
  * and its chest. Exterior points are local, interior points interior metres; ward, book and dungeon points follow the warp. */
 function portals(lay, ex, it) {
   const exSpans = (x, z) => exteriorSpans(ex, x, z)
@@ -418,8 +419,11 @@ function portals(lay, ex, it) {
       })
     }
     if (e.ladder) {
-      const { x, z, k } = e.ladder, y = (k + 1) * H, lo = k * SH
-      ladders.push({ k, x: x * S, z: z * S, hatch: [x, y + 0.2, z], roof: spotNear(exSpans, x, y, z, 1.2, -x, -z), down: spotNear(inSpans(lo), x * S, lo, z * S, 1.3, -x, -z) })
+      const { x, z, k, ux, uz } = e.ladder, y = (k + 1) * H, lo = k * SH, fx = x * S - ux * (LADDER.rails - LADDER.foot), fz = z * S - uz * (LADDER.rails - LADDER.foot)
+      ladders.push({
+        k, x: x * S, z: z * S, ux, uz, foot: [fx, fz], bottom: lo, top: lo + SH - LADDER.trap - LADDER.head,
+        hatch: [x, y + 0.2, z], roof: spotNear(exSpans, x, y, z, 1.2, -x, -z), down: spotNear(inSpans(lo), fx, lo, fz, 1.2, ux, uz),
+      })
     }
   }
   const rope = lay.edges.find((e) => e.rope).rope, summit = lay.nodes.find((n) => n.kind === 'summit')
@@ -435,6 +439,27 @@ function portals(lay, ex, it) {
   })
   const books = lay.books.map((b, i) => ({ at: at(bookSpot(lay, b, i)), code: b.code.slice() }))
   return { doors, ladders, wards, books, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice(), dungeon }
+}
+
+/** Of ladder portals `ls` (interior metres), the one whose foot (x, z) stands within `reach` of with her feet `y` on its floor; else null. */
+export function ladderFoot(ls, x, z, reach, y) {
+  let best = null, bd = reach
+  for (const l of ls) {
+    const d = Math.hypot(x - l.foot[0], z - l.foot[1])
+    if (d <= bd && Math.abs(y - l.bottom) < 0.3) { best = l; bd = d }
+  }
+  return best
+}
+
+/** The ladder whose rungs a hand at (x, y, z) is within `reach` of, as { l, rung } (the grip height nearest y); else null. */
+export function ladderRung(ls, x, y, z, reach) {
+  for (const l of ls) {
+    const px = l.x - l.ux * LADDER.rails, pz = l.z - l.uz * LADDER.rails
+    const across = Math.abs(-(x - px) * l.uz + (z - pz) * l.ux), out = Math.abs((x - px) * l.ux + (z - pz) * l.uz)
+    if (across > LADDER.half + reach || out > reach || y < l.bottom || y > l.bottom + SH - LADDER.trap + reach) continue
+    return { l, rung: l.bottom + Math.max(1, Math.round((y - l.bottom) / LADDER.rung)) * LADDER.rung }
+  }
+  return null
 }
 
 /** A layout's collision and portals, as plain data (structured-clonable, for the worker's reply). */

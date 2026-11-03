@@ -6,13 +6,15 @@
 // unentered or the dungeon's key or (unlocked) chest unreached; and a spiral she cannot drive down or up end to end, along the post,
 // the middle of the treads or the drum, or that pops her up onto a landing's slab on the way down. The flood is slow, so it sweeps
 // few seeds: ones whose one-cell towers are entered only by their spirals, and 258641, whose dungeon is reached only by one; the flood
-// runs with every ward open. And a shut ward that lets her step through its doorway, or an opened one that does not.
+// runs with every ward open. A shut ward that lets her step through its doorway, or an opened one that does not. And a ladder she
+// cannot climb by walking at it, or that she starts climbing walking past it.
 
 import THREE from '../src/three-instance.js'
 import { Player } from '../src/player.js'
 import { WalkSurface } from '../src/v2/walk.js'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
-import { castleSolids, interiorSpans, SPANS, wardFrame } from '../src/v2/castles/solids.js'
+import { castleSolids, interiorSpans, ladderFoot, SPANS, wardFrame } from '../src/v2/castles/solids.js'
+import { Climb } from '../src/v2/climb.js'
 import { SEG, SPIRAL } from '../src/v2/castles/spiral.js'
 import { roomPlan } from '../src/v2/castles/furnish.js'
 
@@ -113,6 +115,53 @@ for (const seed of [1, 3, 8]) {
 }
 check(!leaky.length, 'a shut ward stops her in its doorway', leaky.join(' '))
 check(!stuck.length, 'an opened ward lets her walk through its doorway', stuck.join(' '))
+
+// Ladders, with the real Climb: walking at one from 1 m before its foot (0.6 m before a drum's, whose well lies ahead) climbs it until her head meets the trap door, which takes
+// her out; walking past along its wall, on its foot line or 0.4 m out, from 1.5 m to one side toward the other, never starts a climb.
+const unclimbed = [], snagged = []
+let passes = 0
+for (const seed of [1, 3, 8]) {
+  const lay = castleLayout(seed), sol = castleSolids(lay), { at, group, player, surface } = rig(sol.it), ls = sol.portals.ladders
+  const climb = new Climb(player, [{ ladderAt: (x, z, r, y) => {
+    const l = ladderFoot(ls, x, z, r, y)
+    return l === null ? null : { x: l.foot[0], z: l.foot[1], ux: l.ux, uz: l.uz, bottom: l.bottom, top: l.top, act: { kind: 'leave' } }
+  }, rungAt: () => null }], (act) => { climb.out = act })
+  const walk = (x, z, y, gx, gz, secs, held) => {
+    const p = group.position
+    player.teleportTo(x, z, y)
+    group.rotation.set(0, Math.atan2(-gx, -gz), 0)
+    group.updateMatrixWorld(true)
+    climb.out = null
+    let top = y
+    for (let t = 0; t < secs * 72 && climb.out === null; t++) {
+      at.hint = player.standY
+      const input = { move: 1, strafe: 0, lift: 0, turn: 0, unstick: false, instant: false }
+      climb.desk(1 / 72, input, gx, gz)
+      player.update(1 / 72, input)
+      top = Math.max(top, p.y)
+      if (player.held) held.n++
+    }
+    return top
+  }
+  ls.forEach((l, i) => {
+    const tag = `${seed}:${i}`, held = { n: 0 }
+    at.hint = l.bottom
+    const back = surface.fits(l.foot[0] + l.ux, l.foot[1] + l.uz, l.bottom) ? 1 : 0.6
+    const top = walk(l.foot[0] + l.ux * back, l.foot[1] + l.uz * back, l.bottom, -l.ux, -l.uz, 15, held)
+    if (climb.out === null || climb.out.kind !== 'leave' || top < l.top - 0.01) unclimbed.push(`${tag} to ${(top - l.bottom).toFixed(1)} m`)
+    for (const out of [0, 0.4]) for (const s of [-1, 1]) {
+      const px = -l.uz * s, pz = l.ux * s, x = l.foot[0] + l.ux * out - px * 1.5, z = l.foot[1] + l.uz * out - pz * 1.5
+      at.hint = l.bottom
+      if (!surface.fits(x, z, l.bottom)) continue
+      passes++
+      held.n = 0
+      walk(x, z, l.bottom, px, pz, 3 / 1.4, held)
+      if (held.n || climb.out !== null) snagged.push(`${tag}${s < 0 ? '-' : '+'}${out}`)
+    }
+  })
+}
+check(!unclimbed.length, 'walking at a ladder climbs it until her head meets the trap door, which takes her out onto the roof', unclimbed.join(' '))
+check(!snagged.length, `walking past a ladder along its wall never climbs it (${passes} passes)`, snagged.join(' '))
 
 // Drive: forward only (as in VR), steering a lead point round the helix at radius RAD, down from each column's top and up from its foot.
 const LEAD = 0.6, RADS = [SPIRAL.post + 0.35, (SPIRAL.post + SPIRAL.well) / 2, SPIRAL.well - 0.25]

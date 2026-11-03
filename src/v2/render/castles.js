@@ -6,7 +6,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { castleLayout, CASTLE } from '../castles/layout.js'
 import { courtGeometry, exteriorGeometry, toGeometry, UV_METRES } from '../castles/shell.js'
-import { exteriorSpans, interiorSpans, onFlight, spiralTreadAt, SPANS } from '../castles/solids.js'
+import { exteriorSpans, interiorSpans, ladderFoot, ladderRung, onFlight, spiralTreadAt, SPANS } from '../castles/solids.js'
 import { castleExtents, toLocal } from '../layers/castles.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { downsample, flipY, dilate, SUPERSAMPLE } from '../../props/impostor.js'
@@ -27,10 +27,10 @@ export const CASTLE_CARD = { seed: 3, size: 512, bottom: -3 }
 export const CASTLE_RISE = 320
 // The texture of each shell.js material slot.
 export const MAP_KEYS = ['stone', 'plank', 'door', 'gate', 'thatch', 'leaded', 'cloth']
-// Plan metres round a rope, a hatch or a ladder where each fires, and how near her feet must be to its height. The rope hangs a
+// Plan metres round a rope or a roof hatch where each fires, and how near her feet must be to its height. The rope hangs a
 // metre off the lookout's face, past its 1.3 m battlement band, which she cannot step onto: she takes it over the band. A door
-// fires within `door` of its leaves' face, which is solid, so touching them is going through.
-const ZONE = { rope: 2.2, hatch: 0.6, ladder: 0.7, door: 0.5, rise: 0.6 }
+// fires within `door` of its leaves' face, which is solid, so touching them is going through. A ladder inside is climbed (ladderAt).
+const ZONE = { rope: 2.2, hatch: 0.6, door: 0.5, rise: 0.6 }
 // The summit rope (render/castles.js ropeMeshes): coiled on the roof `back` m in from where it hangs until she clicks it (ropeOn),
 // then hanging from `lift` over the roof to the foot of the face. A ray within `grab` of the coil or the hanging top takes it.
 const ROPE = { r: 0.017, sides: 7, coil: 0.22, rings: 6, back: 2.2, lift: 0.45, grab: 0.35 }
@@ -647,17 +647,37 @@ export class Castles {
     })
     if (inside) {
       if (zone === null && !c.solids.it.unlocked && atLeaves(P.dungeon.door, P.dungeon.door.hw)) { const d = P.dungeon.door; zone = 'lock'; act = { kind: 'locked', site: s, at: world([d.x, d.y + 2.2, d.z], oy) } }
-      P.ladders.forEach((l, i) => {
-        if (zone === null && near(l.x, l.z, ZONE.ladder, l.down[1])) { zone = `l${i}`; act = { kind: 'leave', site: s, at: world(l.roof, s.y), face: face(-l.hatch[0], -l.hatch[2]) } }
-      })
     } else {
       P.ladders.forEach((l, i) => {
-        if (zone === null && near(l.hatch[0], l.hatch[2], ZONE.hatch, l.hatch[1])) { zone = `t${i}`; act = { kind: 'enter', site: s, at: world(l.down, s.y + CASTLE_RISE), face: face(-l.x, -l.z), back: world(l.roof, s.y), ward: -1 } }
+        if (zone === null && near(l.hatch[0], l.hatch[2], ZONE.hatch, l.hatch[1])) { zone = `t${i}`; act = { kind: 'enter', site: s, at: world(l.down, s.y + CASTLE_RISE), face: face(l.ux, l.uz), back: world(l.roof, s.y), ward: -1 } }
       })
     }
     const fire = zone !== null && zone !== this._zone
     this._zone = zone
     return fire ? act : null
+  }
+
+  /** The ladder (climb.js; Palisades.ladderAt's record, world) in the castle she is in whose foot (x, z) is within `reach` of, her feet
+   * `y` on its floor: its `act` the leave portal its top fires, where her head meets the trap door. Else null. */
+  ladderAt(x, z, reach, y) {
+    const c = this.inside
+    if (c === null) return null
+    const s = c.site, [lx, lz] = toLocal(s, x, z), l = ladderFoot(c.solids.portals.ladders, lx, lz, reach, y - s.y - CASTLE_RISE)
+    return l === null ? null : this._climbed(c, l)
+  }
+
+  /** The ladder whose rungs a hand at world (x, y, z) is within `reach` of, as ladderAt's record with `rung` its grip height; else null. */
+  rungAt(x, y, z, reach) {
+    const c = this.inside
+    if (c === null) return null
+    const s = c.site, oy = s.y + CASTLE_RISE, [lx, lz] = toLocal(s, x, z), r = ladderRung(c.solids.portals.ladders, lx, y - oy, lz, reach)
+    return r === null ? null : { ...this._climbed(c, r.l), rung: oy + r.rung }
+  }
+
+  _climbed(c, l) {
+    const s = c.site, oy = s.y + CASTLE_RISE, [fx, fz] = turn(s, l.foot[0], l.foot[1]), [ux, uz] = turn(s, l.ux, l.uz), [rx, rz] = turn(s, l.roof[0], l.roof[2])
+    const act = { kind: 'leave', site: s, at: [s.x + rx, s.y + l.roof[1], s.z + rz], face: turn(s, -l.hatch[0], -l.hatch[2]) }
+    return { x: s.x + fx, z: s.z + fz, ux, uz, bottom: oy + l.bottom, top: oy + l.top, act }
   }
 
   /** After a portal set her down: the zone she now stands in is the one she is in, so it does not fire. */

@@ -22,9 +22,19 @@
 // disturbing the crabs it has. THE STONE MOVES TOO: a rock is seated on the
 // drawn terrain and re-seated when the chunk under it re-splits
 // (Rocks._reground), by tens of centimetres where a far 2 m chunk becomes a
-// near 0.5 m one, and a pausing crab's matrix is held rather than recomposed,
-// so it would never follow the rock. So every crab re-reads its stone once per
-// RESEAT_EVERY frames.
+// near 0.5 m one, and a laid spell would never follow the rock. So every
+// RESEAT_S the spots of every crab's spell are re-read against their stone, and
+// a spell whose stone moved is laid again.
+//
+// THE GPU POSES A CRAB ON ITS ROCK. A spell is laid into one row of a PhraseTable
+// (gpu-motion.js): its sits as pause phrases cut at the idle bouts, its scuttle as
+// go phrases cut every half body length with the stone's height and normal
+// sampled at each cut. The vertex shader evaluates the phrase at the room's
+// clock and builds the instance matrix and the clip frames (MOTION_GLSL), and
+// poseAt() is its JS twin. The CPU touches a crab when its spell turns, when a
+// sweep (_sweep) re-sorts the crabs into mesh and card, and when it is a pet,
+// a hunter or loose (cpu rows: the mesh reads its matrix and clip from the
+// attributes, as a held copy does at row 0).
 //
 // EVERYTHING A CRAB DOES IS A PURE FUNCTION OF ITS KEY AND THE ROOM'S CLOCK
 // (_notes/creature-sync.md), so two clients standing on the same shore watch
@@ -68,7 +78,9 @@ import { mulberry32 } from '../../sim/mathx.js'
 import { keyHash, phraseRand } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 import { PropArena } from './prop-arena.js'
-import { CRAB_ANIM_NORMAL, CRAB_ANIM_PARS, CRAB_ANIM_VERTEX, loadCrabAnim, poseWeight, writeAnim } from './crab-anim.js'
+import { BOUT_S, FADE_S, CRAB_ANIM_NORMAL, CRAB_ANIM_PARS, CRAB_ANIM_VERTEX, loadCrabAnim, pickIdle, poseWeight, writeAnim } from './crab-anim.js'
+import { PhraseTable, ROW_W, TIME_HI, motionSplice } from './gpu-motion.js'
+import { getPropClock } from '../../material.js'
 import {
   CARD_M, CRAB_VIEWS, CRITTER_GLB, bakeCritterCard, critterCardExtents, glint, hueTurnTint, hueVary, loadCritterGlb, makeHueAttribute,
   setCritterAsset, tierTintSplice, tileKey, walkTiles,
@@ -111,9 +123,20 @@ const POST_TRIES = 8
 // Drawn STRETCH_Y taller than the mesh (which is squashed flat), and sunk SINK of its height into the stone along the normal, so the legs grip the surface instead of tiptoeing on it.
 export const STRETCH_Y = 1.25
 export const SINK = 0.2
-// Frames between a crab's re-reads of its stone's height (see the header), and per tile rescan.
+// Frames between a CPU-driven crab's re-reads of its stone's height, seconds between the re-reads of every laid spell's stone (see the header), and frames per tile rescan.
 export const RESEAT_EVERY = 8
+export const RESEAT_S = 0.25
 const RESCAN_FRAMES = 4
+// The sweep re-sorts the crabs into mesh and card when her head has moved SWEEP_M, at every phrase turn, and every SWEEP_S while a far card is walking (a card's drift lasts 0.25 s).
+export const SWEEP_M = 0.25
+export const SWEEP_S = 0.2
+// A go phrase is laid as pieces of GO_PIECE_SPAN of the crab's size, at most GO_PIECES_MAX of them (the row holds 31 phrases; the sits take up to 6).
+const GO_PIECE_SPAN = 0.5
+const GO_PIECES_MAX = 24
+// Phrase kinds in the row.
+const PAUSE = 0
+const GO = 1
+const CPU = 2
 // The normal is read from the surface NORMAL_SPAN of the crab's span either side of it; two sides whose rises differ by more than LIP of that are a lip, not a slope (see _slope).
 const NORMAL_SPAN = 0.25
 const LIP = 2
@@ -143,6 +166,56 @@ const _mat = new THREE.Matrix4()
 const _flat = new THREE.Matrix4()
 const _lay = new THREE.Matrix4().makeRotationX(-Math.PI / 2)
 const _tint = new THREE.Color()
+const _at = { x: 0, y: 0, z: 0, ph: null }
+const _row = new Float32Array(16)
+const _anim = new Float32Array(4)
+const _P = { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, heading: 0, state: 'pause', speed: 0, vx: 0, vy: 0, vz: 0, until: 0, anim: new Float32Array(4) }
+
+// The body of gpuMotion (gpu-motion.js) for a crab. Phrase texels: A = start, dur, kind, s (a pause: seconds into its bout at the phrase's start; a go: the walk's cycles at it, phase0 in); B = x, y, z, drawn yaw; C = (pause) clip base, frames, seconds, (go) cycles a second, side, 0, and in both w = seconds from the whole pause or leg to this phrase; D = ground normal, w = the whole pause or leg's seconds. A go phrase runs to the next phrase's B and D. Kind CPU hands the mesh's own matrix and aAnim back.
+const MOTION_GLSL = /* glsl */ `
+  int p = phraseAt( row, n, e );
+  vec4 A = texel( row, 1 + 4 * p );
+  if ( A.z > 1.5 ) {
+    crabAnim = aAnim;
+    return instanceMatrix;
+  }
+  vec4 B = texel( row, 2 + 4 * p );
+  vec4 C = texel( row, 3 + 4 * p );
+  vec4 D = texel( row, 4 + 4 * p );
+  float k = head.z;
+  float le = e - A.x;
+  vec3 pos = B.xyz;
+  vec3 nrm = D.xyz;
+  vec2 clip;
+  float t;
+  if ( A.z > 0.5 ) {
+    vec3 to = texel( row, 6 + 4 * p ).xyz;
+    vec3 nTo = texel( row, 8 + 4 * p ).xyz;
+    float u = A.y > 0.0 ? clamp( le / A.y, 0.0, 1.0 ) : 1.0;
+    pos = mix( B.xyz, to, u );
+    nrm = normalize( mix( D.xyz, nTo, u ) );
+    clip = uCrabWalk;
+    t = ( A.w + C.x * le ) * C.y * clip.y;
+  } else {
+    clip = C.xy;
+    t = ( A.w + le ) / C.z * clip.y;
+  }
+  float we = C.w + le;
+  float wu = clamp( min( 1.0, min( we / 0.3, ( D.w - we ) / 0.3 ) ), 0.0, 1.0 );
+  t = mod( t, clip.y );
+  float f = floor( t );
+  crabAnim = vec4( clip.x + f, clip.x + mod( f + 1.0, clip.y ), t - f, wu * wu * ( 3.0 - 2.0 * wu ) );
+  vec4 q = normalize( vec4( nrm.z, 0.0, -nrm.x, 1.0 + nrm.y ) );
+  float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z, xw = q.x * q.w, yw = q.y * q.w, zw = q.z * q.w;
+  float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+  mat3 tilt = mat3(
+    1.0 - 2.0 * ( yy + zz ), 2.0 * ( xy + zw ), 2.0 * ( xz - yw ),
+    2.0 * ( xy - zw ), 1.0 - 2.0 * ( xx + zz ), 2.0 * ( yz + xw ),
+    2.0 * ( xz + yw ), 2.0 * ( yz - xw ), 1.0 - 2.0 * ( xx + yy ) );
+  float cy = cos( B.w ), sy = sin( B.w );
+  mat3 R = tilt * mat3( cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy );
+  return mat4( vec4( R[ 0 ] * k, 0.0 ), vec4( R[ 1 ] * ( k * ${STRETCH_Y.toFixed(4)} ), 0.0 ), vec4( R[ 2 ] * k, 0.0 ), vec4( pos - nrm * ( uCrabSink * k ), 1.0 ) );
+`
 
 // A perch's identity and its seed come from its quantised origin: the same rock, the same crabs.
 const perchKey = (x, z) => Math.round(x * 8) * 0x100000 + Math.round(z * 8)
@@ -196,10 +269,17 @@ export class Crabs {
 
     // A wet shell glints: critters.js's glint.
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: WET_ROUGHNESS, metalness: 0 })
-    // Each vertex is one bone's (`aBone`); `aAnim` per instance picks the two texture rows of its clip frame, their blend, and the pose's weight over the bind pose (crab-anim.js).
+    // Each vertex is one bone's (`aBone`); `crabAnim` per instance picks the two texture rows of its clip frame, their blend, and the pose's weight over the bind pose (crab-anim.js): built in the vertex shader from the crab's row, or read from `aAnim` for a CPU row.
+    this.table = new PhraseTable(MAX + 1)
+    this.uWalk = { value: new THREE.Vector2() }
+    this.uSink = { value: 0 }
     this.material.onBeforeCompile = (shader) => {
       if (this.anim === null) throw new Error('Crabs: drawn before its animation landed')
       shader.uniforms.uCrabAnim = { value: this.anim.texture }
+      shader.uniforms.uCrabWalk = this.uWalk
+      shader.uniforms.uCrabSink = this.uSink
+      // Before the crab's own splices, which put their declarations ahead of the motion block.
+      motionSplice(shader, this.table, MOTION_GLSL)
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\n${CRAB_ANIM_PARS}`)
         .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>\n${CRAB_ANIM_NORMAL}`)
@@ -219,6 +299,11 @@ export class Crabs {
     this.animAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4)
     this.animAttr.setUsage(THREE.DynamicDrawUsage)
     this.mesh.geometry.setAttribute('aAnim', this.animAttr)
+    // Table row of each instance: a slot's is its id + 1; row 0 is the CPU row a held copy (hands.js defaults every instanced attribute to 0) is drawn by.
+    this.rows = new THREE.InstancedBufferAttribute(new Float32Array(MAX), 1)
+    this.rows.setUsage(THREE.DynamicDrawUsage)
+    this.mesh.geometry.setAttribute('aRow', this.rows)
+    this._cpuRow(0)
     this.anim = null
     this.hue = makeHueAttribute(this.mesh, MAX)
     // The far crabs, one litter-card instance per slot (a slot's id is its card's); drawn once the picture is baked, and until then every crab is the mesh.
@@ -226,7 +311,6 @@ export class Crabs {
     this.litterCards = cards
     this.cardPicture = -1
     this.cardReady = false
-    this.cardCount = 0
     this.cards = PropArena.over(cards.meshes, MAX, 'v2-crabs-card', { budget: cardBudget })
     for (let i = 0; i < MAX; i++) {
       this.cards.addInstance(0)
@@ -249,8 +333,10 @@ export class Crabs {
         x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, yaw: 0, side: 1, size: 0.3, hue: 0, speed: 0,
         // The spell planned (_spell), the phrase of it playing -- 'pause' at a spot, 'go' from one spot to another -- and how far into that phrase the pose is. The clip: `phase` the walk's cycles, `phase0` the crab's own offset into every clip (0..1), `still` the seconds into this standstill and `stillSalt` which standstill it is (so it rolls its own idles), `w` the pose's weight (crab-anim.js).
         spell: null, phrase: null, elapsed: 0, state: 'pause', phase: 0, phase0: 0, still: 0, stillSalt: 0, w: 1, depth: 0,
-        // The composed instance matrix, rebuilt only while `stale`; a pausing crab copies it.
+        // The composed instance matrix, rebuilt only while `stale`, for a CPU-driven crab and a card.
         m: new Float32Array(16), stale: true,
+        // What its table row holds: the spell `rowSpell` laid as the phrases `laid` from world second `laidStart` ('gpu'), or nothing to draw ('none'); `rowStale` once the stone under the spell moved. `wake` is when the spell phrase playing ends, `poseUntil` until when x, y, z hold; `cardMoving` whether its card is walking on a drift.
+        rowKind: 'none', rowSpell: null, rowStale: false, laid: null, laidStart: 0, wake: Infinity, poseUntil: -Infinity, cardMoving: false,
         // Which of its perch's rolled crabs it is, for the taken registry; and, for one she let go of, the drop it runs from -- off any perch, on no rock.
         member: 0, loose: false, drop: null,
         // Off its spell after her (HUNT): { back, bitT } -- `back` once it is walking home -- or null.
@@ -263,6 +349,25 @@ export class Crabs {
     this.loose = []
     this.pets = []
     this.bait = []
+    // Perch crabs off their spell after her (HUNT) once she is no longer small enough to start a hunt; the ones the sweep found walking; the slots on the mesh by the GPU, in instance order, and how many.
+    this.hunters = new Set()
+    this.movers = []
+    this.sweepList = new Int32Array(MAX)
+    this.gpuCount = 0
+    this.tail = 0
+    // The slots with a card on, and the CPU-driven ones among them (rewritten and hidden every frame).
+    this.cardsOn = new Set()
+    this.cpuCards = new Set()
+    // Whether every crab is CPU-driven this frame (she is small, or her bug is held at a crab), whether the list of who is drawn how must be redone, the world second and head the last sweep saw, and the next re-read of the stones and the next turn of any phrase.
+    this.cpuAll = false
+    this.listDirty = true
+    this.sweptAt = -Infinity
+    this.sweptUnder = true
+    this.sweptHead = { x: Infinity, y: Infinity, z: Infinity }
+    this.nextWake = -Infinity
+    this.nextReseat = -Infinity
+    this.cardWalkers = 0
+    this.sweepNo = 0
     // The releases owed to the room (pending), and the drop key of every release made here, hers or a peer's, so one heard twice lets one crab go.
     this.outbox = []
     this.drops = new Set()
@@ -314,6 +419,8 @@ export class Crabs {
     this.bounds = setCritterAsset(this.mesh, this.material, asset, 'crabs')
     this.span = this.bounds.span
     this.bodyH = this.bounds.height
+    this.uWalk.value.set(anim.walk.base, anim.walk.frames)
+    this.uSink.value = SINK * this.bodyH
     // The card lies flat: the top view is the shared quad turned down about X, so the picture's up is -Z, centred at the body's middle height.
     const ext = critterCardExtents(this.bounds)
     this.cardLift = (ext.y0 + ext.y1) / 2
@@ -450,9 +557,16 @@ export class Crabs {
         c.stillSalt = 0
         c.w = 1
         c.stale = true
+        c.rowKind = 'none'
+        c.rowSpell = null
+        c.rowStale = false
+        c.laid = null
+        c.poseUntil = -Infinity
+        c.cardDirty = true
         this._seat(c, x, y, z, yaw)
         perch.crabs.push(c)
         t.live++
+        this.listDirty = true
       }
     }
   }
@@ -461,12 +575,14 @@ export class Crabs {
     for (const p of t.perches.values()) {
       for (const c of p.crabs) {
         c.perch = null
+        this.hunters.delete(c)
         this.free.push(c)
       }
       p.crabs.length = 0
     }
     t.perches.clear()
     t.live = 0
+    this.listDirty = true
   }
 
   /** Rebuild every tile around (cx, cz) at world second `now`. Boot, and whenever the ground moves under her. */
@@ -481,6 +597,7 @@ export class Crabs {
     this.pets.length = 0
     // The rescan queue holds tile objects; the ones just left must not be scanned, or their crabs would be seated in a tile nothing draws and never freed.
     this.rescan = []
+    this.listDirty = true
     this.overflow = 0
     this.saturated = 0
     this.head.x = cx
@@ -502,6 +619,7 @@ export class Crabs {
    */
   bodies(into) {
     if (!this.batch.visible) return into
+    this._refreshMovers()
     for (const t of this.tiles.values()) {
       for (const p of t.perches.values()) {
         for (const c of p.crabs) if (this.under || c.y >= p.level) into.push(c)
@@ -520,6 +638,7 @@ export class Crabs {
    */
   pickAt(x, y, z, reach, maxSize) {
     if (!this.batch.visible) return null
+    this._refreshMovers()
     let best = null
     let bestD = reach
     const consider = (c) => {
@@ -586,6 +705,9 @@ export class Crabs {
     if (!taken.has(`crab${c.member}`, perch.x, perch.z)) taken.add(`crab${c.member}`, perch.x, perch.z)
     perch.crabs.splice(i, 1)
     c.perch = null
+    c.hunt = null
+    this.hunters.delete(c)
+    this.listDirty = true
     for (const t of this.tiles.values()) if (t.perches.get(perchKey(perch.x, perch.z)) === perch) { t.live--; break }
   }
 
@@ -596,6 +718,7 @@ export class Crabs {
     this.pets.splice(i, 1)
     c.pet = null
     c.fedAt = null
+    this.listDirty = true
   }
 
   /**
@@ -605,7 +728,7 @@ export class Crabs {
    * on every client. A pet already grows MEAL.grow and keeps the key of where
    * it first ate.
    */
-  _feed(c, by, now, at = { x: snap(c.x), z: snap(c.z), yaw: snap(c.yaw) }) {
+  _feed(c, by, now, at = null) {
     if (c.pet !== null) {
       c.size *= 1 + MEAL.grow
       c.pet = { by }
@@ -617,7 +740,12 @@ export class Crabs {
       this.loose.splice(this.loose.indexOf(c), 1)
       c.loose = false
       c.drop = null
-    } else if (c.perch !== null) this._unperch(c)
+    } else if (c.perch !== null) {
+      // Its place and clip are the CPU's from here, so read them off the spell as it stands.
+      this._play(c, now)
+      this._unperch(c)
+    }
+    if (at === null) at = { x: snap(c.x), z: snap(c.z), yaw: snap(c.yaw) }
     c.size *= GROW
     c.pet = { by }
     c.way = headway()
@@ -633,6 +761,7 @@ export class Crabs {
 
   /** Her bug in `bait` at a drawn crab's body (EAT): eaten, if her hand gives it up, and the crab fed. */
   _bite(bait, now) {
+    this._refreshMovers()
     for (const l of bait) {
       let best = null
       let bestD = EAT.m
@@ -818,18 +947,21 @@ export class Crabs {
    * only where the stone is gone on both sides.
    */
   _normal(c, onStone = true) {
+    this._normalAt(c.x, c.y, c.z, c.size, onStone, _n)
+    c.nx = _n.x; c.ny = _n.y; c.nz = _n.z
+  }
+
+  /** `_normal` for a crab of `size` standing at (x, y, z), into `out`. */
+  _normalAt(x, y, z, size, onStone, out) {
     // Off the rocks -- a crab she let go of, running over the ground -- the field's own slope is the surface.
     if (!onStone) {
-      const { gx, gz } = this.height.heightAndSlopeAt(c.x, c.z)
-      _n.set(-gx, 1, -gz).normalize()
-      c.nx = _n.x; c.ny = _n.y; c.nz = _n.z
-      return
+      const { gx, gz } = this.height.heightAndSlopeAt(x, z)
+      return out.set(-gx, 1, -gz).normalize()
     }
-    const e = c.size * NORMAL_SPAN
-    const sx = this._slope(this.stoneAt(c.x - e, c.z), c.y, this.stoneAt(c.x + e, c.z), e)
-    const sz = this._slope(this.stoneAt(c.x, c.z - e), c.y, this.stoneAt(c.x, c.z + e), e)
-    _n.set(-sx, 1, -sz).normalize()
-    c.nx = _n.x; c.ny = _n.y; c.nz = _n.z
+    const e = size * NORMAL_SPAN
+    const sx = this._slope(this.stoneAt(x - e, z), y, this.stoneAt(x + e, z), e)
+    const sz = this._slope(this.stoneAt(x, z - e), y, this.stoneAt(x, z + e), e)
+    return out.set(-sx, 1, -sz).normalize()
   }
 
   /** Seat `c` at (x, y, z) facing `yaw`, on the normal of whatever it stands on there. */
@@ -994,14 +1126,20 @@ export class Crabs {
     this._seat(c, x, y, z, ph.yaw ?? this._facing(from, to, c.yaw), top !== -Infinity)
   }
 
-  /** Pose `c` at world second `now`, planning the spell it falls in; false once a loose crab's run is over. */
-  _play(c, now) {
+  /** Plan the spell `c` is in at world second `now` if it is not holding it; false once a loose crab's run is over. */
+  _ensureSpell(c, now) {
     if (c.spell === null || now < c.spell.start || now >= c.spell.start + SPELL_S) {
       const spell = this._spell(c, Math.floor((now - c.epoch - c.offset) / SPELL_S))
       if (spell === null) return false
       c.spell = spell
       this.spells++
     }
+    return true
+  }
+
+  /** Pose `c` at world second `now`, planning the spell it falls in; false once a loose crab's run is over. */
+  _play(c, now) {
+    if (!this._ensureSpell(c, now)) return false
     const e = now - c.spell.start
     const ph = Crabs._phraseAt(c.spell.phrases, e)
     c.phrase = ph
@@ -1010,22 +1148,294 @@ export class Crabs {
     return true
   }
 
+  // --- the GPU plan -------------------------------------------------------------
+
+  /** Row `row` as the CPU's: the mesh's own matrix and aAnim, which a held copy (hands.js defaults every instanced attribute to 0) and a pet, hunter or loose crab are drawn by. */
+  _cpuRow(row) {
+    this.table.write(row, 0, 1, [{ kind: CPU, start: 0, dur: 1, apex: 0, yaw: 0, a: { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }, b: null }])
+  }
+
+  /** A spot with the stone's normal under it, as a row holds it. */
+  _anchor(x, y, z, size, onStone) {
+    this._normalAt(x, y, z, size, onStone, _n)
+    return { x, y, z, nx: _n.x, ny: _n.y, nz: _n.z }
+  }
+
   /**
-   * One frame: every crab in the tiles is posed from its spell at world time
-   * `now` (the room's clock in seconds) and written. Nothing is integrated, so
-   * the frame's length does not enter into it and a client that joined a
-   * moment ago draws the same crab on the same stone as one that has watched
-   * all along.
+   * Lay `c`'s spell into its table row: each sit as pause phrases cut at the idle bouts (the clip each bout
+   * plays is rolled here), each scuttle as go phrases of GO_PIECE_SPAN of its size with the stone's height
+   * and normal sampled at every cut; a go phrase runs to the next phrase's spot. A spell with a spot off the
+   * stone has nothing to draw.
+   */
+  _layRow(c) {
+    const spell = c.spell
+    const row = c.id + 1
+    const out = []
+    const turn = c.side < 0 ? Math.PI : 0
+    const s0 = c.phase0 * BOUT_S
+    let blind = false
+    for (let i = 0; i < spell.phrases.length; i++) {
+      const ph = spell.phrases[i]
+      const until = ph.start + ph.dur
+      if (ph.kind === 'pause') {
+        if (ph.at.y === -Infinity) { blind = true; break }
+        const a = this._anchor(ph.at.x, ph.at.y, ph.at.z, c.size, true)
+        const salt = spell.seg * 4 + i
+        let t = 0
+        do {
+          const s = s0 + t
+          const bout = Math.floor(s / BOUT_S + 1e-9)
+          const len = Math.min(ph.dur - t, (bout + 1) * BOUT_S - s)
+          const clip = pickIdle(this.anim, c.key, salt, bout)
+          out.push({ kind: PAUSE, start: ph.start + t, dur: len, apex: Math.max(0, s - bout * BOUT_S), yaw: ph.yaw + turn, heading: ph.yaw, speed: 0, until, a, c: [clip.base, clip.frames, clip.seconds, t], dw: ph.dur })
+          t += len
+        } while (t < ph.dur - 1e-9)
+        continue
+      }
+      const { from, to } = ph
+      const dist = Math.hypot(to.x - from.x, to.z - from.z)
+      const K = Math.min(GO_PIECES_MAX, Math.max(1, Math.ceil(dist / (c.size * GO_PIECE_SPAN))))
+      const dt = ph.dur / K
+      const rate = this._cycles(c, dist) / ph.dur
+      for (let j = 0; j < K; j++) {
+        const u = j / K
+        const x = from.x + (to.x - from.x) * u
+        const z = from.z + (to.z - from.z) * u
+        const top = j === 0 ? from.y : this.stoneAt(x, z)
+        const y = top === -Infinity ? from.y + (to.y - from.y) * u : top
+        out.push({ kind: GO, start: ph.start + j * dt, dur: dt, apex: c.phase0 + rate * j * dt, yaw: ph.yaw + turn, heading: ph.yaw, speed: ph.speed, until, a: this._anchor(x, y, z, c.size, top !== -Infinity), c: [rate, c.side, 0, j * dt], dw: ph.dur })
+      }
+    }
+    c.rowSpell = spell
+    c.rowStale = false
+    c.poseUntil = -Infinity
+    c.cardDirty = true
+    if (blind) {
+      c.rowKind = 'none'
+      c.laid = null
+      this.table.clear(row)
+      return
+    }
+    c.rowKind = 'gpu'
+    c.laid = out
+    c.laidStart = spell.start
+    this.table.write(row, spell.start, c.size / this.span, out)
+  }
+
+  /**
+   * The pose a laid crab has at world second `now`, into `P`: the arithmetic of MOTION_GLSL, so the gate can
+   * hold the GPU's crab to the CPU's. `P.yaw` is the drawn heading, `P.heading` the crab's own; `P.anim` is
+   * its crabAnim; (vx, vy, vz) is the phrase's velocity in m/s; `P.until` the spell second its spell phrase ends.
+   */
+  poseAt(c, now, P) {
+    const laid = c.laid
+    const e = now - c.laidStart
+    let p = laid.length - 1
+    while (p > 0 && laid[p].start > e) p--
+    const ph = laid[p]
+    const le = e - ph.start
+    const a = ph.a
+    let x = a.x, y = a.y, z = a.z, nx = a.nx, ny = a.ny, nz = a.nz
+    let vx = 0, vy = 0, vz = 0
+    let base, frames, t
+    if (ph.kind === GO) {
+      const to = laid[p + 1].a
+      const u = ph.dur > 0 ? Math.min(1, Math.max(0, le / ph.dur)) : 1
+      x = a.x + (to.x - a.x) * u
+      y = a.y + (to.y - a.y) * u
+      z = a.z + (to.z - a.z) * u
+      nx = a.nx + (to.nx - a.nx) * u
+      ny = a.ny + (to.ny - a.ny) * u
+      nz = a.nz + (to.nz - a.nz) * u
+      const l = Math.hypot(nx, ny, nz)
+      nx /= l; ny /= l; nz /= l
+      if (ph.dur > 0) { vx = (to.x - a.x) / ph.dur; vy = (to.y - a.y) / ph.dur; vz = (to.z - a.z) / ph.dur }
+      base = this.anim.walk.base
+      frames = this.anim.walk.frames
+      t = (ph.apex + ph.c[0] * le) * ph.c[1] * frames
+    } else {
+      base = ph.c[0]
+      frames = ph.c[1]
+      t = ((ph.apex + le) / ph.c[2]) * frames
+    }
+    const we = ph.c[3] + le
+    const wu = Math.max(0, Math.min(1, we / FADE_S, (ph.dw - we) / FADE_S))
+    t = ((t % frames) + frames) % frames
+    const f = Math.floor(t)
+    P.x = x; P.y = y; P.z = z; P.nx = nx; P.ny = ny; P.nz = nz
+    P.yaw = ph.yaw
+    P.heading = ph.heading
+    P.state = ph.kind === GO ? 'go' : 'pause'
+    P.speed = ph.speed
+    P.vx = vx; P.vy = vy; P.vz = vz
+    P.until = ph.until
+    P.anim[0] = base + f
+    P.anim[1] = base + ((f + 1) % frames)
+    P.anim[2] = t - f
+    P.anim[3] = wu * wu * (3 - 2 * wu)
+    return P
+  }
+
+  /** Read `c`'s place and heading off its laid row at world second `now` into the slot, and note when its phrase turns. */
+  _at(c, now) {
+    const P = this.poseAt(c, now, _P)
+    c.x = P.x; c.y = P.y; c.z = P.z
+    c.nx = P.nx; c.ny = P.ny; c.nz = P.nz
+    c.yaw = P.heading
+    c.state = P.state
+    c.speed = P.speed
+    c.wake = c.laidStart + P.until
+    c.poseUntil = P.state === 'go' ? -Infinity : c.wake
+    return P
+  }
+
+  /** The walkers the last sweep found, read at the room's clock now: for the ear, a hand and a bite, which want where a crab is and not where it was. */
+  _refreshMovers() {
+    for (const c of this.movers) {
+      if (c.perch === null || c.hunt !== null || c.laid === null) continue
+      this._at(c, this.now)
+    }
+  }
+
+  /** The instance matrix of a crab of `size` at (x, y, z) on the normal (nx, ny, nz), drawn facing `yaw`, into `out`. */
+  _compose(x, y, z, nx, ny, nz, yaw, size, out) {
+    const k = size / this.span
+    const sink = SINK * this.bodyH * k
+    _pos.set(x - nx * sink, y - ny * sink, z - nz * sink)
+    _n.set(nx, ny, nz)
+    _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, yaw))
+    _scl.set(k, k * STRETCH_Y, k)
+    _mat.compose(_pos, _quat, _scl).toArray(out)
+  }
+
+  /** Re-read the stone under every laid spell's sits; a spell whose stone moved is planned again and laid at the next sweep. */
+  _reseat(now) {
+    this.nextReseat = now + RESEAT_S
+    for (const t of this.tiles.values()) {
+      if (t.live === 0) continue
+      for (const p of t.perches.values()) {
+        for (const c of p.crabs) {
+          if (c.hunt !== null || c.rowSpell === null || c.rowSpell !== c.spell) continue
+          for (const ph of c.spell.phrases) {
+            if (ph.kind !== 'pause') continue
+            const top = this.stoneAt(ph.at.x, ph.at.z)
+            if (top === -Infinity || top === ph.at.y) continue
+            c.spell = null
+            c.rowStale = true
+            this.nextWake = -Infinity
+            break
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Re-sort the perch crabs into the mesh (drawn by the GPU off their rows), the cards and nothing, at world
+   * second `now` with her head at (hx, hy, hz): lay the rows whose spell turned, read where each crab is, and
+   * write each far card that is moving or has changed.
+   */
+  _sweep(hx, hy, hz, now, under) {
+    this.sweepNo++
+    this.sweptAt = now
+    this.sweptUnder = under
+    this.sweptHead.x = hx; this.sweptHead.y = hy; this.sweptHead.z = hz
+    this.movers.length = 0
+    const card2 = this.cardReady ? CARD_M * CARD_M : Infinity
+    const list = this.sweepList
+    let n = 0
+    let walkers = 0
+    let wake = Infinity
+    if (!this.cpuAll) {
+      for (const t of this.tiles.values()) {
+        if (t.live === 0) continue
+        for (const p of t.perches.values()) {
+          for (const c of p.crabs) {
+            if (c.hunt !== null) continue
+            if (!this._ensureSpell(c, now)) throw new Error(`Crabs: perch crab ${c.key} has no spell`)
+            if (c.rowSpell !== c.spell || c.rowStale) this._layRow(c)
+            if (c.rowKind === 'none') continue
+            if (c.poseUntil <= now) this._at(c, now)
+            if (c.wake < wake) wake = c.wake
+            if (c.state === 'go') this.movers.push(c)
+            if (!under && c.y < p.level) continue
+            const dx = c.x - hx, dy = c.y - hy, dz = c.z - hz
+            if (dx * dx + dy * dy + dz * dz > card2) {
+              if (this._cardGpu(c)) walkers++
+            } else {
+              list[n++] = c.id
+            }
+          }
+        }
+      }
+    }
+    const rows = this.rows.array
+    const hue = this.hue.array
+    let changed = false
+    for (let i = 0; i < n; i++) {
+      const c = this.slots[list[i]]
+      if (rows[i] !== c.id + 1 || hue[i] !== Math.fround(c.hue)) { rows[i] = c.id + 1; hue[i] = c.hue; changed = true }
+    }
+    for (let i = n; i < this.gpuCount; i++) { rows[i] = 0; changed = true }
+    if (changed) {
+      this.rows.needsUpdate = true
+      this.hue.needsUpdate = true
+    }
+    for (const c of this.cardsOn) {
+      if (c.cardStamp === this.sweepNo) continue
+      this.cards.setVisibleAt(c.id, false)
+      c.cardOn = false
+      this.cardsOn.delete(c)
+    }
+    this.gpuCount = n
+    this.cardWalkers = walkers
+    this.nextWake = wake
+    this.listDirty = false
+  }
+
+  /** A far crab's card from its laid row: written when new or changed, and while it walks (on a drift that lasts until the next sweep). True while it walks. */
+  _cardGpu(c) {
+    c.cardStamp = this.sweepNo
+    if (this.cpuCards.delete(c)) c.cardDirty = true
+    this.cardsOn.add(c)
+    const moving = c.state === 'go'
+    if (c.cardOn && !c.cardDirty && !moving && !c.cardMoving) return false
+    const P = this.poseAt(c, this.now, _P)
+    this._compose(P.x, P.y, P.z, P.nx, P.ny, P.nz, P.yaw, c.size, c.m)
+    _mat.fromArray(c.m).multiply(_flat.makeTranslation(0, this.cardLift, 0).multiply(_lay))
+    this.cards.setMatrixAt(c.id, _mat)
+    if (c.cardDirty || !c.cardOn) this.cards.setColorAt(c.id, hueTurnTint(this.cardMean, c.hue, _tint))
+    this.cards.setDriftAt(c.id, moving ? P.vx : 0, moving ? P.vy : 0, moving ? P.vz : 0, getPropClock())
+    c.cardMoving = moving
+    c.cardDirty = false
+    if (!c.cardOn) {
+      this.cards.setVisibleAt(c.id, true)
+      c.cardOn = true
+    }
+    return moving
+  }
+
+  /** How many far crabs are drawn as cards. */
+  get cardCount() {
+    return this.cardsOn.size + this.cpuCards.size
+  }
+
+  /**
+   * One frame. A crab on its spell is drawn by the GPU off its table row and costs the CPU nothing between
+   * the turns of its plan: the sweep (_sweep) runs when she has moved SWEEP_M, a phrase has turned, a far card
+   * is walking (SWEEP_S), or the list of who is drawn changed; the stones are re-read every RESEAT_S. Only a
+   * loose crab, a pet and a hunter (and every crab while she is small enough to be hunted) are posed here
+   * and written to the mesh after the GPU's crabs, on row 0.
    *
-   * `under` is whether her head is below a water surface: while it is not, a
-   * crab under its lake's surface is neither posed nor written -- the surface
-   * is nearly opaque from above, so it costs its share of the frame for
-   * nothing -- and it picks its spell back up where it stands when she goes
-   * under. A crab up on the dry top of a half-sunk boulder is drawn either
-   * way.
+   * Nothing is integrated for a crab on its spell, so the frame's length does not enter into it and a client
+   * that joined a moment ago draws the same crab on the same stone as one that has watched all along.
    *
-   * `lures` are hands.js lures(), her bugs among them fed to a crab they are
-   * held at; `peers` the peers' heads `{ x, y, z, by }`, which their pets follow.
+   * `under` is whether her head is below a water surface: while it is not, a crab under its lake's surface is
+   * not drawn -- the surface is nearly opaque from above -- and it picks its spell back up where it stands
+   * when she goes under. A crab up on the dry top of a half-sunk boulder is drawn either way.
+   *
+   * `lures` are hands.js lures(), her bugs among them fed to a crab they are held at; `peers` the peers'
+   * heads `{ x, y, z, by }`, which their pets follow.
    */
   update(hx, hy, hz, now, under = true, lures = [], peers = []) {
     if (!Number.isFinite(now)) throw new Error(`Crabs.update: bad world time ${now}`)
@@ -1044,26 +1454,33 @@ export class Crabs {
       if (t && this.tiles.has(tileKey(t.tx, t.tz))) this._scan(t)
     }
     this.frame++
+    this.table.setTime(now)
     this.bait.length = 0
     for (const l of lures) if (l.by === null && BUGS.includes(l.kind)) this.bait.push(l)
     if (this.bait.length > 0) this._bite(this.bait, now)
+
+    const small = atMost(this.size, HUNT.fits)
+    if (small !== this.cpuAll || under !== this.sweptUnder) {
+      this.cpuAll = small
+      this.listDirty = true
+    }
+    if (!this.cpuAll && now >= this.nextReseat) this._reseat(now)
+    const sh = this.sweptHead
+    if (
+      this.listDirty || now < this.sweptAt ||
+      (!this.cpuAll && (now >= this.nextWake || Math.hypot(hx - sh.x, hy - sh.y, hz - sh.z) >= SWEEP_M || (this.cardWalkers > 0 && now - this.sweptAt >= SWEEP_S)))
+    ) this._sweep(hx, hy, hz, now, under)
 
     const mat = this.mesh.instanceMatrix.array
     const anim = this.animAttr.array
     const hue = this.hue.array
     const card2 = this.cardReady ? CARD_M * CARD_M : Infinity
-    let n = 0
-    // A crab's matrix, rebuilt if it moved, into the mesh or the card by its distance.
+    let n = this.gpuCount
+    // A CPU-driven crab's matrix, rebuilt if it moved, into the mesh's tail or the card by its distance.
     const write = (c) => {
       if (c.stale) {
-        const k = c.size / this.span
-        const sink = SINK * this.bodyH * k
-        _pos.set(c.x - c.nx * sink, c.y - c.ny * sink, c.z - c.nz * sink)
-        _n.set(c.nx, c.ny, c.nz)
         // `side` is which of the body's two ±Z ends leads, rolled with the crab and fixed for its life: the plan speaks only of the line it crosses, which either end serves.
-        _quat.setFromUnitVectors(UP, _n).multiply(_yawQ.setFromAxisAngle(UP, c.side < 0 ? c.yaw + Math.PI : c.yaw))
-        _scl.set(k, k * STRETCH_Y, k)
-        _mat.compose(_pos, _quat, _scl).toArray(c.m)
+        this._compose(c.x, c.y, c.z, c.nx, c.ny, c.nz, c.side < 0 ? c.yaw + Math.PI : c.yaw, c.size, c.m)
         c.stale = false
         c.cardDirty = true
       }
@@ -1111,48 +1528,64 @@ export class Crabs {
       const level = this.water.lakeLevelAt(c.x, c.z)
       if (under || level === null || c.y >= level) write(c)
     }
-    for (const t of this.tiles.values()) {
-      if (t.live === 0) continue
-      for (const p of t.perches.values()) {
-        for (const c of p.crabs) {
-          if (!under && c.y < p.level) continue
-          if (this._hunting(c, hx, hy, hz, now, dt)) { write(c); continue }
-          this._play(c, now)
-          // A re-ground is a vertical shift of the whole rock, so the normal holds; a seat whose stone is gone is kept. A sitting crab reads it back: its stone's drawn top moves with the client's own LOD, which the spell knows nothing of.
-          if ((this.frame + c.id) % RESEAT_EVERY === 0) {
-            const top = this.stoneAt(c.x, c.z)
-            if (top !== -Infinity && top !== c.y) { c.y = top; c.stale = true }
+    if (this.cpuAll) {
+      for (const t of this.tiles.values()) {
+        if (t.live === 0) continue
+        for (const p of t.perches.values()) {
+          for (const c of p.crabs) {
+            if (!under && c.y < p.level) continue
+            c.rowSpell = null
+            if (this._hunting(c, hx, hy, hz, now, dt)) { write(c); continue }
+            this._play(c, now)
+            // A re-ground is a vertical shift of the whole rock, so the normal holds; a seat whose stone is gone is kept. A sitting crab reads it back: its stone's drawn top moves with the client's own LOD, which the spell knows nothing of.
+            if ((this.frame + c.id) % RESEAT_EVERY === 0) {
+              const top = this.stoneAt(c.x, c.z)
+              if (top !== -Infinity && top !== c.y) { c.y = top; c.stale = true }
+            }
+            write(c)
           }
-          write(c)
         }
       }
+    } else {
+      for (const c of this.hunters) {
+        if (!under && c.y < c.perch.level) continue
+        c.rowSpell = null
+        if (!this._hunting(c, hx, hy, hz, now, dt)) this._play(c, now)
+        write(c)
+      }
     }
-    // A buffer that held nothing and holds nothing is not re-uploaded.
-    if (n > 0 || this.mesh.count > 0) {
+    // The tail is re-uploaded while it holds anything, and once more after it emptied.
+    const tail = n - this.gpuCount
+    if (tail > 0 || this.tail > 0) {
       this.mesh.instanceMatrix.needsUpdate = true
       this.animAttr.needsUpdate = true
       this.hue.needsUpdate = true
     }
+    this.tail = tail
     this.mesh.count = n
     this.mesh.visible = n > 0
-    let cards = 0
-    for (const c of this.slots) {
-      if (c.cardOn && c.cardStamp !== this.frame) {
-        this.cards.setVisibleAt(c.id, false)
-        c.cardOn = false
-      }
-      if (c.cardOn) cards++
+    for (const c of this.cpuCards) {
+      if (c.cardStamp === this.frame) continue
+      this.cards.setVisibleAt(c.id, false)
+      c.cardOn = false
+      this.cpuCards.delete(c)
     }
-    this.cardCount = cards
+    this.table.flush()
   }
 
-  /** A far crab's card: rewritten when its matrix was rebuilt or it has just come out to the card rung, otherwise left standing. */
+  /** A far CPU-driven crab's card: rewritten when its matrix was rebuilt or it has just come out to the card rung, otherwise left standing. */
   _writeCard(c) {
     c.cardStamp = this.frame
+    if (this.cardsOn.delete(c)) c.cardDirty = true
+    this.cpuCards.add(c)
     if (c.cardOn && !c.cardDirty) return
     _mat.fromArray(c.m).multiply(_flat.makeTranslation(0, this.cardLift, 0).multiply(_lay))
     this.cards.setMatrixAt(c.id, _mat)
     this.cards.setColorAt(c.id, hueTurnTint(this.cardMean, c.hue, _tint))
+    if (c.cardMoving) {
+      this.cards.setDriftAt(c.id, 0, 0, 0, getPropClock())
+      c.cardMoving = false
+    }
     c.cardDirty = false
     if (!c.cardOn) {
       this.cards.setVisibleAt(c.id, true)
@@ -1171,7 +1604,10 @@ export class Crabs {
     const near = (m) => Math.hypot(hx - c.x, hz - c.z) <= m && Math.abs(hy - c.y) <= m
     const small = atMost(this.size, HUNT.fits)
     if (c.hunt === null || c.hunt.back) {
-      if (small && near(HUNT.m)) c.hunt = { back: false, bitT: -Infinity }
+      if (small && near(HUNT.m)) {
+        c.hunt = { back: false, bitT: -Infinity }
+        this.hunters.add(c)
+      }
     } else if (!small || !near(2 * HUNT.m)) c.hunt.back = true
     if (c.hunt === null) return false
     if (!c.hunt.back) {
@@ -1187,7 +1623,12 @@ export class Crabs {
     const { x, y, z, yaw } = c
     this._play(c, now)
     const tx = c.x, tz = c.z
-    if (Math.hypot(tx - x, tz - z) <= HUNT.speed * c.size * dt) { c.hunt = null; return false }
+    if (Math.hypot(tx - x, tz - z) <= HUNT.speed * c.size * dt) {
+      c.hunt = null
+      this.hunters.delete(c)
+      this.listDirty = true
+      return false
+    }
     this._seat(c, x, y, z, yaw, this.stoneAt(x, z) > -Infinity)
     this._scuttle(c, tx, tz, 0, dt)
     return true
@@ -1232,6 +1673,7 @@ export class Crabs {
   dispose() {
     this.batch.parent?.remove(this.batch)
     this.mesh.geometry.dispose()
+    this.table.dispose()
     this.material.map?.dispose()
     this.material.dispose()
     for (const c of this.slots) if (c.cardOn) this.cards.setVisibleAt(c.id, false)

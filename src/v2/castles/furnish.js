@@ -208,7 +208,8 @@ const plans = new WeakMap()
  * A layout's room plan: `chambers` { node, k, rect (its air, interior metres), cells, round, role, portals } and `walls` { k, axis,
  * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. A used room node's cells less those
  * its shafts fill (spiral.js) are split into the largest rectangles first, walled from each other where they meet; each is then cut
- * on cell lines (a partition is then 2.4 interior metres off any ladder, and its doorway between the cells' doors), the throne's
+ * on cell lines (a ladder's back is to a room wall, so a partition is 1.2 interior metres off its trap door at the least, and its
+ * doorway between the cells' doors), the throne's
  * node into pieces of 6 cells at most, the rest 2 or 1; the keep's ground (the hall's) is left whole.
  */
 export function roomPlan(lay) {

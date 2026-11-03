@@ -57,7 +57,8 @@ export class PhraseTable {
 
   /**
    * Write `phrases` into `row` for a segment that began at world second `start`: each
-   * `{ kind, start, dur, apex, a: {x,y,z,yaw,nx,ny,nz}, b: {x,y,z} | null }` with `kind` the layer's code.
+   * `{ kind, start, dur, apex, yaw, a: {x,y,z,nx,ny,nz}, b: {x,y,z} | null }` with `kind` the layer's code.
+   * A phrase may also carry `c: [x, y, z, w]`, the layer's own numbers in place of `b` and the spare of texel 2, and `dw`, the spare of texel 3.
    */
   write(row, start, scale, phrases) {
     if (phrases.length > PHRASES_MAX) throw new Error(`PhraseTable: ${phrases.length} phrases, the row holds ${PHRASES_MAX}`)
@@ -71,8 +72,13 @@ export class PhraseTable {
       d[q] = ph.start; d[q + 1] = ph.dur; d[q + 2] = ph.kind; d[q + 3] = ph.apex
       d[q + 4] = ph.a.x; d[q + 5] = ph.a.y; d[q + 6] = ph.a.z; d[q + 7] = ph.yaw
       const b = ph.b
-      d[q + 8] = b ? b.x : 0; d[q + 9] = b ? b.y : 0; d[q + 10] = b ? b.z : 0; d[q + 11] = 0
-      d[q + 12] = ph.a.nx; d[q + 13] = ph.a.ny; d[q + 14] = ph.a.nz; d[q + 15] = 0
+      if (ph.c) {
+        if (b) throw new Error('PhraseTable: a phrase takes `b` or `c`, not both')
+        d[q + 8] = ph.c[0]; d[q + 9] = ph.c[1]; d[q + 10] = ph.c[2]; d[q + 11] = ph.c[3]
+      } else {
+        d[q + 8] = b ? b.x : 0; d[q + 9] = b ? b.y : 0; d[q + 10] = b ? b.z : 0; d[q + 11] = 0
+      }
+      d[q + 12] = ph.a.nx; d[q + 13] = ph.a.ny; d[q + 14] = ph.a.nz; d[q + 15] = ph.dw === undefined ? 0 : ph.dw
     }
     this._range(row, 1 + phrases.length * 4)
   }

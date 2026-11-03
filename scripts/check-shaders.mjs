@@ -897,8 +897,8 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
     SHADERS.push([`${label}  frag`, 'frag', builtinPrologue('frag', defines), frag])
     CROSS_STAGE.push([label, vert, frag])
     // The bend itself. Losing it is silent: the fish still draw, stiff as decoys.
-    if (!vert.includes('transformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
-    if (!vert.includes('transformed.y += aBend * aSwim.w')) MISSING_MARKS.push(`${label} vert: the climb lift`)
+    if (!vert.includes('transformed.x += aBend * ( fishSwim.y * sin( fishSwim.x - FISH_WAVE_K * position.z ) + fishSwim.z )')) MISSING_MARKS.push(`${label} vert: the swim bend`)
+    if (!vert.includes('transformed.y += aBend * fishSwim.w')) MISSING_MARKS.push(`${label} vert: the climb lift`)
     // Underwater a fish has no glint of its own -- the surface does that -- so no specular term may creep in.
     if (frag.includes('reflectedLight.directSpecular +=')) MISSING_MARKS.push(`${label} frag: a specular term on an underwater fish`)
   }

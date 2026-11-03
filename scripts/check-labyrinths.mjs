@@ -304,7 +304,7 @@ console.log('\nthe climber on the towers')
   rig.add(camera)
   camera.position.y = 1.6
   const player = new Player(rig, camera, walk)
-  const climb = new Climb(player, palisades)
+  const climb = new Climb(player, [palisades], () => { throw new Error('a palisade ladder has no act') })
   const still = () => ({ move: 0, strafe: 0, lift: 0, turn: 0, unstick: false, instant: true })
   // Faces her along (fx, fz) and walks `move` for up to `secs`, the climb first as main.js runs it; the worst fall on the way.
   const walkFor = (fx, fz, move, secs, until = () => false) => {

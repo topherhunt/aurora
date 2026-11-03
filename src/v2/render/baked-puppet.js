@@ -23,6 +23,29 @@ const MAX_ROWS = 4096
 const CLIPS_PER_FLUSH = 1
 const MODE_KEY = 'v2.puppets'
 const IDENTITY = new THREE.Matrix4()
+// The longest a body glides on from its last write: one the layer stops writing stops this far on.
+export const GLIDE_S = 0.1
+// Wall seconds a puppet's step may disagree with the clock before its clip is re-anchored to the step's time.
+const OWED_S = 1e-3
+const TIME_HI = 1024
+
+// THE CLOCK every baked clip and glide runs on, in the shader and in `time`: the frame's dt summed. A layer stepping its puppets by that same dt writes nothing; any other step (dt * rate, a held 0) re-anchors the clip.
+let clockNow = 0
+let clockDt = 0
+const uVatT = { value: new THREE.Vector2() }
+
+/** Once a frame, before the layers step their puppets. */
+export function advanceBakedClock(dt) {
+  clockNow += dt
+  clockDt = dt
+}
+
+/** `seconds` as the shader's (multiple of TIME_HI, remainder), into `out` at `o`: float32 alone loses milliseconds past an hour. */
+function stampOf(seconds, out, o) {
+  const hi = Math.floor(seconds / TIME_HI) * TIME_HI
+  out[o] = hi
+  out[o + 1] = seconds - hi
+}
 
 /** 'baked' or 'skinned': `?puppets=` wins and is remembered, then the remembered one, then baked. */
 function readMode() {
@@ -274,7 +297,7 @@ function restFeet(rig, legs) {
   })
 }
 
-/** The (row, row, blend) of `clip` at `time`, into `out`. */
+/** The (row, row, blend) of `clip` at `time`, into `out`: the shader's vatRows. */
 function rowsAt(clip, time, out) {
   const f = clip.duration > 0 ? (time / clip.duration) * clip.n : 0
   const r0 = Math.min(Math.floor(f), clip.n)
@@ -290,24 +313,46 @@ function rowsAt(clip, time, out) {
 // patch and all. USE_SKINNING is never defined, so skinIndex and skinWeight
 // are declared here.
 // ---------------------------------------------------------------------------
+// aClip: first row, n, duration, 1 for a one-shot. aClock: anchor second (hi, lo), clip time there, rate. aGlide: m/s and rad/s about y from aGlideAt (hi, lo).
 const VAT_PARS = /* glsl */ `
 uniform highp sampler2D uVat;
+uniform vec2 uVatT;
 attribute vec4 skinIndex;
 attribute vec4 skinWeight;
-attribute vec3 aVat;
-mat4 vatBone( float i ) {
-  int x = int( i + 0.5 ) * 3, a = int( aVat.x ), b = int( aVat.y );
-  vec4 r0 = mix( texelFetch( uVat, ivec2( x, a ), 0 ), texelFetch( uVat, ivec2( x, b ), 0 ), aVat.z );
-  vec4 r1 = mix( texelFetch( uVat, ivec2( x + 1, a ), 0 ), texelFetch( uVat, ivec2( x + 1, b ), 0 ), aVat.z );
-  vec4 r2 = mix( texelFetch( uVat, ivec2( x + 2, a ), 0 ), texelFetch( uVat, ivec2( x + 2, b ), 0 ), aVat.z );
+attribute vec4 aClip;
+attribute vec4 aClock;
+attribute vec4 aGlide;
+attribute vec2 aGlideAt;
+vec3 vatRows() {
+  float t = aClock.z + aClock.w * ( ( uVatT.x - aClock.x ) + ( uVatT.y - aClock.y ) );
+  t = aClip.w > 0.5 ? clamp( t, 0.0, aClip.z ) : aClip.z > 0.0 ? mod( t, aClip.z ) : 0.0;
+  float f = aClip.z > 0.0 ? t / aClip.z * aClip.y : 0.0;
+  float r0 = min( floor( f ), aClip.y );
+  return vec3( aClip.x + r0, aClip.x + min( r0 + 1.0, aClip.y ), f - r0 );
+}
+mat4 vatBone( float i, vec3 rows ) {
+  int x = int( i + 0.5 ) * 3, a = int( rows.x + 0.5 ), b = int( rows.y + 0.5 );
+  vec4 r0 = mix( texelFetch( uVat, ivec2( x, a ), 0 ), texelFetch( uVat, ivec2( x, b ), 0 ), rows.z );
+  vec4 r1 = mix( texelFetch( uVat, ivec2( x + 1, a ), 0 ), texelFetch( uVat, ivec2( x + 1, b ), 0 ), rows.z );
+  vec4 r2 = mix( texelFetch( uVat, ivec2( x + 2, a ), 0 ), texelFetch( uVat, ivec2( x + 2, b ), 0 ), rows.z );
   return transpose( mat4( r0, r1, r2, vec4( 0.0, 0.0, 0.0, 1.0 ) ) );
 }
+mat4 vatGlide() {
+  float g = clamp( ( uVatT.x - aGlideAt.x ) + ( uVatT.y - aGlideAt.y ), 0.0, ${GLIDE_S.toFixed(3)} );
+  float a = aGlide.w * g, c = cos( a ), s = sin( a );
+  mat3 r = mat3( c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c );
+  mat4 m = instanceMatrix;
+  return mat4( vec4( r * m[0].xyz, 0.0 ), vec4( r * m[1].xyz, 0.0 ), vec4( r * m[2].xyz, 0.0 ), vec4( m[3].xyz + aGlide.xyz * g, 1.0 ) );
+}
+mat4 vatInstance;
+#define instanceMatrix vatInstance
 `
 const VAT_BASE = /* glsl */ `
-mat4 boneMatX = vatBone( skinIndex.x );
-mat4 boneMatY = vatBone( skinIndex.y );
-mat4 boneMatZ = vatBone( skinIndex.z );
-mat4 boneMatW = vatBone( skinIndex.w );
+vec3 vatR = vatRows();
+mat4 boneMatX = vatBone( skinIndex.x, vatR );
+mat4 boneMatY = vatBone( skinIndex.y, vatR );
+mat4 boneMatZ = vatBone( skinIndex.z, vatR );
+mat4 boneMatW = vatBone( skinIndex.w, vatR );
 `
 const VAT_NORMAL = /* glsl */ `
 mat4 skinMatrix = skinWeight.x * boneMatX + skinWeight.y * boneMatY + skinWeight.z * boneMatZ + skinWeight.w * boneMatW;
@@ -327,12 +372,14 @@ const VAT_SKIN = /* glsl */ `
  */
 function vatSplice(shader, uVat, fade, lit = true) {
   shader.uniforms.uVat = uVat
+  shader.uniforms.uVatT = uVatT
   const swap = (src, chunk, by) => {
     if (!src.includes(chunk)) throw new Error(`BakedPuppet: the shader has no ${chunk}`)
     return src.replace(chunk, by)
   }
   let vs = shader.vertexShader
   vs = swap(vs, '#include <common>', `#include <common>\n${VAT_PARS}${fade ? 'attribute vec2 aFade;\nvarying vec2 vFade;\n' : ''}`)
+  vs = swap(vs, 'void main() {', 'void main() {\nvatInstance = vatGlide();')
   vs = swap(vs, '#include <skinbase_vertex>', lit ? VAT_BASE : '')
   vs = swap(vs, '#include <skinnormal_vertex>', lit ? VAT_NORMAL : '')
   vs = swap(vs, '#include <skinning_vertex>', (lit ? '' : VAT_BASE) + VAT_SKIN + (fade ? 'vFade = aFade;\n' : ''))
@@ -447,7 +494,7 @@ function makeBatch(tier, material, fade, cap) {
   for (const name in tier.attributes) geometry.setAttribute(name, tier.attributes[name])
   // A wild strider's bare tier is its full one drawn short of the tack: dropped here, every wild one wears a saddle.
   geometry.setDrawRange(tier.drawRange.start, tier.drawRange.count)
-  const b = { geometry, material, fade, cap: 0, n: 0, mesh: null, vat: null, fadeAttr: null, dirty: 0 }
+  const b = { geometry, material, fade, cap: 0, n: 0, mesh: null, clip: null, clock: null, glide: null, glideAt: null, fadeAttr: null, dirty: 0 }
   grow(b, cap)
   return b
 }
@@ -457,8 +504,14 @@ function grow(b, cap) {
   const dyn = (n, size) => new THREE.InstancedBufferAttribute(new Float32Array(n * size), size).setUsage(THREE.DynamicDrawUsage)
   b.cap = cap
   b.dirty = DIRTY_ALL
-  b.vat = dyn(cap, 3)
-  b.geometry.setAttribute('aVat', b.vat)
+  b.clip = dyn(cap, 4)
+  b.clock = dyn(cap, 4)
+  b.glide = dyn(cap, 4)
+  b.glideAt = dyn(cap, 2)
+  b.geometry.setAttribute('aClip', b.clip)
+  b.geometry.setAttribute('aClock', b.clock)
+  b.geometry.setAttribute('aGlide', b.glide)
+  b.geometry.setAttribute('aGlideAt', b.glideAt)
   if (b.fade) {
     b.fadeAttr = dyn(cap, 2)
     b.geometry.setAttribute('aFade', b.fadeAttr)
@@ -476,21 +529,26 @@ function grow(b, cap) {
 }
 
 const _rows = [0, 0, 0]
-// Which of a batch's buffers a frame changed; an unchanged one is not re-uploaded (a standing townsman's matrix, colour and rows repeat).
-const D_MATRIX = 1, D_COLOR = 2, D_VAT = 4, D_FADE = 8, DIRTY_ALL = 15
+// Which of a batch's buffers a frame changed; an unchanged one is not re-uploaded (a body playing on, gliding or standing writes none).
+const D_MATRIX = 1, D_COLOR = 2, D_CLIP = 4, D_FADE = 8, D_GLIDE = 16, DIRTY_ALL = 31
 const _m16 = new Float32Array(16)
 const f32 = Math.fround
 const _col = new THREE.Color()
 const touched = new Set()
 
-function put(b, matrix, rows, color, cut, side) {
+/** Copy `n` floats of `src` into `attr` at instance `i`, true if any differed. */
+function copyIn(attr, i, src, n) {
+  const a = attr.array, o = i * n
+  let diff = false
+  for (let k = 0; k < n; k++) if (a[o + k] !== src[k]) { a[o + k] = src[k]; diff = true }
+  return diff
+}
+
+function put(b, p, matrix, color, cut, side) {
   if (b.n === b.cap) {
-    const keep = { m: b.mesh.instanceMatrix.array.slice(0, b.n * 16), c: b.mesh.instanceColor.array.slice(0, b.n * 3), v: b.vat.array.slice(0, b.n * 3), f: b.fadeAttr?.array.slice(0, b.n * 2) }
+    const n = b.n, keep = [b.mesh.instanceMatrix, b.mesh.instanceColor, b.clip, b.clock, b.glide, b.glideAt, b.fadeAttr].map((a) => a && a.array.slice(0, n * a.itemSize))
     grow(b, b.cap * 2)
-    b.mesh.instanceMatrix.array.set(keep.m)
-    b.mesh.instanceColor.array.set(keep.c)
-    b.vat.array.set(keep.v)
-    if (b.fade) b.fadeAttr.array.set(keep.f)
+    ;[b.mesh.instanceMatrix, b.mesh.instanceColor, b.clip, b.clock, b.glide, b.glideAt, b.fadeAttr].forEach((a, k) => { if (a) a.array.set(keep[k]) })
   }
   const i = b.n++
   matrix.toArray(_m16)
@@ -501,11 +559,8 @@ function put(b, matrix, rows, color, cut, side) {
     ca[i * 3] = color.r; ca[i * 3 + 1] = color.g; ca[i * 3 + 2] = color.b
     b.dirty |= D_COLOR
   }
-  const va = b.vat.array
-  if (va[i * 3] !== f32(rows[0]) || va[i * 3 + 1] !== f32(rows[1]) || va[i * 3 + 2] !== f32(rows[2])) {
-    va[i * 3] = rows[0]; va[i * 3 + 1] = rows[1]; va[i * 3 + 2] = rows[2]
-    b.dirty |= D_VAT
-  }
+  if (copyIn(b.clip, i, p._clip4, 4) | copyIn(b.clock, i, p._clock4, 4)) b.dirty |= D_CLIP
+  if (copyIn(b.glide, i, p._glide, 4) | copyIn(b.glideAt, i, p._glideAt, 2)) b.dirty |= D_GLIDE
   if (b.fade) {
     const fa = b.fadeAttr.array
     if (fa[i * 2] !== f32(cut) || fa[i * 2 + 1] !== f32(side)) {
@@ -531,6 +586,7 @@ const live = new Set()
 let view = null
 // The sphere's growth for a frame's head turn (rad, times its distance) and travel (m). In the headset the flush runs before three poses this frame's eyes, so the test is against the last frame's: three leaves both eyes' union on the camera after each render.
 const CULL_TURN = 0.15, CULL_PAD = 0.5
+const _now2 = [0, 0]
 const _frustum = new THREE.Frustum()
 const _pv = new THREE.Matrix4()
 const _sphere = new THREE.Sphere()
@@ -541,7 +597,8 @@ export function cullBakedTo(camera) { view = camera }
 
 function inView(p) {
   _sphere.copy(p.vat.sphere).applyMatrix4(p.group.matrixWorld)
-  _sphere.radius += CULL_PAD + CULL_TURN * _sphere.center.distanceTo(_eye)
+  const g = p._glide
+  _sphere.radius += CULL_PAD + CULL_TURN * _sphere.center.distanceTo(_eye) + Math.hypot(g[0], g[1], g[2]) * GLIDE_S
   return _frustum.intersectsSphere(_sphere)
 }
 
@@ -556,6 +613,8 @@ export function flushBaked() {
     }
   }
   const tint = tierTintOn()
+  stampOf(clockNow, _now2, 0)
+  uVatT.value.set(_now2[0], _now2[1])
   if (view) {
     _frustum.setFromProjectionMatrix(_pv.multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse))
     _eye.setFromMatrixPosition(view.matrixWorld)
@@ -571,19 +630,18 @@ export function flushBaked() {
       if (!p.vat.data) continue
     }
     p.group.updateWorldMatrix(true, false)
+    p._latch()
     if (view && !inView(p)) continue
-    const clip = p.current ? p.current._clip : p._rest
-    rowsAt(clip, p.current ? p.current.time : 0, _rows)
     const settled = p.fade >= 1
     if (tint) {
       if (p.to < 0) continue
-      put(batchFor(tintLookFor(p.vat), p.meshes[p.to].geometry, 0), p.group.matrixWorld, _rows, TIER_TINTS[p.to].color, 1, 1)
+      put(batchFor(tintLookFor(p.vat), p.meshes[p.to].geometry, 0), p, p.group.matrixWorld, TIER_TINTS[p.to].color, 1, 1)
       continue
     }
     const look = lookFor(p.mats.plain, p.vat)
     _col.copy(p.mats.plain.color).multiply(p.tint)
-    if (p.to >= 0) put(batchFor(look, p.meshes[p.to].geometry, settled ? 0 : 1), p.group.matrixWorld, _rows, _col, settled ? 1 : p.fade, 1)
-    if (!settled && p.from >= 0) put(batchFor(look, p.meshes[p.from].geometry, 1), p.group.matrixWorld, _rows, _col, p.fade, -1)
+    if (p.to >= 0) put(batchFor(look, p.meshes[p.to].geometry, settled ? 0 : 1), p, p.group.matrixWorld, _col, settled ? 1 : p.fade, 1)
+    if (!settled && p.from >= 0) put(batchFor(look, p.meshes[p.from].geometry, 1), p, p.group.matrixWorld, _col, p.fade, -1)
   }
   for (const b of live) if (!touched.has(b)) { b.mesh.count = 0; b.mesh.visible = false }
   for (const b of touched) {
@@ -591,7 +649,8 @@ export function flushBaked() {
     b.mesh.visible = true
     if (b.dirty & D_MATRIX) b.mesh.instanceMatrix.needsUpdate = true
     if (b.dirty & D_COLOR) b.mesh.instanceColor.needsUpdate = true
-    if (b.dirty & D_VAT) b.vat.needsUpdate = true
+    if (b.dirty & D_CLIP) { b.clip.needsUpdate = true; b.clock.needsUpdate = true }
+    if (b.dirty & D_GLIDE) { b.glide.needsUpdate = true; b.glideAt.needsUpdate = true }
     if (b.fade && b.dirty & D_FADE) b.fadeAttr.needsUpdate = true
     b.dirty = 0
   }
@@ -611,16 +670,41 @@ export function bakedBatches() {
 // current time), `meshes[k].geometry` (swappable), `feet` and plant/unplant
 // (recorded, not solved).
 // ---------------------------------------------------------------------------
+/** A clip's clock: anchored at clock second `_at` to clip time `_t0`, running on at its rate while it is its puppet's current one, held where it was left otherwise. A loop wraps either way; a one-shot holds its end, as clampWhenFinished does. */
 class BakedAction {
-  constructor(clip, baked, once) {
+  constructor(owner, clip, baked, once) {
+    this.owner = owner
     this._source = clip
     this._clip = baked
     this.once = once
-    this.time = 0
-    this.timeScale = 1
+    this._t0 = 0
+    this._at = clockNow
+    this._scale = 1
   }
 
   getClip() { return this._source }
+
+  get rate() { return this.owner.mixer.timeScale * this._scale }
+
+  get time() {
+    const t = this.owner.current === this ? this._t0 + this.rate * (clockNow - this._at) : this._t0
+    const d = this._clip.duration
+    return this.once ? Math.min(Math.max(t, 0), d) : d > 0 ? ((t % d) + d) % d : 0
+  }
+
+  set time(t) {
+    this._t0 = t
+    this._at = clockNow
+  }
+
+  get timeScale() { return this._scale }
+
+  set timeScale(s) {
+    if (s === this._scale) return
+    const t = this.time
+    this._scale = s
+    this.time = t
+  }
 }
 
 const fromHalf = THREE.DataUtils.fromHalfFloat
@@ -673,8 +757,18 @@ export class BakedPuppet {
     this.meshes = asset.tiers.map((geometry) => ({ geometry, bindMatrix: IDENTITY }))
     this.bones = this.vat.names.map((name, i) => new BakedBone(this, i, name))
     this.skeleton = { bones: this.bones, boneInverses: asset.skeleton.boneInverses, dispose: () => active.delete(this) }
-    this.mixer = { timeScale: 1 }
-    this.actions = new Map(asset.clips.map((clip) => [clip.name, new BakedAction(clip, this.vat.clips.get(clip.name), !!oneShot?.has(clip.name))]))
+    let scale = 1
+    const self = this
+    this.mixer = {
+      get timeScale() { return scale },
+      set timeScale(s) {
+        if (s === scale) return
+        const a = self.current, t = a && a.time
+        scale = s
+        if (a) a.time = t
+      },
+    }
+    this.actions = new Map(asset.clips.map((clip) => [clip.name, new BakedAction(this, clip, this.vat.clips.get(clip.name), !!oneShot?.has(clip.name))]))
     // Before any clip plays a body holds the first clip's first frame.
     this._rest = this.vat.clips.get(asset.clips[0].name)
     this.current = null
@@ -686,9 +780,40 @@ export class BakedPuppet {
     this.to = -1
     this.fade = 1
     this.fadeS = 0
+    this._owed = 0
+    // What flushBaked writes for this body: its clip and clock (VAT_PARS), its glide and when that began.
+    this._clip4 = new Float32Array(4)
+    this._clock4 = new Float32Array(4)
+    this._glide = new Float32Array(4)
+    this._glideAt = new Float32Array(2)
+    this._glideSet = -1
+    this._world = new Float32Array(16)
   }
 
   get tier() { return this.to }
+
+  /**
+   * Glide on from where the group stands now at (vx, vy, vz) m/s, turning `w` rad/s
+   * about y, for up to GLIDE_S: the shader carries the body between the layer's writes.
+   * Call it on the frame the group is written; a frame that moves the group without it stops the glide.
+   */
+  glide(vx, vy, vz, w) {
+    const g = this._glide
+    g[0] = vx; g[1] = vy; g[2] = vz; g[3] = w
+    stampOf(clockNow, this._glideAt, 0)
+    this._glideSet = clockNow
+  }
+
+  /** This frame's clip, clock and glide as flushBaked writes them. */
+  _latch() {
+    const a = this.current, clip = a ? a._clip : this._rest, c = this._clip4, k = this._clock4
+    c[0] = clip.start; c[1] = clip.n; c[2] = clip.duration; c[3] = a && a.once ? 1 : 0
+    if (a) { stampOf(a._at, k, 0); k[2] = a._t0; k[3] = a.rate } else k.fill(0)
+    const e = this.group.matrixWorld.elements, w = this._world
+    let moved = false
+    for (let i = 0; i < 16; i++) if (w[i] !== f32(e[i])) { w[i] = e[i]; moved = true }
+    if (moved && this._glideSet !== clockNow) this._glide.fill(0)
+  }
 
   get done() { return this.to === -1 && this.fade >= 1 }
 
@@ -698,8 +823,11 @@ export class BakedPuppet {
     if (!next) throw new Error(`BakedPuppet: no clip named ${name}`)
     if (this.current === next && this.cue === cue) return
     this.cue = cue
-    next.time = at >= 0 ? at % next._clip.duration : 0
+    const was = this.current
+    if (was && was !== next) was._t0 = was.time
     this.current = next
+    next.time = at >= 0 ? at % next._clip.duration : 0
+    this._owed = 0
   }
 
   show(tier, seconds = lodFadeS()) {
@@ -729,19 +857,22 @@ export class BakedPuppet {
 
   unplant() { this._planted = false }
 
-  /** The clip's clock and the dissolve. A loop wraps either way; a one-shot holds its end, as clampWhenFinished does. */
+  /** The dissolve, and the clip by `dt` where that is not the clock's own frame (BakedAction). */
   step(dt) {
     const a = this.current
     if (a) {
-      const d = a._clip.duration
-      const t = a.time + dt * this.mixer.timeScale * a.timeScale
-      a.time = a.once ? Math.min(Math.max(t, 0), d) : d > 0 ? ((t % d) + d) % d : 0
+      this._owed += dt - clockDt
+      if (Math.abs(this._owed) > OWED_S) {
+        a.time = a.time + this._owed * a.rate
+        this._owed = 0
+      }
     }
     if (this.fade < 1) this.fade = Math.min(1, this.fade + dt / this.fadeS)
     if (this.done) active.delete(this)
   }
 
   release() {
+    this._glide.fill(0)
     this.current = null
     this.cue = -1
     this.from = -1

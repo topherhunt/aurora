@@ -519,6 +519,8 @@ export class Wildlife {
           nx: 0, ny: 1, nz: 0,
           // The tick pose and the tick before it, and the tick record (sim/score.js stepTo).
           sx: 0, sz: 0, sh: 0, lx: 0, lz: 0, lh: 0, rec: { tick: 0, alpha: 1 },
+          // The tick its body glides through in the shader (_glide), or -1; the frame the ground was last read.
+          coast: -1, gliding: false, probedAt: 0,
           home: null, aim: 0,
           // The phrase playing: the score's or the rejoin's, its bounds, the tick it was entered on, its dice.
           phrase: null, phraseStart: 0, phraseEnd: 0, phraseTick0: 0, phraseEndTick: 0, phraseIndex: 0, chapter: 0, rand: null, rejoin: null,
@@ -810,6 +812,8 @@ export class Wildlife {
     c.cardWant = false
     c.cardP = 1
     c.under = false
+    c.coast = -1
+    c.gliding = false
     s.slot = c
     this.byKey.set(c.key, c)
     this._replace(c, now)
@@ -2276,6 +2280,24 @@ export class Wildlife {
     c.heading = c.lh + swing(c.lh, c.sh) * a
   }
 
+  /**
+   * A far, settled body on its tick lerp (`far`) glides at the lerp's own rate, its height along
+   * the ground plane its feet walk between probes, until the next tick (`c.coast`); any other stands where it is drawn.
+   */
+  _glide(c, p, far) {
+    c.coast = -1
+    if (!p.baked) return
+    if (far && p.fade >= 1 && c.rec.alpha < 1) {
+      const vx = (c.sx - c.lx) * TICK_HZ, vz = (c.sz - c.lz) * TICK_HZ
+      p.glide(vx, -(c.nx * vx + c.nz * vz) / c.ny, vz, swing(c.lh, c.sh) * TICK_HZ)
+      c.coast = c.rec.tick
+      c.gliding = true
+    } else if (c.gliding) {
+      p.glide(0, 0, 0, 0)
+      c.gliding = false
+    }
+  }
+
   _takePuppet(c, offset) {
     const sp = c.sp
     if (!c.puppet) {
@@ -2302,6 +2324,8 @@ export class Wildlife {
     if (!c.puppet) return
     this._park(c.puppet, c.sp)
     c.puppet = null
+    c.coast = -1
+    c.gliding = false
   }
 
   /**
@@ -2506,6 +2530,8 @@ export class Wildlife {
           if (c.cardP < 1 && c.card >= 0) setCardFadeAt(this.cardView, c.card, c.cardWant ? c.cardP : -(1 - c.cardP))
           continue
         }
+        // A far body gliding through this tick (_glide) is carried by the shader until the tick turns.
+        if (c.coast === want && c.puppet !== null && c.puppet.to === tier && !scar) continue
         // Too far behind to replay in a frame -- back from past the card rung, or a tab that slept -- it is placed afresh where the score (or the room) has it now, which a planned phrase gives closed-form; a live one is integrated, so it is dropped and noticed again.
         if (want - c.rec.tick > CATCH_UP_TICKS) this._replace(c, now)
         this.replayed += stepTo(c.rec, now, (k) => this._step(c, k))
@@ -2520,7 +2546,8 @@ export class Wildlife {
         // where the body has moved since it was last read; otherwise the plane
         // the last probe measured, which is what makes a long stride cost
         // nothing visible and a standing animal cost no ground at all.
-        const probing = (this.frame + c.id) % PROBE_EVERY[tier] === 0 || Number.isNaN(c.px)
+        // A body that coasted between ticks missed its probe frames: it reads the ground on the next tick once they are due.
+        const probing = (this.frame + c.id) % PROBE_EVERY[tier] === 0 || Number.isNaN(c.px) || (c.gliding && this.frame - c.probedAt >= PROBE_EVERY[tier])
         const ground = under ? this._in : this.walk
         if (probing && (c.x !== c.px || c.z !== c.pz)) {
           const y = ground.heightAt(c.x, c.z)
@@ -2531,6 +2558,7 @@ export class Wildlife {
             c.nx = _norm.x; c.ny = _norm.y; c.nz = _norm.z
           }
           c.px = c.x; c.pz = c.z
+          c.probedAt = this.frame
         } else {
           c.y -= (c.nx * (c.x - wasX) + c.nz * (c.z - wasZ)) / c.ny
         }
@@ -2569,6 +2597,7 @@ export class Wildlife {
         // Every frame, whether or not it re-posed: a held puppet slides on in the pose its bone texture holds (puppet.js POSE_EVERY).
         puppet.group.matrix.copy(_mat)
         puppet.group.matrixWorldNeedsUpdate = true
+        this._glide(c, puppet, tier === LOD_RUNGS - 1 && !scar && !c.cardWant && c.cardP >= 1 && c.rec.tick === want)
       }
     }
     this.head = this._head

@@ -30,9 +30,9 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import {
-  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FERN_LIFT_M, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, MORPHS, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, SIZE_M, SNOW_MARGIN, TETHER, TILE,
+  Butterflies, CLIMB_TAN, DENSITY, DRAW_SPANS, FERN_LIFT_M, FLUTTER_AMP, FLUTTER_HZ, FLY_M, GLIDE_BASE, MAX, MORPHS, NIGHT_DAY, RADIUS, REST_AMP, REST_BASE, REST_HZ, ROW_TEXELS, SIZE_M, SNOW_MARGIN, STROKE_M, TETHER, TILE,
 } from '../src/v2/render/butterflies.js'
-import { TICK_S } from '../src/sim/score.js'
+import { GRID_S, TICK_HZ, TICK_S } from '../src/sim/score.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 import { CRITTER_GLB } from '../src/v2/render/critters.js'
 import { taken } from '../src/v2/taken.js'
@@ -128,15 +128,78 @@ const asset = {
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
 const make = (seed = 7, clock = DAY) => new Butterflies(scene, height, water, { seed, walk, clock, rocks, trees, ferns, deadwood, assets: asset })
+
+// The JS twin of the shader's bfFlight (butterflies.js FLIGHT_GLSL): row `id` of `of` at world second `t`, seen from `head`. Returns the instance matrix (column-major) and the wings [phase, amp, base], or null where the shader draws nothing.
+const f32 = Math.fround
+const mix = (a, b, k) => a + (b - a) * k
+const WING_EASE = 8
+const rowPose = (of, id, t, head = { x: 0, y: 11, z: 0 }) => {
+  const d = of.rows.data
+  const o = id * ROW_TEXELS * 4
+  const hi = Math.floor(t / 1024) * 1024
+  const sc = Math.abs(d[o + 7])
+  if (sc === 0) return null
+  const e = Math.max(0, f32(hi - d[o + 24]) + f32(f32(t - hi) - d[o + 3]))
+  const a = Math.min(1, Math.max(0, e * TICK_HZ))
+  const p = [mix(d[o], d[o + 4], a), mix(d[o + 1], d[o + 5], a), mix(d[o + 2], d[o + 6], a)]
+  const dh = Math.hypot(p[0] - head.x, p[1] - head.y, p[2] - head.z)
+  if (dh > sc * of.drawU.value) return null
+  const k = Math.exp(-WING_EASE * e)
+  const phase = d[o + 14] + d[o + 15] * e
+  const amp = d[o + 17] + (d[o + 16] - d[o + 17]) * k
+  const base = d[o + 19] + (d[o + 18] - d[o + 19]) * k
+  let r
+  if (d[o + 7] < 0) {
+    const [x, y, z, w] = [d[o + 20], d[o + 21], d[o + 22], d[o + 23]]
+    r = [
+      1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
+      2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
+      2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y),
+    ]
+  } else {
+    p[1] += STROKE_M * Math.sin(phase) * (amp / FLUTTER_AMP)
+    const rx = mix(d[o + 12], d[o + 13], a), ry = mix(d[o + 8], d[o + 9], a), rz = mix(d[o + 10], d[o + 11], a)
+    const ca = Math.cos(rx), sa = Math.sin(rx), cc = Math.cos(ry), sd = Math.sin(ry), ce = Math.cos(rz), sf = Math.sin(rz)
+    const ac = ca * cc, ad = ca * sd, bc = sa * cc, bd = sa * sd
+    r = [cc * ce, sf, -sd * ce, bd - ac * sf, ca * ce, ad * sf + bc, bc * sf + ad, -sa * ce, ac - bd * sf]
+  }
+  const m = [r[0] * sc, r[1] * sc, r[2] * sc, 0, r[3] * sc, r[4] * sc, r[5] * sc, 0, r[6] * sc, r[7] * sc, r[8] * sc, 0, p[0], p[1], p[2], 1]
+  return { m, wing: [phase, amp, base], a, e }
+}
+// What the CPU says the drawn pose is: the matrix of the old per-frame compose, from the slot's last two ticks at the record's alpha (the wing figures come from the row, tested against the old per-frame ease below).
+const wrapAng = (a) => Math.atan2(Math.sin(a), Math.cos(a))
+const referenceMatrix = (of, b, t, wing) => {
+  const a = Math.min(1, Math.max(0, (t - b.epoch - b.rec.tick * TICK_S) * TICK_HZ))
+  const sc = b.size / of.span
+  const pos = new THREE.Vector3(b.ox + (b.x - b.ox) * a, b.oy + (b.y - b.oy) * a, b.oz + (b.z - b.oz) * a)
+  const quat = new THREE.Quaternion()
+  if (b.state === 'rest') {
+    pos.set(b.x, b.y, b.z)
+    // The card's up along the perch's normal, its body along the heading laid onto the surface, or up the bark on a trunk.
+    const n = new THREE.Vector3(b.nx, b.ny, b.nz)
+    const x = b.perch === 'trunk' ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(Math.cos(b.yaw), 0, -Math.sin(b.yaw))
+    x.addScaledVector(n, -x.dot(n)).normalize()
+    quat.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, n, new THREE.Vector3().crossVectors(x, n)))
+  } else {
+    pos.y += STROKE_M * Math.sin(wing[0]) * (wing[1] / FLUTTER_AMP)
+    quat.setFromEuler(new THREE.Euler(b.oroll + (b.roll - b.oroll) * a, b.oyaw + wrapAng(b.yaw - b.oyaw) * a, b.opitch + (b.pitch - b.opitch) * a, 'YZX'))
+  }
+  return new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(sc, sc, sc)).toArray()
+}
 const flock = make()
 check(flock.loaded && flock.mesh.visible && Math.abs(flock.span - 0.06) < 1e-6, 'asset set: visible, span 6 cm', `span ${flock.span}`)
 {
-  const shader = { vertexShader: '#include <common>\n#include <beginnormal_vertex>\n#include <begin_vertex>\n', fragmentShader: '#include <common>\n#include <normal_fragment_begin>\n' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\nvoid main() {\n#include <beginnormal_vertex>\n#include <begin_vertex>\n}', fragmentShader: '#include <common>\n#include <normal_fragment_begin>\n' }
   flock.material.onBeforeCompile(shader)
-  check(shader.vertexShader.includes('attribute vec3 aWing') && shader.vertexShader.includes('sin( aWing.x )') && shader.vertexShader.includes('transformed.y += abs( position.z ) * sin( wingAng )'), 'the flap turns each wing about the seam in begin_vertex')
-  check(shader.vertexShader.indexOf('wingAng = ') < shader.vertexShader.indexOf('#include <begin_vertex>') && shader.vertexShader.includes('objectNormal = vec3( 0.0, cos( wingAng )'), 'the wing normal turns with the wing, worked out before the position stage')
+  const vs = shader.vertexShader
+  check(vs.includes('attribute vec3 aWing') && vs.includes('wingAng = bfWing.z + bfWing.y * sin( bfWing.x )') && vs.includes('transformed.y += abs( position.z ) * sin( wingAng )'), 'the flap turns each wing about the seam in begin_vertex')
+  check(vs.indexOf('wingAng = ') < vs.indexOf('#include <begin_vertex>') && vs.includes('objectNormal = vec3( 0.0, cos( wingAng )'), 'the wing normal turns with the wing, worked out before the position stage')
+  check(vs.includes('texelFetch( uRows') && vs.includes('#define instanceMatrix gpuInstanceMatrix') && vs.indexOf('mat4 bfHeld()') < vs.indexOf('#define instanceMatrix') && vs.includes('gpuInstanceMatrix = aRow < 0.5 ? bfHeld() : bfFlight('), 'the matrix and the wings are the shader\'s own for a row, and a copy in a hand (aRow 0) keeps its own instanceMatrix and aWing')
+  check(shader.uniforms.uRows === flock.rows.uniforms.uRows && shader.uniforms.uRowDraw === flock.drawU && !vs.includes('`'), 'the row table and draw radius reach the program')
+  const rowIds = flock.mesh.geometry.getAttribute('aRow')
+  check(rowIds.isInstancedBufferAttribute && rowIds.count === MAX && Array.from(rowIds.array).every((v, i) => v === i + 1), 'aRow is slot id + 1 per instance, so zero marks a copy in a hand')
   check(shader.fragmentShader.includes('normal *= faceDirection;'), 'both faces take the authored normal\'s light')
-  check(flock.mesh.geometry.getAttribute('aWing').isInstancedBufferAttribute, 'aWing is per instance')
+  check(flock.mesh.geometry.getAttribute('aWing').isInstancedBufferAttribute && flock.mesh.geometry.getAttribute('aWing').itemSize === 3, 'aWing is per instance, for a hand\'s copy')
   check(flock.material.alphaTest === 0.5 && flock.material.side === THREE.DoubleSide, 'a double-sided cutout material')
 }
 
@@ -208,21 +271,23 @@ flock.place(0, 0, T)
   T += 1 / 72
   flock.update(0, 11, 0, T)
   const c = flock.mesh.instanceColor.array
-  const drawn = alive().filter((b) => b.row >= 0)
-  const matched = drawn.filter((b) => Math.abs(c[b.row * 3] - b.r) < 1e-6 && Math.abs(c[b.row * 3 + 1] - b.g) < 1e-6 && Math.abs(c[b.row * 3 + 2] - b.b) < 1e-6)
-  check(flock.mesh.count > 0 && drawn.length === flock.mesh.count && matched.length === drawn.length, 'each written instance carries its butterfly\'s tint', `${matched.length} of ${flock.mesh.count}`)
+  const drawn = alive()
+  const matched = drawn.filter((b) => Math.abs(c[b.id * 3] - b.r) < 1e-6 && Math.abs(c[b.id * 3 + 1] - b.g) < 1e-6 && Math.abs(c[b.id * 3 + 2] - b.b) < 1e-6)
+  check(flock.mesh.count > 0 && flock.mesh.count === Math.max(...drawn.map((b) => b.id)) + 1 && matched.length === drawn.length, 'each instance carries its butterfly\'s tint, and the count is the last slot in use', `${matched.length} of ${drawn.length}, count ${flock.mesh.count}`)
 }
 
 // --- flight and landing --------------------------------------------------------
 {
   const dt = 1 / 72
-  let low = 0, high = 0, seatOff = 0, upOff = 0, unwritten = 0, wingsOff = 0, frames = 0
+  let low = 0, high = 0, seatOff = 0, upOff = 0, unwritten = 0, frames = 0
   let maxMs = 0, totalMs = 0
   const landed = new Set()
   // The frame each butterfly last took off, so the rise from a ground perch is not read as flying low.
   const tookOff = new Map()
   const was = new Map(alive().map((b) => [b.id, b.state]))
-  let phaseMax = 0
+  let phaseMax = 0, maxAge = 0, poseMax = 0, poseN = 0, easeSum = 0, easeMax = 0, easeN = 0
+  // The per-frame ease the closed form replaced, re-seeded from the row whenever a segment hard-sets the wings.
+  const ease = new Map()
   // Where each flier was last frame, for the climb and the path checks; a flier's positions every half second, in 3 s windows.
   const prev = new Map()
   let steep = 0, steps = 0
@@ -240,7 +305,23 @@ flock.place(0, 0, T)
     const ms = performance.now() - t0
     if (f > 10) { maxMs = Math.max(maxMs, ms); totalMs += ms; frames++ }
     for (const b of alive()) {
-      phaseMax = Math.max(phaseMax, b.phase)
+      const pz = rowPose(flock, b.id, T)
+      phaseMax = Math.max(phaseMax, flock.rows.data[b.id * ROW_TEXELS * 4 + 14])
+      if (pz) {
+        maxAge = Math.max(maxAge, pz.e)
+        const ref = referenceMatrix(flock, b, T, pz.wing)
+        poseMax = Math.max(poseMax, ...ref.map((v, i) => Math.abs(v - pz.m[i])))
+        poseN++
+        let w = ease.get(b.id)
+        if (!w || w.key !== b.key || w.seg !== b.seg) w = { key: b.key, seg: b.seg, amp: pz.wing[1], base: pz.wing[2] }
+        else {
+          w.amp += (b.ampTo - w.amp) * Math.min(1, WING_EASE * dt)
+          w.base += (b.baseTo - w.base) * Math.min(1, WING_EASE * dt)
+          const dev = Math.max(Math.abs(w.amp - pz.wing[1]), Math.abs(w.base - pz.wing[2]))
+          easeSum += dev; easeMax = Math.max(easeMax, dev); easeN++
+        }
+        ease.set(b.id, w)
+      }
       if (b.state === 'fly' && was.get(b.id) !== 'fly') tookOff.set(b.id, f)
       if (b.state === 'land' && was.get(b.id) !== 'land') approach.set(b.id, f)
       if (b.state !== 'land' && approach.has(b.id)) { approaches.push((f - approach.get(b.id)) / 72); approach.delete(b.id) }
@@ -254,8 +335,8 @@ flock.place(0, 0, T)
           if (rise > run * CLIMB_TAN + 1e-4) steep++
         }
         prev.set(b.id, { x: b.x, y: b.y, z: b.z, seg: b.seg, state: b.state })
-        if (b.amp > FLUTTER_AMP * 0.9) flapped++
-        if (b.glide && Math.abs(b.base - GLIDE_BASE) < 0.05) glided++
+        if (pz && pz.wing[1] > FLUTTER_AMP * 0.9) flapped++
+        if (pz && b.glide && Math.abs(pz.wing[2] - GLIDE_BASE) < 0.05) glided++
       } else prev.delete(b.id)
       if (b.state === 'fly') {
         if (f % 36 === 0) {
@@ -277,14 +358,11 @@ flock.place(0, 0, T)
       } else if (b.state === 'rest') {
         landed.add(b.id)
         if (Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) > 1e-6) seatOff++
-        if (b.row < 0) { if (Math.hypot(b.x, b.y - 11, b.z) < b.size * DRAW_SPANS) unwritten++; continue }
+        if (!pz) { if (Math.hypot(b.x, b.y - 11, b.z) < b.size * DRAW_SPANS) unwritten++; continue }
         // The card's up is the matrix's y column; it must be the perch's normal.
-        const m = flock.mesh.instanceMatrix.array
-        const k = b.row
-        const s = Math.hypot(m[k * 16 + 4], m[k * 16 + 5], m[k * 16 + 6])
-        if ((m[k * 16 + 4] * b.nx + m[k * 16 + 5] * b.ny + m[k * 16 + 6] * b.nz) / s < 0.999) upOff++
-        const w = flock.wing.array
-        if (w[k * 3] !== Math.fround(b.phase) || w[k * 3 + 1] !== Math.fround(b.amp) || w[k * 3 + 2] !== Math.fround(b.base)) wingsOff++
+        const m = pz.m
+        const sy = Math.hypot(m[4], m[5], m[6])
+        if ((m[4] * b.nx + m[5] * b.ny + m[6] * b.nz) / sy < 0.999) upOff++
       }
     }
   }
@@ -297,8 +375,9 @@ flock.place(0, 0, T)
   const circling = approaches.filter((s) => s > APPROACH_S).length
   check(approaches.length > 50 && circling === 0, `every landing approach seats within ${APPROACH_S} s`, `${circling} of ${approaches.length} longer, median ${approaches[approaches.length >> 1]?.toFixed(1)} s, max ${approaches[approaches.length - 1]?.toFixed(1)} s`)
   check(seatOff === 0 && upOff === 0 && unwritten === 0, 'a landed butterfly in reach is drawn on its perch with its up along the surface', `${seatOff} off the seat, ${upOff} tilted, ${unwritten} unwritten`)
-  check(wingsOff === 0, 'aWing carries each instance\'s phase, amplitude and base')
-  check(phaseMax < Math.PI * 2 + 1, 'the phase is kept to a turn, within float32\'s reach', `${phaseMax.toFixed(2)} rad after two minutes`)
+  check(easeN > 5000 && easeSum / easeN < 0.02 && easeMax < 0.3, 'the closed-form wings stay with the per-frame ease they replaced', `mean ${(easeSum / Math.max(1, easeN)).toFixed(4)}, max ${easeMax.toFixed(3)} over ${easeN} butterfly-frames`)
+  check(phaseMax < Math.PI * 2 + 1e-3 && maxAge < GRID_S + 1, 'a row\'s phase is kept to a turn and read within a segment of its stamp, within float32\'s reach', `${phaseMax.toFixed(2)} rad, ${maxAge.toFixed(2)} s old at most`)
+  check(poseN > 5000 && poseMax < 5e-4, 'the shader\'s pose (its JS twin, from the row) is the pose the CPU holds, at every frame between ticks', `max element off ${poseMax.toExponential(2)} over ${poseN} butterfly-frames`)
   check(steps > 1000 && steep === 0, 'no butterfly ever rises steeper than CLIMB_TAN of its run', `${steep} of ${steps} airborne frames`)
   chords.sort((a, b) => a - b)
   const median = chords[chords.length >> 1]
@@ -328,38 +407,59 @@ flock.place(0, 0, T)
     }
   }
   // A flier whose wings have reached full flutter (a glide holds them near shut) within NEAR_M of her head; frames until one turns up.
-  const nearFlier = () => alive().filter((b) => b.state === 'fly' && !b.glide && b.amp > FLUTTER_AMP - 0.05 && Math.hypot(b.x, b.y - 11, b.z) < NEAR_M)[0]
+  const wingsOf = (b) => { const p = rowPose(flock, b.id, T); return p ? p.wing : [0, 0, 0] }
+  const nearFlier = () => alive().filter((b) => b.state === 'fly' && !b.glide && wingsOf(b)[1] > FLUTTER_AMP - 0.05 && Math.hypot(b.x, b.y - 11, b.z) < NEAR_M)[0]
   let flier = nearFlier()
   for (let f = 0; f < 72 * 30 && !flier; f++) { T += dt; flock.update(0, 11, 0, T); flier = nearFlier() }
-  check(!!rest && Math.abs(rest.amp - REST_AMP) < 0.05 && Math.abs(rest.base - REST_BASE) < 0.05, 'a resting butterfly holds its wings raised, pulsing narrowly', rest ? `amp ${rest.amp.toFixed(2)} base ${rest.base.toFixed(2)}` : 'none resting')
-  check(!!flier && Math.abs(flier.amp - FLUTTER_AMP) < 0.05 && Math.abs(flier.base) < 0.05, 'a flapping butterfly flutters wide about the flat', flier ? `amp ${flier.amp.toFixed(2)} base ${flier.base.toFixed(2)}` : 'none flying')
+  const restW = rest ? wingsOf(rest) : null, flierW = flier ? wingsOf(flier) : null
+  check(!!rest && Math.abs(restW[1] - REST_AMP) < 0.05 && Math.abs(restW[2] - REST_BASE) < 0.05, 'a resting butterfly holds its wings raised, pulsing narrowly', rest ? `amp ${restW[1].toFixed(2)} base ${restW[2].toFixed(2)}` : 'none resting')
+  check(!!flier && Math.abs(flierW[1] - FLUTTER_AMP) < 0.05 && Math.abs(flierW[2]) < 0.05, 'a flapping butterfly flutters wide about the flat', flier ? `amp ${flierW[1].toFixed(2)} base ${flierW[2].toFixed(2)}` : 'none flying')
   check(REST_HZ < 1 && FLUTTER_HZ >= 8, 'the pulse is slow and the flutter fast', `${REST_HZ} Hz / ${FLUTTER_HZ} Hz`)
   if (flier) {
-    const p0 = flier.phase
-    T += dt
-    flock.update(0, 11, 0, T)
-    const ran = (flier.phase - p0 + Math.PI * 2) % (Math.PI * 2)
-    check(Math.abs(ran - Math.PI * 2 * FLUTTER_HZ * dt) < 1e-6, 'a flier\'s phase runs at FLUTTER_HZ', `${ran.toFixed(4)} rad in a frame`)
+    // No tick lands between these two reads of the clock, so only the row's own rate moves the phase.
+    const p0 = rowPose(flock, flier.id, T).wing[0]
+    const p1 = rowPose(flock, flier.id, T + dt).wing[0]
+    check(Math.abs(p1 - p0 - Math.PI * 2 * FLUTTER_HZ * dt) < 5e-3, 'a flier\'s phase runs at FLUTTER_HZ', `${(p1 - p0).toFixed(4)} rad in a frame`)
   }
   check(maxMs < 1 && totalMs / frames < 0.2, 'a frame of butterflies is cheap', `max ${maxMs.toFixed(3)} ms, mean ${(totalMs / frames).toFixed(3)} ms`)
 }
 
-// --- a sitter's matrix is copied, not recomposed ---------------------------------
+// --- frames between ticks write nothing ------------------------------------------
 {
-  // One resting with seconds of its phrase left, so the run below stays inside the sit and inside its segment.
+  // The next second any butterfly is due: before it, a frame has nothing to tell the GPU but the clock.
+  const nextDue = () => Math.min(...alive().map((b) => b.due))
+  flock.update(0, 11, 0, T)
+  const due = nextDue()
+  check(due > T, 'a butterfly is due after the clock, never before it', `${(due - T).toFixed(4)} s ahead`)
+  const w0 = flock.rows.writes
+  const v0 = flock.rows.texture.version
+  const m0 = flock.mesh.instanceMatrix.version
+  let quiet = true
+  let frames = 0
+  for (let t = T + (due - T) / 10; t < due - 1e-6 && frames < 40; t += (due - T) / 10, frames++) {
+    flock.update(0, 11, 0, t)
+    if (flock.rows.pending || flock.rows.writes !== w0) quiet = false
+  }
+  check(frames >= 8 && quiet && flock.rows.texture.version === v0 && flock.mesh.instanceMatrix.version === m0, 'frames between ticks write no row and upload nothing', `${frames} frames, ${flock.rows.writes - w0} rows written`)
+  const hiT = flock.rows.uniforms.uRowT.value
+  check(Math.abs(hiT.x + hiT.y - (T + (due - T) * 0.9)) < 1e-3 || frames > 0, 'only the clock uniform moves')
+  flock.update(0, 11, 0, due + 1e-6)
+  check(flock.rows.writes > w0, 'and the frame a butterfly falls due writes its row')
+  T = due + 1e-6
+  // A butterfly seated for a second is not rewritten at all: no tick touches its row.
   const held = () => alive().find((b) => b.state === 'rest' && b.phEnd - (T - b.epoch) > 2)
   let b = held()
   for (let f = 0; f < 72 * 30 && !b; f++) { T += 1 / 72; flock.update(0, 11, 0, T); b = held() }
   if (!b) check(false, 'a butterfly sits still long enough to read')
   else {
     const seg = b.seg
-    const seat = flock._seat
-    let seated = 0
-    flock._seat = function (c) { if (c === b) seated++; return seat.call(this, c) }
+    const publish = flock._publish
+    let published = 0
+    flock._publish = function (c) { if (c === b && c.seg === seg && c.state === 'rest') published++; return publish.call(this, c) }
     let f = 0
-    for (; f < 72 && b.state === 'rest' && b.seg === seg; f++) { T += 1 / 72; flock.update(0, 11, 0, T) }
-    flock._seat = seat
-    check(f > 36 && seated === 0, 'a second of sitting recomposes its matrix on no frame', `${seated} seats over ${f} frames`)
+    for (; f < 72 && b.state === 'rest'; f++) { T += 1 / 72; flock.update(0, 11, 0, T) }
+    flock._publish = publish
+    check(f > 36 && published === 0, 'a second of sitting rewrites its row on no frame', `${published} writes over ${f} frames`)
   }
 }
 
@@ -379,12 +479,12 @@ flock.place(0, 0, T)
     flock._target(b, st)
     b.state = 'rest'
     b.x = b.ox = b.px; b.y = b.oy = b.py; b.z = b.oz = b.pz
-    b.stale = true
+    b.dirty = true
+    b.due = 0
     flock.update(0, 11, 0, T)
-    const m = flock.mesh.instanceMatrix.array
-    const k = b.row
-    const bodyUp = k >= 0 && m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2]) > 0.9999
-    check(bodyUp, 'seated with its head up the trunk', k < 0 ? 'not written' : `${(m[k * 16 + 1] / Math.hypot(m[k * 16], m[k * 16 + 1], m[k * 16 + 2])).toFixed(4)}`)
+    const pz = rowPose(flock, b.id, T)
+    const bodyUp = pz !== null && pz.m[1] / Math.hypot(pz.m[0], pz.m[1], pz.m[2]) > 0.9999
+    check(bodyUp, 'seated with its head up the trunk', pz === null ? 'not drawn' : `${(pz.m[1] / Math.hypot(pz.m[0], pz.m[1], pz.m[2])).toFixed(4)}`)
   }
 }
 
@@ -436,7 +536,7 @@ flock.place(0, 0, T)
   check(settled >= 0 && settled < 72 * 30, 'every butterfly is down within half a minute of sundown', settled < 0 ? `${alive(night).filter((b) => b.state !== 'rest').length} still up after a minute` : `${(settled / 72).toFixed(1)} s`)
   check(flyingAfter === 0, 'and once down not one of them takes off again in the dark', `${flyingAfter} airborne butterfly-frames after`)
   check(alive(night).every((b) => Math.hypot(b.x - b.px, b.y - b.py, b.z - b.pz) < 1e-6 && b.perch !== null), 'each is sat on a perch, not hovering where it gave up', JSON.stringify(night.landings))
-  check(alive(night).every((b) => Math.abs(b.amp - REST_AMP) < 1e-6 && Math.abs(b.base - REST_BASE) < 1e-6), 'with its wings raised and pulsing, as a resting butterfly holds them')
+  check(alive(night).every((b) => { const w = rowPose(night, b.id, t, { x: b.x, y: b.y, z: b.z }).wing; return Math.abs(w[1] - REST_AMP) < 1e-3 && Math.abs(w[2] - REST_BASE) < 1e-3 }), 'with its wings raised and pulsing, as a resting butterfly holds them')
 
   // A tile that grows in the dark arrives seated: she walks a long way after sunset and the new meadow is not a cloud of fliers.
   t += dt
@@ -529,7 +629,8 @@ flock.place(0, 0, T)
   const k = make(9)
   let t = 0
   k.place(0, 0, t)
-  const b = alive(k)[0]
+  // The last one the tile grew: a catch earlier in the roll shifts every later roll of its tile.
+  const b = alive(k).at(-1)
   const tile = b.tile
   const before = alive(k).length
   const hit = k.pickAt(b.x, b.y + 0.05, b.z, 0.3)
@@ -568,7 +669,8 @@ flock.place(0, 0, T)
   const d0 = Math.hypot(loose.x - head.x, loose.z - head.z)
   for (let i = 0; i < 3 * 72; i++) { t += 1 / 72; k.update(head.x, head.y, head.z, t) }
   const d1 = Math.hypot(loose.x - head.x, loose.z - head.z)
-  check(d1 > d0 + 1 && loose.amp > REST_AMP, 'it flutters away from her', `${d0.toFixed(2)} to ${d1.toFixed(2)} m in 3 s, amp ${loose.amp.toFixed(3)}`)
+  const looseAmp = rowPose(k, loose.id, t, head).wing[1]
+  check(d1 > d0 + 1 && looseAmp > REST_AMP, 'it flutters away from her', `${d0.toFixed(2)} to ${d1.toFixed(2)} m in 3 s, amp ${looseAmp.toFixed(3)}`)
   check(Math.hypot(loose.x - 10.5, loose.z - 0.2) < TETHER + 1, 'and stays on the meadow it was let go over', `${Math.hypot(loose.x - 10.5, loose.z - 0.2).toFixed(1)} m out`)
   check(k.release(rec, 5000, 0, 5000, head) === false, 'and is refused where no tile is resident')
   {

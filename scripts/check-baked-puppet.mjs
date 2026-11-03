@@ -5,7 +5,7 @@
 // What can go wrong without throwing: a texture laid out one way and read another (a body drawn as a crumpled star); a sample that wraps into the next clip; a bone a layer reads that is not where the drawn body has it (a saddle or a grip off the animal); a fade or tint drawn through the wrong batch; a puppet that never leaves the active set.
 
 import * as THREE from 'three'
-import { BakedPuppet, bakedBatches, bakedRoot, cullBakedTo, flushBaked, makePuppet, puppetMode, rollTint, setPuppetMode, solverStub, tintFor, tintRange } from '../src/v2/render/baked-puppet.js'
+import { BakedPuppet, GLIDE_S, advanceBakedClock, bakedBatches, bakedRoot, cullBakedTo, flushBaked, makePuppet, puppetMode, rollTint, setPuppetMode, solverStub, tintFor, tintRange } from '../src/v2/render/baked-puppet.js'
 import { Puppet, makePuppetMaterials, makeSettledMaterial, poseSphere } from '../src/v2/render/puppet.js'
 import { TIER_TINTS, setTierTint } from '../src/v2/render/critters.js'
 import { mulberry32 } from '../src/sim/mathx.js'
@@ -125,10 +125,37 @@ console.log('the bones')
   bp.skeleton.dispose(); bp.release(); sk.release()
 }
 
-/** One vertex as the vertex shader skins it: the instance's (row, row, blend) read out of the texture. */
+/** The batch's material's uniforms as its compiled program binds them. */
+function uniformsOf(b) {
+  const sh = { vertexShader: THREE.ShaderLib.lambert.vertexShader, fragmentShader: THREE.ShaderLib.lambert.fragmentShader, uniforms: {} }
+  b.mesh.material.onBeforeCompile(sh)
+  return sh.uniforms
+}
+
+/** The instance's (row, row, blend) as the vertex shader's vatRows finds them, in float32 as the GPU holds its inputs. */
+function shaderRows(b, inst) {
+  const g = b.mesh.geometry, T = uniformsOf(b).uVatT.value, f = Math.fround
+  const c = [0, 1, 2, 3].map((k) => g.getAttribute('aClip').getComponent(inst, k)), k = [0, 1, 2, 3].map((j) => g.getAttribute('aClock').getComponent(inst, j))
+  let t = k[2] + k[3] * ((f(T.x) - k[0]) + (f(T.y) - k[1]))
+  t = c[3] > 0.5 ? Math.min(Math.max(t, 0), c[2]) : c[2] > 0 ? t - c[2] * Math.floor(t / c[2]) : 0
+  const x = c[2] > 0 ? (t / c[2]) * c[1] : 0, r0 = Math.min(Math.floor(x), c[1])
+  return [c[0] + r0, c[0] + Math.min(r0 + 1, c[1]), x - r0]
+}
+
+/** The instance's matrix as the vertex shader's vatGlide carries it on. */
+function shaderGlide(b, inst) {
+  const g = b.mesh.geometry, T = uniformsOf(b).uVatT.value, f = Math.fround
+  const v = [0, 1, 2, 3].map((k) => g.getAttribute('aGlide').getComponent(inst, k)), at = g.getAttribute('aGlideAt')
+  const age = Math.min(Math.max((f(T.x) - at.getX(inst)) + (f(T.y) - at.getY(inst)), 0), GLIDE_S)
+  const m = new THREE.Matrix4().fromArray(b.mesh.instanceMatrix.array, inst * 16)
+  const turned = new THREE.Matrix4().makeRotationY(v[3] * age).multiply(m.clone().setPosition(0, 0, 0))
+  return turned.setPosition(new THREE.Vector3().setFromMatrixPosition(m).add(new THREE.Vector3(v[0], v[1], v[2]).multiplyScalar(age)))
+}
+
+/** One vertex as the vertex shader skins it: the instance's rows read out of the texture. */
 function shaderSkin(p, b, inst, geometry, i) {
   const data = p.vat.texture.image.data, w = p.vat.texture.image.width
-  const r0 = b.mesh.geometry.getAttribute('aVat').getX(inst), r1 = b.mesh.geometry.getAttribute('aVat').getY(inst), s = b.mesh.geometry.getAttribute('aVat').getZ(inst)
+  const [r0, r1, s] = shaderRows(b, inst)
   const v = new THREE.Vector3().fromBufferAttribute(geometry.getAttribute('position'), i)
   const out = new THREE.Vector3()
   const idx = geometry.getAttribute('skinIndex'), wt = geometry.getAttribute('skinWeight')
@@ -143,6 +170,54 @@ function shaderSkin(p, b, inst, geometry, i) {
     out.z += weight * (m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z + m[2][3])
   }
   return out
+}
+
+console.log('the clock on the GPU')
+{
+  const p = new BakedPuppet(asset, mats(), { oneShot: new Set(['drop']) }), q = new BakedPuppet(asset, mats())
+  for (const x of [p, q]) { scene.add(x.group); x.show(0, 0); x.play('wave') }
+  q.group.matrix.makeTranslation(2, 0, 3); q.group.matrixWorldNeedsUpdate = true
+  const dt = 1 / 72
+  const frame = (stepOf = (x) => x.step(dt)) => { advanceBakedClock(dt); for (const x of [p, q]) stepOf(x); flushBaked() }
+  for (let f = 0; f < 3; f++) frame()
+  const at = (x) => { for (const b of bakedBatches()) { const e = b.mesh.instanceMatrix.array; for (let i = 0; i < b.n; i++) if (e[i * 16 + 12] === Math.fround(x.group.matrixWorld.elements[12])) return [b, i] } throw new Error('not drawn') }
+  const batch = (x = q) => at(x)[0], inst = (x) => at(x)[1]
+  const versions = () => ['aClip', 'aClock', 'aGlide', 'aGlideAt'].map((n) => batch().mesh.geometry.getAttribute(n).version).concat(batch().mesh.instanceMatrix.version).join()
+  const was = versions()
+  for (let f = 0; f < 40; f++) frame()
+  check(versions() === was, 'bodies stepped by the clock\'s own dt play on with nothing written', `${was} -> ${versions()}`)
+  const rowsOf = (x) => { const c = x.current._clip, t = x.current.time, n = c.duration > 0 ? (t / c.duration) * c.n : 0, r0 = Math.min(Math.floor(n), c.n); return [c.start + r0, c.start + Math.min(r0 + 1, c.n), n - r0] }
+  const gap = (x) => { const a = shaderRows(batch(x), inst(x)), b = rowsOf(x); return Math.abs(a[0] + a[2] - b[0] - b[2]) }
+  check(gap(p) < 1e-3 && gap(q) < 1e-3, 'the shader\'s rows are the ones the CPU reads at the same instant', `${gap(p).toExponential(1)}, ${gap(q).toExponential(1)}`)
+  const t0 = p.current.time
+  for (let f = 0; f < 30; f++) frame((x) => x.step(dt * 0.5))
+  const want = ((t0 + 30 * dt * 0.5) % 1 + 1) % 1
+  check(Math.abs(p.current.time - want) < 2e-3 && gap(p) < 1e-3, 'a puppet stepped at half the clock plays at half speed, the shader re-anchored to it', `${p.current.time.toFixed(4)} vs ${want.toFixed(4)}`)
+  p.mixer.timeScale = 2
+  const t1 = p.current.time
+  frame()
+  check(Math.abs(p.current.time - ((t1 + 2 * dt) % 1)) < 1e-6 && gap(p) < 1e-3, 'a new time scale runs on from where the clip stood', `${p.current.time.toFixed(4)}`)
+  p.mixer.timeScale = 1
+  p.play('drop', 1)
+  for (let f = 0; f < 72; f++) frame()
+  check(p.current.time === 0.5 && gap(p) < 1e-6, 'a one-shot holds its end on the GPU too', `${p.current.time}`)
+
+  q.glide(1.5, 0.25, -0.5, 0.8)
+  frame()
+  const m0 = new THREE.Matrix4().copy(q.group.matrixWorld), v0 = versions()
+  for (let f = 0; f < 4; f++) frame()
+  const age = 5 * dt
+  const truth = new THREE.Matrix4().makeRotationY(0.8 * age).multiply(m0.clone().setPosition(0, 0, 0)).setPosition(2 + 1.5 * age, 0.25 * age, 3 - 0.5 * age)
+  const off = (a, b) => Math.max(...a.elements.map((x, k) => Math.abs(x - b.elements[k])))
+  check(versions() === v0 && off(shaderGlide(batch(), inst(q)), truth) < 1e-5, 'a gliding body moves and turns in the shader with nothing written', `off ${off(shaderGlide(batch(), inst(q)), truth).toExponential(1)}`)
+  for (let f = 0; f < 20; f++) frame()
+  check(off(shaderGlide(batch(), inst(q)), new THREE.Matrix4().makeRotationY(0.8 * GLIDE_S).multiply(m0.clone().setPosition(0, 0, 0)).setPosition(2 + 1.5 * GLIDE_S, 0.25 * GLIDE_S, 3 - 0.5 * GLIDE_S)) < 1e-5, 'and stops GLIDE_S on if the layer writes it no more')
+  q.group.matrix.makeTranslation(2.1, 0, 3); q.group.matrixWorldNeedsUpdate = true
+  frame()
+  check(off(shaderGlide(batch(), inst(q)), q.group.matrixWorld) < 1e-6, 'a group moved without a glide stands where it was put')
+  for (const x of [p, q]) { x.skeleton.dispose(); x.release(); scene.remove(x.group) }
+  advanceBakedClock(0)
+  flushBaked()
 }
 
 console.log('the batches')
@@ -238,7 +313,7 @@ console.log('the batches')
   fade.onBeforeCompile(fsh)
   check(/discard/.test(fsh.fragmentShader) && /aFade/.test(fsh.vertexShader) && fade.customProgramCacheKey() === 'check-baked|vat-fade', 'the fading twin dissolves on its per-instance cut')
   const bsh = { vertexShader: THREE.ShaderLib.basic.vertexShader, fragmentShader: THREE.ShaderLib.basic.fragmentShader, uniforms: {} }
-  check(!throws(() => { setTierTint(true); flushBaked(); bakedBatches()[0].mesh.material.onBeforeCompile(bsh); setTierTint(false) }) && /vatBone\( skinIndex\.x \)[\s\S]*transformed = /.test(bsh.vertexShader), 'the unlit tint twin fetches its bones at the skinning')
+  check(!throws(() => { setTierTint(true); flushBaked(); bakedBatches()[0].mesh.material.onBeforeCompile(bsh); setTierTint(false) }) && /vatBone\( skinIndex\.x, vatR \)[\s\S]*transformed = /.test(bsh.vertexShader), 'the unlit tint twin fetches its bones at the skinning')
 
   const before = bakedRoot.children.length
   const v0 = settled.version

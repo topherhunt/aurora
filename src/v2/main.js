@@ -56,7 +56,7 @@ import { Wildfire, TORCH_CAP } from './render/wildfire.js'
 import { flicker as flameFlicker, FLICKER } from './render/fire.js'
 import { HEARTH_LIGHT } from './hearth-light.js'
 import { TriFlames } from './render/fire-tris.js'
-import { bakedRoot, cullBakedTo, puppetMode, setPuppetMode } from './render/baked-puppet.js'
+import { advanceBakedClock, bakedRoot, cullBakedTo, puppetMode, setPuppetMode } from './render/baked-puppet.js'
 import { Boulders } from './render/boulders.js'
 import { Grass, TILE as GRASS_TILE } from './render/grass.js'
 import { TerrainTint } from '../terrain/terrain-tint.js'
@@ -5786,7 +5786,7 @@ async function buildRoom(room, at) {
   worldProbe.setVantage(probeVantage)
   window.v2probe = worldProbe // console: `v2probe.anchor`, `v2probe.origin`
   player = new Player(rig, camera, walk, { scale: herScale() })
-  climb = palisades || castles ? new Climb(player, palisades) : null
+  climb = palisades || castles ? new Climb(player, [palisades, castles].filter((q) => q !== null), (act) => castlePortal(act).catch(reportRuntimeError)) : null
   window.v2climb = climb // console: `v2climb.startRope(v2palisades.ropeAt(site))`
   netplay.scale = herScale()
   window.v2player = player // console: `v2player.pathClear(x0, z0, x1, z1)`
@@ -8978,6 +8978,8 @@ function tick() {
   // finished fades and the shader that draws them read the same instant. It
   // wraps at 1024 s inside setPropClock -- see the packing note in material.js.
   setPropClock(now / 1000)
+  // Baked creature clips play on this clock in the shader; a layer whose step(dt) differs re-anchors (baked-puppet.js BakedAction).
+  advanceBakedClock(dt)
   // Teleporting in the headset cuts every LOD and rim change instead of dissolving it (material.js setDissolves). Flight is continuous, so it keeps them.
   setDissolves(!(renderer.xr.isPresenting && questToggles.teleport && !player.flying))
   // THE BLADE BED CARRIES ITS OWN CLOCK, and it is not uPropClock. Every other

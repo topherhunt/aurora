@@ -13,7 +13,7 @@
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { readFileSync } from 'node:fs'
-import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
+import { castleLayout, CASTLE, LADDER } from '../src/v2/castles/layout.js'
 import { WARDS, wardSearch } from '../src/v2/castles/wards.js'
 import { DOOR_SLOT, exteriorGeometry, GATE_SLOT, interiorGeometries, interiorWarp, LEAD_SLOT, rayHit, STONE_SLOT, warpedProp, warpOf, WOOD_SLOT } from '../src/v2/castles/shell.js'
 import { castleWindows } from '../src/v2/castles/light.js'
@@ -326,7 +326,7 @@ check(Math.max(...lowTri) < 0.9, 'the mid-distance exterior is lighter than the 
 
 // Collision: castleSolids throws where a portal has nowhere to set her down. Columns are sampled on a 0.5 m grid over each footprint,
 // the interior at every storey.
-let solidFail = null, worstEx = 0, worstIn = 0, portalsShort = []
+let solidFail = null, worstEx = 0, worstIn = 0, portalsShort = [], ladderLoose = [], ladderPenned = []
 for (const l of good.slice(0, 60)) {
   let sol
   try { sol = castleSolids(l) } catch (e) { solidFail ??= `seed ${l.seed}: ${e.message}`; continue }
@@ -337,6 +337,20 @@ for (const l of good.slice(0, 60)) {
   }
   const P = sol.portals, want = l.edges.filter((e) => e.stair).length + 1
   if (P.doors.length === 0 || sol.it.spirals.length !== want || !P.rope || !P.chest) portalsShort.push(l.seed)
+  // A ladder's back is to a wall or its drum's, and ahead of its foot she has floor and head room to walk past it; in a drum, whose
+  // middle is its helix and hole, to stand before it (its doorways keep two segments off it).
+  for (const d of P.ladders) {
+    const drum = sol.it.spirals.some((q) => Math.hypot(q.x - d.x, q.z - d.z) < SPIRAL.well)
+    const spans = (x, z) => { const n = interiorSpans(sol.it, x, z, d.bottom + 0.5); return Array.from({ length: n }, (_, i) => [SPANS.LO[i], SPANS.HI[i]]) }
+    const at = (out, across) => [d.foot[0] + d.ux * out - d.uz * across, d.foot[1] + d.uz * out + d.ux * across]
+    const walled = spans(d.x - d.ux * (LADDER.hatch + 0.25), d.z - d.uz * (LADDER.hatch + 0.25)).some(([lo, hi]) => lo <= d.bottom + 1.5 && hi >= d.bottom + 1.5)
+    const open = (drum ? [0.6] : [0.6, 1, 1.4]).every((o) => (drum ? [0] : [-0.6, 0, 0.6]).every((a) => {
+      const q = spans(...at(o, a))
+      return q.some(([, hi]) => Math.abs(hi - d.bottom) < 0.3) && !q.some(([lo, hi]) => lo < d.bottom + 1.9 && hi > d.bottom + 0.35)
+    }))
+    if (!walled) ladderLoose.push(`${l.seed}:k${d.k} ${d.x.toFixed(1)},${d.z.toFixed(1)}`)
+    if (!open) ladderPenned.push(`${l.seed}:k${d.k} ${d.x.toFixed(1)},${d.z.toFixed(1)}`)
+  }
 }
 // A castle whose collision throws never loads in, so far more seeds are swept here than the grid above can afford.
 for (let seed = 100000; seed < 103000 && solidFail === null; seed++) {
@@ -347,6 +361,8 @@ for (const seed of [661222, 111589]) if (solidFail === null) try { const l = cas
 check(solidFail === null, 'every castle\'s collision and portals build', solidFail ?? '')
 check(worstEx < SPAN_CAP && worstIn < SPAN_CAP, 'no castle column passes the walk\'s span cap', `worst exterior ${worstEx}, interior ${worstIn} of ${SPAN_CAP}`)
 check(portalsShort.length === 0, 'every castle has doors, its spirals, a rope and a chest', portalsShort.slice(0, 5).join(' '))
+check(ladderLoose.length === 0, "every ladder stands with its back to a wall or its drum's", ladderLoose.slice(0, 5).join(' '))
+check(ladderPenned.length === 0, 'ahead of every ladder there is room to walk past it', ladderPenned.slice(0, 5).join(' '))
 
 // Court torches: 2-3 posts, apart, clear of the well and the gate guards' stands; their light baked, capped, and gone 10 m off.
 const torchBad = [], glowBad = []

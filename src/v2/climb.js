@@ -1,4 +1,4 @@
-// Climbing a watchtower's or scaffold's ladder (design/41-palisade-labyrinths.md): on the desktop she walks into it and the walk keys climb; in the headset an empty hand grips a rung and pulls. Either way Player.hold keeps her height until her next walk or teleport, and reaching the top steps her off at the ladder's exit. A scaffold's dropped rope lets her down at a steady pace (`rope`).
+// Climbing a watchtower's, scaffold's or castle's ladder (design/41-palisade-labyrinths.md, design/44-castles.md): on the desktop she walks into it and the walk keys climb; in the headset an empty hand grips a rung and pulls. Either way Player.hold keeps her height until her next walk or teleport, and reaching the top steps her off at the ladder's exit, or for a ladder with an `act` (a castle's, its head at the trap door) hands that portal to `onAct`. A scaffold's dropped rope lets her down at a steady pace (`rope`).
 import { TOWER } from './layers/labyrinths.js'
 import { SCAFFOLD } from './layers/scaffold.js'
 
@@ -6,10 +6,11 @@ import { SCAFFOLD } from './layers/scaffold.js'
 export const CLIMB = { speed: 0.9, reach: 0.35, face: 0.5, grip: 0.15 }
 
 export class Climb {
-  /** `palisades` answers ladderAt and rungAt (render/palisades.js); null in a world with only castles, whose ropes alone are climbed. */
-  constructor(player, palisades) {
+  /** Each of `sources` answers ladderAt and rungAt (render/palisades.js, render/castles.js); `onAct(act)` takes a top's portal. */
+  constructor(player, sources, onAct) {
     this.player = player
-    this.palisades = palisades
+    this.sources = sources
+    this.onAct = onAct
     this.ladder = null
     this._sign = 1
     this.grips = { left: null, right: null }
@@ -50,13 +51,12 @@ export class Climb {
 
   /** The desktop's move, before player.update: walking at a ladder from its foot (facing in) climbs it, from the deck (facing out) climbs down it, and on it `input.move` is spent (zeroed); a strafe lets go, as does backing off its foot. `fx, fz` her gaze's level unit. */
   desk(dt, input, fx, fz) {
-    if (this.palisades === null) return
     const p = this.player, o = p.rig.position
     if (this.ladder !== null && !p.held) this.ladder = null
     if (this.ladder === null) {
       if (input.move <= 0 || p.flying || p.swimming || p.travel || p.standY === null) return
       // Anywhere on the deck: its corner posts stand closer than her body is wide, so the ladder is its only way off on foot.
-      const l = this.palisades.ladderAt(o.x, o.z, TOWER.foot, p.standY)
+      const l = this._find((s) => s.ladderAt(o.x, o.z, TOWER.foot, p.standY))
       if (l === null) return
       const onDeck = Math.abs(p.standY - l.top) < 0.1
       if (!onDeck && Math.hypot(o.x - l.x, o.z - l.z) > CLIMB.reach) return
@@ -87,11 +87,10 @@ export class Climb {
 
   /** A headset hand's grip this frame, its world position `at`: true when a press took a rung, so it drops nothing. While a grip holds, the rig moves against the hand so the hand stays on its rung; the last hand to grip leads. */
   grip(hand, pressed, justPressed, empty, at) {
-    if (this.palisades === null) return false
     const p = this.player
     let took = false
     if (justPressed && empty) {
-      const r = this.palisades.rungAt(at.x, at.y, at.z, CLIMB.grip)
+      const r = this._find((s) => s.rungAt(at.x, at.y, at.z, CLIMB.grip))
       if (r !== null) {
         // From the deck, out past its posts to the ladder's foot line, as the top steps her on.
         if (!p.held && Math.abs(p.standY - r.top) < 0.1) {
@@ -116,7 +115,15 @@ export class Climb {
     return took
   }
 
-  // Up the ladder by `dy`: held between its foot and its top, and off onto its exit at the top.
+  _find(ask) {
+    for (const s of this.sources) {
+      const l = ask(s)
+      if (l !== null) return l
+    }
+    return null
+  }
+
+  // Up the ladder by `dy`: held between its foot and its top, and off onto its exit (or through its act) at the top.
   _rise(dy) {
     const p = this.player, l = this.ladder
     const y = Math.max(l.bottom, p.rig.position.y + dy)
@@ -126,6 +133,9 @@ export class Climb {
     }
     this.ladder = null
     this.grips.left = this.grips.right = null
-    p.teleportTo(l.exitX, l.exitZ, l.top)
+    if (l.act) {
+      p.hold(l.top)
+      this.onAct(l.act)
+    } else p.teleportTo(l.exitX, l.exitZ, l.top)
   }
 }

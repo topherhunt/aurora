@@ -1,10 +1,12 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { CHAPTER_S, GRID_S, TICK_S, CATCH_UP_TICKS, SILENT_TICKS, hash32, keyHash, phraseRand, chapterOf, tickAfter, stepTo, easeWeight } from '../../sim/score.js'
+import { CHAPTER_S, GRID_S, TICK_S, TICK_HZ, CATCH_UP_TICKS, SILENT_TICKS, hash32, keyHash, phraseRand, chapterOf, tickAfter, stepTo, easeWeight } from '../../sim/score.js'
 import { cullTripoBackfaces } from '../../tripo-culling.js'
 import { hueVary, makeHueAttribute, tierTintSplice, tileSeed, walkTiles } from './critters.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 import { atMost } from '../eating.js'
+import { RowTable } from './butterflies.js'
+import { TIME_HI } from './gpu-motion.js'
 
 // ---------------------------------------------------------------------------
 // Fish: every authored lake and river stocked with the three roster species,
@@ -37,7 +39,9 @@ import { atMost } from '../eating.js'
 // by its key) each is put back at its station -- a pose closed-form in (key,
 // segment) -- with the last EASE_S of a segment a pull onto the next station,
 // so what one client integrates never strays from what another does for
-// longer than a segment. A frame draws each fish between its last two ticks.
+// longer than a segment. A tick also carries the fish's facing, roll, curve,
+// lift and tail beat on a filter of its own; the frame draws between the last
+// two ticks' poses in the vertex shader and the CPU writes nothing between ticks.
 //
 // ONE AI, THREE PERSONALITIES. Every fish is a heading that wanders, a speed
 // that is steered toward a target, a pull toward its own station in the
@@ -73,16 +77,19 @@ import { atMost } from '../eating.js'
 // per fish and cached, because heightAt is the one thing in this file that
 // is not arithmetic.
 //
-// THE TAIL IS THE SHADER'S. public/fauna/fish.json (tools/fauna/ship.mjs)
+// THE POSE IS THE SHADER'S. public/fauna/fish.json (tools/fauna/ship.mjs)
 // carries each species' picked Tripo mesh, nose at -Z, with a per-vertex
-// swim-bend weight, and each fish is one InstancedMesh instance with (phase,
-// amplitude, curve, lift): the vertex stage bends every vertex sideways by
-// bend * (amplitude * sin(phase - k * z) + curve) and up by bend * lift. The
-// frame advances the phase at a rate that follows the fish's speed, so a
-// lurking pike barely sculls and a bolting glimmerfin is a blur, and it sets
-// curve and lift from the turn and the pitch in hand, so the body arcs into
-// every turn and climb and the tail beats harder through it: a fish never
-// swings round or tilts straight as a board.
+// swim-bend weight. Each fish is one instance whose row in the species'
+// RowTable (butterflies.js) holds the last two ticks' position, yaw, pitch,
+// roll, curve, lift and tail amplitude, the tail phase at the stamp and its
+// rate. The vertex stage mixes the two poses by the time since the stamp,
+// builds the matrix, and bends every vertex sideways by bend * (amplitude *
+// sin(phase - k * z) + curve) and up by bend * lift. The rate follows the
+// fish's speed, so a lurking pike barely sculls and a bolting glimmerfin is a
+// blur, and curve and lift follow the turn and the pitch, so the body arcs
+// into every turn and climb. A fish in her hand, and the instance a leap
+// borrows, carry aRow 0 and are posed by their own instanceMatrix and aSwim; a
+// loose fish is the one CPU path, its row rewritten every frame.
 //
 // NO TWO FISH ARE THE SAME COLOUR. Each rolls a brightness (instanceColor) and
 // a hue, a turn of up to HUE radians either way round the colour wheel
@@ -191,13 +198,48 @@ export const SPECIES = {
 }
 
 const TAU = Math.PI * 2
+
+// The fish row, FISH_ROW_TEXELS RGBA32F texels (x, y, z, w):
+//   0  previous-tick position, the stamp (seconds past the row's HI)
+//   1  current-tick position, the scale (0 hides the slot)
+//   2  yaw before and after (unwrapped onto the shorter turn), pitch before and after
+//   3  roll before and after, curve before and after
+//   4  lift before and after, tail amplitude before and after
+//   5  tail phase at the stamp, its rate, the stamp's HI
+export const FISH_ROW_TEXELS = 6
+
+/** GLSL for the fish row: `fishRow(row)` returns the instance matrix and sets `fishSwim`. Kept in step with fishPose in the gate. */
+const FISH_GLSL = `
+mat4 fishHeld() { fishSwim = aSwim; return instanceMatrix; }
+mat4 fishRow( int row ) {
+  vec4 t0 = texelFetch( uRows, ivec2( 0, row ), 0 );
+  vec4 t1 = texelFetch( uRows, ivec2( 1, row ), 0 );
+  vec4 t2 = texelFetch( uRows, ivec2( 2, row ), 0 );
+  vec4 t3 = texelFetch( uRows, ivec2( 3, row ), 0 );
+  vec4 t4 = texelFetch( uRows, ivec2( 4, row ), 0 );
+  vec4 t5 = texelFetch( uRows, ivec2( 5, row ), 0 );
+  fishSwim = vec4( 0.0 );
+  float sc = t1.w;
+  if ( sc == 0.0 ) return mat4( 0.0 );
+  float e = max( 0.0, ( uRowT.x - t5.z ) + ( uRowT.y - t0.w ) );
+  float a = clamp( e * ${TICK_HZ}.0, 0.0, 1.0 );
+  vec3 p = mix( t0.xyz, t1.xyz, a );
+  fishSwim = vec4( t5.x + t5.y * e, mix( t4.z, t4.w, a ), mix( t3.z, t3.w, a ), mix( t4.x, t4.y, a ) );
+  float rx = mix( t2.z, t2.w, a );
+  float ry = mix( t2.x, t2.y, a );
+  float rz = mix( t3.x, t3.y, a );
+  float ca = cos( rx ), sa = sin( rx ), cc = cos( ry ), sd = sin( ry ), ce = cos( rz ), sf = sin( rz );
+  float ccE = cc * ce, ccF = cc * sf, sdE = sd * ce, sdF = sd * sf;
+  mat3 r = mat3(
+    ccE + sdF * sa, ca * sf, ccF * sa - sdE,
+    sdE * sa - ccF, ca * ce, sdF + ccE * sa,
+    ca * sd, -sa, ca * cc
+  );
+  return mat4( vec4( r[0] * sc, 0.0 ), vec4( r[1] * sc, 0.0 ), vec4( r[2] * sc, 0.0 ), vec4( p, 1.0 ) );
+}`
+
 const between = (rand, [lo, hi]) => lo + (hi - lo) * rand()
 
-const _euler = new THREE.Euler(0, 0, 0, 'YXZ')
-const _quat = new THREE.Quaternion()
-const _pos = new THREE.Vector3()
-const _scl = new THREE.Vector3()
-const _mat = new THREE.Matrix4()
 const _a = { x: 0, z: 0, y: 0 }
 const _e = { x: 0, z: 0, y: 0 }
 const _s = { sx: 0, sy: 0, sz: 0, bed: 0, level: 0 }
@@ -252,6 +294,11 @@ export class Fish {
     // Lured sets owed to the room (pendingLured), and the peers' by bed key (applyLured): { by, has }.
     this.owed = []
     this.luredIn = new Map()
+    // Fish holding a lure, and of them the ones on her, as of the last frame the notice loop ran; the longest fish living, recounted when `biggestStale`. A frame with no lure in a hand, none held and none big enough to take her for prey skips the loop.
+    this.noticing = 0
+    this.hers = 0
+    this.biggest = 0
+    this.biggestStale = false
     if (assets) {
       for (const sp of this.species) this.setAsset(sp, this.assetFor(assets, sp))
       this.ready = Promise.resolve(true)
@@ -269,11 +316,25 @@ export class Fish {
   makeSpecies(id, cfg) {
     // Lambert, no specular: a fish only glints once it is out of the water -- under it, the sheen the eye reads belongs to the surface, and the fish is a matte thing in dim light. Opaque and front-faced: a Tripo fish is a closed volume whose fins are two sheets a hair apart (tripo-culling.js), and nothing here sorts.
     const material = new THREE.MeshLambertMaterial({ ...cfg.material })
-    // The swim bend. `aBend` is ship.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `aSwim` is per instance: phase, amplitude, and the turn's sideways curve and the climb's lift, all in local metres. The wave number is a literal scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
+    // The swim bend. `aBend` is ship.mjs's per-vertex weight (0 at the nose, 1 at the tail tip); `fishSwim` is per instance: phase, amplitude, and the turn's sideways curve and the climb's lift, all in local metres -- from the row for a flight instance, from `aSwim` for one in a hand (aRow 0). The wave number is a literal scaled to the species' length, so a pike's wave is one body length long just like a glimmerfin's.
+    const rows = new RowTable(FISH_ROW_TEXELS, cfg.count)
     material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, rows.uniforms)
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float aBend;\nattribute vec4 aSwim;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( aSwim.y * sin( aSwim.x - FISH_WAVE_K * position.z ) + aSwim.z );\ntransformed.y += aBend * aSwim.w;')
+        .replace('#include <common>', `#include <common>
+attribute float aBend;
+attribute vec4 aSwim;
+attribute float aRow;
+vec4 fishSwim;
+#ifdef USE_INSTANCING
+uniform sampler2D uRows;
+uniform vec2 uRowT;
+mat4 gpuInstanceMatrix;
+${FISH_GLSL}
+#define instanceMatrix gpuInstanceMatrix
+#endif`)
+        .replace('void main() {', 'void main() {\n#ifdef USE_INSTANCING\ngpuInstanceMatrix = aRow < 0.5 ? fishHeld() : fishRow( int( aRow + 0.5 ) - 1 );\n#endif')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += aBend * ( fishSwim.y * sin( fishSwim.x - FISH_WAVE_K * position.z ) + fishSwim.z );\ntransformed.y += aBend * fishSwim.w;')
       hueVary(shader)
       tierTintSplice(shader, 0)
     }
@@ -283,16 +344,16 @@ export class Fish {
     const slots = []
     for (let i = 0; i < cfg.count; i++) {
       slots.push({
-        alive: false, loose: false, school: null, tile: null,
+        id: i, alive: false, loose: false, school: null, tile: null,
         // Its index in its bed, for the lured sets and the taken registry.
         index: -1,
         // The pose at the last tick and the one before it; the frame draws between them. A loose fish is stepped per frame and drawn at (x, y, z).
         x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0,
-        // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be.
-        hx: 0, hz: -1, pitch: 0, roll: 0,
+        // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be; `yaw` is its heading as a Y turn, and the p- fields the previous tick's.
+        hx: 0, hz: -1, pitch: 0, roll: 0, yaw: 0, pyaw: 0, ppitch: 0, proll: 0, pcurve: 0, plift: 0, pamp: 0,
         // `size` is its length in metres, for the ear.
         wander: 0, depthFrac: 0.5, scale: 1, size: 0, margin: 0, tint: 1, hue: 0,
-        phase: 0, amp: 0, curve: 0, lift: 0,
+        phase: 0, amp: 0, curve: 0, lift: 0, rate: 0,
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s from `station0` at world time zero -- plus a slow vertical bob.
         pace: 1, verve: 1, beat: 1, ring: 0, station0: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
         // `cx`, `cz` the current's drift where it was last probed, m/s.
@@ -318,15 +379,19 @@ export class Fish {
     mesh.visible = false
     // The instances move every frame and the beds are a disc around the head anyway; a per-mesh sphere would have to be rebuilt each frame to cull anything.
     mesh.frustumCulled = false
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 3).fill(1), 3)
+    // The flight mesh's matrix and tail come from the rows; `aSwim` is on the geometry for the copies in a hand, whose records carry it.
     const swim = new THREE.InstancedBufferAttribute(new Float32Array(cfg.count * 4), 4)
-    swim.setUsage(THREE.DynamicDrawUsage)
     mesh.geometry.setAttribute('aSwim', swim)
+    // The row of instance i is slot i, +1 so the zero a copy in a hand carries means "not a row".
+    const rowIds = new Float32Array(cfg.count)
+    for (let i = 0; i < cfg.count; i++) rowIds[i] = i + 1
+    mesh.geometry.setAttribute('aRow', new THREE.InstancedBufferAttribute(rowIds, 1))
     const hue = makeHueAttribute(mesh, cfg.count)
     cullTripoBackfaces(mesh)
     this.batch.add(mesh)
-    return { id, cfg, material, mesh, swim, hue, slots, free: slots.slice(), schools: [], loaded: false, lengthM: 0 }
+    // `top` is one past the last live slot (the mesh draws that many instances); free slots are taken lowest id first so it stays tight; `loose` the fish her hand let go of.
+    return { id, cfg, material, mesh, swim, hue, rows, slots, free: slots.slice().reverse(), top: 0, loose: [], schools: [], loaded: false, lengthM: 0 }
   }
 
   /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
@@ -372,7 +437,7 @@ export class Fish {
   place(cx, cz) {
     for (const t of this.tiles.values()) this._leave(t)
     this.tiles.clear()
-    for (const sp of this.species) for (const f of sp.slots) if (f.loose) this.unslot(sp, f)
+    for (const sp of this.species) for (const f of sp.loose.slice()) this.unslot(sp, f)
     this.overflow = 0
     this.head.x = cx
     this.head.z = cz
@@ -450,8 +515,8 @@ export class Fish {
         const school = {
           key, sp, tile: t, offset: keyHash(key) % GRID_S,
           home: { x, z, bed: at.bed, level: at.level },
-          // The anchor at the last tick; `chapters` the hop chains by chapter index (_walk); `seg` the segment the members were last put at their stations for, `rec` their tick record (score.js stepTo).
-          x, z, y: this.column(at.bed, at.level, 0.5), fleeAt: 0, chapters: new Map(), seg: null, rec: { tick: 0, alpha: 0 },
+          // The anchor at the last tick; `chapters` the hop chains by chapter index (_walk); `seg` the segment the members were last put at their stations for, `rec` their tick record (score.js stepTo), `pubTick` the tick their rows were last written for.
+          x, z, y: this.column(at.bed, at.level, 0.5), fleeAt: 0, chapters: new Map(), seg: null, rec: { tick: 0, alpha: 0 }, pubTick: -1,
           members: [],
         }
         for (let i = 0; i < n; i++) {
@@ -542,6 +607,29 @@ export class Fish {
     f.lure = null
     f.lured = false
     f.listedAt = -1
+    f.yaw = f.pyaw = Math.atan2(-f.hx, -f.hz)
+    f.ppitch = f.proll = f.pcurve = f.plift = f.pamp = f.rate = 0
+    this._occupy(sp, f)
+  }
+
+  /** Slot `f` live: its tint and hue into the species' buffers, and the mesh drawing as far as it. */
+  _occupy(sp, f) {
+    sp.mesh.instanceColor.array.fill(f.tint, f.id * 3, f.id * 3 + 3)
+    sp.mesh.instanceColor.needsUpdate = true
+    sp.hue.array[f.id] = f.hue
+    sp.hue.needsUpdate = true
+    sp.top = Math.max(sp.top, f.id + 1)
+    if (f.size > this.biggest) this.biggest = f.size
+  }
+
+  /** Slot `f` free: its row emptied so the shader draws nothing for it, and the mesh drawn only as far as the last live slot. */
+  _vacate(sp, f) {
+    sp.rows.data.fill(0, f.id * FISH_ROW_TEXELS * 4, (f.id + 1) * FISH_ROW_TEXELS * 4)
+    sp.rows.touch(f.id)
+    while (sp.top > 0 && !sp.slots[sp.top - 1].alive) sp.top--
+    sp.free.push(f)
+    sp.free.sort((p, q) => q.id - p.id)
+    this.biggestStale = true
   }
 
   _leave(t) {
@@ -559,7 +647,7 @@ export class Fish {
       f.alive = false
       f.school = null
       f.tile = null
-      sp.free.push(f)
+      this._vacate(sp, f)
     }
     school.members.length = 0
     const i = sp.schools.indexOf(school)
@@ -580,6 +668,7 @@ export class Fish {
 
   /** A fish with no school -- one she let go of, or one just taken -- back to the free list. */
   unslot(sp, f) {
+    if (f.loose) sp.loose.splice(sp.loose.indexOf(f), 1)
     f.alive = false
     f.loose = false
     f.stun = 0
@@ -588,7 +677,7 @@ export class Fish {
     f.index = -1
     f.lured = false
     f.lure = null
-    sp.free.push(f)
+    this._vacate(sp, f)
   }
 
   get stats() {
@@ -1004,6 +1093,73 @@ export class Fish {
     }
     if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
     if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
+    this._pose(sp, f, dt)
+  }
+
+  /**
+   * The fish's look over the `dt` seconds just stepped, from its velocity: the
+   * previous pose kept for the frame to draw from, the facing chasing the
+   * velocity, the roll leaning into the turn, the pitch read off the climb, the
+   * body arcing into the turn and the climb, the tail rate following the speed
+   * relative to its own cruise (idle sculling at 40% of its beat, a burst at
+   * nearly three times it), deeper through a turn, and still when stunned.
+   */
+  _pose(sp, f, dt) {
+    const cfg = sp.cfg
+    f.pyaw = f.yaw
+    f.ppitch = f.pitch
+    f.proll = f.roll
+    f.pcurve = f.curve
+    f.plift = f.lift
+    f.pamp = f.amp
+    f.phase = (f.phase + f.rate * dt) % TAU
+    const spd = Math.hypot(f.vx, f.vz)
+    // Cross product of the facing and the velocity's direction: the sine of the turn in hand, negative to the left.
+    let turn = 0
+    if (spd > 0.02) {
+      const k = 1 - Math.exp(-6 * dt)
+      const wantX = f.vx / spd
+      const wantZ = f.vz / spd
+      turn = f.hx * wantZ - f.hz * wantX
+      f.hx += (wantX - f.hx) * k
+      f.hz += (wantZ - f.hz) * k
+      const hl = Math.hypot(f.hx, f.hz) || 1
+      f.hx /= hl
+      f.hz /= hl
+      f.roll += (-turn * 0.5 - f.roll) * k
+    } else {
+      f.roll += (0 - f.roll) * (1 - Math.exp(-3 * dt))
+    }
+    const climb = Math.atan2(f.vy, Math.max(spd, 0.05)) - f.pitch
+    f.pitch += climb * (1 - Math.exp(-4 * dt))
+    // The tail swings to the inside of a turn (left turn, tail left), by up to 0.4 of the length on a hard one. Vertically it arcs the same way and keeps arcing for as long as the fish holds a pitch, so a climbing or diving fish is a curve and not a tilted board.
+    const kb = 1 - Math.exp(-8 * dt)
+    f.curve += (Math.max(-0.4, Math.min(0.4, turn * 2)) * sp.lengthM - f.curve) * kb
+    f.lift += (Math.max(-0.3, Math.min(0.3, climb * 1.5 + f.pitch * 0.8)) * sp.lengthM - f.lift) * kb
+    const rel = Math.hypot(f.vx, f.vy, f.vz) / (cfg.cruise * f.pace)
+    f.rate = TAU * cfg.tailHz * f.beat * (0.4 + 0.6 * rel)
+    f.amp = f.stun > 0 ? 0 : cfg.tailAmp * sp.lengthM * Math.min(1.6, 0.5 + 0.5 * rel) * (1 + 2 * Math.abs(turn))
+    // Local -Z is the nose (ship.mjs turns every pick that way), so yaw = atan2(-hx, -hz) points it down the heading.
+    f.yaw = Math.atan2(-f.hx, -f.hz)
+  }
+
+  /** Fish `f`'s row: its last two poses, stamped at world time `stamp`, the time of the pose it ends on, and the tail at `phase` there. */
+  _publish(sp, f, stamp, phase) {
+    const d = sp.rows.data
+    const o = f.id * FISH_ROW_TEXELS * 4
+    const hi = Math.floor(stamp / TIME_HI) * TIME_HI
+    d[o] = f.px; d[o + 1] = f.py; d[o + 2] = f.pz; d[o + 3] = stamp - hi
+    d[o + 4] = f.x; d[o + 5] = f.y; d[o + 6] = f.z; d[o + 7] = f.scale
+    // The shorter way round from the previous yaw to this one.
+    const turn = f.yaw - f.pyaw
+    d[o + 8] = f.yaw - (turn - TAU * Math.round(turn / TAU)); d[o + 9] = f.yaw
+    d[o + 10] = f.ppitch; d[o + 11] = f.pitch
+    d[o + 12] = f.proll; d[o + 13] = f.roll
+    d[o + 14] = f.pcurve; d[o + 15] = f.curve
+    d[o + 16] = f.plift; d[o + 17] = f.lift
+    d[o + 18] = f.pamp; d[o + 19] = f.amp
+    d[o + 20] = phase; d[o + 21] = f.rate; d[o + 22] = hi; d[o + 23] = 0
+    sp.rows.touch(f.id)
   }
 
   /** The push on `f` away from the `others` within `sep` metres, along axis 0 (x) or 1 (z). */
@@ -1153,7 +1309,7 @@ export class Fish {
       size: f.size,
       geometry: sp.mesh.geometry,
       material: sp.material,
-      attrs: { aSwim: [f.phase, f.amp, 0, 0], aHue: [f.hue] },
+      attrs: { aSwim: [this._tailNow(f), f.amp, 0, 0], aHue: [f.hue] },
       color: [f.tint, f.tint, f.tint],
       scale: [f.scale, f.scale, f.scale],
       stowable: f.size < stowMax,
@@ -1164,6 +1320,12 @@ export class Fish {
       this._drop(sp, f)
     }
     return rec
+  }
+
+  /** Fish `f`'s tail phase at the clock of the last update. */
+  _tailNow(f) {
+    if (f.loose || this.now === null) return f.phase
+    return (f.phase + f.rate * (this.now - f.school.rec.tick * TICK_S)) % TAU
   }
 
   /**
@@ -1254,6 +1416,10 @@ export class Fish {
     f.speed = 0
     f.stun = between(rand, STUN_S)
     f.listedAt = -1
+    f.yaw = f.pyaw = Math.atan2(-f.hx, -f.hz)
+    f.ppitch = f.proll = f.pcurve = f.plift = f.pamp = f.rate = 0
+    sp.loose.push(f)
+    this._occupy(sp, f)
     return true
   }
 
@@ -1368,7 +1534,7 @@ export class Fish {
   /**
    * One frame with her head under, at the room's clock `now`: the beds
    * follow her, the lures are noticed, every school is ticked up to `now`
-   * and the instance buffers written. `lures`: hands.js lures() this frame,
+   * and the rows of those that ticked written. `lures`: hands.js lures() this frame,
    * the spiders, butterflies and grasshoppers among them swum at.
    */
   update(x, y, z, now, lures = NO_LURES) {
@@ -1385,101 +1551,61 @@ export class Fish {
     this.her.x = x
     this.her.y = y
     this.her.z = z
-    for (const t of this.tiles.values()) {
-      for (const f of t.fish) this._notice(f, lures)
-      this._owe(t, now)
+    if (this.biggestStale) {
+      this.biggest = 0
+      for (const sp of this.species) for (const f of sp.slots) if (f.alive && f.size > this.biggest) this.biggest = f.size
+      this.biggestStale = false
     }
+    const noticing = lures.length > 0 || this.noticing > 0 || this.biggest > PREY.nibble * PREY.heightM * this.size
+    if (noticing) {
+      let held = 0
+      let hers = 0
+      for (const t of this.tiles.values()) {
+        for (const f of t.fish) {
+          this._notice(f, lures)
+          if (f.lure !== null) { held++; if (f.lure === this.her) hers++ }
+        }
+      }
+      this.noticing = held
+      this.hers = hers
+    }
+    for (const t of this.tiles.values()) if (noticing || t.luredSent !== '') this._owe(t, now)
 
+    // A tick is the only time a schooled fish's row is written: every school ticks on the same absolute ticks of the room's clock, so a frame between them touches no fish.
     let stepped = 0
     for (const sp of this.species) {
-      const cfg = sp.cfg
       for (const school of sp.schools) {
         const g = Math.floor((now - school.offset) / GRID_S)
-        if (school.seg !== g) this._reset(sp, school, g)
+        const turned = school.seg !== g
+        if (turned) this._reset(sp, school, g)
         stepped = Math.max(stepped, stepTo(school.rec, now, (tick) => this._tick(sp, school, tick), CATCH_UP_TICKS))
+        if (turned || school.pubTick !== school.rec.tick) {
+          school.pubTick = school.rec.tick
+          const stamp = school.rec.tick * TICK_S
+          for (const f of school.members) this._publish(sp, f, stamp, f.phase)
+        }
       }
-
-      const mat = sp.mesh.instanceMatrix.array
-      const col = sp.mesh.instanceColor.array
-      const swim = sp.swim.array
-      const hue = sp.hue.array
-      let n = 0
-      for (const f of sp.slots) {
+      // A loose fish is stepped and written every frame, dated two ticks back so the shader draws the pose just written.
+      for (let i = sp.loose.length - 1; i >= 0; i--) {
+        const f = sp.loose[i]
+        this.stepLoose(sp, f, dt)
         if (!f.alive) continue
-        let x, y, z
-        if (f.loose) {
-          this.stepLoose(sp, f, dt)
-          if (!f.alive) continue
-          x = f.x; y = f.y; z = f.z
-        } else {
-          const a = f.school.rec.alpha
-          x = f.px + (f.x - f.px) * a
-          y = f.py + (f.y - f.py) * a
-          z = f.pz + (f.z - f.pz) * a
-        }
-
-        // Facing chases velocity; the pitch is read straight off it and the roll leans into the turn.
-        const spd = Math.hypot(f.vx, f.vz)
-        // Cross product of the facing and the velocity's direction: the sine of the turn in hand, negative to the left.
-        let turn = 0
-        if (spd > 0.02) {
-          const k = Math.min(1, 6 * dt)
-          const wantX = f.vx / spd
-          const wantZ = f.vz / spd
-          turn = f.hx * wantZ - f.hz * wantX
-          f.hx += (wantX - f.hx) * k
-          f.hz += (wantZ - f.hz) * k
-          const hl = Math.hypot(f.hx, f.hz) || 1
-          f.hx /= hl
-          f.hz /= hl
-          f.roll += (-turn * 0.5 - f.roll) * k
-        } else {
-          f.roll += (0 - f.roll) * Math.min(1, 3 * dt)
-        }
-        const wantPitch = Math.atan2(f.vy, Math.max(spd, 0.05))
-        const climb = wantPitch - f.pitch
-        f.pitch += climb * Math.min(1, 4 * dt)
-
-        // The body arcs into the turn: the tail swings to the inside (left turn, tail left), by up to 0.4 of the length on a hard turn. Vertically it arcs the same way, and keeps arcing for as long as the fish holds a pitch, so a climbing or diving fish is a curve and not a tilted board.
-        const kb = Math.min(1, 8 * dt)
-        f.curve += (Math.max(-0.4, Math.min(0.4, turn * 2)) * sp.lengthM - f.curve) * kb
-        f.lift += (Math.max(-0.3, Math.min(0.3, climb * 1.5 + f.pitch * 0.8)) * sp.lengthM - f.lift) * kb
-
-        // Tail rate follows speed, relative to this fish's own cruise: idle sculling at 40% of its beat, a burst at nearly three times it. The beat deepens through a turn, since a turn is driven by the tail.
-        const rel = Math.hypot(f.vx, f.vy, f.vz) / (cfg.cruise * f.pace)
-        f.phase = (f.phase + dt * TAU * cfg.tailHz * f.beat * (0.4 + 0.6 * rel)) % TAU
-        f.amp = cfg.tailAmp * sp.lengthM * Math.min(1.6, 0.5 + 0.5 * rel) * (1 + 2 * Math.abs(turn))
-        // A stunned fish does not scull.
-        if (f.stun > 0) f.amp = 0
-
-        // Local -Z is the nose (ship.mjs turns every pick that way), so yaw = atan2(-hx, -hz) points it down the heading.
-        _euler.set(f.pitch, Math.atan2(-f.hx, -f.hz), f.roll)
-        _quat.setFromEuler(_euler)
-        _pos.set(x, y, z)
-        _scl.setScalar(f.scale)
-        _mat.compose(_pos, _quat, _scl)
-        _mat.toArray(mat, n * 16)
-        col[n * 3] = col[n * 3 + 1] = col[n * 3 + 2] = f.tint
-        swim[n * 4] = f.phase
-        swim[n * 4 + 1] = f.amp
-        swim[n * 4 + 2] = f.curve
-        swim[n * 4 + 3] = f.lift
-        hue[n] = f.hue
-        n++
+        f.px = f.x; f.py = f.y; f.pz = f.z
+        this._pose(sp, f, dt)
+        this._publish(sp, f, now - 2 * TICK_S, f.phase - f.rate * 2 * TICK_S)
       }
-      sp.mesh.count = n
-      sp.mesh.instanceMatrix.needsUpdate = true
-      sp.mesh.instanceColor.needsUpdate = true
-      sp.swim.needsUpdate = true
-      sp.hue.needsUpdate = true
+      sp.mesh.count = sp.top
+      sp.rows.setFrame(now, x, y, z)
+      sp.rows.flush()
     }
-    this._prey(now)
+    if (this.hers > 0) this._prey(now)
     // A catch-up frame (a join, a clock skip) darts nobody in the ear: she was not there for it.
     if (stepped > SILENT_TICKS) this.startles.length = 0
   }
 
   dispose() {
     for (const sp of this.species) {
+      sp.rows.dispose()
       sp.mesh.geometry.dispose()
       sp.material.map?.dispose()
       sp.material.dispose()

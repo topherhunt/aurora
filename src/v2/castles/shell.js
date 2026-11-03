@@ -5,7 +5,7 @@
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
 import { makeWarp } from '../../buildings/v2/warp.js'
-import { CASTLE } from './layout.js'
+import { CASTLE, LADDER } from './layout.js'
 import { courtProps, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { SEG, SHAFT, shaftsOf, SPIRAL } from './spiral.js'
 import { castleWindows, faceShade, interiorLight, PANE } from './light.js'
@@ -542,7 +542,7 @@ export function exteriorGeometry(lay, { warp = true, full = true, glow = null } 
     if (e.flight) flight(m, e.flight, m.tint(STONE.wall))
     if (e.bridge) bridge(m, e.bridge, m.tint(STONE.wall))
     m.with(WOOD_SLOT, () => {
-      if (e.ladder) m.box(e.ladder.x - 0.5, (e.ladder.k + 1) * H, e.ladder.z - 0.5, e.ladder.x + 0.5, (e.ladder.k + 1) * H + 0.2, e.ladder.z + 0.5, m.tint(DARKWOOD))
+      if (e.ladder) { const { x, z, k } = e.ladder, r = LADDER.lid; m.box(x - r, (k + 1) * H, z - r, x + r, (k + 1) * H + 0.2, z + r, m.tint(DARKWOOD)) }
     }, true)
   }
   // The summit chest, open: its lid stands up behind it.
@@ -557,7 +557,7 @@ export function exteriorGeometry(lay, { warp = true, full = true, glow = null } 
 }
 
 // Prop colours multiply the plank or stone texture; cloth and straw ride the planks.
-const PLANK = rgb(0xe6d6bf), DARKWOOD = rgb(0x9c8068), CLOTH = rgb(0xd9cfb8), STRAW = rgb(0xf2d98a), RED = rgb(0xa8342c), IRON = rgb(0x4a4744), EMBER = rgb(0xff9a3c), ROPE = rgb(0xe0c890)
+const PLANK = rgb(0xe6d6bf), DARKWOOD = rgb(0x9c8068), LADDER_WOOD = rgb(0xd9bf98), CLOTH = rgb(0xd9cfb8), STRAW = rgb(0xf2d98a), RED = rgb(0xa8342c), IRON = rgb(0x4a4744), EMBER = rgb(0xff9a3c), ROPE = rgb(0xe0c890)
 const BLUE = rgb(0x3a5a9a), GREEN = rgb(0x4f7a3a), CLAY = rgb(0xb06a40), BREAD = rgb(0xd2a060), SAND = rgb(0xd8c49a), WATER = rgb(0x3d6a78), PARCH = rgb(0xead9a8), PEWTER = rgb(0x9a9894)
 const COAL = rgb(0x3a3634), BONE = rgb(0xe8e0c8), HAM = rgb(0xa05040), CROPS = [GREEN, rgb(0xd87a30), rgb(0xd8c8d0), rgb(0xa88a5a)]
 // Book cloth, render/interior.js BINDINGS as linear colours.
@@ -1200,15 +1200,23 @@ export function interiorGeometries(lay) {
         if (f) spiralSteps(m, f.x, f.z, y, f.a0, f.hand, f.last)
       }
       for (const e of mine) if (e.ladder) m.with(WOOD_SLOT, () => {
-        // Rails `yaw` across (a ladder in a drum faces its axis), rungs between them, up to the roof hatch's trap door under the
-        // ceiling: planks in a frame, two iron straps and a ring.
-        const lx = e.ladder.x * S, lz = e.ladder.z * S, yaw = e.ladder.yaw ?? 0, c = Math.cos(yaw), s = Math.sin(yaw), trap = y + SH - 0.38
+        // Round rails and rungs against the wall behind the hatch (u across, w back toward the wall), up to the roof hatch's trap door
+        // under the ceiling: planks in a frame, two iron straps and a ring.
+        const lx = e.ladder.x * S, lz = e.ladder.z * S, c = -e.ladder.uz, s = e.ladder.ux, trap = y + SH - LADDER.trap
+        const plan = (u, w) => [lx + u * c - w * s, lz + u * s + w * c]
         const bar = (u0, u1, v0, v1, y0, y1, col = DARKWOOD) => {
-          const q = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, w]) => [lx + u * c - w * s, lz + u * s + w * c])
+          const q = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, w]) => plan(u, w))
           m.hexa(q.map((p) => at3(p, y0)).concat(q.map((p) => at3(p, y1))), col)
         }
-        for (const o of [-0.3, 0.3]) bar(o - 0.04, o + 0.04, -0.04, 0.04, y, trap)
-        for (let r = 0.4; r < trap - y; r += 0.4) bar(-0.3, 0.3, -0.03, 0.03, y + r - 0.03, y + r + 0.03)
+        const pole = (a, b, r, col) => {
+          const d = norm(sub(b, a)), e1 = Math.abs(d[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0], e2 = norm(cross(d, e1))
+          const out = (t) => [0, 1, 2].map((j) => Math.cos(t) * e1[j] + Math.sin(t) * e2[j])
+          const rim = (p, i) => { const o = out(i * Math.PI / 4); return [p[0] + o[0] * r, p[1] + o[1] * r, p[2] + o[2] * r] }
+          for (let i = 0; i < 8; i++) m.quad(rim(a, i), rim(a, i + 1), rim(b, i + 1), rim(b, i), col, out((i + 0.5) * Math.PI / 4))
+        }
+        const H3 = (u, h) => at3(plan(u, LADDER.rails), h), wood = m.tint(LADDER_WOOD)
+        for (const o of [-LADDER.half, LADDER.half]) pole(H3(o, y), H3(o, trap), 0.035, wood)
+        for (let r = LADDER.rung; r < trap - y; r += LADDER.rung) pole(H3(-LADDER.half, y + r), H3(LADDER.half, y + r), 0.022, wood)
         bar(-0.6, 0.6, -0.6, 0.6, trap, trap + 0.08, PLANK)
         for (const [u0, u1, v0, v1] of [[-0.66, 0.66, -0.66, -0.56], [-0.66, 0.66, 0.56, 0.66], [-0.66, -0.56, -0.56, 0.56], [0.56, 0.66, -0.56, 0.56]]) bar(u0, u1, v0, v1, trap - 0.02, trap + 0.08)
         for (const v of [-0.3, 0.3]) bar(-0.56, 0.56, v - 0.05, v + 0.05, trap - 0.03, trap, IRON)

@@ -75,6 +75,8 @@ export class FishLeap {
     for (const [name, attr] of Object.entries(src.attributes)) if (!attr.isInstancedBufferAttribute) geo.setAttribute(name, attr)
     geo.setIndex(src.index)
     geo.setAttribute('aSwim', new THREE.InstancedBufferAttribute(new Float32Array(4), 4))
+    // Row 0: the material poses this instance by its own matrix and aSwim, not by a row of the layer's.
+    geo.setAttribute('aRow', new THREE.InstancedBufferAttribute(new Float32Array(1), 1))
     mesh = new THREE.InstancedMesh(geo, sp.material, 1)
     mesh.name = `v2-fish-leap-${sp.id}`
     mesh.frustumCulled = false

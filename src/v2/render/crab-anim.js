@@ -6,11 +6,13 @@
 // time, blends them, and moves the vertex and its normal by that one matrix.
 // One draw call serves every crab and a crab costs four floats of attribute.
 //
-// Per instance `aAnim` = (row of frame A, row of frame B, blend of B over A,
+// Per instance `crabAnim` = (row of frame A, row of frame B, blend of B over A,
 // weight of the pose over the bind pose). The weight is the crossfade: every
 // clip passes through the bind pose at its own start, so a clip fades in from
 // it and out to it and nothing pops. The clip and its time are chosen by the
-// pure functions below, from the crab's key and a clock only.
+// pure functions below, from the crab's key and a clock only. A crab on a plan
+// has `crabAnim` built in the vertex shader (crabs.js); one the CPU drives
+// (a pet, a loose crab, a held copy) reads it from the `aAnim` attribute.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -87,14 +89,20 @@ export function writeAnim(anim, c, out, o) {
 export const CRAB_ANIM_PARS = /* glsl */ `
 attribute float aBone;
 attribute vec4 aAnim;
+vec4 crabAnim;
 uniform highp sampler2D uCrabAnim;
+uniform vec2 uCrabWalk;
+uniform float uCrabSink;
 vec4 crabRow( int x, int a, int b, vec4 bind ) {
-  return mix( bind, mix( texelFetch( uCrabAnim, ivec2( x, a ), 0 ), texelFetch( uCrabAnim, ivec2( x, b ), 0 ), aAnim.z ), aAnim.w );
+  return mix( bind, mix( texelFetch( uCrabAnim, ivec2( x, a ), 0 ), texelFetch( uCrabAnim, ivec2( x, b ), 0 ), crabAnim.z ), crabAnim.w );
 }
 `
 export const CRAB_ANIM_NORMAL = /* glsl */ `
+#ifndef USE_INSTANCING
+crabAnim = aAnim;
+#endif
 int crabX = int( aBone + 0.5 ) * 3;
-int crabA = int( aAnim.x + 0.5 ), crabB = int( aAnim.y + 0.5 );
+int crabA = int( crabAnim.x + 0.5 ), crabB = int( crabAnim.y + 0.5 );
 vec4 crabR0 = crabRow( crabX, crabA, crabB, vec4( 1.0, 0.0, 0.0, 0.0 ) );
 vec4 crabR1 = crabRow( crabX + 1, crabA, crabB, vec4( 0.0, 1.0, 0.0, 0.0 ) );
 vec4 crabR2 = crabRow( crabX + 2, crabA, crabB, vec4( 0.0, 0.0, 1.0, 0.0 ) );

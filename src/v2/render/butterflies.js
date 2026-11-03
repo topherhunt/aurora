@@ -52,28 +52,36 @@
 // half a minute of sundown and leaves again a few at a time rather than all on
 // the frame the sun clears the horizon.
 //
-// THE WINGS ARE THE VERTEX SHADER. The cards lie flat in the mesh's XZ with the
-// body along X and the seam at z = 0, and `aWing` per instance is the flap's
-// phase, its amplitude and the angle the wings rest about; each wing is turned
-// about the seam by base + amp * sin(phase), and its normal with it. In flight
-// the phase runs at FLUTTER_HZ over a wide amplitude about the flat; at rest at
-// REST_HZ over a narrow one about REST_BASE, wings up. Both faces take the
-// authored normal's light, as the critter card does. The wings run on the
-// frame's own clock, not the tick's: they are the one thing about a butterfly
-// nobody has to agree on.
+// THE VERTEX SHADER POSES THE BUTTERFLY. The CPU writes a butterfly's ROW of
+// `this.rows` (a float texture, one row per slot, layout at ROW_TEXELS) when
+// the butterfly ticks or a segment begins, and never between: the shader reads
+// the row at the room's clock, draws between the last two ticks at the record's
+// alpha, and builds the instance matrix and the wing angle itself. The cards lie
+// flat in the mesh's XZ with the body along X and the seam at z = 0; each wing
+// is turned about the seam by base + amp * sin(phase), and its normal with it.
+// In flight the phase runs at FLUTTER_HZ over a wide amplitude about the flat;
+// at rest at REST_HZ over a narrow one about REST_BASE, wings up. The phase is
+// linear in the time since the row's stamp and the amplitude and base ease
+// exponentially onto their targets, so a row holds a wing's whole future until
+// its targets or rate change (wingSync). Both faces take the authored normal's
+// light, as the critter card does. The wings run on the frame's own clock, not
+// the tick's: they are the one thing about a butterfly nobody has to agree on.
+// A copy of the card in a hand (hands.js) is an instance with aRow 0 and its
+// own `aWing`, instanceMatrix and tint: the shader takes those as they are.
 //
 // THE COLOUR IS A TINT. Each butterfly rolls one of MORPHS from its tile's seed
 // and carries the morph's per-channel multiplier in instanceColor, so a blue,
 // an orange and a meadow butterfly are three instances of the one draw.
 //
-// The frame draws between the last two ticks at the record's alpha, and a
-// sitter's matrix is kept on its slot and copied rather than recomposed.
+// A slot's id is its row and its instance, so a butterfly's tint is written
+// once, when it wakes.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
 import { mulberry32 } from '../../sim/mathx.js'
-import { GRID_S, TICK_S, CATCH_UP_TICKS, hash32, keyHash, phraseRand, tickAfter, stepTo, easeWeight, Score } from '../../sim/score.js'
+import { GRID_S, TICK_HZ, TICK_S, CATCH_UP_TICKS, hash32, keyHash, phraseRand, tickAfter, tickOf, stepTo, easeWeight, Score } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
+import { TIME_HI } from './gpu-motion.js'
 import { CRITTER_GLB, loadCritterGlb, setCritterAsset, tileKey, tileSeed, walkTiles } from './critters.js'
 import { FERN_PERCH_STRIDE } from './ferns.js'
 import { taken, TOLERANCE_M } from '../taken.js'
@@ -173,14 +181,133 @@ const _n = new THREE.Vector3()
 const _x = new THREE.Vector3()
 const _z = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
-const _euler = new THREE.Euler()
-const _pos = new THREE.Vector3()
-const _scl = new THREE.Vector3()
-const _mat = new THREE.Matrix4()
 const _basis = new THREE.Matrix4()
+const _wing = { phase: 0, amp: 0, base: 0 }
+/** The wings of `b` at world second `t` into `out`: the phase runs at the rate since wT, the amplitude and base angle ease onto their targets. */
+const wingAt = (b, t, out) => {
+  const e = Math.max(0, t - b.wT)
+  const k = Math.exp(-WING_EASE * e)
+  out.phase = b.wPhase + b.wRate * e
+  out.amp = b.wAmpTo + (b.wAmp - b.wAmpTo) * k
+  out.base = b.wBaseTo + (b.wBase - b.wBaseTo) * k
+  return out
+}
 const _hit = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 }
 const _s0 = { kind: null, seat: false, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }
 const _s1 = { kind: null, seat: false, x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }
+
+/**
+ * A float texture of per-instance rows (`texels` RGBA32F texels wide, one row per
+ * slot) that a layer's vertex shader reads with texelFetch. Rows are patched into
+ * it once it holds the whole table on the GPU; `writes` counts the rows written.
+ * The clock the shader reads is split at TIME_HI so a float32 keeps its fraction.
+ */
+export class RowTable {
+  constructor(texels, rows) {
+    this.texels = texels
+    this.rows = rows
+    this.data = new Float32Array(texels * rows * 4)
+    this.texture = new THREE.DataTexture(this.data, texels, rows, THREE.RGBAFormat, THREE.FloatType)
+    this.texture.minFilter = this.texture.magFilter = THREE.NearestFilter
+    this.texture.generateMipmaps = false
+    this.uploaded = false
+    this.texture.onUpdate = () => { this.uploaded = true }
+    this.texture.needsUpdate = true
+    this.pending = false
+    this.writes = 0
+    this.uniforms = {
+      uRows: { value: this.texture },
+      uRowT: { value: new THREE.Vector2() },
+      uRowHead: { value: new THREE.Vector3() },
+    }
+  }
+
+  /** Mark row `row` written. */
+  touch(row) {
+    if (this.uploaded) this.texture.addUpdateRange(row * this.texels * 4, this.texels * 4)
+    this.pending = true
+    this.writes++
+  }
+
+  /** Hand the written rows to the GPU. */
+  flush() {
+    if (!this.pending) return
+    this.texture.needsUpdate = true
+    this.pending = false
+  }
+
+  /** The clock the shader reads, and the head the layer culls about. */
+  setFrame(t, x, y, z) {
+    const hi = Math.floor(t / TIME_HI) * TIME_HI
+    this.uniforms.uRowT.value.set(hi, t - hi)
+    this.uniforms.uRowHead.value.set(x, y, z)
+  }
+
+  dispose() {
+    this.texture.dispose()
+  }
+}
+
+// The butterfly row, ROW_TEXELS RGBA32F texels (x, y, z, w):
+//   0  previous-tick position, the stamp (seconds past the row's HI)
+//   1  current-tick position, the scale (size / span; negative seats the butterfly, 0 hides it)
+//   2  yaw before and after (unwrapped onto the shorter turn), pitch before and after
+//   3  roll before and after, wing phase at the stamp, wing phase rate
+//   4  wing amplitude at the stamp and its target, base angle at the stamp and its target
+//   5  the seat's quaternion (rest)
+//   6  the stamp's HI
+export const ROW_TEXELS = 7
+
+const glslNum = (v) => (Number.isInteger(v) ? v.toFixed(1) : String(v))
+
+/** GLSL for the butterfly row's pose: `bfFlight(row)` returns the instance matrix and sets `bfWing`. Kept in step with rowPose in the gate. */
+const FLIGHT_GLSL = `
+mat4 bfHeld() { bfWing = aWing; return instanceMatrix; }
+mat4 bfFlight( int row ) {
+  vec4 t0 = texelFetch( uRows, ivec2( 0, row ), 0 );
+  vec4 t1 = texelFetch( uRows, ivec2( 1, row ), 0 );
+  vec4 t2 = texelFetch( uRows, ivec2( 2, row ), 0 );
+  vec4 t3 = texelFetch( uRows, ivec2( 3, row ), 0 );
+  vec4 t4 = texelFetch( uRows, ivec2( 4, row ), 0 );
+  vec4 t5 = texelFetch( uRows, ivec2( 5, row ), 0 );
+  vec4 t6 = texelFetch( uRows, ivec2( 6, row ), 0 );
+  bfWing = vec3( 0.0 );
+  float sc = abs( t1.w );
+  if ( sc == 0.0 ) return mat4( 0.0 );
+  float e = max( 0.0, ( uRowT.x - t6.x ) + ( uRowT.y - t0.w ) );
+  float a = clamp( e * ${glslNum(TICK_HZ)}, 0.0, 1.0 );
+  vec3 p = mix( t0.xyz, t1.xyz, a );
+  vec3 dh = p - uRowHead;
+  float draw = sc * uRowDraw;
+  if ( dot( dh, dh ) > draw * draw ) return mat4( 0.0 );
+  float ease = exp( -${glslNum(WING_EASE)} * e );
+  float phase = t3.z + t3.w * e;
+  float amp = t4.y + ( t4.x - t4.y ) * ease;
+  float base = t4.w + ( t4.z - t4.w ) * ease;
+  bfWing = vec3( phase, amp, base );
+  mat3 r;
+  if ( t1.w < 0.0 ) {
+    float x = t5.x, y = t5.y, z = t5.z, w = t5.w;
+    r = mat3(
+      1.0 - 2.0 * ( y * y + z * z ), 2.0 * ( x * y + w * z ), 2.0 * ( x * z - w * y ),
+      2.0 * ( x * y - w * z ), 1.0 - 2.0 * ( x * x + z * z ), 2.0 * ( y * z + w * x ),
+      2.0 * ( x * z + w * y ), 2.0 * ( y * z - w * x ), 1.0 - 2.0 * ( x * x + y * y )
+    );
+  } else {
+    p.y += ${glslNum(STROKE_M)} * sin( phase ) * ( amp / ${glslNum(FLUTTER_AMP)} );
+    float rx = mix( t3.x, t3.y, a );
+    float ry = mix( t2.x, t2.y, a );
+    float rz = mix( t2.z, t2.w, a );
+    float ca = cos( rx ), sa = sin( rx ), cc = cos( ry ), sd = sin( ry ), ce = cos( rz ), sf = sin( rz );
+    float ac = ca * cc, ad = ca * sd, bc = sa * cc, bd = sa * sd;
+    r = mat3(
+      cc * ce, sf, -sd * ce,
+      bd - ac * sf, ca * ce, ad * sf + bc,
+      bc * sf + ad, -sa * ce, ac - bd * sf
+    );
+  }
+  return mat4( vec4( r[0] * sc, 0.0 ), vec4( r[1] * sc, 0.0 ), vec4( r[2] * sc, 0.0 ), vec4( p, 1.0 ) );
+}`
 
 export class Butterflies {
   /**
@@ -216,15 +343,35 @@ export class Butterflies {
     this.seed = seed
 
     this.material = new THREE.MeshLambertMaterial({ color: 0xffffff, alphaTest: 0.5, side: THREE.DoubleSide })
+    this.rows = new RowTable(ROW_TEXELS, MAX)
+    // The draw radius of a unit scale: past DRAW_SPANS wingspans of her head a butterfly is under a pixel and the shader drops it.
+    this.drawU = { value: 0 }
     this.material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.rows.uniforms)
+      shader.uniforms.uRowDraw = this.drawU
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec3 aWing;\nfloat wingAng;\nfloat wingSide;')
+        .replace('#include <common>', `#include <common>
+attribute vec3 aWing;
+attribute float aRow;
+float wingAng;
+float wingSide;
+vec3 bfWing;
+#ifdef USE_INSTANCING
+uniform sampler2D uRows;
+uniform vec2 uRowT;
+uniform vec3 uRowHead;
+uniform float uRowDraw;
+mat4 gpuInstanceMatrix;
+${FLIGHT_GLSL}
+#define instanceMatrix gpuInstanceMatrix
+#endif`)
+        .replace('void main() {', 'void main() {\n#ifdef USE_INSTANCING\ngpuInstanceMatrix = aRow < 0.5 ? bfHeld() : bfFlight( int( aRow + 0.5 ) - 1 );\n#endif')
         // The normal stage runs before the position stage, so the angle is worked out here and reused below.
         .replace(
           '#include <beginnormal_vertex>',
           '#include <beginnormal_vertex>\n' +
             'wingSide = sign( position.z );\n' +
-            'wingAng = aWing.z + aWing.y * sin( aWing.x );\n' +
+            'wingAng = bfWing.z + bfWing.y * sin( bfWing.x );\n' +
             'objectNormal = vec3( 0.0, cos( wingAng ), -wingSide * sin( wingAng ) );'
         )
         .replace(
@@ -243,14 +390,15 @@ export class Butterflies {
     // Hidden, not merely empty, until the asset lands: the boot's scene census throws on a visible mesh with no geometry.
     this.mesh.visible = false
     this.mesh.frustumCulled = false
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    this.wing = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3)
-    this.wing.setUsage(THREE.DynamicDrawUsage)
-    this.mesh.geometry.setAttribute('aWing', this.wing)
+    // The flight mesh's matrix and wings come from the rows; `aWing` is on the geometry for the copies in a hand, whose records carry it.
+    this.mesh.geometry.setAttribute('aWing', new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3))
+    // The row of instance i is slot i, +1 so the zero a copy in a hand carries means "not a row".
+    const rowIds = new Float32Array(MAX)
+    for (let i = 0; i < MAX; i++) rowIds[i] = i + 1
+    this.mesh.geometry.setAttribute('aRow', new THREE.InstancedBufferAttribute(rowIds, 1))
     // The morph's tint, through three's own vColor; made here so the program is keyed with it from the first draw.
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3).fill(1), 3)
     this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
-    this.written = []
     // The layer toggle flips the group, so it cannot unhide the mesh before its geometry lands.
     this.batch = new THREE.Group()
     this.batch.name = 'v2-butterflies'
@@ -280,13 +428,17 @@ export class Butterflies {
         speed: 1, spd: 1, vy: 0, beat: 0, glide: false,
         // The perch: its kind, its point and the surface normal there.
         perch: null, px: 0, py: 0, pz: 0, nx: 0, ny: 1, nz: 0,
-        // The wings: phase, and the amplitude / base angle with the figures they ease toward.
-        phase: 0, amp: FLUTTER_AMP, base: 0, ampTo: FLUTTER_AMP, baseTo: 0,
-        // Its instance this frame, or -1 when it was culled; its matrix, and whether the matrix trails the step.
-        row: -1, m: new Float32Array(16), stale: true,
+        // The figures the wings ease toward.
+        ampTo: FLUTTER_AMP, baseTo: 0,
+        // The wings' closed form since world second wT (wingAt): phase, phase rate, amplitude and base angle then, and the targets and rate they are easing under.
+        wT: 0, wPhase: 0, wRate: 0, wAmp: FLUTTER_AMP, wBase: 0, wAmpTo: FLUTTER_AMP, wBaseTo: 0,
+        // Whether its row trails its state, the world second it was last run to and the one its next tick or segment falls due.
+        dirty: true, at: 0, due: 0,
       })
     }
-    this.free = this.slots.slice()
+    // Low ids are used first, so the rows the shader walks stay packed at the front.
+    this.free = this.slots.slice().reverse()
+    this.top = 0
     // The releases owed to the room (pending), and the drop key of every release made here, hers or a peer's, so one heard twice lets one butterfly go.
     this.outbox = []
     this.drops = new Set()
@@ -299,9 +451,8 @@ export class Butterflies {
     this.roosts = new Map()
     this.score = new Score((key, chapter, rand) => this._plan(key, chapter, rand), { chapterS: BOUT_S, keep: 2, cap: 4 * MAX })
     this.frame = 0
-    // The room's clock as the last update read it, and the frame's own seconds for the wings.
+    // The room's clock as the last update read it.
     this.now = 0
-    this.last = null
     this.head = { x: 0, z: 0 }
     this.buf = new Float32Array(PERCH_BUF * Math.max(4, FERN_PERCH_STRIDE))
     this.span = 1
@@ -329,8 +480,9 @@ export class Butterflies {
 
   setAsset(asset) {
     this.span = setCritterAsset(this.mesh, this.material, asset, 'butterflies').span
-    // Every kept matrix was scaled by the old span.
-    for (const b of this.slots) b.stale = true
+    this.drawU.value = this.span * DRAW_SPANS
+    // Every row's scale is size / span.
+    for (const b of this.slots) if (b.key !== null) this._publish(b)
     this.loaded = true
   }
 
@@ -642,7 +794,8 @@ export class Butterflies {
     b.vy = 0
     b.pitch = b.opitch = 0
     b.roll = b.oroll = 0
-    b.stale = true
+    b.dirty = true
+    const tw = b.epoch + b.rec.tick * TICK_S
     // Every field the flight carries is rolled here in one order whichever state the segment opens in: a segment that opens at rest and takes off inside itself has to weave and beat the same as one that opened on the wing, or the two clients whose frames fell either side of the take-off fly it differently.
     b.weave = b.rand() * TAU
     b.jerk = between(b.rand, JERK_S)
@@ -656,8 +809,9 @@ export class Butterflies {
       b.state = 'rest'
       b.yaw = b.oyaw = spin
       b.spd = 0
-      b.amp = b.ampTo = REST_AMP
-      b.base = b.baseTo = REST_BASE
+      b.ampTo = REST_AMP
+      b.baseTo = REST_BASE
+      this._wingHard(b, tw, REST_AMP, REST_BASE)
       return
     }
     b.state = 'fly'
@@ -665,8 +819,32 @@ export class Butterflies {
     const ex = _s1.x - _s0.x, ez = _s1.z - _s0.z
     b.yaw = b.oyaw = Math.hypot(ex, ez) > 0.05 ? headingTo(ex, ez) : spin
     b.spd = b.speed
-    b.amp = b.ampTo = FLUTTER_AMP
-    b.base = b.baseTo = 0
+    b.ampTo = FLUTTER_AMP
+    b.baseTo = 0
+    this._wingHard(b, tw, FLUTTER_AMP, 0)
+  }
+
+  /** The wings' phase before the slot's first segment: a fixed `phase`, which _reset runs on from. */
+  _wingStart(b, phase) {
+    b.wPhase = phase
+    b.wRate = 0
+    b.wT = 0
+  }
+
+  /** The wings put at amplitude `amp` and base angle `base` at world second `tw`, easing onto the slot's targets under its state's rate; the phase runs on. */
+  _wingHard(b, tw, amp, base) {
+    b.wPhase = wingAt(b, tw, _wing).phase % TAU
+    b.wT = tw
+    b.wRate = TAU * (b.state === 'rest' ? REST_HZ : FLUTTER_HZ)
+    b.wAmp = amp; b.wBase = base
+    b.wAmpTo = b.ampTo; b.wBaseTo = b.baseTo
+  }
+
+  /** At world second `tw`, re-base the wings' closed form if a target or the rate changed since it was written. */
+  _wingSync(b, tw) {
+    if (b.wRate === TAU * (b.state === 'rest' ? REST_HZ : FLUTTER_HZ) && b.wAmpTo === b.ampTo && b.wBaseTo === b.baseTo) return
+    const w = wingAt(b, tw, _wing)
+    this._wingHard(b, tw, w.amp, w.base)
   }
 
   /** One tick of `b` at tick index `tick`. */
@@ -691,7 +869,12 @@ export class Butterflies {
       b.state = 'fly'
       this._wander(b, dt, k, tick)
     }
-    if (b.state === 'rest') return
+    const tw = b.epoch + tNow
+    if (b.state === 'rest') {
+      this._wingSync(b, tw)
+      return
+    }
+    b.dirty = true
     this._beat(b, dt)
     // The ease closes the gap to the pose the segment ends at, so the turn's snap onto it is nothing the eye reads.
     if (w > 0) {
@@ -705,6 +888,7 @@ export class Butterflies {
       const run = Math.hypot(b.x - b.ox, b.z - b.oz)
       b.y = Math.max(b.oy - run * SINK_TAN, Math.min(b.oy + run * CLIMB_TAN, b.y))
     }
+    this._wingSync(b, tw)
   }
 
   /** A tick of erratic flight: the weave, the jerk, the tether, the height chase. */
@@ -771,7 +955,7 @@ export class Butterflies {
     b.turn = 0
     b.vy = 0
     b.spd = 0
-    b.stale = true
+    b.dirty = true
   }
 
   /** The flap/glide cycle of a butterfly in the air: the wings' targets and the speed's surge and sag. */
@@ -806,9 +990,15 @@ export class Butterflies {
     b.epoch = epoch
     b.homeX = x
     b.homeZ = z
-    b.row = -1
     this.homes.set(key, { x, y, z, yaw, epoch, drop })
+    const tint = this.mesh.instanceColor
+    tint.array[b.id * 3] = b.r; tint.array[b.id * 3 + 1] = b.g; tint.array[b.id * 3 + 2] = b.b
+    tint.needsUpdate = true
+    if (b.id >= this.top) this.top = b.id + 1
+    this.mesh.count = this.top
     const s = this.now - epoch
+    b.at = 0
+    b.due = 0
     this._reset(b, Math.floor((s - b.offset) / GRID_S))
   }
 
@@ -822,8 +1012,13 @@ export class Butterflies {
     b.tile = null
     b.key = null
     b.seg = null
-    b.row = -1
+    // Its row is emptied so the shader draws nothing for it, and the count falls to the last slot still in use.
+    this.rows.data.fill(0, b.id * ROW_TEXELS * 4, (b.id + 1) * ROW_TEXELS * 4)
+    this.rows.touch(b.id)
+    while (this.top > 0 && this.slots[this.top - 1].key === null) this.top--
+    this.mesh.count = this.top
     this.free.push(b)
+    this.free.sort((p, q) => q.id - p.id)
   }
 
   _enter(tx, tz) {
@@ -847,7 +1042,7 @@ export class Butterflies {
       if (!b) { this.overflow++; continue }
       b.size = size
       b.r = r; b.g = g; b.b = bl
-      b.phase = rand() * TAU
+      this._wingStart(b, rand() * TAU)
       this._wake(b, t, keyOf(tx, tz, i), x, h, z, 0, false, 0)
       t.flock.push(b)
     }
@@ -895,7 +1090,7 @@ export class Butterflies {
       size: b.size,
       geometry: this.mesh.geometry,
       material: this.material,
-      attrs: { aWing: [b.phase, REST_AMP, REST_BASE] },
+      attrs: { aWing: [wingAt(b, this.now, _wing).phase % TAU, REST_AMP, REST_BASE] },
       color: [b.r, b.g, b.b],
       scale: [s, s, s],
       stowable: true,
@@ -953,16 +1148,16 @@ export class Butterflies {
     const key = dropKey(x, z, yaw)
     b.size = rec.size
     b.r = rec.color[0]; b.g = rec.color[1]; b.b = rec.color[2]
-    b.phase = rec.attrs.aWing[0]
+    const phase = rec.attrs.aWing[0]
+    this._wingStart(b, phase)
     // Its epoch is the drop, so the chain's first chapter -- and its first segment -- open at the hand.
     this._wake(b, t, key, x, y, z, yaw, true, now - (keyHash(key) % BOUT_S))
     // The wings open from the rest they were held at.
-    b.amp = REST_AMP
-    b.base = REST_BASE
     b.ampTo = FLUTTER_AMP
     b.baseTo = 0
+    this._wingHard(b, b.epoch + b.rec.tick * TICK_S, REST_AMP, REST_BASE)
     t.flock.push(b)
-    this._owe(key, now, x, y, z, yaw, hx, hz, b.size, b.r, b.g, b.b, b.phase)
+    this._owe(key, now, x, y, z, yaw, hx, hz, b.size, b.r, b.g, b.b, phase)
     return true
   }
 
@@ -1033,94 +1228,61 @@ export class Butterflies {
     _quat.setFromRotationMatrix(_basis.makeBasis(_x, _n, _z))
   }
 
+  /** Write `b`'s row: the last two tick poses, their stamp, and the wings' closed form at it. */
+  _publish(b) {
+    const d = this.rows.data
+    const o = b.id * ROW_TEXELS * 4
+    const stamp = b.epoch + b.rec.tick * TICK_S
+    const hi = Math.floor(stamp / TIME_HI) * TIME_HI
+    const w = wingAt(b, stamp, _wing)
+    const sc = b.size / this.span
+    const rest = b.state === 'rest'
+    d[o] = rest ? b.x : b.ox; d[o + 1] = rest ? b.y : b.oy; d[o + 2] = rest ? b.z : b.oz; d[o + 3] = stamp - hi
+    d[o + 4] = b.x; d[o + 5] = b.y; d[o + 6] = b.z; d[o + 7] = rest ? -sc : sc
+    d[o + 8] = b.oyaw; d[o + 9] = b.oyaw + wrap(b.yaw - b.oyaw); d[o + 10] = b.opitch; d[o + 11] = b.pitch
+    d[o + 12] = b.oroll; d[o + 13] = b.roll; d[o + 14] = w.phase % TAU; d[o + 15] = b.wRate
+    d[o + 16] = w.amp; d[o + 17] = b.wAmpTo; d[o + 18] = w.base; d[o + 19] = b.wBaseTo
+    if (rest) {
+      this._seat(b)
+      d[o + 20] = _quat.x; d[o + 21] = _quat.y; d[o + 22] = _quat.z; d[o + 23] = _quat.w
+    }
+    d[o + 24] = hi
+    this.rows.touch(b.id)
+  }
+
+  /** Run `b` up to the room's clock `now` on the score and write its row if that moved it. */
+  _advance(b, now) {
+    const s = now - b.epoch
+    const g = Math.floor((s - b.offset) / GRID_S)
+    if (b.seg !== g) this._reset(b, g)
+    stepTo(b.rec, s, (tick) => this._tick(b, tick), CATCH_UP_TICKS)
+    if (b.dirty) {
+      this._publish(b)
+      b.dirty = false
+    }
+    b.at = now
+    b.due = b.rec.tick < tickOf(s) ? now : b.epoch + Math.min((b.rec.tick + 1) * TICK_S, (g + 1) * GRID_S + b.offset)
+  }
+
   /**
-   * One frame at the room's clock `now`: the tiles follow her head, every
-   * butterfly on the meadow is run up to now on the score, and the ones within
-   * DRAW_SPANS of their size are written between their last two ticks.
+   * One frame at the room's clock `now`: the tiles follow her head, the shader's
+   * clock and head are set, and each butterfly that has reached its next tick or
+   * segment is run up to now on the score and its row written. A frame between
+   * two ticks writes nothing.
    */
   update(hx, hy, hz, now) {
     if (!Number.isFinite(now)) throw new Error(`Butterflies.update: bad world time ${now}`)
-    // The frame's own seconds, for the wings; the flight runs on `now` itself.
-    const dt = this.last === null ? 0 : Math.min(0.1, Math.max(0, now - this.last))
-    this.last = now
     this.now = now
     this.head.x = hx
     this.head.z = hz
     walkTiles(this.tiles, hx, hz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
     this.frame++
-    const mat = this.mesh.instanceMatrix.array
-    const wing = this.wing.array
-    const tint = this.mesh.instanceColor.array
-    const wk = Math.min(1, WING_EASE * dt)
-    const written = this.written
-    let n = 0
-    let dirty = false
     for (const t of this.tiles.values()) {
-      for (const b of t.flock) {
-        const s = now - b.epoch
-        const g = Math.floor((s - b.offset) / GRID_S)
-        if (b.seg !== g) this._reset(b, g)
-        stepTo(b.rec, s, (tick) => this._tick(b, tick), CATCH_UP_TICKS)
-        if (b.state !== 'rest') b.stale = true
-
-        b.amp += (b.ampTo - b.amp) * wk
-        b.base += (b.baseTo - b.base) * wk
-        b.phase += TAU * (b.state === 'rest' ? REST_HZ : FLUTTER_HZ) * dt
-        // Kept to a turn: the attribute is float32, and a phase run up for an hour would flap in coarse steps.
-        if (b.phase > TAU) b.phase -= TAU
-
-        const a = b.rec.alpha
-        const x = b.ox + (b.x - b.ox) * a
-        const y = b.oy + (b.y - b.oy) * a
-        const z = b.oz + (b.z - b.oz) * a
-        b.row = -1
-        const dx = x - hx, dy = y - hy, dz = z - hz
-        const draw = b.size * DRAW_SPANS
-        if (dx * dx + dy * dy + dz * dz > draw * draw) continue
-        const moved = b.stale
-        if (b.stale) {
-          const sc = b.size / this.span
-          if (b.state === 'rest') {
-            _pos.set(x, y, z)
-            this._seat(b)
-          } else {
-            // Each downstroke's lift, as a bounce on the wing phase, scaled by how hard the wings are beating.
-            _pos.set(x, y + STROKE_M * Math.sin(b.phase) * (b.amp / FLUTTER_AMP), z)
-            // Roll about the body, then pitch, then the heading: 'YZX' applies X first.
-            _quat.setFromEuler(_euler.set(
-              b.oroll + (b.roll - b.oroll) * a,
-              b.oyaw + wrap(b.yaw - b.oyaw) * a,
-              b.opitch + (b.pitch - b.opitch) * a,
-              'YZX'
-            ))
-          }
-          _scl.set(sc, sc, sc)
-          _mat.compose(_pos, _quat, _scl).toArray(b.m)
-          b.stale = false
-        }
-        // Matrix and tint are rewritten only for a body that moved or a different butterfly in the slot; the wing buffer beats every frame.
-        if (moved || written[n] !== b) {
-          mat.set(b.m, n * 16)
-          tint[n * 3] = b.r; tint[n * 3 + 1] = b.g; tint[n * 3 + 2] = b.b
-          written[n] = b
-          dirty = true
-        }
-        wing[n * 3] = b.phase
-        wing[n * 3 + 1] = b.amp
-        wing[n * 3 + 2] = b.base
-        b.row = n
-        n++
-      }
+      for (const b of t.flock) if (now < b.at || now >= b.due) this._advance(b, now)
     }
-    if (n !== this.mesh.count) dirty = true
-    this.mesh.count = n
-    this.mesh.visible = this.loaded && n > 0
-    written.length = n
-    if (dirty) {
-      this.mesh.instanceMatrix.needsUpdate = true
-      this.mesh.instanceColor.needsUpdate = true
-    }
-    this.wing.needsUpdate = true
+    this.rows.setFrame(now, hx, hy, hz)
+    this.rows.flush()
+    this.mesh.visible = this.loaded && this.top > 0
   }
 
   dispose() {
@@ -1128,5 +1290,6 @@ export class Butterflies {
     this.mesh.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()
+    this.rows.dispose()
   }
 }
