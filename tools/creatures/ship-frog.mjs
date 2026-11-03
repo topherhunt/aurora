@@ -1,6 +1,7 @@
 /**
- * Ship the frog: pocket-game's bogpip, its 1000-triangle tier decimated into the critter ladder and its idle and
- * hop clips baked into one bone texture. Writes public/creatures/bogpip{,-lod1..3}.glb, bogpip.webp and
+ * Ship the frog: pocket-game's bogpip, its 1000-triangle tier and a quarter-count LOD2 (frogs.js draws two mesh
+ * tiers and a far card), and its idle and hop clips baked into one bone texture. Writes public/creatures/bogpip.glb,
+ * bogpip-lod2.glb, bogpip.webp and
  * bogpip-anim.bin (src/v2/render/frog-anim.js reads it).
  *
  *   node tools/creatures/ship-frog.mjs
@@ -204,6 +205,6 @@ function writeTier(file, t) {
   fs.writeFileSync(path.join(OUT, file), Buffer.concat([h, jh, j, bh, b]))
 }
 
-const ladder = skinnedLadder(mesh)
-ladder.forEach((t, k) => writeTier(k ? `${ID}-lod${k}.glb` : `${ID}.glb`, t))
+const ladder = skinnedLadder(mesh, [0.25])
+ladder.forEach((t, k) => writeTier(k ? `${ID}-lod2.glb` : `${ID}.glb`, t))
 console.log(`ship ${ID}.glb ladder: ${ladder.map((t) => t.indices.length / 3).join('/')} triangles`)

@@ -4181,7 +4181,7 @@ const perfTraceFrame = { jsMs: 0, renderMs: 0, calls: 0, tris: 0, uploadCalls: 0
  * head is under the water.
  */
 function applyAnimalVisibility() {
-  frogs.batch.visible = animalOn('frogs')
+  frogs.setShown(animalOn('frogs'))
   crabs.setShown(animalOn('crabs'))
   butterflies.batch.visible = animalOn('butterflies')
   grasshoppers.batch.visible = animalOn('grasshoppers')
@@ -6008,7 +6008,8 @@ async function buildRoom(room, at) {
   // The frogs on the banks and the crabs on the lake boulders (render/frogs.js,
   // render/crabs.js). Both are tile scatters that ask the rocks, so after them.
   await bootStep('frogs')
-  frogs = new Frogs(scene, height, waterSurfaces, { seed, rocks, ground: terrain, eat: (lure) => hands.eatLure(lure, 'frog') })
+  frogs = new Frogs(scene, height, waterSurfaces, { seed, rocks, ground: terrain, cards: litterCards, eat: (lure) => hands.eatLure(lure, 'frog') })
+  frogs.ready.then(() => { if (build === roomBuild) frogs.bakeCard(renderer) })
   frogs.her = her
   lighting.patch(frogs.material, { mode: 'vertex', cacheKey: 'v2-frogs' })
   frogs.place(spawn.x, spawn.z)

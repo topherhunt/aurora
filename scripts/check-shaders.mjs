@@ -1010,7 +1010,7 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   const frogBox = { ...boxAsset, skinIndex: new Float32Array(n * 4), skinWeight: Float32Array.from({ length: n * 4 }, (_, i) => (i % 4 === 0 ? 1 : 0)) }
   const frogBuf = readFileSync(new URL(`../public/${FROG_ANIM_URL}`, import.meta.url))
   const frogAnim = parseFrogAnim(frogBuf.buffer.slice(frogBuf.byteOffset, frogBuf.byteOffset + frogBuf.byteLength))
-  const frogs = new Frogs(new THREE.Scene(), flat, water, { seed: 1, rocks, ground: { groundVersion: 0, groundAt: () => 0 }, assets: Array.from({ length: LOD_TIERS }, () => frogBox), anim: frogAnim })
+  const frogs = new Frogs(new THREE.Scene(), flat, water, { seed: 1, rocks, ground: { groundVersion: 0, groundAt: () => 0 }, assets: Array.from({ length: LOD_TIERS }, () => frogBox), anim: frogAnim, cards: new LitterCards(64) })
   for (const [label, material, marks] of [
     ['crab mesh            ', crabs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform highp sampler2D uCrabAnim;']],
     ['frog mesh            ', frogs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform vec2 uFrogPhase;', 'objectNormal = vec3( dot( frogR0.xyz', 'transformed = vec3( dot( frogR0.xyz']],

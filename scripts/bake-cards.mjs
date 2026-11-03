@@ -48,8 +48,9 @@ async function poll(what, fn, ms = 30000) {
 const origin = `https://localhost:${PREVIEW_PORT}`
 await poll('vite preview', () => new Promise((res) => {
   // basic-ssl's certificate is self-signed, so the probe goes over plain TCP and only asks that the port answers.
+  // Vite binds `localhost`, which may be ::1 only, so the probe must not hardcode 127.0.0.1.
   import('node:net').then(({ connect }) => {
-    const s = connect(PREVIEW_PORT, '127.0.0.1', () => { s.end(); res(true) })
+    const s = connect(PREVIEW_PORT, 'localhost', () => { s.end(); res(true) })
     s.on('error', () => res(false))
   })
 }))

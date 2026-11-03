@@ -1137,9 +1137,9 @@ console.log('\nthe creatures')
     const hoppers = new Grasshoppers(scene, field, water, { seed, walk, assets: boxAsset(1) })
     // Rolled about the clearing rather than the lake: a grasshopper's tiles reach 14 m (grasshoppers.js RADIUS) and the water fills that much of some lakes, where the crabs' and frogs' 40 m still find a shore.
     hoppers.place(room.clearing.x, room.clearing.z)
-    const crabs = new Crabs(scene, field, water, { seed, rocks, assets: boxAsset(1) })
+    const crabs = new Crabs(scene, field, water, { seed, rocks, cards: new LitterCards(4096), assets: boxAsset(1) })
     crabs.place(room.lake.x, room.lake.z)
-    const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets, anim: frogAnim })
+    const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets, anim: frogAnim, cards: new LitterCards(4096) })
     frogs.place(room.lake.x, room.lake.z)
     let seated = 0
     for (const t of frogs.tiles.values()) seated += t.frogs.length

@@ -36,12 +36,13 @@
 
 import * as THREE from 'three'
 import fs from 'node:fs'
-import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, SIT_S, WALK, LEAP, HOPS_MAX, WET_PAUSE_S, WADE_M, WET_ROUGHNESS, MORPHS, LOD_TIERS, LURES, LURE_M, LURE_FORGET_M, CHASE, ORBIT_M, NOTICE_S, REJOIN_MIN_S, GROW, bedKey, keyOf } from '../src/v2/render/frogs.js'
+import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_AMP, SINK, BOB_S, BOB_AMP, SIT_S, WALK, LEAP, HOPS_MAX, WET_PAUSE_S, WADE_M, WET_ROUGHNESS, MORPHS, LOD_TIERS, LOD_LEVELS, LOD_STEPS, CARD, RUNGS, frogTier, LURES, LURE_M, LURE_FORGET_M, CHASE, ORBIT_M, NOTICE_S, REJOIN_MIN_S, GROW, bedKey, keyOf } from '../src/v2/render/frogs.js'
 import { MEAL } from '../src/v2/eating.js'
+import { LitterCards } from '../src/v2/render/litter-cards.js'
 import { taken } from '../src/v2/taken.js'
 import { GRID_S, keyHash } from '../src/sim/score.js'
 import { FROG_ANIM_URL, HOP_FADE, hopWeight, idleWeight, parseFrogAnim } from '../src/v2/render/frog-anim.js'
-import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, TIER_TINTS, critterLodUrl, critterTier, cullRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
+import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, TIER_TINTS, critterLodUrl, cullRange, hueTurnTint, lodReach, setTierTint } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
 
@@ -105,7 +106,7 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
     check(Math.abs(ahead) < 10, 'the frog faces +X: its eyes lie ahead of its body along +X', `head ${ahead.toFixed(1)} deg from +X`)
     let last = tris
     for (let k = 1; k < LOD_TIERS; k++) {
-      const url = critterLodUrl(CRITTER_GLB.frog, k)
+      const url = critterLodUrl(CRITTER_GLB.frog, LOD_LEVELS[k])
       const tierFile = new URL(`../public/${url}`, import.meta.url)
       check(fs.existsSync(tierFile), `${url} is shipped`)
       if (!fs.existsSync(tierFile)) continue
@@ -113,14 +114,13 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
       const tierJson = JSON.parse(tierBuf.toString('utf8', 20, 20 + tierBuf.readUInt32LE(12)))
       const t = shape(tierBuf, tierJson)
       check(t.tris < last && tierJson.images?.[0]?.uri === image?.uri, `tier ${k} is coarser than the one above and wears the pick's WebP`, `${t.tris} tris after ${last}`)
-      // The coarsest tier is lopsided today (the decimator's doing, see the design doc); the world still needs it looking the right way.
       check(Math.abs(t.ahead) < 25, `tier ${k} faces +X`, `head ${t.ahead.toFixed(1)} deg from +X`)
       last = t.tris
     }
     // The skin: every tier carries four influences a vertex onto bones the baked texture has, and each clip's last frame is its first, so a loop or a hop closes on itself.
     const anim = readAnim()
     for (let k = 0; k < LOD_TIERS; k++) {
-      const b = fs.readFileSync(new URL(`../public/${k ? critterLodUrl(CRITTER_GLB.frog, k) : CRITTER_GLB.frog}`, import.meta.url))
+      const b = fs.readFileSync(new URL(`../public/${k ? critterLodUrl(CRITTER_GLB.frog, LOD_LEVELS[k]) : CRITTER_GLB.frog}`, import.meta.url))
       const j = JSON.parse(b.toString('utf8', 20, 20 + b.readUInt32LE(12)))
       const attrs = j.meshes[0].primitives[0].attributes
       const joints = accessor(b, j, attrs.JOINTS_0), weights = accessor(b, j, attrs.WEIGHTS_0)
@@ -192,7 +192,7 @@ const ANIM = readAnim()
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
+const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096) })
 check(frogs.loaded && frogs.tiers.length === LOD_TIERS && frogs.tiers.every((t) => t.visible && t.parent === frogs.batch) && Math.abs(frogs.span - 1) < 1e-6, 'assets set: every tier visible in the batch, span 1', `span ${frogs.span}`)
 // The stand-in is half as tall as it is long, so a floating frog's feet sit SINK of that under the surface, per metre of size.
 check(Math.abs(frogs.sink - SINK * 0.5) < 1e-6 && SINK === 0.5, 'a floating frog sinks half its height', `sink ${frogs.sink} per metre of size`)
@@ -220,11 +220,11 @@ check(frogs.tiers.every((t, k) => t.geometry.getAttribute('aHue') === frogs.hues
 // The pose weights: a hop fades in from the bind pose and out to it, a sit's idle the same at its ends.
 check(hopWeight(0) === 0 && hopWeight(1) === 0 && hopWeight(0.5) === 1 && hopWeight(HOP_FADE) === 1 && hopWeight(HOP_FADE / 2) > 0 && hopWeight(HOP_FADE / 2) < 1, 'a hop\'s pose is the bind pose at take-off and landing, full between')
 check(idleWeight(0, 2) === 0 && idleWeight(2, 2) === 0 && idleWeight(1, 2) === 1 && idleWeight(5, Infinity) === 1 && idleWeight(5, 0) === 1, 'a sit\'s idle fades in and out at its ends, and in only when its end is not known')
-// The tint row (critters.js TIER_TINTS): four tiers on one material cannot each wear a uniform, so each tier's mesh is swapped onto its own flat colour on the next update, and back.
+// The tint row (critters.js TIER_TINTS): two tiers on one material cannot each wear a uniform, so each tier's mesh is swapped onto the flat colour of the rung it ships as on the next update, and back.
 {
   setTierTint(true)
   frogs.update(0, GROUND + 1.6, 0, 0)
-  check(frogs.tiers.every((t, k) => t.material === TIER_TINTS[k]) && new Set(frogs.tiers.map((t) => t.material)).size === LOD_TIERS, 'on, each tier wears the flat colour of its rung, no two alike')
+  check(frogs.tiers.every((t, k) => t.material === TIER_TINTS[LOD_LEVELS[k]]) && new Set(frogs.tiers.map((t) => t.material)).size === LOD_TIERS, 'on, each tier wears the flat colour of its rung, no two alike')
   setTierTint(false)
   frogs.update(0, GROUND + 1.6, 0, 1 / 60)
   check(frogs.tiers.every((t) => t.material === frogs.material), 'off, every tier is back on the one shared material')
@@ -393,14 +393,14 @@ check(onRock === 0, 'no frog sits on the boulder', `${onRock} frames`)
 check(strayed === 0, `no frog ever rests more than ${TETHER_M} m and a leap from home`, `furthest ${maxStray.toFixed(2)} m`)
 check(alive().every((f) => (f.state === 'sit' && !f.wet && Math.abs(f.y - (GROUND + 0.05)) < 1e-6) || (f.state === 'sit' && f.wet && Math.abs(f.y - afloatY(f)) < 1e-6) || f.state === 'hop'), 'a frog at rest is on the ground, or afloat at its level')
 check(ms < 1.5, 'a frame costs well under a scatter', `${ms.toFixed(3)} ms/frame with ${alive().length} frogs`)
-check(drawnCount() === alive().filter((f) => f.lod < LOD_TIERS).length && drawnCount() > 0, 'the tiers\' instance counts are the live frogs in view', `${drawnCount()} of ${alive().length} alive`)
+check(!frogs.cardReady && drawnCount() === alive().filter((f) => f.lod < RUNGS).length && drawnCount() > 0, 'with no card baked, the tiers\' instance counts are the live frogs in view', `${drawnCount()} of ${alive().length} alive`)
 
 // --- the room: two clients on different frames, and one joining late, have every frog in the same place ----
 const poseOf = (f) => [f.key, f.x, f.y, f.z, f.yaw, f.nx, f.ny, f.nz, f.state, f.wet, f.u]
 const poses = (layer) => layer.slots.filter((f) => f.tile !== null).map(poseOf).sort((a, b) => (a[0] < b[0] ? -1 : 1))
 const same = (a, b) => a.length === b.length && a.every((p, i) => p.every((v, k) => (typeof v === 'number' ? Math.abs(v - b[i][k]) < 1e-9 : v === b[i][k])))
 {
-  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
+  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096) })
   twin.place(0, 0)
   // A client that has run since before the bed was grown, on a rougher, uneven frame.
   let t = T0 - 100
@@ -409,7 +409,7 @@ const same = (a, b) => a.length === b.length && a.every((p, i) => p.every((v, k)
   twin.update(...HEAD, T0 + SECONDS)
   check(same(poses(frogs), poses(twin)) && alive().length > 20, 'two clients on different frames have every frog in one pose', `${alive().length} frogs`)
   // And one that joins now, with no history, mid-segment for nearly every frog.
-  const late = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
+  const late = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096) })
   late.place(0, 0)
   late.update(...HEAD, T0 + SECONDS)
   check(same(poses(frogs), poses(late)), 'a client joining mid-segment has every frog where the others do')
@@ -499,34 +499,34 @@ let NOW = T0 + SECONDS + 10
   check(sitters.every((f) => Math.abs(f.y - (GROUND + 0.05)) < 1e-6), 'and back again when it drops')
 }
 
-// --- the ladder: each frog is the tier its distance calls for, in its own body lengths ----
+// --- the ladder: two mesh tiers and the far card, each rung its distance in its own body lengths ----
 {
   const span = (SIZE_M[0] + SIZE_M[1]) / 2
-  const rungs = Array.from({ length: LOD_TIERS }, (_, k) => lodReach(span, k))
-  check(LOD_TIERS === 4 && rungs.every((d, k) => k === 0 || Math.abs(d / rungs[k - 1] - 2) < 1e-12), `four tiers, each reaching twice as far as the one above it`, `${rungs.map((d) => d.toFixed(1)).join(' / ')} m for a ${span.toFixed(2)} m frog`)
-  // critterTier on its own: the pick near, each tier one step down, nothing past the cull, and hysteresis both ways round a threshold.
-  const ladder = rungs.map((d) => critterTier(span, d * 0.99, -1, LOD_TIERS))
-  check(ladder.every((t, k) => t === k) && critterTier(span, 0.1, -1, LOD_TIERS) === 0 && critterTier(span, 1000, -1, LOD_TIERS) === LOD_TIERS, 'critterTier steps a frog with no tier yet down the ladder by its distance and off its foot', ladder.join(', '))
-  // Around the tier 1 / tier 2 threshold.
-  const edge = rungs[1]
+  const rungs = LOD_STEPS.map((k) => lodReach(span, 0) * k)
+  check(LOD_TIERS === 2 && LOD_LEVELS.join() === '0,2' && CARD === 2 && RUNGS === 3 && Math.abs(rungs[CARD] - cullRange(span)) < 1e-9, 'the pick, LOD2 and the card, the card reaching the world ladder\'s mesh cull', `${rungs.map((d) => d.toFixed(1)).join(' / ')} m for a ${span.toFixed(2)} m frog`)
+  // frogTier on its own: the pick near, each rung one step down, nothing past the cull, and hysteresis both ways round a threshold.
+  const ladder = rungs.map((d) => frogTier(span, d * 0.99, -1))
+  check(ladder.every((t, k) => t === k) && frogTier(span, 0.1, -1) === 0 && frogTier(span, 1000, -1) === RUNGS, 'frogTier steps a frog with no rung yet down the ladder by its distance and off its foot', ladder.join(', '))
+  // Around the pick / LOD2 threshold.
+  const edge = rungs[0]
   const H = LOD_HYSTERESIS
-  const stayUp = critterTier(span, edge * (1 + H * 0.5), 1, LOD_TIERS), stayDown = critterTier(span, edge * (1 - H * 0.5), 2, LOD_TIERS)
-  const goUp = critterTier(span, edge * (1 - H * 1.5), 2, LOD_TIERS), goDown = critterTier(span, edge * (1 + H * 1.5), 1, LOD_TIERS)
-  check(stayUp === 1 && stayDown === 2 && goUp === 1 && goDown === 2, 'a frog just over a threshold keeps its tier until it is well over', `stay ${stayUp}/${stayDown}, go ${goUp}/${goDown}`)
-  check(critterTier(span, 1000, LOD_TIERS - 1, LOD_TIERS) === LOD_TIERS && critterTier(span, cullRange(span) * 1.05, LOD_TIERS, LOD_TIERS) === LOD_TIERS, 'a frog past the cull is not drawn, and one just back inside it not drawn yet either')
+  const stayUp = frogTier(span, edge * (1 + H * 0.5), 0), stayDown = frogTier(span, edge * (1 - H * 0.5), 1)
+  const goUp = frogTier(span, edge * (1 - H * 1.5), 1), goDown = frogTier(span, edge * (1 + H * 1.5), 0)
+  check(stayUp === 0 && stayDown === 1 && goUp === 0 && goDown === 1, 'a frog just over a threshold keeps its rung until it is well over', `stay ${stayUp}/${stayDown}, go ${goUp}/${goDown}`)
+  check(frogTier(span, 1000, CARD) === RUNGS && frogTier(span, cullRange(span) * 1.05, RUNGS) === RUNGS, 'a frog past the cull is not drawn, and one just back inside it not drawn yet either')
 
-  // In the scatter: her head on the bank, every drawn frog is in the tier its size over its distance calls for, and every frog past its cull is undrawn.
+  // In the scatter, no card baked yet: her head on the bank, every drawn frog is on the mesh tier its size over its distance calls for (the card rung drawn as LOD2), and every frog past its cull is undrawn.
   frogs.place(0, 0)
   frogs.update(...HEAD, NOW)
   frogs.update(...HEAD, NOW)
   const list = drawn(HEAD)
   check(list.length > 0 && list.every((d) => d.f), 'every instance stands on some live frog\'s seat', `${list.length} drawn`)
   const tiersUsed = new Set(list.map((d) => d.tier))
-  check(tiersUsed.size >= 3, 'the bank in view spans several tiers', `tiers ${[...tiersUsed].sort().join(', ')}`)
-  const right = list.filter((d) => d.f && critterTier(d.f.size, d.dist, -1, LOD_TIERS) === d.tier).length
+  check(tiersUsed.size === LOD_TIERS && list.some((d) => d.f.lod === CARD), 'the bank in view spans both tiers and the card rung', `tiers ${[...tiersUsed].sort().join(', ')}`)
+  const right = list.filter((d) => d.f && Math.min(frogTier(d.f.size, d.dist, -1), LOD_TIERS - 1) === d.tier).length
   check(right === list.length, 'each is drawn as the tier its distance calls for', `${right} of ${list.length}`)
   const away = (f) => Math.hypot(f.x - HEAD[0], f.y - HEAD[1], f.z - HEAD[2])
-  const hidden = alive().filter((f) => f.lod === LOD_TIERS)
+  const hidden = alive().filter((f) => f.lod === RUNGS)
   check(hidden.length > 0 && hidden.every((f) => away(f) > cullRange(f.size) * (1 - H)) && list.every((d) => d.dist <= cullRange(d.f.size) * (1 + H)), 'the frogs past their own cull are not drawn, and every drawn one is inside it', `${hidden.length} hidden of ${alive().length}`)
   // A tier instance is its frog: same size (the matrix's scale up to the breath), same tint and hue. The buffers are float32.
   let matched = 0
@@ -543,7 +543,7 @@ let NOW = T0 + SECONDS + 10
   const target = alive().find((f) => f.state === 'sit' && f.lod >= 0 && f.lod < LOD_TIERS - 1)
   if (!target) throw new Error('check-frogs: no drawn sitting frog with a rung below it to sway across')
   const dist0 = Math.hypot(target.x - HEAD[0], target.y - HEAD[1], target.z - HEAD[2])
-  const edgeD = lodReach(target.size, target.lod)
+  const edgeD = lodReach(target.size, 0) * LOD_STEPS[target.lod]
   let changes = 0, prev = target.lod
   for (let i = 0; i < 200; i++) {
     // Along the line from her head to the frog, so the distance is exactly the threshold plus a sway of half the hysteresis.
@@ -556,9 +556,33 @@ let NOW = T0 + SECONDS + 10
   // Walk her out to the far bank: what was undrawn is the pick.
   frogs.update(-HALF - 2, GROUND + 1.6, 40, NOW)
   frogs.update(-HALF - 2, GROUND + 1.6, 40, NOW)
-  // Tier 0 reaches under two metres for a frog, so what says she has moved is which frogs are drawn at all, not which are on the near rung.
+  // Tier 0 reaches a few metres for a frog, so what says she has moved is which frogs are drawn at all, not which are on the near rung.
   const near = drawn([-HALF - 2, GROUND + 1.6, 40])
   check(near.length > 0 && near.every((d) => Math.hypot(d.p[0] - HEAD[0], d.p[2] - HEAD[2]) > 20), 'the frogs drawn are the ones by the bank she walked to, not the ones she left', `${near.length} drawn, none within 20 m of where she stood`)
+
+  // The card baked (a stand-in mean colour; the photograph needs a renderer): a bed frog on the card rung is its card, standing where it sits in its own tint, and on no mesh tier.
+  frogs.cardMean = { r: 0.2, g: 0.35, b: 0.1 }
+  frogs.cardReady = true
+  frogs.listDirty = true
+  frogs.update(...HEAD, NOW)
+  const onCard = alive().filter((f) => f.gpu && f.lod === CARD)
+  const meshed = new Set(drawn(HEAD).map((d) => d.f))
+  const _c = new THREE.Color(), _w = new THREE.Color()
+  const carded = onCard.filter((f) => {
+    const e = frogs.cards.getMatrixAt(f.id, new THREE.Matrix4()).elements
+    const t = hueTurnTint(frogs.cardMean, f.hue, _w)
+    const c = frogs.cards.getColorAt(f.id, _c)
+    return f.cardOn && frogs.cards.getVisibleAt(f.id) && !meshed.has(f) && Math.abs(e[12] - f.x) < 1e-4 && Math.abs(e[13] - f.y) < 1e-4 && Math.abs(e[14] - f.z) < 1e-4 &&
+      Math.abs(c.r - t.r * f.r) < 1e-3 && Math.abs(c.g - t.g * f.g) < 1e-3 && Math.abs(c.b - t.b * f.b) < 1e-3
+  })
+  check(onCard.length > 0 && carded.length === onCard.length && frogs.carded.size === onCard.length, 'each far bed frog is its card, where it sits, in its own tint, and off the meshes', `${carded.length} of ${onCard.length} on the card rung`)
+  check(drawnCount() + frogs.carded.size === alive().filter((f) => f.lod < RUNGS).length, 'the meshes and the cards together are the live frogs in view')
+  // She walks off: the cards of the frogs she left are put away.
+  frogs.update(-HALF - 2, GROUND + 1.6, 400, NOW)
+  check(frogs.carded.size === 0 && onCard.every((f) => !f.cardOn && !frogs.cards.getVisibleAt(f.id)), 'out of sight, no card is left standing')
+  frogs.cardReady = false
+  frogs.cardMean = null
+  frogs.update(...HEAD, NOW)
 }
 
 // --- a bank that slopes: frogs sit along its normal, and turn to the new slope over a hop ----
@@ -567,7 +591,7 @@ let NOW = T0 + SECONDS + 10
   const GX = 0.4
   const SEAM = HALF + 2
   const slope = { ...height, heightAndSlopeAt: (x) => (x > SEAM ? { h: GROUND, tan: GX, gx: GX, gz: 0 } : { h: GROUND, tan: 0, gx: 0, gz: 0 }) }
-  const tilted = new Frogs(new THREE.Scene(), slope, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
+  const tilted = new Frogs(new THREE.Scene(), slope, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096) })
   tilted.place(0, 0)
   tilted.update(0, GROUND + 1.6, 0, NOW)
   const want = [-GX, 1, 0].map((c) => c / Math.hypot(GX, 1))
@@ -612,7 +636,7 @@ let NOW = T0 + SECONDS + 10
 {
   frogs.place(0, 0)
   // A twin client with no lure in it, to say where the frog would be on its plan.
-  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
+  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096) })
   twin.place(0, 0)
   const step = (head, lures) => { NOW += DT; frogs.update(...head, NOW, lures); twin.update(...head, NOW) }
   step(HEAD)
@@ -718,8 +742,8 @@ let NOW = T0 + SECONDS + 10
 // --- her hands: a frog taken, let go, and fed, and a peer's client told of each --------
 {
   const eaten = []
-  const me = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, eat: (l) => { eaten.push(l); return true } })
-  const peer = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
+  const me = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096), eat: (l) => { eaten.push(l); return true } })
+  const peer = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, cards: new LitterCards(4096) })
   const mine = () => me.slots.filter((g) => g.tile !== null)
   const heard = (a) => { const b = a.slice(); b[8] = 7; return b }
   let head = [HALF + 1, GROUND + 1.6, 0]

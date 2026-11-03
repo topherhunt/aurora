@@ -4,7 +4,6 @@ import THREE from '../../three-instance.js'
 import { LAYER, TEX_SIZE } from '../../textures.js'
 import { ROCK_IMPOSTOR_LAYERS } from '../../props/rock-bank.js'
 import { RUNES } from '../castles/wards.js'
-import { SPUN_VIEWS, bakeCritterCard, spunBounds } from './critters.js'
 import { CASTLE_CARD } from './castles.js'
 
 export const RUNE_CELL = 128
@@ -18,7 +17,7 @@ const pooled = (name, cards, i) => {
 }
 
 /** The ten sources in RUNES order -- `{ name, size, px }` -- off the room's layers; throws naming any whose card is not in this room. */
-function sources({ renderer, litterCards, propTextures, frogs, crabs, wildlife, wildStriders, dragons, castles }) {
+function sources({ litterCards, propTextures, frogs, crabs, wildlife, wildStriders, dragons, castles }) {
   const need = (layer, name) => { if (layer === null) throw new Error(`rune atlas: ${name} is not in this room`); return layer }
   const wild = (key) => {
     const sp = need(wildlife, key).species.find((s) => s.key === key)
@@ -26,15 +25,10 @@ function sources({ renderer, litterCards, propTextures, frogs, crabs, wildlife, 
     return pooled(key, litterCards, sp.picture)
   }
   const layer = (name, l) => ({ name, size: TEX_SIZE, px: propTextures.image.data.subarray(l * TEX_SIZE * TEX_SIZE * 4, (l + 1) * TEX_SIZE * TEX_SIZE * 4) })
-  // The frog has no far card: its glb is photographed through the same baker, side on as the wildlife's cards are, bottom row first so flipped.
   const frog = () => {
-    need(frogs, 'frogs')
-    if (!frogs.loaded) throw new Error('rune atlas: the frog has not loaded')
-    const tex = bakeCritterCard(renderer, frogs.mesh.geometry, frogs.material.map, spunBounds(frogs.bounds), SPUN_VIEWS)
-    const row = TEX_SIZE * 4, px = new Uint8Array(tex.image.data.length)
-    for (let y = 0; y < TEX_SIZE; y++) px.set(tex.image.data.subarray(y * row, (y + 1) * row), (TEX_SIZE - 1 - y) * row)
-    tex.dispose()
-    return { name: 'frog', size: TEX_SIZE, px }
+    const f = need(frogs, 'frogs')
+    if (!f.cardReady) throw new Error('rune atlas: the frog card has not been baked')
+    return pooled('frog', litterCards, f.cardPicture)
   }
   const byRune = {
     strider: () => pooled('strider', litterCards, need(wildStriders, 'striders').inner.picture),

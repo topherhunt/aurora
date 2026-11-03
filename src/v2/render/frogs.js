@@ -74,10 +74,10 @@
 // frogHop and splash); the queue is this frame's only, so nothing said while
 // the ambience is not listening is heard late.
 //
-// A frog is drawn as the tier of its LOD ladder its apparent size calls for
-// (critters.js critterTier, the rungs a ratio of its own body length), one
-// InstancedMesh per tier under one material, and not at all under the last
-// rung; the tiers together hold every live frog she can see.
+// A frog is drawn on the rung of its ladder its apparent size calls for
+// (frogTier): the pick or LOD2, one InstancedMesh each under one material, or
+// a bed frog's far card (an instance of the shared litter quad, written by the
+// sweep), and not at all under the last rung.
 // ---------------------------------------------------------------------------
 
 import THREE from '../../three-instance.js'
@@ -86,8 +86,11 @@ import { GRID_S, hash32, keyHash, phraseRand } from '../../sim/score.js'
 import { DROP, dropWire, snap } from '../creature-net.js'
 import { taken, TOLERANCE_M } from '../taken.js'
 import {
-  CRITTER_GLB, LOD_RUNGS, TIER_TINTS, critterLodUrl, critterTier, glint, hueVary, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
+  CRITTER_GLB, LOD_DEG, TIER_TINTS, critterLodUrl, distAt, glint, hueTurnTint, hueVary, ladderTier, loadCritterGlb, makeHueAttribute, setCritterAsset, tierTintOn, tileSeed, walkTiles,
 } from './critters.js'
+import { CARD_DRIFT_S, cardPicture } from './litter-cards.js'
+import { PropArena } from './prop-arena.js'
+import { getPropClock } from '../../material.js'
 import { MEAL } from '../eating.js'
 import { KEEP_UP, headway } from '../keep-up.js'
 import { PhraseTable, ROW_W, motionSplice } from './gpu-motion.js'
@@ -96,10 +99,16 @@ import { FROG_ANIM_NORMAL, FROG_ANIM_PARS, FROG_ANIM_VERTEX, hopWeight, idleWeig
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
 export const TILE = 8
-// Tiles whose centre is within this of her are grown; the biggest frog is under the last rung past twenty-nine metres.
+// Tiles whose centre is within this of her are grown; the biggest frog is under the last rung past twenty metres.
 export const RADIUS = 48
-// Tiers on the ladder: the pick and the shipped -lod1..3, one per rung of the world ladder (critters.js LOD_RUNGS). A 0.36 m frog steps down at 2.4, 4.8 and 9.6 m and is gone past 19.2.
-export const LOD_TIERS = LOD_RUNGS
+// The ladder (critters.js ladderTier): the mesh tiers, the pick and the shipped -lod2 (LOD_LEVELS), then the CARD rung; rung k reaches LOD_STEPS[k] times the world ladder's first. A 0.36 m frog steps down at 3.2 and 6.5 m and is gone past 12.9.
+export const LOD_TIERS = 2
+export const LOD_LEVELS = [0, 2]
+export const LOD_STEPS = [2, 4, 8]
+export const CARD = LOD_TIERS
+export const RUNGS = LOD_TIERS + 1
+/** The rung a frog of `size` at `dist` is drawn on, given the one it was on; RUNGS is not drawn. */
+export const frogTier = (size, dist, prev) => ladderTier(distAt(size, LOD_DEG), LOD_STEPS, RUNGS, dist, prev)
 // How far from the waterline a frog may sit, on the dry side.
 export const SHORE_M = 5
 // The ground a frog will not sit on: steeper than this (a tangent), or within SNOW_MARGIN metres of the snow line, which is the cold the brief excludes.
@@ -246,6 +255,7 @@ const _scl = new THREE.Vector3()
 const _mat = new THREE.Matrix4()
 const _stone = { x: 0, z: 0, r: 0 }
 const _her = new THREE.Vector3()
+const _tint = new THREE.Color()
 
 /** A frog's slot. While the frog is drawn by the GPU (`gpu`) its x, y, z read the plan at the room's clock, so a reader between frames (sense.js, hands.js) sees where the shader draws it. */
 class Frog {
@@ -270,9 +280,11 @@ export class Frogs {
    * @param opts.ground  TerrainV2 or null: the drawn surface to seat on, falling back to the field
    * @param opts.assets  parsed assets (critters.js shape, skinned) for a gate; the world fetches the GLBs
    * @param opts.anim    the parsed animation (frog-anim.js) that goes with `assets`
+   * @param opts.cards   the shared LitterCards: the far bed frogs are its instances, one per slot
    * @param opts.eat     (lure) => true once her hand holding it has lost it (hands.js eatLure)
    */
-  constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null, anim = null, eat = () => false } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null, anim = null, cards = null, eat = () => false } = {}) {
+    if (!cards || typeof cards.claim !== 'function') throw new Error('Frogs needs the LitterCards its far card is drawn by')
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Frogs needs a height field with heightAt, heightAndSlopeAt and snowLineAt')
     }
@@ -321,7 +333,7 @@ export class Frogs {
     this.tinted = false
     this.tiers = Array.from({ length: LOD_TIERS }, (_, k) => {
       const mesh = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.material, MAX)
-      mesh.name = k ? `v2-frogs-lod${k}` : 'v2-frogs'
+      mesh.name = k ? `v2-frogs-lod${LOD_LEVELS[k]}` : 'v2-frogs'
       mesh.count = 0
       // Hidden, not merely empty, until the asset lands: the boot's scene census throws on a visible mesh with no geometry.
       mesh.visible = false
@@ -362,12 +374,27 @@ export class Frogs {
     this.batch.name = 'v2-frogs'
     this.batch.add(...this.tiers)
     scene.add(this.batch)
+    // The far bed frogs, one litter-card instance per slot (a slot's id is its card's), drawn once the picture is baked (bakeCard); until then the card rung draws LOD2. `carded` holds the slots with a card on.
+    const cardBudget = cards.claim('frogs', MAX)
+    this.litterCards = cards
+    this.cardPicture = -1
+    this.cardReady = false
+    this.cardMean = null
+    this.cards = PropArena.over(cards.meshes, MAX, 'v2-frogs-card', { budget: cardBudget })
+    for (let i = 0; i < MAX; i++) {
+      this.cards.addInstance(0)
+      this.cards.setVisibleAt(i, false)
+    }
+    this.carded = new Set()
+    this.sweepNo = 0
 
     this.slots = []
     for (let i = 0; i < MAX; i++) {
       this.slots.push(new Frog(this, {
         id: i, tile: null, key: '', index: 0, offset: 0,
-        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: LOD_TIERS,
+        x: 0, y: 0, z: 0, homeX: 0, homeZ: 0, yaw: 0, size: 0.36, breath: 0, r: 1, g: 1, b: 1, hue: 0, lod: RUNGS,
+        // Its far card: shown, the phrase it was written at, and the sweep that last kept it.
+        cardOn: false, cardPh: null, cardStamp: -1,
         // The ground normal the frog sits along.
         nx: 0, ny: 1, nz: 0,
         // The phrase playing -- a 'sit' at a spot or a 'hop' between two -- `t` seconds into it, `wet` when the frog is afloat; `u` the hop's fraction flown.
@@ -443,7 +470,7 @@ export class Frogs {
   async load() {
     const [pick, anim] = await Promise.all([loadCritterGlb(CRITTER_GLB.frog), loadFrogAnim()])
     if (pick.origin.some((v) => Math.abs(v) > 1e-3)) throw new Error(`Frogs: ${CRITTER_GLB.frog} is off its feet by ${pick.origin.join(', ')} -- rerun tools/creatures/ship-frog.mjs`)
-    const tiers = await Promise.all(Array.from({ length: LOD_TIERS - 1 }, (_, k) => loadCritterGlb(critterLodUrl(CRITTER_GLB.frog, k + 1), { origin: pick.origin })))
+    const tiers = await Promise.all(LOD_LEVELS.slice(1).map((level) => loadCritterGlb(critterLodUrl(CRITTER_GLB.frog, level), { origin: pick.origin })))
     this.setAsset([pick, ...tiers], anim)
     return true
   }
@@ -465,13 +492,72 @@ export class Frogs {
       } else {
         // Its own decode of the same WebP: the pick's is the one drawn.
         if (k < assets.length) asset.map?.dispose()
-        setCritterAsset(this.tiers[k], this.material, { ...asset, map: null }, `frogs lod${k}`)
+        setCritterAsset(this.tiers[k], this.material, { ...asset, map: null }, `frogs lod${LOD_LEVELS[k]}`)
       }
       this.tiers[k].geometry.setAttribute('skinIndex', new THREE.BufferAttribute(Float32Array.from(asset.skinIndex), 4))
       this.tiers[k].geometry.setAttribute('skinWeight', new THREE.BufferAttribute(Float32Array.from(asset.skinWeight), 4))
     }
+    if (this.cardPicture < 0) {
+      this.cardPicture = this.litterCards.addPicture(cardPicture('heading', this.bounds))
+      for (let i = 0; i < MAX; i++) this.cards.setLayerShiftAt(i, this.cardPicture)
+    }
     this.loaded = true
     this._relay()
+  }
+
+  /** Photograph the pick, sitting in its bind pose, onto the far card and start drawing the far bed frogs as cards. Once, after `ready`. Each card's hue turn is a tint on the picture's mean linear colour (critters.js hueTurnTint). */
+  bakeCard(renderer) {
+    if (!this.loaded) throw new Error('Frogs.bakeCard: the asset has not landed')
+    this.litterCards.bake(renderer, this.cardPicture, this.mesh.geometry, this.material.map, this.bounds, 'heading')
+    const px = this.litterCards.pixels(this.cardPicture)
+    const mean = { r: 0, g: 0, b: 0 }
+    let n = 0
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 128) continue
+      _tint.setRGB(px[i] / 255, px[i + 1] / 255, px[i + 2] / 255, THREE.SRGBColorSpace)
+      mean.r += _tint.r; mean.g += _tint.g; mean.b += _tint.b
+      n++
+    }
+    if (n === 0) throw new Error('Frogs.bakeCard: the card picture is empty')
+    this.cardMean = { r: mean.r / n, g: mean.g / n, b: mean.b / n }
+    this.cardReady = true
+    this.listDirty = true
+  }
+
+  /** Draw the whole layer or none of it; the far cards are shared instances, so the batch's `visible` alone would leave them. */
+  setShown(shown) {
+    this.batch.visible = shown
+    this.cards.setShown(shown)
+  }
+
+  /** Bed frog `f`'s far card, kept by this sweep: written when new, at a new phrase, and at every sweep of a hop, walking on a drift to its landing that reaches it by the hop's end or one drift, whichever is later, so it never overshoots before the next sweep. */
+  _card(f) {
+    f.cardStamp = this.sweepNo
+    const hop = f.state === 'hop'
+    if (f.cardOn && f.cardPh === f.ph && !hop) return
+    f.cardPh = f.ph
+    _quat.setFromAxisAngle(UP, f.yaw)
+    _tilt.setFromUnitVectors(UP, _nrm.set(f.nx, f.ny, f.nz))
+    _quat.premultiply(_tilt)
+    _mat.compose(_pos.set(f._x, f._y, f._z), _quat, _scl.setScalar(f.size / this.span))
+    this.cards.setMatrixAt(f.id, _mat)
+    hueTurnTint(this.cardMean, f.hue, _tint)
+    this.cards.setColorAt(f.id, _tint.setRGB(_tint.r * f.r, _tint.g * f.g, _tint.b * f.b))
+    const s = hop ? Math.max((1 - f.u) * f.ph.dur, CARD_DRIFT_S) : 1
+    const to = hop ? f.ph.to : { x: f._x, y: f._y, z: f._z }
+    this.cards.setDriftAt(f.id, (to.x - f._x) / s, (to.y - f._y) / s, (to.z - f._z) / s, getPropClock())
+    if (!f.cardOn) {
+      this.cards.setVisibleAt(f.id, true)
+      f.cardOn = true
+      this.carded.add(f)
+    }
+  }
+
+  _uncard(f) {
+    this.cards.setVisibleAt(f.id, false)
+    f.cardOn = false
+    f.cardPh = null
+    this.carded.delete(f)
   }
 
   /** Every bed frog's row is laid again at the next wake: its scale or its landings changed. */
@@ -631,7 +717,7 @@ export class Frogs {
       f.hue = hue
       f.yaw = 0
       f.breath = breath
-      f.lod = LOD_TIERS
+      f.lod = RUNGS
       f.state = 'sit'
       f.ph = null
       f.wet = false
@@ -1063,7 +1149,7 @@ export class Frogs {
     let best = null
     let bestD = reach
     const consider = (f) => {
-      if (f.size >= maxSize || f.lod === LOD_TIERS || f.caught !== null) return
+      if (f.size >= maxSize || f.lod === RUNGS || f.caught !== null) return
       const d = Math.hypot(f.x - x, f.y - y, f.z - z) - f.size * 0.5
       if (d < bestD) { bestD = d; best = { dist: Math.max(0, d), f, size: f.size } }
     }
@@ -1139,7 +1225,7 @@ export class Frogs {
     if (!f) { this.overflow++; return null }
     const key = dropKey(drop.x, drop.z, drop.yaw)
     Object.assign(f, { tile: null, key, index: -1, offset: 0, homeX: from.x, homeZ: from.z, size: look.size, hue: look.hue, r: look.color[0], g: look.color[1], b: look.color[2] })
-    Object.assign(f, { breath: (keyHash(key) % 628) / 100, lod: LOD_TIERS, seg: null, lured: false, lure: null, caught: null, calm: -Infinity, pet: null, drop, under: this.cave !== null && from.y < this.cave.apron.y - 100 })
+    Object.assign(f, { breath: (keyHash(key) % 628) / 100, lod: RUNGS, seg: null, lured: false, lure: null, caught: null, calm: -Infinity, pet: null, drop, under: this.cave !== null && from.y < this.cave.apron.y - 100 })
     f.rand = mulberry32(hash32(keyHash(key), 0x1e))
     this.drops.add(key)
     this._in = f.under ? this.cave.walk : null
@@ -1311,9 +1397,10 @@ export class Frogs {
         sx = sz = 1 + s * 0.4
       }
     }
-    // The tier its apparent size calls for; past the ladder's foot it is not drawn.
-    f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
-    if (f.lod === LOD_TIERS) return
+    // The rung its apparent size calls for; past the ladder's foot it is not drawn, and on the card rung a frog this layer poses is LOD2 (only the sweep writes cards).
+    f.lod = frogTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod)
+    if (f.lod === RUNGS) return
+    const t = Math.min(f.lod, LOD_TIERS - 1)
     const k = f.size / this.span
     _pos.set(f.x, f.y + lift, f.z)
     // Yaw about the world up, then that up tilted onto the ground's normal.
@@ -1322,14 +1409,14 @@ export class Frogs {
     _quat.premultiply(_tilt)
     _scl.set(k * sx, k * sy, k * sz)
     _mat.compose(_pos, _quat, _scl)
-    const tier = this.tiers[f.lod]
-    const w = this.gpuCounts[f.lod] + counts[f.lod]++
+    const tier = this.tiers[t]
+    const w = this.gpuCounts[t] + counts[t]++
     _mat.toArray(tier.instanceMatrix.array, w * 16)
     const c = tier.instanceColor.array
     c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
-    this.hues[f.lod].array[w] = f.hue
+    this.hues[t].array[w] = f.hue
     if (this.anim === null) return
-    const anim = this.animAttrs[f.lod].array
+    const anim = this.animAttrs[t].array
     if (f.state === 'sit') writeAnim(this.anim.idle, (this.uIdle.value + f.breath / (2 * Math.PI)) % 1, idleWeight(f.t, f.ph.dur), anim, w * 4)
     else writeAnim(this.anim.hop, f.u, hopWeight(f.u), anim, w * 4)
   }
@@ -1436,6 +1523,7 @@ export class Frogs {
     }
     if (on) {
       this.cpu.clear()
+      for (const f of this.carded) this._uncard(f)
       for (let k = 0; k < LOD_TIERS; k++) {
         this.rowAttrs[k].array.fill(0, 0, this.gpuCounts[k])
         this.rowAttrs[k].needsUpdate = true
@@ -1488,8 +1576,9 @@ export class Frogs {
     }
   }
 
-  /** The bed frogs on their plans sorted into the tiers their apparent size calls for, each tier's head of the arrays (row, tint, hue, breath) rewritten if the list changed. */
+  /** The bed frogs on their plans sorted onto the rungs their apparent size calls for: each mesh tier's head of the arrays (row, tint, hue, breath) rewritten if the list changed, and the cards kept (_card) or put away. */
   _sweep(hx, hy, hz, now) {
+    this.sweepNo++
     this.sweptAt = now
     this.sweptHead.x = hx; this.sweptHead.y = hy; this.sweptHead.z = hz
     this.hopped = false
@@ -1502,9 +1591,10 @@ export class Frogs {
       for (const f of t.frogs) {
         if (!f.gpu) continue
         if (f.sat !== now) this._sync(f)
-        f.lod = critterTier(f.size, Math.hypot(f._x - hx, f._y - hy, f._z - hz), f.lod, LOD_TIERS)
-        if (f.lod === LOD_TIERS) continue
-        const k = f.lod
+        f.lod = frogTier(f.size, Math.hypot(f._x - hx, f._y - hy, f._z - hz), f.lod)
+        if (f.lod === RUNGS) continue
+        if (f.lod === CARD && this.cardReady) { this._card(f); continue }
+        const k = Math.min(f.lod, LOD_TIERS - 1)
         const i = counts[k]++
         const rows = this.rowAttrs[k].array
         if (force || rows[i] !== f.id + 1) {
@@ -1528,6 +1618,7 @@ export class Frogs {
       }
       this.gpuCounts[k] = counts[k]
     }
+    for (const f of this.carded) if (f.cardStamp !== this.sweepNo) this._uncard(f)
   }
 
   /** The matrix the shader draws instance `i` of tier `k` with, in doubles from the texels it reads: the JS twin of MOTION_GLSL, for the gates. A CPU row gives the tier's own matrix, an emptied row a zero scale. */
@@ -1599,7 +1690,7 @@ export class Frogs {
     // The tint row (critters.js): each tier's mesh onto its flat colour, or all of them back onto the one shared material.
     if (this.tinted !== tierTintOn()) {
       this.tinted = tierTintOn()
-      this.tiers.forEach((m, k) => { m.material = this.tinted ? TIER_TINTS[k] : this.material })
+      this.tiers.forEach((m, k) => { m.material = this.tinted ? TIER_TINTS[LOD_LEVELS[k]] : this.material })
     }
     if (this.tinted !== this.cpuAll) this._setCpuAll(this.tinted)
 
@@ -1684,6 +1775,7 @@ export class Frogs {
 
   dispose() {
     this.batch.parent?.remove(this.batch)
+    for (const f of this.carded) this._uncard(f)
     for (const tier of this.tiers) tier.geometry.dispose()
     this.material.map?.dispose()
     this.material.dispose()

@@ -24,7 +24,7 @@
 import * as THREE from 'three'
 import fs from 'node:fs'
 import { Fish, FISH_ROW_TEXELS, SPECIES, TILE, RADIUS, HUE, DART_SPEED, STUN_S, LOOSE_GONE_M, LURES, LURE_M, LURE_FORGET_M, LURE_HASTE, LURED_EVERY_S, PREY, CURRENT_MPS } from '../src/v2/render/fish.js'
-import { CHAPTER_S, GRID_S, TICK_S, chapterOf, tickOf } from '../src/sim/score.js'
+import { CHAPTER_S, GRID_S, TICK_S, chapterOf, tickOf, tickAfter } from '../src/sim/score.js'
 import { taken } from '../src/v2/taken.js'
 import { TIME_HI } from '../src/v2/render/gpu-motion.js'
 import { SPECIES as ROSTER } from '../tools/fauna/fish-roster.mjs'
@@ -140,7 +140,9 @@ for (const sp of fish.species) {
 const T0 = 4321.37
 const DT = 1 / 72
 const clock = { seconds: T0 }
-const step = (x, y, z, lures) => { clock.seconds += DT; fish.update(x, y, z, clock.seconds, lures) }
+// A fish's place and look are worked out only when asked for; the gate asks for every fish every frame.
+const poseAll = (of) => { for (const sp of of.species) for (const f of sp.slots) if (f.alive) of.pose(f) }
+const step = (x, y, z, lures) => { clock.seconds += DT; fish.update(x, y, z, clock.seconds, lures); poseAll(fish) }
 fish.place(0, 0)
 const alive = (of = fish) => of.species.flatMap((sp) => sp.slots.filter((f) => f.alive))
 const bass = fish.species.find((sp) => sp.id === 'ironscale-bass')
@@ -185,7 +187,7 @@ let bent = 0
 let stiff = 0
 let pitched = 0
 let arched = 0
-// Every glimmerfin bolt onset, grouped by the startle that armed it (the frame a school's boltIn timers were seen set), to catch a startle that fires the whole shoal at once: one startle's onsets must spread over time and miss some of the shoal.
+// Every glimmerfin bolt onset, grouped by the startle that armed it (the frame a school's boltTick was seen set), to catch a startle that fires the whole shoal at once: one startle's onsets must spread over time and miss some of the shoal.
 const startles = new Map()
 const armedBy = new Map()
 const wasBolt = new Map()
@@ -194,11 +196,22 @@ const wasMood = new Map()
 const setOffs = { 'ironscale-bass': 0, 'rime-fangpike': 0, 'glimmerfin': 0 }
 let listedWrong = 0
 let listedSlow = 0
-// The largest jump a drawn fish makes between frames: a segment turn snaps each fish onto its station, and the ease before it must have brought it close enough that the snap is nothing the eye reads.
+// The largest jump a drawn fish makes between frames, in place and in velocity: legs meet with matched velocity and acceleration, a segment turn's last leg lands on the next one's start, so neither may snap. A kick is a snap past 0.5 m/s and past 0.1 of its speed: the swim's own hardest turn at a glimmerfin's top bolt is 0.44 m/s a frame.
 const drawn = new Map()
 let jumps = 0
 let jumpMax = 0
+let kickMax = 0
 let turns = 0
+// Every plan, by school and tick: how many of a school pick their next leg on the same tick, off the segment's first.
+const plans = new Map()
+const plan = fish._plan
+fish._plan = function (sp, f, school, tick, w, i) {
+  if (tick !== tickAfter(school.seg * GRID_S + school.offset)) {
+    const k = `${school.key}@${tick}`
+    plans.set(k, { n: (plans.get(k)?.n ?? 0) + 1, size: school.members.length, sp: sp.id })
+  }
+  return plan.call(this, sp, f, school, tick, w, i)
+}
 for (let i = 0; i < SECONDS / DT; i++) {
   step(0, LEVEL + 1.6, 0)
   const listedNow = new Set(fish.startled([]))
@@ -206,10 +219,10 @@ for (let i = 0; i < SECONDS / DT; i++) {
   for (const sp of fish.species) {
     for (const f of sp.slots) {
       const mood = wasMood.get(f)
-      wasMood.set(f, f.alive ? { mood: f.mood, left: f.moodLeft, seg: f.school.seg } : undefined)
+      wasMood.set(f, f.alive ? { mood: f.mood, end: f.moodEnd, seg: f.school.seg } : undefined)
       const turned = f.alive && mood !== undefined && mood.seg !== f.school.seg
       if (turned) turns++
-      const fresh = f.alive && mood !== undefined && !turned && (f.mood !== mood.mood || f.moodLeft > mood.left)
+      const fresh = f.alive && mood !== undefined && !turned && (f.mood !== mood.mood || f.moodEnd > mood.end)
       const fast = fresh && f.speed >= DART_SPEED
       if (fast) setOffs[sp.id]++
       // A turn frame re-rolls the mood after the tick.
@@ -221,7 +234,7 @@ for (let i = 0; i < SECONDS / DT; i++) {
       if (turned && armedBy.has(f)) { armedBy.get(f).cut = true; armedBy.delete(f) }
       if (!f.alive) armedBy.delete(f)
       // A fish at the very edge the fright starts from bolts on the arming frame itself, so its timer is never seen above zero.
-      else if ((f.boltIn > 0 || onset) && !armedBy.has(f)) {
+      else if ((f.boltTick !== Infinity || onset) && !armedBy.has(f)) {
         const key = `${f.school.key}@${i}`
         if (!startles.has(key)) startles.set(key, { first: Infinity, last: 0, n: 0, size: f.school.members.length })
         armedBy.set(f, startles.get(key))
@@ -238,15 +251,15 @@ for (let i = 0; i < SECONDS / DT; i++) {
       const was = yawOf.get(f)
       yawOf.set(f, f.alive ? yaw : undefined)
       if (f.alive) {
-        const a = f.school.rec.alpha
-        const x = f.px + (f.x - f.px) * a, y = f.py + (f.y - f.py) * a, z = f.pz + (f.z - f.pz) * a
         const d = drawn.get(f)
         if (d && i > 72) {
-          const jump = Math.hypot(x - d[0], y - d[1], z - d[2])
-          if (jump > 0.35) jumps++
+          const jump = Math.hypot(f.x - d[0], f.y - d[1], f.z - d[2])
+          const kick = Math.hypot(f.vx - d[3], f.vy - d[4], f.vz - d[5])
+          if (jump > 0.2 || (kick > 0.5 && kick > 0.1 * Math.hypot(f.vx, f.vy, f.vz))) jumps++
           jumpMax = Math.max(jumpMax, jump)
+          kickMax = Math.max(kickMax, kick)
         }
-        drawn.set(f, [x, y, z])
+        drawn.set(f, [f.x, f.y, f.z, f.vx, f.vy, f.vz])
       } else drawn.delete(f)
       if (!f.alive || was === undefined || i < 72) continue
       if (Math.abs(f.pitch) > 0.15) {
@@ -280,14 +293,21 @@ check(dry === 0, `no fish out of the water over ${SECONDS} s`, `${dry} samples d
 check(bar === 0, 'no fish crossed the bar of land', `${bar} samples on it`)
 check(fish.stats.beached === 0, 'no fish had to be put back at its anchor', `${fish.stats.beached} beached`)
 check(fish.stats.ticks >= fish.stats.schools * SECONDS * 20 * 0.99, 'every school ticks at 20 Hz on the clock', `${fish.stats.ticks} ticks for ${fish.stats.schools} schools`)
-check(turns >= alive().length * Math.floor(SECONDS / GRID_S) && jumps === 0, 'a segment turn snaps no drawn fish further than the eye reads', `${turns} fish-turns, ${jumps} jumps over 0.35 m, largest ${jumpMax.toFixed(3)} m`)
+fish._plan = plan
+check(turns >= alive().length * Math.floor(SECONDS / GRID_S) && jumps === 0, 'no fish snaps in place or velocity between frames, across legs and segment turns', `${turns} fish-turns, ${jumps} frames over 0.2 m or the kick bar, largest ${jumpMax.toFixed(3)} m and ${kickMax.toFixed(3)} m/s`)
+for (const id of Object.keys(speeds)) {
+  // A fish replans alone: on a tick its schoolmates mostly leave be, so no school turns as one.
+  const ps = [...plans.values()].filter((p) => p.sp === id && p.size >= 4)
+  if (!ps.length) continue
+  const together = ps.reduce((a, p) => a + p.n * (p.n / p.size), 0) / ps.reduce((a, p) => a + p.n, 0)
+  check(together < 0.3, `${id}: schoolmates pick their legs on their own ticks`, `a plan shares its tick with ${(together * 100).toFixed(0)}% of the school on average`)
+}
 check(turning > 1000 && bent / turning > 0.9, 'a turning fish arcs into its turn', `${bent} of ${turning} turning frames bent the right way`)
 check(stiff / Math.max(1, turning) < 0.01, 'no fish turns straight as a board', `${stiff} of ${turning} turning frames stiff`)
 check(pitched > 1000 && arched / pitched > 0.9, 'a pitched fish arcs into its climb or dive', `${arched} of ${pitched} pitched frames arched the right way`)
 {
-  // A startle still rippling when the run ends is cut short; only whole ones count.
-  // A startle cut by a segment turn is whatever bolted before the turn; only whole ripples are measured.
-  const shoals = [...startles.values()].filter((s) => s.size >= 6 && s.n > 0 && s.first < SECONDS - 2 && !s.cut)
+  // Only whole ripples are measured: not one still running when the run ends, nor one cut by a segment turn, nor one fish alone (the rest on their last leg into the turn let it pass).
+  const shoals = [...startles.values()].filter((s) => s.size >= 6 && s.n > 1 && s.first < SECONDS - 2 && !s.cut)
   const cut = [...startles.values()].filter((s) => s.size >= 6 && s.cut).length
   const spreads = shoals.map((s) => s.last - s.first)
   const onOneFrame = spreads.filter((s) => s < DT / 2).length
@@ -391,6 +411,7 @@ for (const sp of fish.species) {
   check(deep.length > 40 && meanDeep > 1.6, 'fish over 12 m of water skew large', `${deep.length} fish, mean scale ${meanDeep.toFixed(2)}`)
   check(Math.min(...deep) < 0.9 && Math.max(...deep) > 2.2, 'but the deep still holds the odd small one, and some giants', `${Math.min(...deep).toFixed(2)} .. ${Math.max(...deep).toFixed(2)}`)
   for (let i = 0; i < 10 * 72; i++) deepFish.update(0, LEVEL - 5, 0, T0 + i * DT)
+  poseAll(deepFish)
   const big = deepFish.species.flatMap((sp) => sp.slots.filter((f) => f.alive))
   check(big.every((f) => f.y >= f.bed + f.margin && f.y <= f.level - f.margin), 'a giant keeps its own bulk off the bed and under the surface', `${big.length} fish after 10 s`)
   deepFish.dispose()
@@ -455,48 +476,66 @@ check(alive().every(inWater), 'every refilled fish is in the water')
   // The first frame under: every school is caught up from its segment's start to the clock, and not a fish is out of the water.
   const ticks0 = fish.stats.ticks
   step(0, LEVEL - 1, -40)
-  check(fish.stats.ticks > ticks0 && alive().every(inWater) && fish.species.every((sp) => sp.schools.every((sc) => sc.rec.alpha >= 0 && sc.rec.alpha <= 1)), 'the first frame under has every school caught up to the clock', `${fish.stats.ticks - ticks0} ticks for ${fish.stats.schools} schools`)
+  check(fish.stats.ticks > ticks0 && alive().every(inWater) && fish.species.every((sp) => sp.schools.every((sc) => sc.rec.tick === tickOf(clock.seconds))), 'the first frame under has every school caught up to the clock', `${fish.stats.ticks - ticks0} ticks for ${fish.stats.schools} schools`)
   for (let i = 0; i < 3 * 72; i++) step(0, LEVEL, 0)
 }
 
 // --- the pose is the shader's ---------------------------------------------
-// A JS twin of the vertex shader's row math (FISH_GLSL), run on the row as the GPU holds it at world time t, against the pose the slot's own fields describe composed with three. Kept in step with the shader.
+// A JS twin of the vertex shader's row math (FISH_GLSL), run on the row as the GPU holds it at world time t, against Fish._eval and Fish._look composed with three. Kept in step with the shader.
 const fishPose = (sp, f, t) => {
   const d = sp.rows.data
   const o = f.id * FISH_ROW_TEXELS * 4
-  const sc = d[o + 7]
+  const T = Array.from({ length: FISH_ROW_TEXELS }, (_, i) => [d[o + 4 * i], d[o + 4 * i + 1], d[o + 4 * i + 2], d[o + 4 * i + 3]])
+  const [t0, t1, t2, t3, t4, t5, t6, t7, t8] = T
+  const sc = t5[3]
   if (sc === 0) return null
+  const D = t5[1]
   const hi = Math.floor(t / TIME_HI) * TIME_HI
-  const e = Math.max(0, (hi - d[o + 22]) + ((t - hi) - d[o + 3]))
-  const a = Math.min(1, Math.max(0, e * 20))
-  const mix = (u, v) => u + (v - u) * a
-  const p = [mix(d[o], d[o + 4]), mix(d[o + 1], d[o + 5]), mix(d[o + 2], d[o + 6])]
-  const rx = mix(d[o + 10], d[o + 11]), ry = mix(d[o + 8], d[o + 9]), rz = mix(d[o + 12], d[o + 13])
+  const u = (hi - t5[2]) + ((t - hi) - t5[0])
+  const s = Math.min(1, u / D)
+  const over = u - s * D
+  const ea = 1 / (D * D)
+  const c = [[t0[0], t2[0], t3[0]], [t0[1], t2[1], t3[1]], [t0[2], t2[2], t3[2]], [t0[3], t2[3], t3[3]], [t1[0], t1[2], t4[0]], [t1[1], t1[3], t4[1]]]
+  const v = [0, 1, 2].map((j) => (c[1][j] + s * (2 * c[2][j] + s * (3 * c[3][j] + s * (4 * c[4][j] + s * 5 * c[5][j])))) / D)
+  const a = [0, 1, 2].map((j) => (2 * c[2][j] + s * (6 * c[3][j] + s * (12 * c[4][j] + s * 20 * c[5][j]))) * ea)
+  const drift = [t4[2], 0, t4[3]]
+  const p = [0, 1, 2].map((j) => c[0][j] + s * (c[1][j] + s * (c[2][j] + s * (c[3][j] + s * (c[4][j] + s * c[5][j])))) + v[j] * over + drift[j] * u)
+  const F = [v[0] + t6[0] + (t6[2] - t6[0]) * s, v[2] + t6[1] + (t6[3] - t6[1]) * s]
+  const dF = [a[0] + (t6[2] - t6[0]) / D, a[2] + (t6[3] - t6[1]) / D]
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
+  const turn = clamp((F[0] * dF[1] - F[1] * dF[0]) / Math.max(F[0] * F[0] + F[1] * F[1], 1e-6) / 6, -1, 1)
+  const hs = Math.hypot(v[0], v[2])
+  const H = Math.max(hs, 0.05)
+  const rx = Math.atan2(v[1], H)
+  const dhs = hs > 0.05 ? (v[0] * a[0] + v[2] * a[2]) / hs : 0
+  const dp = (H * a[1] - v[1] * dhs) / (H * H + v[1] * v[1])
+  const wu = Math.min(u, D)
+  const s1 = t8[0] + t8[1] * D + t8[2] * D * D
+  const phase = t7[0] + t7[1] * (0.4 * u + 0.6 * t7[2] * (wu * (t8[0] + wu * (t8[1] * 0.5 + wu * t8[2] / 3)) + s1 * over))
+  const amp = t7[3] * Math.min(1.6, 0.5 + 0.5 * Math.hypot(...v) * t7[2]) * (1 + 2 * Math.abs(turn))
+  const swim = [phase, amp, clamp(turn * 2, -0.4, 0.4) * t8[3], clamp(dp * 0.2 + rx * 0.8, -0.3, 0.3) * t8[3]]
+  const ry = Math.atan2(-F[0], -F[1])
+  const rz = -turn * 0.5
   const ca = Math.cos(rx), sa = Math.sin(rx), cc = Math.cos(ry), sd = Math.sin(ry), ce = Math.cos(rz), sf = Math.sin(rz)
   const ccE = cc * ce, ccF = cc * sf, sdE = sd * ce, sdF = sd * sf
   const r = [ccE + sdF * sa, ca * sf, ccF * sa - sdE, sdE * sa - ccF, ca * ce, sdF + ccE * sa, ca * sd, -sa, ca * cc]
-  const m = [...r.slice(0, 3).map((v) => v * sc), 0, ...r.slice(3, 6).map((v) => v * sc), 0, ...r.slice(6, 9).map((v) => v * sc), 0, ...p, 1]
-  return { m, swim: [d[o + 20] + d[o + 21] * e, mix(d[o + 18], d[o + 19]), mix(d[o + 14], d[o + 15]), mix(d[o + 16], d[o + 17])], a }
+  const m = [...r.slice(0, 3).map((x) => x * sc), 0, ...r.slice(3, 6).map((x) => x * sc), 0, ...r.slice(6, 9).map((x) => x * sc), 0, ...p, 1]
+  return { m, swim }
 }
-// The pose a slot's fields describe at time t, drawn from the tick it was stamped at (schooled) or at once (loose), composed with three.
-const fishReference = (f, t) => {
-  const loose = f.loose
-  const stamp = loose ? t - 2 * TICK_S : f.school.rec.tick * TICK_S
-  const e = Math.max(0, t - stamp)
-  const a = Math.min(1, Math.max(0, e * 20))
-  const mix = (u, v) => u + (v - u) * a
-  const turn = f.yaw - f.pyaw
-  const yaw0 = f.yaw - (turn - Math.PI * 2 * Math.round(turn / (Math.PI * 2)))
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(mix(f.ppitch, f.pitch), mix(yaw0, f.yaw), mix(f.proll, f.roll), 'YXZ'))
-  const m = new THREE.Matrix4().compose(new THREE.Vector3(mix(f.px, f.x), mix(f.py, f.y), mix(f.pz, f.z)), q, new THREE.Vector3(f.scale, f.scale, f.scale))
-  return { m: m.toArray(), swim: [f.phase + f.rate * (loose ? 0 : e), mix(f.pamp, f.amp), mix(f.pcurve, f.curve), mix(f.plift, f.lift)] }
+// The pose the CPU's own leg gives at time t, composed with three.
+const fishReference = (of, sp, f, t) => {
+  const o = of._eval(f, t, {})
+  const look = Fish._look(o, f.L, sp.lengthM)
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(look.pitch, look.yaw, look.roll, 'YXZ'))
+  const m = new THREE.Matrix4().compose(new THREE.Vector3(o.x, o.y, o.z), q, new THREE.Vector3(f.scale, f.scale, f.scale))
+  return { m: m.toArray(), swim: [o.phase, look.amp, look.curve, look.lift] }
 }
 const gapOf = (x, y) => Math.max(...x.map((v, i) => Math.abs(v - y[i])))
-const poseGap = (sp, f, t) => {
+const poseGap = (sp, f, t, of = fish) => {
   const got = fishPose(sp, f, t)
   if (got === null) return { pose: Infinity, phase: Infinity }
-  const want = fishReference(f, t)
-  // The tail phase is compared on the circle, the CPU keeping it in [0, TAU); it carries the stamp's float32 rounding times the beat, so it gets a looser bar than the matrix.
+  const want = fishReference(of, sp, f, t)
+  // The tail phase is compared on the circle; it carries the row's float32 time times the beat, so it gets a looser bar than the matrix.
   return { pose: Math.max(gapOf(got.m, want.m), gapOf(got.swim.slice(1), want.swim.slice(1))), phase: Math.abs(Math.sin(got.swim[0] - want.swim[0])) }
 }
 {
@@ -515,20 +554,22 @@ const poseGap = (sp, f, t) => {
       frames++
     }
   }
-  check(bad === 0 && frames > 5000 && worst < 2e-3 && worstPhase < 1e-2, 'the shader\'s pose of a fish is the slot\'s own pose composed with three', `${frames} fish-frames, worst gap ${worst.toExponential(2)}, tail phase ${worstPhase.toExponential(2)} rad`)
-  const some = live()[0]
-  const mid = fishPose(some.sp, some.f, clock.seconds)
-  check(mid.a >= 0 && mid.a <= 1 && Math.abs(mid.m[12] - some.f.x) < 1, 'and sits between its last two ticks', `a ${mid.a.toFixed(2)}`)
-  for (const sp of fish.species) check(sp.mesh.count === sp.top && sp.slots.every((f) => f.alive === (sp.rows.data[f.id * FISH_ROW_TEXELS * 4 + 7] !== 0)), `${sp.id}: a row is drawn exactly when its slot is alive, and the mesh covers them`, `${sp.mesh.count} drawn`)
+  check(bad === 0 && frames > 5000 && worst < 2e-3 && worstPhase < 1e-2, 'the shader\'s pose of a fish is the CPU\'s leg composed with three', `${frames} fish-frames, worst gap ${worst.toExponential(2)}, tail phase ${worstPhase.toExponential(2)} rad`)
+  // A quarter second on with nothing written, the row alone has the fish somewhere else.
+  const moved = live().filter(({ sp, f }) => { const a = fishPose(sp, f, clock.seconds).m, b = fishPose(sp, f, clock.seconds + 0.25).m; return Math.hypot(b[12] - a[12], b[13] - a[13], b[14] - a[14]) > 0.005 }).length
+  check(moved > live().length * 0.9, 'and the row swims the fish on between writes', `${moved} of ${live().length} moved in 0.25 s`)
+  for (const sp of fish.species) check(sp.mesh.count === sp.top && sp.slots.every((f) => f.alive === (sp.rows.data[f.id * FISH_ROW_TEXELS * 4 + 23] !== 0)), `${sp.id}: a row is drawn exactly when its slot is alive, and the mesh covers them`, `${sp.mesh.count} drawn`)
 }
-// Frames between ticks write nothing: a school's rows are written on its tick and the matrix, swim, hue and tint buffers never.
+// A row is written when its fish picks a leg, and at no other time: a frame with no tick writes nothing, a tick writes only the fish whose legs ended, and the matrix, swim, hue and tint buffers never.
 {
   let quiet = 0
   let wrote = 0
-  let tickFrames = 0
-  let tickWrites = 0
   let leaked = 0
-  for (let i = 0; i < 6 * 72; i++) {
+  const S = 6
+  const writes = new Map(fish.species.map((sp) => [sp, 0]))
+  const legs0 = fish.legs
+  const writes0 = fish.species.reduce((a, sp) => a + sp.rows.writes, 0)
+  for (let i = 0; i < S * 72; i++) {
     const before = fish.species.map((sp) => [sp.rows.writes, sp.rows.texture.version, sp.mesh.instanceMatrix.version, sp.swim.version, sp.hue.version, sp.mesh.instanceColor.version])
     const was = tickOf(clock.seconds)
     step(0, LEVEL - 1, 0)
@@ -536,21 +577,27 @@ const poseGap = (sp, f, t) => {
     fish.species.forEach((sp, k) => {
       const b = before[k]
       const n = sp.rows.writes - b[0]
+      writes.set(sp, writes.get(sp) + n)
       if (sp.mesh.instanceMatrix.version !== b[2] || sp.swim.version !== b[3] || sp.hue.version !== b[4] || sp.mesh.instanceColor.version !== b[5]) leaked++
-      if (ticked) tickWrites += n
-      else wrote += n + (sp.rows.texture.version !== b[1] ? 1 : 0)
+      if (!ticked) wrote += n + (sp.rows.texture.version !== b[1] ? 1 : 0)
     })
-    if (ticked) tickFrames++
-    else quiet++
+    if (!ticked) quiet++
   }
-  check(quiet > 6 * 72 * 0.5 && wrote === 0, 'frames between ticks write no row and upload no texture', `${quiet} quiet frames, ${wrote} writes`)
-  check(tickFrames >= 6 * 20 - 2 && tickWrites >= fish.stats.alive * tickFrames * 0.9 && leaked === 0, 'a tick frame writes every schooled fish\'s row, and no frame writes the matrix, swim, hue or tint buffers', `${tickFrames} tick frames, ${tickWrites} rows, ${leaked} stray uploads`)
+  check(quiet > S * 72 * 0.5 && wrote === 0, 'frames between ticks write no row and upload no texture', `${quiet} quiet frames, ${wrote} writes`)
+  // A segment turn writes each fish's hold once on top of its legs.
+  const holds = fish.species.reduce((a, sp) => a + sp.rows.writes, 0) - writes0 - (fish.legs - legs0)
+  check(leaked === 0 && holds >= 0 && holds <= fish.stats.alive * Math.ceil(S / GRID_S + 1), 'every row written is a leg picked or a turn\'s hold, and no frame writes the matrix, swim, hue or tint buffers', `${fish.legs - legs0} legs, ${holds} holds, ${leaked} stray uploads`)
+  for (const sp of fish.species) {
+    const n = sp.slots.filter((f) => f.alive).length
+    const every = (n * S) / writes.get(sp)
+    check(every > 0.2, `${sp.id}: a fish writes its row once a leg, not once a tick`, `once every ${every.toFixed(2)} s on average, ${(writes.get(sp) / S).toFixed(0)} rows a second for ${n} fish`)
+  }
 }
 
 // --- the room: two clients swim the same fish -------------------------------
 // A twin on the same seed, fed the same head on another frame cadence, holds every fish to the bit; a late joiner placed mid-segment is on the same fish after its first frame.
 const twin = new Fish(new THREE.Scene(), height, water, { seed: 23, assets })
-const poseOf = (of) => new Map(of.species.flatMap((sp) => sp.schools.flatMap((sc) => sc.members.map((f) => [`${sc.key}#${f.index}`, [f.x, f.y, f.z, f.vx, f.vy, f.vz, f.mood, f.speed, sc.x, sc.z]]))))
+const poseOf = (of) => new Map(of.species.flatMap((sp) => sp.schools.flatMap((sc) => sc.members.map((f) => (of.pos(f), [`${sc.key}#${f.index}`, [f.x, f.y, f.z, f.vx, f.vy, f.vz, f.mood, f.speed, sc.x, sc.z]])))))
 const agree = (a, b) => {
   if (a.size !== b.size) return { ok: false, why: `${a.size} vs ${b.size} fish` }
   let worst = 0
@@ -647,7 +694,7 @@ const agree = (a, b) => {
   // Let go in the lake: stunned, then away from her.
   const ok = fish.release(rec, 5, LEVEL - 0.5, 0, head)
   const loose = sp.slots.find((g) => g.loose)
-  check(ok && loose && loose.alive && loose.stun > 0 && loose.amp === 0 && loose.size === rec.size && loose.index === -1, 'in the lake it is back in the layer, loose and stunned', loose ? `stun ${loose.stun.toFixed(2)} s` : 'none')
+  check(ok && loose && loose.alive && loose.stun > 0 && fish.pose(loose).amp === 0 && loose.size === rec.size && loose.index === -1, 'in the lake it is back in the layer, loose and stunned', loose ? `stun ${loose.stun.toFixed(2)} s` : 'none')
   const x0 = loose.x
   step(head.x, head.y, head.z)
   check(Math.abs(loose.x - x0) < 0.01 && loose.amp === 0, 'stunned, it drifts with its tail still')
@@ -725,12 +772,13 @@ const agree = (a, b) => {
   })
   const want = bass.cfg.cruise * LURE_HASTE * f.pace
   check(near < 0.1 && passes >= 4, 'it runs through the hand and comes round to run through it again', `nearest ${near.toFixed(2)} m, ${passes} passes in 12 s`)
-  check(top > want * 0.9 && top <= want * 1.01, `near ${LURE_HASTE}x its cruise the while`, `${top.toFixed(2)} of ${want.toFixed(2)} m/s`)
+  // A leg's quintic runs a few percent over the swim's speed through the chase's hard turn.
+  check(top > want * 0.9 && top <= want * 1.05, `near ${LURE_HASTE}x its cruise the while`, `${top.toFixed(2)} of ${want.toFixed(2)} m/s`)
   // The lure takes whoever passes within LURE_M; the rest of the school follows its anchor on.
   check(swarm >= 2, 'and a schoolmate is on the hand with it', `${swarm} bass on it at most`)
   check(sets <= 12 / LURED_EVERY_S + 1, `the changing set goes out at most once in ${LURED_EVERY_S} s`, `${sets} sets in 12 s`)
   {
-    const tf = twin.species.find((s) => s.id === bass.id).schools.find((sc) => sc.key === f.school.key).members.find((m) => m.index === f.index)
+    const tf = twin.pos(twin.species.find((s) => s.id === bass.id).schools.find((sc) => sc.key === f.school.key).members.find((m) => m.index === f.index))
     check(Math.hypot(tf.x - f.x, tf.z - f.z) > 0.5, 'the twin without the lure has that fish elsewhere', `${Math.hypot(tf.x - f.x, tf.z - f.z).toFixed(2)} m apart`)
   }
   // Lifted: the fish rises to the hand's height.
@@ -800,7 +848,7 @@ const agree = (a, b) => {
   const gulps = []
   const prey = new Fish(new THREE.Scene(), height, water, { seed: 23, assets, harm: (n, why) => bites.push([n, why]), swallow: (why) => gulps.push(why) })
   const at = { seconds: clock.seconds }
-  const go = (head, s) => { for (let i = 0; i < s * 72; i++) { at.seconds += DT; prey.update(head.x, head.y, head.z, at.seconds) } }
+  const go = (head, s) => { for (let i = 0; i < s * 72; i++) { at.seconds += DT; prey.update(head.x, head.y, head.z, at.seconds) } poseAll(prey) }
   prey.place(0, 0)
   go({ x: 0, y: LEVEL - 1, z: 0 }, 1)
   const sp = (id) => prey.species.find((g) => g.id === id)
@@ -843,6 +891,7 @@ const agree = (a, b) => {
   clock.seconds += 300
   fish.update(0, LEVEL + 1.6, 0, clock.seconds)
   fish._tick = tick
+  poseAll(fish)
   const now = tickOf(clock.seconds)
   const most = Math.max(...ticked.values())
   const caught = schools.every((sc) => sc.rec.tick === now)
@@ -857,7 +906,7 @@ const agree = (a, b) => {
   for (let i = 0; i < 72; i++) step(0, LEVEL, 0)
   const FRAMES = 1000
   const t0 = performance.now()
-  for (let i = 0; i < FRAMES; i++) step(0, LEVEL, 0)
+  for (let i = 0; i < FRAMES; i++) { clock.seconds += DT; fish.update(0, LEVEL, 0, clock.seconds) }
   const ms = (performance.now() - t0) / FRAMES
   // Node, single-threaded, on whatever this machine is: a loose bound, there to catch a neighbour search that went quadratic, not to measure.
   check(ms < 1.5, 'a frame of the beds stays cheap', `${ms.toFixed(3)} ms for ${alive().length} fish`)
@@ -938,12 +987,13 @@ const agree = (a, b) => {
   const sag = (w) => {
     const f = new Fish(new THREE.Scene(), height, w, { seed: 23, assets })
     f.place(0, 0)
-    let sum = 0, n = 0
+    let sum = 0, n = 0, last = T3
     for (let t = T3; t < T3 + 20; t += DT) {
       f.update(0, LEVEL - 1, 0, t)
-      for (const sp of f.species) for (const sc of sp.schools) for (const m of sc.members) { sum += m.x - sc.x; n++ }
+      last = t
+      for (const sp of f.species) for (const sc of sp.schools) for (const m of sc.members) { sum += f.pos(m).x - sc.x; n++ }
     }
-    return { f, lead: sum / n }
+    return { f, lead: sum / n, last }
   }
   const still = sag(water)
   const flowing = sag(river)
@@ -951,7 +1001,7 @@ const agree = (a, b) => {
     `${still.lead.toFixed(2)} m still, ${flowing.lead.toFixed(2)} m at ${CURRENT_MPS} m/s`)
   const late = new Fish(new THREE.Scene(), height, river, { seed: 23, assets })
   late.place(0, 0)
-  late.update(0, LEVEL - 1, 0, T3 + 20 - DT)
+  late.update(0, LEVEL - 1, 0, flowing.last)
   const r = agree(poseOf(flowing.f), poseOf(late))
   check(r.ok, 'and a late joiner swims the same drifting fish', r.why)
   for (const f of [still.f, flowing.f, late]) f.dispose()

@@ -33,15 +33,20 @@ import { TIME_HI } from './gpu-motion.js'
 // the fright that sends the shoal after it; and the chapter's last hop goes
 // home, so the next chapter starts from nothing. The anchor at any world time
 // is that chain walked from the chapter start, every roll and every shore
-// test a pure function, so two clients hold it to the bit. The fish are
-// stepped at TICK_HZ on absolute ticks of the room's clock, each from its own
-// PRNG keyed by segment, and every GRID_S seconds (the school's grid, offset
-// by its key) each is put back at its station -- a pose closed-form in (key,
-// segment) -- with the last EASE_S of a segment a pull onto the next station,
-// so what one client integrates never strays from what another does for
-// longer than a segment. A tick also carries the fish's facing, roll, curve,
-// lift and tail beat on a filter of its own; the frame draws between the last
-// two ticks' poses in the vertex shader and the CPU writes nothing between ticks.
+// test a pure function, so two clients hold it to the bit.
+//
+// EVERY FISH IS ON AUTOPILOT. A schooled fish swims a LEG: a quintic from
+// where it is to where it means to be in `leg` seconds of its own roll, plus
+// the current's drift, written to its row once and drawn by the shader from
+// then on. When a leg ends -- at absolute ticks of the room's clock, each fish
+// on its own -- the fish looks once at the water under and ahead of it, rolls
+// its mood, aims (wander, station, shore, lure, school-mates where they are on
+// that tick) and swims the next leg in a quick integration from its own PRNG
+// keyed by segment. Every GRID_S seconds (the school's grid, offset by its
+// key) each fish's last leg lands on its station for the next segment -- a
+// pose closed-form in (key, segment) -- so what one client plans never strays
+// from what another does for longer than a segment. Facing, roll, curve, lift
+// and the tail all follow from the leg's own derivatives, on GPU and CPU alike.
 //
 // ONE AI, THREE PERSONALITIES. Every fish is a heading that wanders, a speed
 // that is steered toward a target, a pull toward its own station in the
@@ -72,24 +77,22 @@ import { TIME_HI } from './gpu-motion.js'
 // (creature-net.js), so a peer's copy of her hand keeps the same fish on it.
 //
 // NO NEIGHBOUR SEARCH. Separation runs only inside a school, and a school is
-// at most 14 fish, so a tick is linear in the fish. Pike keep apart from the
-// other pike of their bed. Bed and surface are probed every PROBE_EVERY ticks
-// per fish and cached, because heightAt is the one thing in this file that
-// is not arithmetic.
+// at most 14 fish, so a plan is linear in the school. Pike keep apart from
+// the other pike of their bed. The water a plan looks at is the Shallows: bed,
+// surface and current on a 1 m lattice filled once per corner and shared by
+// every fish, because heightAt is the one thing here that is not arithmetic.
 //
 // THE POSE IS THE SHADER'S. public/fauna/fish.json (tools/fauna/ship.mjs)
 // carries each species' picked Tripo mesh, nose at -Z, with a per-vertex
 // swim-bend weight. Each fish is one instance whose row in the species'
-// RowTable (butterflies.js) holds the last two ticks' position, yaw, pitch,
-// roll, curve, lift and tail amplitude, the tail phase at the stamp and its
-// rate. The vertex stage mixes the two poses by the time since the stamp,
-// builds the matrix, and bends every vertex sideways by bend * (amplitude *
-// sin(phase - k * z) + curve) and up by bend * lift. The rate follows the
-// fish's speed, so a lurking pike barely sculls and a bolting glimmerfin is a
-// blur, and curve and lift follow the turn and the pitch, so the body arcs
-// into every turn and climb. A fish in her hand, and the instance a leap
-// borrows, carry aRow 0 and are posed by their own instanceMatrix and aSwim; a
-// loose fish is the one CPU path, its row rewritten every frame.
+// RowTable (butterflies.js) holds its leg (FISH_ROW_TEXELS). The vertex stage
+// evaluates it, builds the matrix, and bends every vertex sideways by bend *
+// (amplitude * sin(phase - k * z) + curve) and up by bend * lift. The tail's
+// rate follows the speed, so a lurking pike barely sculls and a bolting
+// glimmerfin is a blur, and curve and lift follow the turn and the climb. A
+// fish in her hand, and the instance a leap borrows, carry aRow 0 and are posed
+// by their own instanceMatrix and aSwim; a loose fish is the one CPU path, its
+// row rewritten every frame as a leg starting now.
 //
 // NO TWO FISH ARE THE SAME COLOUR. Each rolls a brightness (instanceColor) and
 // a hue, a turn of up to HUE radians either way round the colour wheel
@@ -109,21 +112,33 @@ const GOLDEN = 0.6180339887
 const WALK_M = 4
 // Water this deep, under a fish's own spot, hands out the species' full size ceiling; 0.5 m hands out the shore's.
 const DEEP_M = 12
-// A fish probes the bed, the surface and the water ahead every this many ticks.
+// A loose fish probes the bed, the surface and the water ahead every this many frames.
 const PROBE_EVERY = 4
+// A leg's swim is integrated in steps of SUB_S; its heading turns onto the aim at TURN_GAIN times the species' agility, capped at TURN_MAX times it. The facing leans onto the heading by FACE_EPS of the cruise, so a fish hanging still still points somewhere.
+const SUB_S = 0.025
+const TURN_GAIN = 2
+const TURN_MAX = 1.5
+const FACE_EPS = 0.1
+// A leg that would end within FINAL_TICKS of the grid turn is stretched to land on it. The shore ahead turns a fish home for HOMING_TICKS. A lured fish replans every LURE_LEG_S.
+// No leg is shorter than MIN_LEG ticks: the quintic's acceleration for any mismatch between the swim and its own path grows as 1/D^2, so a shorter leg jerks the fish between frames. A mood due to end sooner ends now; a startle due sooner waits that long.
+const FINAL_TICKS = 30
+const MIN_LEG = 4
+const HOMING_TICKS = 30
+const LURE_LEG_S = 0.2
+// The Shallows: corners SHALLOW_M apart, kept in chunks of CHUNK corners a side.
+const SHALLOW_M = 1
+const CHUNK = 16
 // A startle crosses a shoal at BOLT_WAVE m/s, each fish reacting up to BOLT_JITTER s late on top, and BOLT_MISS of the shoal never bolts at all: a fright is a ripple through the shoal, never one tick's broadcast.
 const BOLT_WAVE = 4
 const BOLT_JITTER = 0.4
 const BOLT_MISS = 0.15
 // A river's pull on a fish at full flow weight (WaterSurfaces.flowAt), m/s, sampled at the probe: under every species' cruise, so a school sags downstream of its anchor and works back up rather than being swept off it.
 export const CURRENT_MPS = 0.15
-// How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. The probe is PROBE_EVERY ticks stale, so this also covers the distance a bolting fish crosses between probes.
+// How far off the bed and under the surface a fish is held, in metres, plus a fifth of its own length. A leg is held inside the column at its two ends, so this also covers the curve's bulge between them.
 const BED_MARGIN = 0.25
 const SURFACE_MARGIN = 0.3
 // A hop's path is tested for water every this many metres, so a school is never led across a spit its fish would beach on.
 const HOP_STEP_M = 2
-// The pull onto the next station over a segment's last EASE_S seconds: the fraction of the gap closed a second at full weight.
-const EASE_PULL = 4
 export const HUE = 0.35
 // A fish setting off at a target speed of at least this, m/s, is listed in startled() for the ear: a glimmerfin's bolt, a pike's burst, a bass's dart, but not a glimmerfin's fidget or any hang.
 export const DART_SPEED = 1
@@ -157,7 +172,8 @@ export const keyOf = (tx, tz, s) => `${bedKey(tx, tz)}:${s}`
  * will seed in and `clearance` how far around an anchor that column must
  * extend; `tether` how far from home the anchor may be sent. `wander` is the
  * heading's random walk in rad/s^0.5; `agility` is how fast velocity chases
- * its target, 1/s. `size` is the scale drawn at the shore and the ceiling
+ * its target, 1/s; `leg` the seconds a fish swims between looks at its
+ * surroundings. `size` is the scale drawn at the shore and the ceiling
  * reached in DEEP_M of water (see sizeAt); `sizeVary` a jitter on top.
  * `fidget` is one fish's own dart or hang: every `fidgetEvery` seconds,
  * `fidgetFor` seconds at `fidgetSpeed` or at a third of cruise, with a kick to
@@ -167,7 +183,7 @@ export const SPECIES = {
   'ironscale-bass': {
     count: 128, perTile: 2, school: [4, 9], schoolRadius: 3, separation: 0.5,
     minDepth: 1.0, clearance: 3, depth: [0.3, 0.7], tether: 10,
-    cruise: 0.55, agility: 1.4, wander: 0.9, lookahead: 3,
+    cruise: 0.55, agility: 1.4, wander: 0.9, lookahead: 3, leg: [0.6, 1.6],
     tailHz: 2.0, tailAmp: 0.11, size: [0.55, 2.6], sizeVary: 0.2,
     anchorSpeed: 0.3, anchorHop: [6, 14], anchorEvery: [8, 16],
     fidgetEvery: [3, 9], fidgetSpeed: 1.3, fidgetFor: 0.5,
@@ -176,7 +192,7 @@ export const SPECIES = {
   'rime-fangpike': {
     count: 24, perTile: 2, school: [1, 1], schoolRadius: 6, separation: 6,
     minDepth: 1.5, clearance: 2.5, depth: [0.08, 0.3], tether: 12,
-    cruise: 0.28, agility: 0.8, wander: 0.35, lookahead: 6,
+    cruise: 0.28, agility: 0.8, wander: 0.35, lookahead: 6, leg: [1.0, 2.2],
     tailHz: 1.1, tailAmp: 0.08, size: [0.6, 2.6], sizeVary: 0.25,
     anchorSpeed: 0.2, anchorHop: [8, 20], anchorEvery: [10, 24],
     // The three moods of an ambush predator: seconds in each, and the speed it holds.
@@ -186,7 +202,7 @@ export const SPECIES = {
   'glimmerfin': {
     count: 176, perTile: 2, school: [6, 14], schoolRadius: 1.2, separation: 0.25,
     minDepth: 0.5, clearance: 1.5, depth: [0.6, 0.9], tether: 5,
-    cruise: 0.18, agility: 3.5, wander: 3.0, lookahead: 1.5,
+    cruise: 0.18, agility: 3.5, wander: 3.0, lookahead: 1.5, leg: [0.25, 0.8],
     tailHz: 3.5, tailAmp: 0.12, size: [0.5, 2.2], sizeVary: 0.3,
     anchorSpeed: 0.15, anchorHop: [2, 5], anchorEvery: [3, 8],
     // The startle: the shoal's anchor jumps `boltHop` metres, every fish bolts at `boltSpeed` for `boltFor` seconds.
@@ -199,16 +215,15 @@ export const SPECIES = {
 
 const TAU = Math.PI * 2
 
-// The fish row, FISH_ROW_TEXELS RGBA32F texels (x, y, z, w):
-//   0  previous-tick position, the stamp (seconds past the row's HI)
-//   1  current-tick position, the scale (0 hides the slot)
-//   2  yaw before and after (unwrapped onto the shorter turn), pitch before and after
-//   3  roll before and after, curve before and after
-//   4  lift before and after, tail amplitude before and after
-//   5  tail phase at the stamp, its rate, the stamp's HI
-export const FISH_ROW_TEXELS = 6
+// The fish row, FISH_ROW_TEXELS RGBA32F texels (x, y, z, w): the leg's quintic per axis in its own time s in [0, 1], k0 + k1 s + ... + k5 s^5.
+//   0  x k0..k3          1  x k4 k5, y k4 k5     2  y k0..k3            3  z k0..k3
+//   4  z k4 k5, the current's drift x, z (m/s)   5  start (seconds past HI), length D, HI, scale (0 hides the slot)
+//   6  facing lean at the start x, z and at the end x, z
+//   7  tail phase at the start, its beat, 1 / the fish's cruise, amplitude (0 when stunned)
+//   8  swim speed through the leg as s0 + B u + C u^2 in seconds u, the species' length
+export const FISH_ROW_TEXELS = 9
 
-/** GLSL for the fish row: `fishRow(row)` returns the instance matrix and sets `fishSwim`. Kept in step with fishPose in the gate. */
+/** GLSL for the fish row: `fishRow(row)` returns the instance matrix and sets `fishSwim`. The GPU twin of Fish._eval and Fish._look, kept in step with fishPose in the gate. */
 const FISH_GLSL = `
 mat4 fishHeld() { fishSwim = aSwim; return instanceMatrix; }
 mat4 fishRow( int row ) {
@@ -218,16 +233,37 @@ mat4 fishRow( int row ) {
   vec4 t3 = texelFetch( uRows, ivec2( 3, row ), 0 );
   vec4 t4 = texelFetch( uRows, ivec2( 4, row ), 0 );
   vec4 t5 = texelFetch( uRows, ivec2( 5, row ), 0 );
+  vec4 t6 = texelFetch( uRows, ivec2( 6, row ), 0 );
+  vec4 t7 = texelFetch( uRows, ivec2( 7, row ), 0 );
+  vec4 t8 = texelFetch( uRows, ivec2( 8, row ), 0 );
   fishSwim = vec4( 0.0 );
-  float sc = t1.w;
+  float sc = t5.w;
   if ( sc == 0.0 ) return mat4( 0.0 );
-  float e = max( 0.0, ( uRowT.x - t5.z ) + ( uRowT.y - t0.w ) );
-  float a = clamp( e * ${TICK_HZ}.0, 0.0, 1.0 );
-  vec3 p = mix( t0.xyz, t1.xyz, a );
-  fishSwim = vec4( t5.x + t5.y * e, mix( t4.z, t4.w, a ), mix( t3.z, t3.w, a ), mix( t4.x, t4.y, a ) );
-  float rx = mix( t2.z, t2.w, a );
-  float ry = mix( t2.x, t2.y, a );
-  float rz = mix( t3.x, t3.y, a );
+  float D = t5.y;
+  float u = ( uRowT.x - t5.z ) + ( uRowT.y - t5.x );
+  float s = min( 1.0, u / D );
+  float over = u - s * D;
+  float ea = 1.0 / ( D * D );
+  vec3 c0 = vec3( t0.x, t2.x, t3.x ), c1 = vec3( t0.y, t2.y, t3.y ), c2 = vec3( t0.z, t2.z, t3.z );
+  vec3 c3 = vec3( t0.w, t2.w, t3.w ), c4 = vec3( t1.x, t1.z, t4.x ), c5 = vec3( t1.y, t1.w, t4.y );
+  vec3 v = ( c1 + s * ( 2.0 * c2 + s * ( 3.0 * c3 + s * ( 4.0 * c4 + s * 5.0 * c5 ) ) ) ) / D;
+  vec3 a = ( 2.0 * c2 + s * ( 6.0 * c3 + s * ( 12.0 * c4 + s * 20.0 * c5 ) ) ) * ea;
+  vec3 p = c0 + s * ( c1 + s * ( c2 + s * ( c3 + s * ( c4 + s * c5 ) ) ) ) + v * over + vec3( t4.z, 0.0, t4.w ) * u;
+  vec2 F = v.xz + mix( t6.xy, t6.zw, s );
+  vec2 dF = a.xz + ( t6.zw - t6.xy ) / D;
+  float turn = clamp( ( F.x * dF.y - F.y * dF.x ) / max( dot( F, F ), 1e-6 ) / 6.0, -1.0, 1.0 );
+  float hs = length( v.xz );
+  float H = max( hs, 0.05 );
+  float rx = atan( v.y, H );
+  float dhs = hs > 0.05 ? dot( v.xz, a.xz ) / hs : 0.0;
+  float dp = ( H * a.y - v.y * dhs ) / ( H * H + v.y * v.y );
+  float wu = min( u, D );
+  float s1 = t8.x + t8.y * D + t8.z * D * D;
+  float phase = t7.x + t7.y * ( 0.4 * u + 0.6 * t7.z * ( wu * ( t8.x + wu * ( t8.y * 0.5 + wu * t8.z / 3.0 ) ) + s1 * over ) );
+  float amp = t7.w * min( 1.6, 0.5 + 0.5 * length( v ) * t7.z ) * ( 1.0 + 2.0 * abs( turn ) );
+  fishSwim = vec4( phase, amp, clamp( turn * 2.0, -0.4, 0.4 ) * t8.w, clamp( dp * 0.2 + rx * 0.8, -0.3, 0.3 ) * t8.w );
+  float ry = atan( -F.x, -F.y );
+  float rz = -turn * 0.5;
   float ca = cos( rx ), sa = sin( rx ), cc = cos( ry ), sd = sin( ry ), ce = cos( rz ), sf = sin( rz );
   float ccE = cc * ce, ccF = cc * sf, sdE = sd * ce, sdF = sd * sf;
   mat3 r = mat3(
@@ -244,6 +280,89 @@ const _a = { x: 0, z: 0, y: 0 }
 const _e = { x: 0, z: 0, y: 0 }
 const _s = { sx: 0, sy: 0, sz: 0, bed: 0, level: 0 }
 const _o = { x: 0, z: 0, y: 0 }
+const _n = { x: 0, y: 0, z: 0, w: 0, ex: 0, ey: 0, ez: 0 }
+const probe = () => ({ wet: false, bed: 0, level: 0, cx: 0, cz: 0 })
+const _w = probe(), _w2 = probe(), _w3 = probe()
+const leg = () => ({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, ax: 0, ay: 0, az: 0, hx: 0, hz: 0, dhx: 0, dhz: 0, phase: 0 })
+const _st = leg(), _pe = leg()
+const _sw = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, ax: 0, ay: 0, az: 0, th: 0 }
+const _lk = { fx: 0, fz: 0, yaw: 0, pitch: 0, roll: 0, curve: 0, lift: 0, amp: 0 }
+
+/**
+ * The water the fish plan on: bed, surface and the current's drift at corners
+ * SHALLOW_M apart, each read once from the terrain and the water and shared
+ * by every fish that looks there, between corners bilinear. A dry corner
+ * counts as a metre above the bed, so the shore shoals toward it. A pure
+ * function of position: the order corners are filled in never shows.
+ */
+class Shallows {
+  constructor(height, water) {
+    this.height = height
+    this.water = water
+    this.chunks = new Map()
+    this.reads = 0
+  }
+
+  /** Corner (ix, iz)'s chunk and offset into it, filled on first use: depth (-1 dry), level (NaN dry), drift x, z. */
+  _corner(ix, iz) {
+    const cx = Math.floor(ix / CHUNK), cz = Math.floor(iz / CHUNK)
+    const key = (cx + 32768) * 65536 + (cz + 32768)
+    let c = this.chunks.get(key)
+    if (c === undefined) {
+      c = new Float64Array(CHUNK * CHUNK * 4).fill(NaN)
+      this.chunks.set(key, c)
+    }
+    const o = ((iz - cz * CHUNK) * CHUNK + (ix - cx * CHUNK)) * 4
+    if (Number.isNaN(c[o])) {
+      this.reads++
+      const x = ix * SHALLOW_M, z = iz * SHALLOW_M
+      const level = this.water.levelAt(x, z)
+      const bed = this.height.heightAt(x, z)
+      if (level === null || bed >= level) {
+        c[o] = -1; c[o + 1] = NaN; c[o + 2] = 0; c[o + 3] = 0
+      } else {
+        const w = this.water.flowAt(x, z, _o) * CURRENT_MPS
+        c[o] = level - bed; c[o + 1] = level; c[o + 2] = _o.x * w; c[o + 3] = _o.z * w
+      }
+    }
+    _cn.c = c
+    return o
+  }
+
+  /** The water at (x, z) into `o`: wet, bed, level and drift (cx, cz). Wet where a corner around it is and the depth is above nothing. */
+  at(x, z, o) {
+    const gx = x / SHALLOW_M, gz = z / SHALLOW_M
+    const ix = Math.floor(gx), iz = Math.floor(gz)
+    const fx = gx - ix, fz = gz - iz
+    let depth = 0, level = 0, wl = 0, cx = 0, cz = 0
+    for (let j = 0; j < 4; j++) {
+      const dx = j & 1, dz = j >> 1
+      const k = this._corner(ix + dx, iz + dz)
+      const c = _cn.c
+      const w = (dx ? fx : 1 - fx) * (dz ? fz : 1 - fz)
+      depth += c[k] * w
+      cx += c[k + 2] * w
+      cz += c[k + 3] * w
+      if (!Number.isNaN(c[k + 1])) { level += c[k + 1]; wl++ }
+    }
+    o.wet = wl > 0 && depth > 0
+    o.level = wl > 0 ? level / wl : 0
+    o.bed = o.level - depth
+    o.cx = cx
+    o.cz = cz
+    return o
+  }
+
+  /** Every chunk whose centre is more than `r` metres from (x, z) let go. */
+  evict(x, z, r) {
+    const side = CHUNK * SHALLOW_M
+    for (const key of this.chunks.keys()) {
+      const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768
+      if (Math.hypot((cx + 0.5) * side - x, (cz + 0.5) * side - z) > r) this.chunks.delete(key)
+    }
+  }
+}
+const _cn = { c: null }
 
 export class Fish {
   /**
@@ -289,6 +408,9 @@ export class Fish {
     // Members a bed rolled that found no free slot.
     this.overflow = 0
     this.ticks = 0
+    // Legs planned, and the shared water they were planned on.
+    this.legs = 0
+    this.shallows = new Shallows(height, water)
     // Fish a probe found on the bank, put back at their anchor.
     this.beached = 0
     // Lured sets owed to the room (pendingLured), and the peers' by bed key (applyLured): { by, has }.
@@ -344,24 +466,26 @@ ${FISH_GLSL}
     const slots = []
     for (let i = 0; i < cfg.count; i++) {
       slots.push({
-        id: i, alive: false, loose: false, school: null, tile: null,
+        id: i, sp: null, alive: false, loose: false, school: null, tile: null,
         // Its index in its bed, for the lured sets and the taken registry.
         index: -1,
-        // The pose at the last tick and the one before it; the frame draws between them. A loose fish is stepped per frame and drawn at (x, y, z).
-        x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0,
-        // Smoothed facing, so a fish that stops does not snap to whatever its last velocity happened to be; `yaw` is its heading as a Y turn, and the p- fields the previous tick's.
-        hx: 0, hz: -1, pitch: 0, roll: 0, yaw: 0, pyaw: 0, ppitch: 0, proll: 0, pcurve: 0, plift: 0, pamp: 0,
+        // The leg it is swimming (_plan; the row's layout), and the tick it ends on.
+        L: { t0: 0, d: TICK_S, k: new Float64Array(18), cx: 0, cz: 0, h0x: 0, h0z: 0, h1x: 0, h1z: 0, ph0: 0, rate: 0, inv: 0, amp: 0, s0: 0, sb: 0, sc: 0 },
+        nextTick: 0, final: false,
+        // Its pose as of `poseFrame` (pose, pos): only worked out when something asks. A loose fish is stepped per frame and its (x, y, z), velocity and facing are its own.
+        x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, poseFrame: -1,
+        hx: 0, hz: -1, pitch: 0, roll: 0, yaw: 0,
         // `size` is its length in metres, for the ear.
         wander: 0, depthFrac: 0.5, scale: 1, size: 0, margin: 0, tint: 1, hue: 0,
-        phase: 0, amp: 0, curve: 0, lift: 0, rate: 0,
+        phase: 0, amp: 0, curve: 0, lift: 0,
         // The fish's own rolls: speed and wander multipliers, tail-beat multiplier, and its station in the school -- a point `ring` metres from the anchor that circles it at `orbit` rad/s from `station0` at world time zero -- plus a slow vertical bob.
-        pace: 1, verve: 1, beat: 1, ring: 0, station0: 0, station: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
-        // `cx`, `cz` the current's drift where it was last probed, m/s.
-        bed: 0, level: 0, cx: 0, cz: 0, probeAt: 0,
-        // Seconds left steering back to the anchor after the probe found the shore ahead, and until the shoal's startle reaches this fish.
-        homing: 0, boltIn: 0,
-        // Mood: pike glide/lurk/burst, bass and glimmerfin fidget. `speed` is the mood's target speed.
-        mood: 'glide', moodLeft: 0, speed: cfg.cruise,
+        pace: 1, verve: 1, beat: 1, ring: 0, station0: 0, orbit: 0, bobHz: 0.1, bobAt: 0,
+        // The water at its last look; `cx`, `cz` a loose fish's drift, m/s.
+        bed: 0, level: 0, cx: 0, cz: 0,
+        // The tick it steers back to the anchor until, after a look found the shore ahead, and the tick the shoal's startle reaches it.
+        homingEnd: -1, boltTick: Infinity,
+        // Mood: pike glide/lurk/burst, bass and glimmerfin fidget, until tick `moodEnd`; a loose fish's jink in seconds, `moodLeft`. `speed` is the mood's target speed.
+        mood: 'glide', moodEnd: 0, moodLeft: 0, speed: cfg.cruise,
         // The segment's PRNG, and the station the segment ends at.
         rand: null, ex: 0, ey: 0, ez: 0,
         // Let go of by her hand: no school, stunned for `stun` seconds, then darting from her head (stepLoose).
@@ -391,7 +515,9 @@ ${FISH_GLSL}
     cullTripoBackfaces(mesh)
     this.batch.add(mesh)
     // `top` is one past the last live slot (the mesh draws that many instances); free slots are taken lowest id first so it stays tight; `loose` the fish her hand let go of.
-    return { id, cfg, material, mesh, swim, hue, rows, slots, free: slots.slice().reverse(), top: 0, loose: [], schools: [], loaded: false, lengthM: 0 }
+    const sp = { id, cfg, material, mesh, swim, hue, rows, slots, free: slots.slice().reverse(), top: 0, loose: [], schools: [], loaded: false, lengthM: 0 }
+    for (const f of slots) f.sp = sp
+    return sp
   }
 
   /** public/fauna/fish.json and its three colour maps. Throws on a roster mismatch rather than drawing a species as a blank. */
@@ -444,6 +570,7 @@ ${FISH_GLSL}
     walkTiles(this.tiles, cx, cz, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
     this.walkedX = cx
     this.walkedZ = cz
+    this.shallows.evict(cx, cz, RADIUS + 1.5 * TILE)
   }
 
   _walkTiles(x, z) {
@@ -451,6 +578,7 @@ ${FISH_GLSL}
     walkTiles(this.tiles, x, z, TILE, RADIUS, (tx, tz) => this._enter(tx, tz), (t) => this._leave(t))
     this.walkedX = x
     this.walkedZ = z
+    this.shallows.evict(x, z, RADIUS + 1.5 * TILE)
   }
 
   /**
@@ -515,8 +643,8 @@ ${FISH_GLSL}
         const school = {
           key, sp, tile: t, offset: keyHash(key) % GRID_S,
           home: { x, z, bed: at.bed, level: at.level },
-          // The anchor at the last tick; `chapters` the hop chains by chapter index (_walk); `seg` the segment the members were last put at their stations for, `rec` their tick record (score.js stepTo), `pubTick` the tick their rows were last written for.
-          x, z, y: this.column(at.bed, at.level, 0.5), fleeAt: 0, chapters: new Map(), seg: null, rec: { tick: 0, alpha: 0 }, pubTick: -1,
+          // The anchor at the last tick; `chapters` the hop chains by chapter index (_walk); `seg` the segment the members were last put at their stations for, `turnTick` the tick it ends on, `rec` their tick record (score.js stepTo), `mx`, `mz` the members where they were on the last tick any of them planned.
+          x, z, y: this.column(at.bed, at.level, 0.5), fleeAt: 0, chapters: new Map(), seg: null, turnTick: 0, rec: { tick: 0, alpha: 0 }, mx: new Float64Array(n), mz: new Float64Array(n),
           members: [],
         }
         for (let i = 0; i < n; i++) {
@@ -561,43 +689,30 @@ ${FISH_GLSL}
     f.school = school
     f.tile = school.tile
     f.index = index
-    f.x = f.px = fx
-    f.z = f.pz = fz
+    f.x = fx
+    f.z = fz
     f.depthFrac = r.depthFrac
     f.bed = bed
     f.level = level
-    this._current(f)
     f.scale = this.sizeAt(cfg, level - bed, r.sizeU, r.sizeJ)
     f.size = sp.lengthM * f.scale
     f.margin = 0.2 * f.size
-    f.y = f.py = this.column(bed, level, f.depthFrac, f.margin)
+    f.y = this.column(bed, level, f.depthFrac, f.margin)
     f.wander = r.b
-    f.hx = Math.cos(r.b)
-    f.hz = Math.sin(r.b)
-    f.vx = f.hx * cfg.cruise
-    f.vz = f.hz * cfg.cruise
-    f.vy = 0
-    f.pitch = 0
-    f.roll = 0
-    f.curve = 0
-    f.lift = 0
-    f.amp = 0
     f.pace = r.pace * Math.sqrt(f.scale)
     f.beat = r.beat / Math.sqrt(f.scale)
     f.verve = r.verve
     f.ring = r.ring
-    f.station0 = f.station = r.b
+    f.station0 = r.b
     f.orbit = r.orbit
     f.bobHz = r.bobHz
     f.bobAt = r.bobAt
     f.tint = r.tint
     f.hue = r.hue
-    f.phase = r.phase
-    f.probeAt = index % PROBE_EVERY
-    f.homing = 0
-    f.boltIn = 0
+    f.homingEnd = -1
+    f.boltTick = Infinity
     f.mood = 'glide'
-    f.moodLeft = 0
+    f.moodEnd = 0
     f.speed = cfg.cruise
     f.rand = null
     f.ex = fx
@@ -606,9 +721,11 @@ ${FISH_GLSL}
     f.stun = 0
     f.lure = null
     f.lured = false
+    f.final = false
     f.listedAt = -1
-    f.yaw = f.pyaw = Math.atan2(-f.hx, -f.hz)
-    f.ppitch = f.proll = f.pcurve = f.plift = f.pamp = f.rate = 0
+    // Hanging where it was born until the first segment turn puts it at its station.
+    this._hold(sp, f, this.now === null ? 0 : this.now, fx, f.y, fz, 0, 0, 0, r.phase)
+    f.nextTick = Infinity
     this._occupy(sp, f)
   }
 
@@ -681,7 +798,7 @@ ${FISH_GLSL}
   }
 
   get stats() {
-    const out = { alive: 0, schools: 0, tiles: this.tiles.size, overflow: this.overflow, ticks: this.ticks, beached: this.beached }
+    const out = { alive: 0, schools: 0, tiles: this.tiles.size, overflow: this.overflow, ticks: this.ticks, legs: this.legs, beached: this.beached, reads: this.shallows.reads }
     for (const sp of this.species) {
       const n = sp.cfg.count - sp.free.length
       out[sp.id] = { alive: n, schools: sp.schools.length }
@@ -846,81 +963,87 @@ ${FISH_GLSL}
 
   /**
    * Segment `g` begins for `school`: the chain is walked through it, and every
-   * member not on a lure is put at its station for the segment's start -- its
-   * ring point about the anchor, or the anchor itself where that is shore --
-   * with its heading, mood and tick PRNG rolled from (key, g, index), and
-   * told the station the segment ends at. A lured fish keeps swimming and is
-   * put back at the next turn it is free for.
+   * member not on a lure is put at its station for the segment's start
+   * (_start) with its mood rolled from (key, g, index), on a one-tick leg its
+   * first tick replans from. A lured fish keeps swimming and is put back at the
+   * next turn it is free for.
    */
   _reset(sp, school, g) {
     const cfg = sp.cfg
     const start = g * GRID_S + school.offset
+    const t0 = tickAfter(start)
     school.seg = g
-    school.rec.tick = tickAfter(start) - 1
+    school.rec.tick = t0 - 1
+    school.turnTick = tickAfter(start + GRID_S)
     const ch = this._walk(school, start + GRID_S)
     // The chain before the segment is history: one event stands for the anchor at its start, and no fright before it reaches a fish put freshly at its station.
     while (ch.events.length > 1 && ch.events[1].at <= start) ch.events.shift()
     while (ch.bolts.length && ch.bolts[0].at < start) ch.bolts.shift()
     this._anchorAt(school, start, _a)
-    this._anchorAt(school, start + GRID_S, _e)
     school.x = _a.x
     school.z = _a.z
     school.y = _a.y
     for (const f of school.members) {
       f.rand = mulberry32(hash32(keyHash(school.key), g, f.index))
       const rand = f.rand
-      const station = f.station0 + f.orbit * start
-      this._station(sp, f, _e, station + f.orbit * GRID_S, _s)
-      f.ex = _s.sx; f.ey = _s.sy; f.ez = _s.sz
+      this._start(sp, f, school, g, rand, _n)
+      f.ex = _n.ex; f.ey = _n.ey; f.ez = _n.ez
+      f.final = false
       if (f.lured) continue
-      f.station = station
-      this._station(sp, f, _a, station, _s)
-      f.x = f.px = _s.sx
-      f.y = f.py = _s.sy
-      f.z = f.pz = _s.sz
-      f.bed = _s.bed
-      f.level = _s.level
-      this._current(f)
-      // Headed for where the segment ends, which is about where the ease was taking it; a station that stays put gets a fresh heading.
-      const ed = Math.hypot(f.ex - f.x, f.ez - f.z)
-      f.wander = ed > 0.05 ? Math.atan2(f.ez - f.z, f.ex - f.x) : rand() * TAU
-      f.vx = Math.cos(f.wander) * cfg.cruise * f.pace
-      f.vz = Math.sin(f.wander) * cfg.cruise * f.pace
-      f.vy = 0
-      f.homing = 0
-      f.boltIn = 0
+      let left
       if (cfg.glide) {
-        if (rand() < 0.6) { f.mood = 'glide'; f.moodLeft = rand() * cfg.glide[1]; f.speed = cfg.cruise }
-        else { f.mood = 'lurk'; f.moodLeft = rand() * cfg.lurk[1]; f.speed = cfg.lurkSpeed }
+        if (rand() < 0.6) { f.mood = 'glide'; left = rand() * cfg.glide[1]; f.speed = cfg.cruise }
+        else { f.mood = 'lurk'; left = rand() * cfg.lurk[1]; f.speed = cfg.lurkSpeed }
       } else {
         f.mood = 'glide'
-        f.moodLeft = rand() * cfg.fidgetEvery[1]
+        left = rand() * cfg.fidgetEvery[1]
         f.speed = cfg.cruise
       }
+      f.moodEnd = t0 + Math.ceil(left * TICK_HZ)
+      f.boltTick = Infinity
+      f.homingEnd = -1
+      f.wander = _n.w
+      const v = cfg.cruise * f.pace
+      this._hold(sp, f, t0 * TICK_S, _n.x, _n.y, _n.z, Math.cos(_n.w) * v, 0, Math.sin(_n.w) * v, this._eval(f, t0 * TICK_S, _st).phase)
+      this._publish(sp, f)
+      f.nextTick = t0
     }
+  }
+
+  /** Fish `f`'s pose at the start of segment `g`, into `o`: its station about the anchor (x, y, z), heading `w` for the station the segment ends at (ex, ey, ez), or a fresh heading off `rand` where that station stays put. */
+  _start(sp, f, school, g, rand, o) {
+    const start = g * GRID_S + school.offset
+    const station = f.station0 + f.orbit * start
+    this._anchorAt(school, start + GRID_S, _e)
+    this._station(sp, f, _e, station + f.orbit * GRID_S, _s)
+    o.ex = _s.sx; o.ey = _s.sy; o.ez = _s.sz
+    this._anchorAt(school, start, _e)
+    this._station(sp, f, _e, station, _s)
+    o.x = _s.sx; o.y = _s.sy; o.z = _s.sz
+    const ed = Math.hypot(o.ex - o.x, o.ez - o.z)
+    o.w = ed > 0.05 ? Math.atan2(o.ez - o.z, o.ex - o.x) : rand() * TAU
+    return o
   }
 
   /** Fish `f`'s station about the anchor `a` at ring angle `station`, into `into` (sx, sy, sz, and the bed and level there): over water deep enough, else the anchor. */
   _station(sp, f, a, station, into) {
     let sx = a.x + Math.cos(station) * f.ring
     let sz = a.z + Math.sin(station) * f.ring
-    let level = this.water.levelAt(sx, sz)
-    let bed = level === null ? 0 : this.height.heightAt(sx, sz)
-    if (level === null || level - bed < sp.cfg.minDepth) {
+    const w = this.shallows.at(sx, sz, _w)
+    if (!w.wet || w.level - w.bed < sp.cfg.minDepth) {
       sx = a.x
       sz = a.z
-      level = this.water.levelAt(sx, sz)
-      bed = level === null ? 0 : this.height.heightAt(sx, sz)
-      if (level === null) throw new Error(`Fish: the anchor of ${f.school.key} is on dry ground at (${sx.toFixed(1)}, ${sz.toFixed(1)})`)
+      this.shallows.at(sx, sz, w)
+      if (!w.wet) throw new Error(`Fish: the anchor of ${f.school.key} is on dry ground at (${sx.toFixed(1)}, ${sz.toFixed(1)})`)
     }
     into.sx = sx
-    into.sy = this.column(bed, level, f.depthFrac, f.margin)
+    into.sy = this.column(w.bed, w.level, f.depthFrac, f.margin)
     into.sz = sz
-    into.bed = bed
-    into.level = level
+    into.bed = w.bed
+    into.level = w.level
   }
 
-  /** One tick of `school`: the anchor read off its chain, a fright due run through the shoal, every member stepped. */
+  /** One tick of `school`: the anchor read off its chain, a fright due run through the shoal, and every member whose leg is over given its next. */
   _tick(sp, school, tick) {
     this.ticks++
     const tNow = tick * TICK_S
@@ -928,134 +1051,150 @@ ${FISH_GLSL}
     school.x = _a.x
     school.z = _a.z
     school.y = _a.y
-    while (ch.bolts.length && ch.bolts[0].at <= tNow) this._fright(sp, school, ch.bolts.shift())
+    while (ch.bolts.length && ch.bolts[0].at <= tNow) this._fright(sp, school, ch.bolts.shift(), tick)
+    const m = school.members
+    let due = false
+    for (const f of m) if (f.nextTick <= tick) { due = true; break }
+    if (!due) return
+    // Every member where it is on this tick, before any replans: the same whichever plans first, since a leg starts where the last one stood.
+    for (let i = 0; i < m.length; i++) {
+      this._eval(m[i], tNow, _st)
+      school.mx[i] = _st.x
+      school.mz[i] = _st.z
+    }
     const w = easeWeight(tNow - (school.seg * GRID_S + school.offset), GRID_S)
-    for (const f of school.members) this._step(sp, f, school, tNow, tick, w)
+    for (let i = 0; i < m.length; i++) if (m[i].nextTick <= tick) this._plan(sp, m[i], school, tick, w, i)
   }
 
-  /** A fright `b` through the shoal: each fish reacts when the wave reaches it, at its own delay on top, and BOLT_MISS of them never notice and just get pulled along after. */
-  _fright(sp, school, b) {
+  /** A fright `b` through the shoal: each fish bolts when the wave reaches it, at its own delay on top, and BOLT_MISS of them never notice and just get pulled along after. A fish on a lure or on its last leg into the turn lets it pass. */
+  _fright(sp, school, b, tick) {
     school.fleeAt = Math.atan2(b.fz, b.fx)
     for (const f of school.members) {
       if (f.rand() < BOLT_MISS) continue
-      const along = ((f.x - b.x) * b.fx + (f.z - b.z) * b.fz) / b.fd + sp.cfg.schoolRadius
-      f.boltIn = Math.max(0, along) / BOLT_WAVE + f.rand() * BOLT_JITTER
+      this._eval(f, tick * TICK_S, _st)
+      const along = ((_st.x - b.x) * b.fx + (_st.z - b.z) * b.fz) / b.fd + sp.cfg.schoolRadius
+      const delay = Math.max(0, along) / BOLT_WAVE + f.rand() * BOLT_JITTER
+      if (f.lured || f.final) continue
+      f.boltTick = tick + Math.max(0, Math.ceil(delay * TICK_HZ - 1e-9) - 1)
+      f.nextTick = Math.min(f.nextTick, f.boltTick)
     }
   }
 
-  /** One tick of a schooled fish, TICK_S long, at world time `tNow`; `w` the ease onto its end station. */
-  _step(sp, f, school, tNow, tick, w) {
+  /**
+   * Fish `f`'s next leg from tick `tick`: where its last one has it, a look at
+   * the water under it and ahead (the shared Shallows), its mood and its aim
+   * -- the wander, its station, the shore, a lure, the ease onto the end
+   * station by weight `w`, its school-mates at `school.mx/mz` -- then the swim
+   * toward that aim integrated to the leg's end, and the quintic through both
+   * ends written to its row. The last leg before the turn lands on the next
+   * segment's start pose instead, so the turn moves nothing.
+   */
+  _plan(sp, f, school, tick, w, i) {
     const cfg = sp.cfg
     const rand = f.rand
-    const dt = TICK_S
-    f.px = f.x
-    f.py = f.y
-    f.pz = f.z
+    const t = tick * TICK_S
+    this.legs++
+    const S = this._eval(f, t, _st)
+    let x = S.x, y = S.y, z = S.z, ax = S.ax, ay = S.ay, az = S.az
+    const vx = S.vx, vy = S.vy, vz = S.vz, hx0 = S.hx, hz0 = S.hz, phase = S.phase
+    const under = this.shallows.at(x, z, _w)
+    if (!under.wet || under.level - under.bed < BED_MARGIN + SURFACE_MARGIN) {
+      // On the bank anyway: put back at the anchor, the one spot known to be deep.
+      this.beached++
+      x = school.x
+      z = school.z
+      this.shallows.at(x, z, under)
+      if (!under.wet) throw new Error(`Fish: the anchor of ${school.key} is on dry ground at (${x.toFixed(1)}, ${z.toFixed(1)})`)
+      y = this.column(under.bed, under.level, f.depthFrac, f.margin)
+      ax = ay = az = 0
+    }
+    f.bed = under.bed
+    f.level = under.level
+    const cx = under.cx, cz = under.cz
 
     // The startle wave reaching this fish: it bolts at its own speed, a little off the shoal's line, and the wander is re-aimed so it stays on that line when the bolt ends.
-    if (f.boltIn > 0) {
-      f.boltIn -= dt
-      if (f.boltIn <= 0) {
-        f.mood = 'bolt'
-        f.moodLeft = cfg.boltFor * (0.6 + 0.8 * rand())
-        f.speed = cfg.boltSpeed * (0.7 + 0.6 * rand())
-        f.wander = school.fleeAt + (rand() - 0.5) * 1.2
-        this.setOff(f)
-      }
+    if (f.boltTick > tick && f.boltTick < tick + MIN_LEG) f.boltTick = tick + MIN_LEG
+    if (f.boltTick <= tick) {
+      f.boltTick = Infinity
+      f.mood = 'bolt'
+      f.moodEnd = tick + Math.ceil(cfg.boltFor * (0.6 + 0.8 * rand()) * TICK_HZ)
+      f.speed = cfg.boltSpeed * (0.7 + 0.6 * rand())
+      f.wander = school.fleeAt + (rand() - 0.5) * 1.2
+      this.setOff(f)
     }
     // Moods. Pike cycle glide -> lurk -> burst -> glide; bass and glimmerfin fidget, each fish on its own clock: a dart or a hang, with a kick to the heading either way.
-    f.moodLeft -= dt
-    if (cfg.glide) {
-      if (f.moodLeft <= 0) {
-        if (f.mood === 'glide') { f.mood = 'lurk'; f.moodLeft = between(rand, cfg.lurk); f.speed = cfg.lurkSpeed }
-        else if (f.mood === 'lurk') { f.mood = 'burst'; f.moodLeft = cfg.burst; f.speed = cfg.burstSpeed; f.wander += (rand() - 0.5) * 1.5; this.setOff(f) }
-        else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.glide); f.speed = cfg.cruise }
-      }
-    } else if (cfg.fidgetEvery) {
-      if (f.moodLeft <= 0) {
-        if (f.mood === 'glide') { f.mood = 'fidget'; f.moodLeft = cfg.fidgetFor * (0.7 + 0.6 * rand()); f.speed = rand() < 0.6 ? cfg.fidgetSpeed : cfg.cruise / 3; f.wander += (rand() - 0.5) * 3; this.setOff(f) }
-        else { f.mood = 'glide'; f.moodLeft = between(rand, cfg.fidgetEvery); f.speed = cfg.cruise }
-      }
+    if (f.moodEnd < tick + MIN_LEG) {
+      let left
+      if (cfg.glide) {
+        if (f.mood === 'glide') { f.mood = 'lurk'; left = between(rand, cfg.lurk); f.speed = cfg.lurkSpeed }
+        else if (f.mood === 'lurk') { f.mood = 'burst'; left = cfg.burst; f.speed = cfg.burstSpeed; f.wander += (rand() - 0.5) * 1.5; this.setOff(f) }
+        else { f.mood = 'glide'; left = between(rand, cfg.glide); f.speed = cfg.cruise }
+      } else if (f.mood === 'glide') { f.mood = 'fidget'; left = cfg.fidgetFor * (0.7 + 0.6 * rand()); f.speed = rand() < 0.6 ? cfg.fidgetSpeed : cfg.cruise / 3; f.wander += (rand() - 0.5) * 3; this.setOff(f) }
+      else { f.mood = 'glide'; left = between(rand, cfg.fidgetEvery); f.speed = cfg.cruise }
+      f.moodEnd = tick + Math.max(MIN_LEG, Math.ceil(left * TICK_HZ))
     }
 
-    // The probe: bed and surface under the fish, and the water ahead of it along its velocity. Staggered so the bed's heightAt calls spread across ticks. A big fish wants proportionally more water ahead. A fish that has beached anyway is put back at the anchor, the one spot known to be deep.
-    if ((tick + f.probeAt) % PROBE_EVERY === 0) {
-      const level = this.water.levelAt(f.x, f.z)
-      if (level === null || level - this.height.heightAt(f.x, f.z) < BED_MARGIN + SURFACE_MARGIN) {
-        this.beached++
-        f.x = school.x
-        f.z = school.z
-        f.level = this.water.levelAt(f.x, f.z)
-        f.bed = this.height.heightAt(f.x, f.z)
-        this._current(f)
-        if (f.level === null) throw new Error(`Fish: the anchor of ${school.key} is on dry ground at (${f.x.toFixed(1)}, ${f.z.toFixed(1)})`)
-        f.y = this.column(f.bed, f.level, f.depthFrac, f.margin)
-      } else {
-        f.level = level
-        f.bed = this.height.heightAt(f.x, f.z)
-        this._current(f)
-      }
-      const spd = Math.hypot(f.vx, f.vz)
-      const ux = spd > 0.02 ? f.vx / spd : Math.cos(f.wander)
-      const uz = spd > 0.02 ? f.vz / spd : Math.sin(f.wander)
-      const ax = f.x + ux * cfg.lookahead
-      const az = f.z + uz * cfg.lookahead
-      const aheadLevel = this.water.levelAt(ax, az)
-      const shallow = aheadLevel === null || aheadLevel - this.height.heightAt(ax, az) < cfg.minDepth * 0.6 * Math.max(1, f.scale)
-      if (shallow && f.homing <= 0) f.homing = 1.5
-    }
-    if (f.homing > 0) f.homing -= dt
+    // The water ahead along its course; a big fish wants proportionally more of it.
+    const spd = Math.hypot(vx, vz)
+    const ux = spd > 0.02 ? vx / spd : Math.cos(f.wander)
+    const uz = spd > 0.02 ? vz / spd : Math.sin(f.wander)
+    const ahead = this.shallows.at(x + ux * cfg.lookahead, z + uz * cfg.lookahead, _w2)
+    if ((!ahead.wet || ahead.level - ahead.bed < cfg.minDepth * 0.6 * Math.max(1, f.scale)) && f.homingEnd <= tick) f.homingEnd = tick + HOMING_TICKS
 
-    // Heading: a random walk, pulled toward the fish's own station in the school when it has strayed, or turned hard for the anchor itself when the shore is ahead. The anchor is always in deep water (the chain), so it is the one heading that is known to be safe.
-    f.wander += (rand() - 0.5) * cfg.wander * f.verve * Math.sqrt(dt) * 2
+    // The leg's length, ending on the mood's end or the fright's arrival, each at least MIN_LEG off.
+    const lured = f.lure !== null
+    let n = Math.round(between(rand, cfg.leg) * TICK_HZ)
+    if (lured) n = Math.round(LURE_LEG_S * TICK_HZ)
+    n = Math.max(MIN_LEG, Math.min(n, f.moodEnd - tick, f.boltTick - tick))
+    f.wander += (rand() - 0.5) * cfg.wander * f.verve * Math.sqrt(n * TICK_S) * 2
+
+    // The aim: the wander, pulled toward its own station in the school when it has strayed, turned hard for the anchor when the shore is ahead, onto a lure's bearing when it has one.
     let dx = Math.cos(f.wander)
     let dz = Math.sin(f.wander)
-    f.station += f.orbit * dt
-    const ax = school.x + Math.cos(f.station) * f.ring - f.x
-    const az = school.z + Math.sin(f.station) * f.ring - f.z
-    const ad = Math.hypot(ax, az)
-    if (f.homing > 0) {
-      const hx = school.x - f.x
-      const hz = school.z - f.z
+    const station = f.station0 + f.orbit * t
+    const sx = school.x + Math.cos(station) * f.ring - x
+    const sz = school.z + Math.sin(station) * f.ring - z
+    const sd = Math.hypot(sx, sz)
+    if (f.homingEnd > tick) {
+      const hx = school.x - x
+      const hz = school.z - z
       const hd = Math.hypot(hx, hz)
       if (hd > 0.5) {
         dx = (hx / hd) * 2
         dz = (hz / hd) * 2
-        // Re-aim the walk itself, so the fish is still heading in when the timer runs out rather than turning straight back.
+        // Re-aim the walk itself, so the fish is still heading in when homing ends rather than turning straight back.
         f.wander = Math.atan2(hz, hx)
       }
     }
-    if (f.lure !== null) {
-      const off = Math.atan2(f.lure.z - f.z, f.lure.x - f.x) - f.wander
-      const swing = Math.atan2(Math.sin(off), Math.cos(off))
-      f.wander += Math.max(-LURE_TURN * dt, Math.min(LURE_TURN * dt, swing))
-      dx = Math.cos(f.wander)
-      dz = Math.sin(f.wander)
+    if (lured) {
+      dx = f.lure.x - x
+      dz = f.lure.z - z
     }
-    const stray = f.lure !== null ? 0 : ad / cfg.schoolRadius
+    const stray = lured ? 0 : sd / cfg.schoolRadius
     if (stray > 0.6) {
       const pull = f.mood === 'bolt' ? 3 : Math.min(2.5, (stray - 0.6) * 1.5)
-      dx += (ax / ad) * pull
-      dz += (az / ad) * pull
+      dx += (sx / sd) * pull
+      dz += (sz / sd) * pull
     }
-    // The ease: over the segment's last EASE_S the heading leans onto the end station too.
-    const ease = w > 0 && !f.lured
-    if (ease) {
-      const ex = f.ex - f.x
-      const ez = f.ez - f.z
-      const ed = Math.max(0.2, Math.hypot(ex, ez))
-      dx += (ex / ed) * w * 2.5
-      dz += (ez / ed) * w * 2.5
+    // The ease: over the segment's last EASE_S the aim turns onto the station the next segment starts it at, so its last leg has little left to close.
+    const ex = f.ex - x
+    const ez = f.ez - z
+    const ed = Math.hypot(ex, ez)
+    if (w > 0 && !lured && ed > 0.05) {
+      const dl = Math.hypot(dx, dz)
+      dx = (dx / dl) * (1 - w) + (ex / ed) * w * 3
+      dz = (dz / dl) * (1 - w) + (ez / ed) * w * 3
     }
-    // Separation: from school-mates, or for a solo species from every other school of its kind in the bed, at its anchor for this tick -- closed-form, where the other body's integrated position would depend on which school stepped first and how far behind it was. Other species are ignored; they are going about their own business.
+    // Separation: from school-mates where they stand this tick, or for a solo species from every other school of its kind in the bed at its anchor. Other species are ignored; they are going about their own business.
     const sep = cfg.separation
-    dx += Fish._apart(f, school.members, sep, 0)
-    dz += Fish._apart(f, school.members, sep, 1)
+    Fish._apart(x, z, school.mx, school.mz, school.members.length, i, sep, _o)
+    dx += _o.x
+    dz += _o.z
     if (cfg.school[1] === 1) {
       for (const s of school.tile.schools) {
         if (s.sp !== sp || s === school) continue
-        this._anchorAt(s, tNow, _o)
-        const gx = f.x - _o.x, gz = f.z - _o.z
+        this._anchorAt(s, t, _o)
+        const gx = x - _o.x, gz = z - _o.z
         const d2 = gx * gx + gz * gz
         if (d2 < sep * sep && d2 > 1e-6) {
           const d = Math.sqrt(d2)
@@ -1064,130 +1203,317 @@ ${FISH_GLSL}
         }
       }
     }
-    const dl = Math.hypot(dx, dz) || 1
     // A fish left behind swims harder to rejoin: without this a shoal that cruises slower than its anchor drifts never catches it.
-    const speed = (f.lure !== null ? cfg.cruise * LURE_HASTE : f.speed) * f.pace * Math.max(1, Math.min(2.5, stray))
-    const wantX = (dx / dl) * speed
-    const wantZ = (dz / dl) * speed
-    const k = Math.min(1, cfg.agility * (f.lure !== null ? LURE_AGILITY : 1) * dt)
-    f.vx += (wantX - f.vx) * k
-    f.vz += (wantZ - f.vz) * k
+    let speed = (lured ? cfg.cruise * LURE_HASTE : f.speed) * f.pace * Math.max(1, Math.min(2.5, stray))
+    // Easing, it keeps the pace that gets it there by the turn.
+    if (w > 0 && !lured) speed = Math.max(speed, (w * ed) / Math.max(TICK_S, (school.turnTick - tick) * TICK_S - 0.5 * FINAL_TICKS * TICK_S))
+    let aim = Math.atan2(dz, dx)
+    // No leg carries a fish past its lookahead: the probe ahead is what keeps it off the shore.
+    n = Math.max(MIN_LEG, Math.min(n, Math.floor((cfg.lookahead / Math.max(speed, 0.05)) * TICK_HZ)))
+    const final = !lured && school.turnTick - (tick + n) < FINAL_TICKS
+    if (final) n = school.turnTick - tick
+    f.final = final
+    const D = n * TICK_S
 
-    // Depth: chase the fish's own place in the column, bobbing slowly about it; the school's anchor y draws it too so a shoal rises and sinks together. A lured fish chases the hand's height, within the column.
-    const lo = f.bed + BED_MARGIN + f.margin
-    const hi = f.level - SURFACE_MARGIN - f.margin
-    const bob = 0.06 * Math.sin(tNow * TAU * f.bobHz + f.bobAt)
-    const target = f.lure !== null ? Math.max(lo, Math.min(hi, f.lure.y)) : 0.5 * (this.column(f.bed, f.level, f.depthFrac + bob, f.margin) + school.y)
-    const wantY = Math.max(-0.4, Math.min(0.4, (target - f.y) * 0.6)) * Math.max(0.3, speed / cfg.cruise)
-    f.vy += (wantY - f.vy) * Math.min(1, 2 * dt)
-
-    f.x += (f.vx + f.cx) * dt
-    f.y += f.vy * dt
-    f.z += (f.vz + f.cz) * dt
-    // The ease closes the gap to the end station, so the turn's snap onto it is nothing the eye reads.
-    if (ease) {
-      const ke = Math.min(1, w * EASE_PULL * dt)
-      f.x += (f.ex - f.x) * ke
-      f.y += (f.ey - f.y) * ke
-      f.z += (f.ez - f.z) * ke
+    if (final) {
+      this._start(sp, f, school, school.seg + 1, mulberry32(hash32(keyHash(school.key), school.seg + 1, f.index)), _n)
+      const v = cfg.cruise * f.pace
+      _sw.x = _n.x; _sw.y = _n.y; _sw.z = _n.z
+      _sw.vx = Math.cos(_n.w) * v; _sw.vy = 0; _sw.vz = Math.sin(_n.w) * v
+      _sw.ax = _sw.ay = _sw.az = 0
+      _sw.th = _n.w
+      // The quintic is in still water; the drift is added on top.
+      _sw.x -= cx * D
+      _sw.z -= cz * D
+    } else {
+      // Depth: its own place in the column, bobbing slowly about it, drawn halfway to the school's so a shoal rises and sinks together; a lured fish the hand's height. Held inside the column here and where the leg is headed.
+      let lo = under.bed + BED_MARGIN + f.margin
+      let hi = under.level - SURFACE_MARGIN - f.margin
+      const there = this.shallows.at(x + Math.cos(aim) * speed * D, z + Math.sin(aim) * speed * D, _w3)
+      if (there.wet) {
+        lo = Math.max(lo, there.bed + BED_MARGIN + f.margin)
+        hi = Math.min(hi, there.level - SURFACE_MARGIN - f.margin)
+      }
+      if (hi < lo) lo = hi = (lo + hi) / 2
+      const bob = 0.06 * Math.sin((t + D) * TAU * f.bobHz + f.bobAt)
+      const ty = lured ? Math.max(lo, Math.min(hi, f.lure.y)) : 0.5 * (this.column(under.bed, under.level, f.depthFrac + bob, f.margin) + school.y)
+      const th0 = spd > 0.02 ? Math.atan2(vz, vx) : Math.atan2(hz0, hx0)
+      this._swim(cfg, th0, spd, x, y, z, vy, aim, speed, ty, lo, hi, n, lured, _sw)
+      const end = this.shallows.at(_sw.x + cx * D, _sw.z + cz * D, _w3)
+      if ((!end.wet || end.level - end.bed < BED_MARGIN + SURFACE_MARGIN) && school.x !== x) {
+        // The leg would end on the bank: swim it for the anchor instead.
+        f.homingEnd = tick + HOMING_TICKS
+        aim = Math.atan2(school.z - z, school.x - x)
+        f.wander = aim
+        this._swim(cfg, th0, spd, x, y, z, vy, aim, speed, ty, lo, hi, n, lured, _sw)
+      }
+      if (lured) f.wander = _sw.th
     }
-    if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
-    if (f.y > hi) { f.y = Math.max(lo, hi); if (f.vy > 0) f.vy = 0 }
-    this._pose(sp, f, dt)
+
+    const L = f.L
+    const k = L.k
+    const eps = FACE_EPS * cfg.cruise
+    L.t0 = t
+    L.d = D
+    Fish._quintic(k, 0, x, vx * D, ax * D * D, _sw.x, _sw.vx * D, _sw.ax * D * D)
+    Fish._quintic(k, 6, y, vy * D, ay * D * D, _sw.y, _sw.vy * D, _sw.ay * D * D)
+    Fish._quintic(k, 12, z, vz * D, az * D * D, _sw.z, _sw.vz * D, _sw.az * D * D)
+    L.cx = cx
+    L.cz = cz
+    L.h0x = hx0
+    L.h0z = hz0
+    L.h1x = Math.cos(_sw.th) * eps
+    L.h1z = Math.sin(_sw.th) * eps
+    this._tail(sp, f, L, phase)
+    f.nextTick = tick + n
+    f.poseFrame = -1
+    this._publish(sp, f)
   }
 
   /**
-   * The fish's look over the `dt` seconds just stepped, from its velocity: the
-   * previous pose kept for the frame to draw from, the facing chasing the
-   * velocity, the roll leaning into the turn, the pitch read off the climb, the
-   * body arcing into the turn and the climb, the tail rate following the speed
-   * relative to its own cruise (idle sculling at 40% of its beat, a burst at
-   * nearly three times it), deeper through a turn, and still when stunned.
+   * The swim of one leg of `n` ticks toward heading `aim` at `speed`, from
+   * heading `th` and speed `s`, in SUB_S steps: the heading turns onto the aim
+   * at TURN_GAIN times the agility and no faster than TURN_MAX times it (a
+   * lured fish at LURE_TURN, so it runs through the hand and comes round), the
+   * speed chases its target, the climb chases height `ty` inside [lo, hi].
+   * Into `o`: the end in still water (x, y, z), its velocity, its
+   * acceleration and heading `th`.
    */
-  _pose(sp, f, dt) {
-    const cfg = sp.cfg
-    f.pyaw = f.yaw
-    f.ppitch = f.pitch
-    f.proll = f.roll
-    f.pcurve = f.curve
-    f.plift = f.lift
-    f.pamp = f.amp
-    f.phase = (f.phase + f.rate * dt) % TAU
-    const spd = Math.hypot(f.vx, f.vz)
-    // Cross product of the facing and the velocity's direction: the sine of the turn in hand, negative to the left.
-    let turn = 0
-    if (spd > 0.02) {
-      const k = 1 - Math.exp(-6 * dt)
-      const wantX = f.vx / spd
-      const wantZ = f.vz / spd
-      turn = f.hx * wantZ - f.hz * wantX
-      f.hx += (wantX - f.hx) * k
-      f.hz += (wantZ - f.hz) * k
-      const hl = Math.hypot(f.hx, f.hz) || 1
-      f.hx /= hl
-      f.hz /= hl
-      f.roll += (-turn * 0.5 - f.roll) * k
-    } else {
-      f.roll += (0 - f.roll) * (1 - Math.exp(-3 * dt))
+  _swim(cfg, th, s, x, y, z, vy, aim, speed, ty, lo, hi, n, lured, o) {
+    const D = n * TICK_S
+    const steps = Math.max(1, Math.ceil(D / SUB_S - 1e-9))
+    const h = D / steps
+    const kA = cfg.agility * (lured ? LURE_AGILITY : 1)
+    const turnMax = lured ? LURE_TURN : cfg.agility * TURN_MAX
+    const kv = Math.min(1, kA * h)
+    const ky = Math.min(1, 2 * h)
+    const climb = Math.max(0.3, speed / cfg.cruise)
+    let om = 0, ds = 0, dvy = 0
+    for (let j = 0; j < steps; j++) {
+      const sw = Math.atan2(Math.sin(aim - th), Math.cos(aim - th))
+      om = Math.max(-turnMax, Math.min(turnMax, sw * kA * TURN_GAIN))
+      if (Math.abs(om * h) > Math.abs(sw)) om = sw / h
+      th += om * h
+      ds = (speed - s) * kv / h
+      s += ds * h
+      const wantY = Math.max(-0.4, Math.min(0.4, (ty - y) * 0.6)) * climb
+      dvy = (wantY - vy) * ky / h
+      vy += dvy * h
+      x += s * Math.cos(th) * h
+      z += s * Math.sin(th) * h
+      y += vy * h
+      if (y < lo) { y = lo; if (vy < 0) vy = 0; dvy = 0 }
+      if (y > hi) { y = hi; if (vy > 0) vy = 0; dvy = 0 }
     }
-    const climb = Math.atan2(f.vy, Math.max(spd, 0.05)) - f.pitch
-    f.pitch += climb * (1 - Math.exp(-4 * dt))
-    // The tail swings to the inside of a turn (left turn, tail left), by up to 0.4 of the length on a hard one. Vertically it arcs the same way and keeps arcing for as long as the fish holds a pitch, so a climbing or diving fish is a curve and not a tilted board.
-    const kb = 1 - Math.exp(-8 * dt)
-    f.curve += (Math.max(-0.4, Math.min(0.4, turn * 2)) * sp.lengthM - f.curve) * kb
-    f.lift += (Math.max(-0.3, Math.min(0.3, climb * 1.5 + f.pitch * 0.8)) * sp.lengthM - f.lift) * kb
-    const rel = Math.hypot(f.vx, f.vy, f.vz) / (cfg.cruise * f.pace)
-    f.rate = TAU * cfg.tailHz * f.beat * (0.4 + 0.6 * rel)
-    f.amp = f.stun > 0 ? 0 : cfg.tailAmp * sp.lengthM * Math.min(1.6, 0.5 + 0.5 * rel) * (1 + 2 * Math.abs(turn))
-    // Local -Z is the nose (ship.mjs turns every pick that way), so yaw = atan2(-hx, -hz) points it down the heading.
-    f.yaw = Math.atan2(-f.hx, -f.hz)
+    const c = Math.cos(th), sn = Math.sin(th)
+    o.x = x; o.y = y; o.z = z
+    o.vx = s * c; o.vy = vy; o.vz = s * sn
+    o.ax = ds * c - s * om * sn; o.ay = dvy; o.az = ds * sn + s * om * c
+    o.th = th
+    return o
   }
 
-  /** Fish `f`'s row: its last two poses, stamped at world time `stamp`, the time of the pose it ends on, and the tail at `phase` there. */
-  _publish(sp, f, stamp, phase) {
+  /** The quintic in the leg's own time s in [0, 1] through position `p0`, velocity `v0` and acceleration `a0` (per unit s) at 0 and `p1`, `v1`, `a1` at 1, into `k` from `at`. */
+  static _quintic(k, at, p0, v0, a0, p1, v1, a1) {
+    const dp = p1 - p0
+    k[at] = p0
+    k[at + 1] = v0
+    k[at + 2] = a0 / 2
+    k[at + 3] = 10 * dp - 6 * v0 - 4 * v1 - 1.5 * a0 + 0.5 * a1
+    k[at + 4] = -15 * dp + 8 * v0 + 7 * v1 + 1.5 * a0 - a1
+    k[at + 5] = 6 * dp - 3 * v0 - 3 * v1 - 0.5 * a0 + 0.5 * a1
+  }
+
+  /** The tail on leg `L` from `phase` at its start: its beat, the speed it scales by, its amplitude, and the swim speed through the leg fitted as a quadratic in seconds so the phase it integrates to is closed-form. */
+  _tail(sp, f, L, phase) {
+    const cfg = sp.cfg
+    const D = L.d
+    L.ph0 = phase % TAU
+    L.rate = TAU * cfg.tailHz * f.beat
+    L.inv = 1 / (cfg.cruise * f.pace)
+    L.amp = f.stun > 0 ? 0 : cfg.tailAmp * sp.lengthM
+    const s0 = Fish._legSpeed(L.k, 0, D)
+    const sm = Fish._legSpeed(L.k, 0.5, D)
+    const s1 = Fish._legSpeed(L.k, 1, D)
+    L.s0 = s0
+    L.sc = (2 * (s1 - 2 * sm + s0)) / (D * D)
+    L.sb = (s1 - s0) / D - L.sc * D
+  }
+
+  static _legSpeed(k, s, D) {
+    let q = 0
+    for (let a = 0; a < 18; a += 6) {
+      const v = k[a + 1] + s * (2 * k[a + 2] + s * (3 * k[a + 3] + s * (4 * k[a + 4] + s * 5 * k[a + 5])))
+      q += v * v
+    }
+    return Math.sqrt(q) / D
+  }
+
+  /** A leg of one tick from (x, y, z) at velocity (vx, vy, vz), facing along it, from tail `phase` at world time `t`: a fish's pose where no planned leg has it yet. */
+  _hold(sp, f, t, x, y, z, vx, vy, vz, phase) {
+    const L = f.L
+    const D = TICK_S
+    L.t0 = t
+    L.d = D
+    L.k.fill(0)
+    L.k[0] = x; L.k[1] = vx * D
+    L.k[6] = y; L.k[7] = vy * D
+    L.k[12] = z; L.k[13] = vz * D
+    const w = this.shallows.at(x, z, _w)
+    L.cx = w.wet ? w.cx : 0
+    L.cz = w.wet ? w.cz : 0
+    const eps = FACE_EPS * sp.cfg.cruise
+    L.h0x = L.h1x = Math.cos(f.wander) * eps
+    L.h0z = L.h1z = Math.sin(f.wander) * eps
+    this._tail(sp, f, L, phase)
+    f.poseFrame = -1
+  }
+
+  /**
+   * Fish `f`'s leg at world time `t`, into `o`: position, swim velocity and
+   * acceleration, the facing's lean (hx, hz) and the tail phase. Past the
+   * leg's end it carries on at its last velocity, its acceleration held for
+   * the look so a frame on the end tick turns the same either side; before its start (a turn's
+   * hold, put a tick ahead) the polynomial runs backward. The CPU twin of fishRow
+   * (FISH_GLSL), in float64.
+   */
+  _eval(f, t, o) {
+    const L = f.L
+    const k = L.k
+    const D = L.d
+    const u = t - L.t0
+    const s = Math.min(1, u / D)
+    const over = u - s * D
+    const ea = 1 / (D * D)
+    for (let a = 0, j = 0; a < 3; a++, j += 6) {
+      const p = k[j] + s * (k[j + 1] + s * (k[j + 2] + s * (k[j + 3] + s * (k[j + 4] + s * k[j + 5]))))
+      const v = (k[j + 1] + s * (2 * k[j + 2] + s * (3 * k[j + 3] + s * (4 * k[j + 4] + s * 5 * k[j + 5])))) / D
+      const acc = (2 * k[j + 2] + s * (6 * k[j + 3] + s * (12 * k[j + 4] + s * 20 * k[j + 5]))) * ea
+      if (a === 0) { o.x = p + v * over + L.cx * u; o.vx = v; o.ax = acc }
+      else if (a === 1) { o.y = p + v * over; o.vy = v; o.ay = acc }
+      else { o.z = p + v * over + L.cz * u; o.vz = v; o.az = acc }
+    }
+    o.hx = L.h0x + (L.h1x - L.h0x) * s
+    o.hz = L.h0z + (L.h1z - L.h0z) * s
+    o.dhx = (L.h1x - L.h0x) / D
+    o.dhz = (L.h1z - L.h0z) / D
+    const wu = Math.min(u, D)
+    const s1 = L.s0 + L.sb * D + L.sc * D * D
+    o.phase = L.ph0 + L.rate * (0.4 * u + 0.6 * L.inv * (wu * (L.s0 + wu * (L.sb * 0.5 + wu * L.sc / 3)) + s1 * over))
+    return o
+  }
+
+  /** Fish `f`'s place at the clock of the last update onto x, y, z, its swim velocity and its tail phase, worked out once a frame and only when something asks. A loose fish's place and velocity are its own integration. */
+  pos(f) {
+    if (!f.alive || f.poseFrame === this.frame || this.now === null) return f
+    f.poseFrame = this.frame
+    const o = this._eval(f, this.now, _pe)
+    if (!f.loose) {
+      f.x = o.x; f.y = o.y; f.z = o.z
+      f.vx = o.vx; f.vy = o.vy; f.vz = o.vz
+    }
+    f.phase = o.phase
+    return f
+  }
+
+  /** pos, and the look the shader draws onto the fish's fields: facing (hx, hz), yaw, pitch, roll, curve, lift and the tail's amplitude. */
+  pose(f) {
+    this.pos(f)
+    if (!f.alive || this.now === null) return f
+    const look = Fish._look(this._eval(f, this.now, _pe), f.L, f.sp.lengthM)
+    if (!f.loose) {
+      const fl = Math.hypot(look.fx, look.fz)
+      f.hx = look.fx / fl
+      f.hz = look.fz / fl
+    }
+    f.yaw = look.yaw
+    f.pitch = look.pitch
+    f.roll = look.roll
+    f.curve = look.curve
+    f.lift = look.lift
+    f.amp = look.amp
+    return f
+  }
+
+  /**
+   * The look of an evaluated leg `o`: facing along the swim velocity leaned
+   * onto the leg's heading, so a hanging fish points somewhere; the turn (the
+   * facing's own turn rate over 6, the sine of the lag a 6/s filter would
+   * carry) rolls it and arcs the tail to the inside; the pitch is the climb's
+   * and the lift arcs the body into it; the tail beats harder with speed and
+   * through a turn.
+   */
+  static _look(o, L, len) {
+    const fx = o.vx + o.hx
+    const fz = o.vz + o.hz
+    const dfx = o.ax + o.dhx
+    const dfz = o.az + o.dhz
+    const turn = Math.max(-1, Math.min(1, (fx * dfz - fz * dfx) / Math.max(fx * fx + fz * fz, 1e-6) / 6))
+    const hs = Math.hypot(o.vx, o.vz)
+    const H = Math.max(hs, 0.05)
+    const pitch = Math.atan2(o.vy, H)
+    const dhs = hs > 0.05 ? (o.vx * o.ax + o.vz * o.az) / hs : 0
+    const dpitch = (H * o.ay - o.vy * dhs) / (H * H + o.vy * o.vy)
+    const rel = Math.hypot(o.vx, o.vy, o.vz) * L.inv
+    _lk.fx = fx
+    _lk.fz = fz
+    _lk.yaw = Math.atan2(-fx, -fz)
+    _lk.pitch = pitch
+    _lk.roll = -turn * 0.5
+    _lk.curve = Math.max(-0.4, Math.min(0.4, turn * 2)) * len
+    _lk.lift = Math.max(-0.3, Math.min(0.3, dpitch * 0.2 + pitch * 0.8)) * len
+    _lk.amp = L.amp * Math.min(1.6, 0.5 + 0.5 * rel) * (1 + 2 * Math.abs(turn))
+    return _lk
+  }
+
+  /** Fish `f`'s row: its leg as FISH_ROW_TEXELS lays it out. */
+  _publish(sp, f) {
     const d = sp.rows.data
     const o = f.id * FISH_ROW_TEXELS * 4
-    const hi = Math.floor(stamp / TIME_HI) * TIME_HI
-    d[o] = f.px; d[o + 1] = f.py; d[o + 2] = f.pz; d[o + 3] = stamp - hi
-    d[o + 4] = f.x; d[o + 5] = f.y; d[o + 6] = f.z; d[o + 7] = f.scale
-    // The shorter way round from the previous yaw to this one.
-    const turn = f.yaw - f.pyaw
-    d[o + 8] = f.yaw - (turn - TAU * Math.round(turn / TAU)); d[o + 9] = f.yaw
-    d[o + 10] = f.ppitch; d[o + 11] = f.pitch
-    d[o + 12] = f.proll; d[o + 13] = f.roll
-    d[o + 14] = f.pcurve; d[o + 15] = f.curve
-    d[o + 16] = f.plift; d[o + 17] = f.lift
-    d[o + 18] = f.pamp; d[o + 19] = f.amp
-    d[o + 20] = phase; d[o + 21] = f.rate; d[o + 22] = hi; d[o + 23] = 0
+    const L = f.L
+    const k = L.k
+    const hi = Math.floor(L.t0 / TIME_HI) * TIME_HI
+    d[o] = k[0]; d[o + 1] = k[1]; d[o + 2] = k[2]; d[o + 3] = k[3]
+    d[o + 4] = k[4]; d[o + 5] = k[5]; d[o + 6] = k[10]; d[o + 7] = k[11]
+    d[o + 8] = k[6]; d[o + 9] = k[7]; d[o + 10] = k[8]; d[o + 11] = k[9]
+    d[o + 12] = k[12]; d[o + 13] = k[13]; d[o + 14] = k[14]; d[o + 15] = k[15]
+    d[o + 16] = k[16]; d[o + 17] = k[17]; d[o + 18] = L.cx; d[o + 19] = L.cz
+    d[o + 20] = L.t0 - hi; d[o + 21] = L.d; d[o + 22] = hi; d[o + 23] = f.scale
+    d[o + 24] = L.h0x; d[o + 25] = L.h0z; d[o + 26] = L.h1x; d[o + 27] = L.h1z
+    d[o + 28] = L.ph0; d[o + 29] = L.rate; d[o + 30] = L.inv; d[o + 31] = L.amp
+    d[o + 32] = L.s0; d[o + 33] = L.sb; d[o + 34] = L.sc; d[o + 35] = sp.lengthM
     sp.rows.touch(f.id)
   }
 
-  /** The push on `f` away from the `others` within `sep` metres, along axis 0 (x) or 1 (z). */
-  static _apart(f, others, sep, axis) {
-    let push = 0
-    for (const g of others) {
-      if (g === f || !g.alive) continue
-      const gx = f.x - g.x
-      const gz = f.z - g.z
+  /** The push from (x, z) away from the school-mates at (mx, mz)[0, n) within `sep` metres, skipping `self`, into `out`. */
+  static _apart(x, z, mx, mz, n, self, sep, out) {
+    out.x = 0
+    out.z = 0
+    for (let j = 0; j < n; j++) {
+      if (j === self) continue
+      const gx = x - mx[j]
+      const gz = z - mz[j]
       const d2 = gx * gx + gz * gz
       if (d2 < sep * sep && d2 > 1e-6) {
         const d = Math.sqrt(d2)
-        push += ((axis === 0 ? gx : gz) / d) * ((sep - d) / sep) * 2
+        out.x += (gx / d) * ((sep - d) / sep) * 2
+        out.z += (gz / d) * ((sep - d) / sep) * 2
       }
     }
-    return push
+    return out
   }
 
   // --- the lures --------------------------------------------------------------
 
   /** The lure fish `f` is on this frame: the nearest of `lures` it wants, noticed within LURE_M of the hand and kept to LURE_FORGET_M -- from LURE_M on when a peer's set says that hand already has it. Taken up at a dart the ear hears, let go of at a cruise. */
   _notice(f, lures) {
+    this.pos(f)
     const tall = PREY.heightM * this.size
     if (f.size > PREY.nibble * tall) {
       const her = this.her
       const d = Math.hypot(her.x - f.x, her.y - f.y, her.z - f.z)
       if (d <= PREY.notice * f.size * (f.lure === her ? 2 : 1)) {
-        if (f.lure !== her) { f.lure = her; f.lured = true; f.speed = f.school.sp.cfg.cruise * LURE_HASTE; this.setOff(f) }
+        if (f.lure !== her) { f.lure = her; f.lured = true; f.speed = f.school.sp.cfg.cruise * LURE_HASTE; this.setOff(f); this._soon(f) }
         return
       }
     }
@@ -1204,7 +1530,7 @@ ${FISH_GLSL}
       const kept = f.lured || (set !== undefined && set.by === lure.by && set.has.has(f.index))
       if (best <= (kept ? LURE_FORGET_M : LURE_M)) {
         f.lure = lure
-        if (!f.lured) { f.lured = true; f.speed = f.school.sp.cfg.cruise * LURE_HASTE; this.setOff(f) }
+        if (!f.lured) { f.lured = true; f.speed = f.school.sp.cfg.cruise * LURE_HASTE; this.setOff(f); this._soon(f) }
         return
       }
     }
@@ -1212,6 +1538,12 @@ ${FISH_GLSL}
     f.lured = false
     f.lure = null
     f.speed = f.school.sp.cfg.cruise
+    this._soon(f)
+  }
+
+  /** Fish `f` replans on its school's next tick, a lure having taken it or let it go. */
+  _soon(f) {
+    f.nextTick = Math.min(f.nextTick, f.school.rec.tick + 1)
   }
 
   /** Her size, a multiple of her full height: which fish take her for prey (PREY). */
@@ -1226,7 +1558,7 @@ ${FISH_GLSL}
     const tall = PREY.heightM * this.size
     for (const t of this.tiles.values()) {
       for (const f of t.fish) {
-        if (f.lure !== her || Math.hypot(her.x - f.x, her.y - f.y, her.z - f.z) > f.size * 0.5) continue
+        if (f.lure !== her || Math.hypot(her.x - this.pos(f).x, her.y - f.y, her.z - f.z) > f.size * 0.5) continue
         const why = `a ${f.school.sp.id}`
         if (f.size > PREY.gulp * tall) {
           if (this.swallow === null) throw new Error('Fish: a fish swallows her, and no swallow() to end her with')
@@ -1282,6 +1614,7 @@ ${FISH_GLSL}
       if (!sp.mesh.visible) continue
       for (const f of sp.slots) {
         if (!f.alive || f.size >= maxSize) continue
+        this.pos(f)
         const d = Math.hypot(f.x - x, f.y - y, f.z - z) - f.size * 0.5
         if (d < bestD) {
           bestD = d
@@ -1303,13 +1636,14 @@ ${FISH_GLSL}
   take(hit, stowMax) {
     const { sp, f } = hit
     if (!f.alive) throw new Error(`Fish.take: a dead ${sp.id}`)
+    this.pose(f)
     const rec = {
       kind: 'fish',
       name: sp.id,
       size: f.size,
       geometry: sp.mesh.geometry,
       material: sp.material,
-      attrs: { aSwim: [this._tailNow(f), f.amp, 0, 0], aHue: [f.hue] },
+      attrs: { aSwim: [f.phase % TAU, f.amp, 0, 0], aHue: [f.hue] },
       color: [f.tint, f.tint, f.tint],
       scale: [f.scale, f.scale, f.scale],
       stowable: f.size < stowMax,
@@ -1320,12 +1654,6 @@ ${FISH_GLSL}
       this._drop(sp, f)
     }
     return rec
-  }
-
-  /** Fish `f`'s tail phase at the clock of the last update. */
-  _tailNow(f) {
-    if (f.loose || this.now === null) return f.phase
-    return (f.phase + f.rate * (this.now - f.school.rec.tick * TICK_S)) % TAU
   }
 
   /**
@@ -1383,7 +1711,7 @@ ${FISH_GLSL}
     f.school = null
     f.tile = null
     f.index = -1
-    f.x = f.px = x; f.y = f.py = y; f.z = f.pz = z
+    f.x = x; f.y = y; f.z = z
     f.vx = f.vy = f.vz = 0
     f.scale = rec.scale[0]
     f.size = rec.size
@@ -1395,20 +1723,11 @@ ${FISH_GLSL}
     f.wander = Math.atan2(z - head.z, x - head.x)
     f.hx = Math.cos(f.wander)
     f.hz = Math.sin(f.wander)
-    f.pitch = 0
-    f.roll = 0
-    f.curve = 0
-    f.lift = 0
     f.pace = (0.8 + 0.4 * rand()) * Math.sqrt(f.scale)
     f.beat = (0.85 + 0.3 * rand()) / Math.sqrt(f.scale)
     f.verve = 1
     f.tint = rec.color[0]
     f.hue = rec.attrs.aHue[0]
-    f.phase = rec.attrs.aSwim[0]
-    f.amp = 0
-    f.probeAt = 0
-    f.homing = 0
-    f.boltIn = 0
     f.lure = null
     f.lured = false
     f.mood = 'glide'
@@ -1416,8 +1735,7 @@ ${FISH_GLSL}
     f.speed = 0
     f.stun = between(rand, STUN_S)
     f.listedAt = -1
-    f.yaw = f.pyaw = Math.atan2(-f.hx, -f.hz)
-    f.ppitch = f.proll = f.pcurve = f.plift = f.pamp = f.rate = 0
+    this._looseLeg(sp, f, this.now === null ? 0 : this.now, 0, 0, 0, rec.attrs.aSwim[0])
     sp.loose.push(f)
     this._occupy(sp, f)
     return true
@@ -1490,6 +1808,37 @@ ${FISH_GLSL}
     if (hi <= lo) { f.y = (f.bed + f.level) / 2; f.vy = 0 }
     else if (f.y < lo) { f.y = lo; if (f.vy < 0) f.vy = 0 }
     else if (f.y > hi) { f.y = hi; if (f.vy > 0) f.vy = 0 }
+    // The facing chases the velocity, so a fish that stops does not snap to whatever its last velocity happened to be.
+    const spd = Math.hypot(f.vx, f.vz)
+    if (spd > 0.02) {
+      const k = 1 - Math.exp(-6 * dt)
+      f.hx += (f.vx / spd - f.hx) * k
+      f.hz += (f.vz / spd - f.hz) * k
+      const hl = Math.hypot(f.hx, f.hz)
+      f.hx /= hl
+      f.hz /= hl
+    }
+  }
+
+  /** A loose fish's row: a leg from where it is at world time `t`, at its velocity and acceleration (ax, ay, az), leaning onto its own facing, from tail `phase`. */
+  _looseLeg(sp, f, t, ax, ay, az, phase) {
+    const L = f.L
+    const k = L.k
+    const D = TICK_S
+    L.t0 = t
+    L.d = D
+    k.fill(0)
+    k[0] = f.x; k[1] = f.vx * D; k[2] = ax * D * D / 2
+    k[6] = f.y; k[7] = f.vy * D; k[8] = ay * D * D / 2
+    k[12] = f.z; k[13] = f.vz * D; k[14] = az * D * D / 2
+    L.cx = f.cx
+    L.cz = f.cz
+    const eps = FACE_EPS * sp.cfg.cruise
+    L.h0x = L.h1x = f.hx * eps
+    L.h0z = L.h1z = f.hz * eps
+    this._tail(sp, f, L, phase)
+    f.poseFrame = -1
+    this._publish(sp, f)
   }
 
   // --- the ear ----------------------------------------------------------------
@@ -1512,7 +1861,7 @@ ${FISH_GLSL}
   /** The fish that set off at DART_SPEED or more this frame, for the ear (audio/ambience.js): the slots themselves, with x, y, z and `size` (its length in metres) on them, each once. A hidden layer lists nobody. */
   startled(into) {
     if (!this.batch.visible) return into
-    for (const f of this.startles) into.push(f)
+    for (const f of this.startles) into.push(this.pos(f))
     return into
   }
 
@@ -1533,8 +1882,8 @@ ${FISH_GLSL}
 
   /**
    * One frame with her head under, at the room's clock `now`: the beds
-   * follow her, the lures are noticed, every school is ticked up to `now`
-   * and the rows of those that ticked written. `lures`: hands.js lures() this frame,
+   * follow her, the lures are noticed, and every school is ticked up to
+   * `now`, its fish whose legs ended given their next. `lures`: hands.js lures() this frame,
    * the spiders, butterflies and grasshoppers among them swum at.
    */
   update(x, y, z, now, lures = NO_LURES) {
@@ -1544,7 +1893,7 @@ ${FISH_GLSL}
     this.head.z = z
     this._walkTiles(x, z)
     this.frame++
-    // The frame's own seconds, for the tail, the facing and the loose fish; the ticks run on `now` itself.
+    // The frame's own seconds, for the loose fish; the ticks run on `now` itself.
     const dt = this.now === null ? 0 : Math.min(0.1, Math.max(0, now - this.now))
     this.now = now
     this.startles.length = 0
@@ -1571,7 +1920,7 @@ ${FISH_GLSL}
     }
     for (const t of this.tiles.values()) if (noticing || t.luredSent !== '') this._owe(t, now)
 
-    // A tick is the only time a schooled fish's row is written: every school ticks on the same absolute ticks of the room's clock, so a frame between them touches no fish.
+    // A plan is the only time a schooled fish's row is written: a frame between a fish's legs touches nothing of it.
     let stepped = 0
     for (const sp of this.species) {
       for (const school of sp.schools) {
@@ -1579,20 +1928,16 @@ ${FISH_GLSL}
         const turned = school.seg !== g
         if (turned) this._reset(sp, school, g)
         stepped = Math.max(stepped, stepTo(school.rec, now, (tick) => this._tick(sp, school, tick), CATCH_UP_TICKS))
-        if (turned || school.pubTick !== school.rec.tick) {
-          school.pubTick = school.rec.tick
-          const stamp = school.rec.tick * TICK_S
-          for (const f of school.members) this._publish(sp, f, stamp, f.phase)
-        }
       }
-      // A loose fish is stepped and written every frame, dated two ticks back so the shader draws the pose just written.
+      // A loose fish is stepped and written every frame, as a leg that starts now.
       for (let i = sp.loose.length - 1; i >= 0; i--) {
         const f = sp.loose[i]
+        const phase = this._eval(f, now, _st).phase
+        const vx = f.vx, vy = f.vy, vz = f.vz
         this.stepLoose(sp, f, dt)
         if (!f.alive) continue
-        f.px = f.x; f.py = f.y; f.pz = f.z
-        this._pose(sp, f, dt)
-        this._publish(sp, f, now - 2 * TICK_S, f.phase - f.rate * 2 * TICK_S)
+        const r = dt > 0 ? 1 / dt : 0
+        this._looseLeg(sp, f, now, (f.vx - vx) * r, (f.vy - vy) * r, (f.vz - vz) * r, phase)
       }
       sp.mesh.count = sp.top
       sp.rows.setFrame(now, x, y, z)
