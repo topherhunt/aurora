@@ -11,7 +11,7 @@ import { V2Height } from '../src/v2/height/field.js'
 import { RELIEF_SHIPPED } from '../src/v2/height/relief.js'
 import { Layers } from '../src/v2/layers/layers.js'
 import { planTowns } from '../src/v2/layers/towns.js'
-import { TRAITS, VOICE, castMinds, villageMinds } from '../src/v2/talk/mind.js'
+import { TRAITS, VOICE, castMinds, homebodyMind, villageMinds } from '../src/v2/talk/mind.js'
 import { LORE, TOPICS, TRUST, expertise, expertBody } from '../src/v2/talk/lore.js'
 import { DialogGrid, NEXT } from '../src/v2/talk/grid.js'
 import { Chat, CHAT, EXCHANGES, chatterStep } from '../src/v2/talk/chat.js'
@@ -1304,17 +1304,34 @@ if (process.argv.includes('--transcript')) {
 
 console.log('aimed hail')
 {
-  const at = (x, z) => ({ c: { pose: { x, z } } })
+  const at = (x, z, y = 0, size = 1.7) => ({ c: { pose: { x, y, z }, size } })
   const eye = { x: 0, y: 1.2, z: 0 }, north = { x: 0, y: 0, z: -1 }
+  const picks = (dir, scale, people, from = eye) => {
+    const aim = aimedAt(from, dir, 3, scale, people)
+    return aim === null ? null : aim.person
+  }
   const near = at(0.2, -2), wide = at(1, -2), behind = at(0, 2), far = at(0, -4)
-  check(aimedAt(eye, north, 3, 1, [wide, near]) === near, 'the trigger picks whom the ray passes nearest')
-  check(aimedAt(eye, north, 3, 1, [wide]) === null, `no one more than ${AIM.side} m off the ray`)
-  check(aimedAt(eye, north, 3, 1, [behind]) === null, 'no one behind the hand')
-  check(aimedAt(eye, north, 3, 1, [far]) === null, 'no one past the reach')
-  check(aimedAt(eye, { x: 0, y: 0.8, z: -0.6 }, 3, 1, [near]) === null, 'a hand pointed at the sky hails no one')
-  check(aimedAt(eye, { x: 0, y: -0.6, z: -0.8 }, 3, 1, [near]) === near, 'a hand pointed down at someone short still reaches them')
+  check(picks(north, 1, [wide, near]) === near, 'the trigger picks whom the ray passes nearest')
+  check(aimedAt(eye, north, 3, 1, [near]).t === 2, 'and says how far along the ray they stand, so what lies beyond them is not taken first')
+  check(picks(north, 1, [wide]) === null, `no one more than ${AIM.side} m off the ray`)
+  check(picks(north, 1, [behind]) === null, 'no one behind the hand')
+  check(picks(north, 1, [far]) === null, 'no one past the reach')
+  check(picks({ x: 0, y: 0.8, z: -0.6 }, 1, [near]) === null, 'a hand pointed at the sky hails no one')
+  check(picks({ x: 0, y: -0.6, z: -0.8 }, 1, [near]) === near, 'a hand pointed down at someone short still reaches them')
+  const leafkin = at(0, -1, 0, 0.6), down = Math.hypot(0.85, 0.53)
+  check(picks({ x: 0, y: -0.85 / down, z: -0.53 / down }, 1, [leafkin], { x: 0, y: 1.6, z: 0 }) === leafkin, 'a click from eye height reaches a leafkin at her feet')
+  check(picks({ x: 0, y: -1, z: 0 }, 1, [leafkin]) === null, 'a ray straight down points at no one')
+  check(picks(north, 1, [at(0, -2, 3)]) === null, 'no one on the floor above')
   const beside = at(0.8, -2)
-  check(aimedAt(eye, north, 3, 1, [beside]) === null && aimedAt(eye, north, 3, 2, [beside]) === beside, 'the aim widens with her scale')
+  check(picks(north, 1, [beside]) === null && picks(north, 2, [beside]) === beside, 'the aim widens with her scale')
+}
+
+console.log('homebody minds')
+{
+  const a = homebodyMind(12345, 130, 1)
+  check(a.id === homebodyMind(12345, 130, 1).id && a.name === homebodyMind(12345, 130, 1).name, 'a homebody is the same leafkin every session')
+  check(a.id !== homebodyMind(12345, 131, 1).id && !leaf.some((m) => m.id === a.id), 'and no other leafkin')
+  check(new Chat(a, ctxAt({ x: 0, z: 0 }), { trusted: true }).open().text.length > 0, 'and answers when hailed')
 }
 
 console.log(failures === 0 ? '\nall talk checks pass' : `\n${failures} talk check(s) FAILED`)

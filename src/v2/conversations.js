@@ -4,7 +4,7 @@
 // The words are talk/*; this is when and where.
 
 import { TalkWorld } from './talk/world.js'
-import { villageMinds } from './talk/mind.js'
+import { homebodyMind, villageMinds } from './talk/mind.js'
 import { Chat, chatterStep, wantsHer } from './talk/chat.js'
 import * as trade from './talk/trade.js'
 import { TILE } from './render/roosts.js'
@@ -75,6 +75,8 @@ export class Conversations {
     this.villagers = villagers
     this.castle = castle
     this.village = villagers ? villageMinds(villageSeed, villagers.all.length, villagers.all.map((c) => villagers.graph.doorNodes.indexOf(c.home))) : []
+    this.villageSeed = villageSeed
+    this.homebodies = new Map()
     this.known = known
     this.rapport = rapport
     this.log = log
@@ -117,11 +119,14 @@ export class Conversations {
     this.hailed = true
   }
 
-  /** A hail along her pointer (a world ray, `dir` unit length): whether it found someone to hail, so the trigger is spent. */
-  hailAlong(origin, dir, scale) {
-    if (this.chat !== null) return false
-    this.pointed = aimedAt(origin, dir, TALK.hail * scale, scale, this._people([]))
-    return this.pointed !== null
+  /** Whom her pointer picks (a world ray, `dir` unit length): aimedAt's `{ person, t }`, or null, always null mid-conversation. */
+  aimed(origin, dir, scale) {
+    return this.chat !== null ? null : aimedAt(origin, dir, TALK.hail * scale, scale, this._people([]))
+  }
+
+  /** The hail of an aimed() `person`. */
+  hailAimed(person) {
+    this.pointed = person
   }
 
   get open() {
@@ -261,6 +266,17 @@ export class Conversations {
     return Math.hypot(p.c.pose.x - shop.x, p.c.pose.z - shop.z) < 8
   }
 
+  /** Leafkin `id` of house `home`: a villager, or a homebody of that house. One mind each, since a conversation's `coming` compares them. */
+  _leafkin(id, home) {
+    if (id < this.village.length) return this.village[id]
+    let mind = this.homebodies.get(id)
+    if (mind === undefined) {
+      mind = homebodyMind(this.villageSeed, id, home)
+      this.homebodies.set(id, mind)
+    }
+    return mind
+  }
+
   /** Townsperson `id` of alive town `t`, or null for a traveller, who has no mind. */
   _townMind(t, id) {
     const entry = this.world.towns[t]
@@ -278,7 +294,7 @@ export class Conversations {
     if (this.room !== null) {
       const { residents: res, t } = this.room
       for (const c of res.talkers([])) {
-        const mind = t === null ? this.village[c.id] : this._townMind(t, c.id)
+        const mind = t === null ? this._leafkin(c.id, res.room.index) : this._townMind(t, c.id)
         if (mind !== null) into.push({ kind: t === null ? 'village' : 'town', c, mind, t, res })
       }
       return into

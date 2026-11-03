@@ -119,16 +119,27 @@ export function castMinds(seed, town, townIndex) {
   return minds
 }
 
-/** Minds for a leafkin village's `count` villagers seeded `seed` (villagers.js), `homes[i]` villager i's house. Leafkin are honest and spacey, wary until fed. */
+/** A leafkin's mind. Leafkin are honest and spacey, wary until fed. */
+function leafkinMind(seed, i, name, home, rand, voices) {
+  const lean = { honesty: 0.2, accuracy: -0.25, wariness: 0.3, boast: -0.1 }
+  return { id: `lk${seed.toString(36)}:${i}`, index: i, kind: 'leafkin', name, body: 'leafkin', trade: 'gather', cls: 'leafkin', home, work: null, household: [], friends: [], rival: null, traits: temperament(rand, [lean]), voice: voiceOf(voices, 'leafkin') }
+}
+
+/** Minds for a leafkin village's `count` villagers seeded `seed` (villagers.js), `homes[i]` villager i's house. */
 export function villageMinds(seed, count, homes) {
   const rand = mulberry32(hash32(seed, SALT.leafkin))
   const names = [...LEAFKIN_NAMES]
-  const lean = { honesty: 0.2, accuracy: -0.25, wariness: 0.3, boast: -0.1 }
   const voices = mulberry32(hash32(seed, SALT.voice))
   const minds = Array.from({ length: count }, (_, i) => {
     const name = names.length > 0 ? names.splice((rand() * names.length) | 0, 1)[0] : `${pick(rand, LEAFKIN_NAMES)}-${i}`
-    return { id: `lk${seed.toString(36)}:${i}`, index: i, kind: 'leafkin', name, body: 'leafkin', trade: 'gather', cls: 'leafkin', home: homes[i], work: null, household: [], friends: [], rival: null, traits: temperament(rand, [lean]), voice: voiceOf(voices, 'leafkin') }
+    return leafkinMind(seed, i, name, homes[i], rand, voices)
   })
   for (const m of minds) m.household = minds.filter((o) => o !== m && o.home === m.home).map((o) => o.index)
   return minds
+}
+
+/** The mind of homebody `id` (render/residents.js) of house `home`, the same for a seed and id every session, so her rapport with it keeps. */
+export function homebodyMind(seed, id, home) {
+  const rand = mulberry32(hash32(seed, SALT.leafkin, id))
+  return leafkinMind(seed, id, pick(rand, LEAFKIN_NAMES), home, rand, mulberry32(hash32(seed, SALT.voice, id)))
 }

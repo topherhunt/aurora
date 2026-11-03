@@ -339,10 +339,10 @@ export class Residents {
 
   // -- her conversation (conversations.js), the same calls as town-residents.js's: `r.her` is `{ at, seat, toward }` while she holds it, `at` Infinity while it comes to her.
 
-  /** Who she can talk with: its villagers (a homebody has no mind), awake, staying, and stood on her floor, not on the stair. */
+  /** Who she can talk with: anyone awake, staying, and stood on her floor, not on the stair. */
   talkers(into) {
     for (const r of this.all) {
-      if (r.id >= HOMEBODY_ID || r.state === 'leave' || r.state === 'gone' || r.phase === 'lie' || r.phase === 'sleep' || r.phase === 'rise') continue
+      if (r.state === 'leave' || r.state === 'gone' || r.phase === 'lie' || r.phase === 'sleep' || r.phase === 'rise') continue
       if (r.level === this.herLevel && Math.abs(r.y - (r.level === 1 ? this.room.loft.y : 0)) < 0.05) into.push(r)
     }
     return into

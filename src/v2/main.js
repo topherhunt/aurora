@@ -3333,12 +3333,11 @@ function buildQuestPanel() {
           if (knockDoor(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction)) return
         }
         let got = hands.press(key, handsHead())
-        // A hand that reaches nothing takes along its pointer, so nothing asks her to bend or crouch (eye-level.js).
+        // A hand that reaches nothing presses along its pointer, so nothing asks her to bend or crouch (eye-level.js).
         if (got === null && empty && el.components.raycaster) {
           const rc = el.components.raycaster
           rc.updateOriginDirection()
-          got = hands.pressRay(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead())
-          if (got === null && conversations !== null && conversations.hailAlong(rc.raycaster.ray.origin, rc.raycaster.ray.direction, herScale())) return
+          got = reachAlong(key, rc.raycaster.ray.origin, rc.raycaster.ray.direction)
         }
         if (got === 'pick') playPick()
       }
@@ -3348,8 +3347,8 @@ function buildQuestPanel() {
   // Flatscreen click support on a desktop, before entering XR. With the menu
   // open a click presses what is under the cursor, and one past the menu goes
   // on to the world: a click on the world reaches the desk hand down the
-  // camera ray, to DESK_CLICK_M, for the first thing it can take (or drops
-  // what the hand holds, or fires the flare gun it holds down the ray -- G drops that). With the mouse captured the ray is the view's
+  // camera ray, to DESK_CLICK_M, for the first thing it can take (or hails
+  // whomever it points at, or drops what the hand holds, or fires the flare gun it holds down the ray -- G drops that). With the mouse captured the ray is the view's
   // centre, since the cursor is not moving. A click is a press that moved
   // under DESK_CLICK_PX, so a drag-look never picks.
   const raycaster = new THREE.Raycaster()
@@ -3402,8 +3401,17 @@ function buildQuestPanel() {
     else if (holdsFlint('desk') && !hands.wouldStow('desk', handsHead())) strikeFlint('desk')
     else if ((holdsStick('desk') || (holdsLantern('desk') && !hands.holding('desk').lit)) && flintInPack() && !hands.wouldStow('desk', handsHead())) strikeFlint('desk', true)
     else if (knockDoor('desk', raycaster.ray.origin, raycaster.ray.direction)) return
-    else if (hands.pressRay('desk', raycaster.ray.origin, raycaster.ray.direction, DESK_CLICK_M * herScale(), handsHead()) === 'pick') playPick()
+    else if (reachAlong('desk', raycaster.ray.origin, raycaster.ray.direction) === 'pick') playPick()
   })
+}
+
+/** A press along a world ray, as Hands.pressRay: an empty hand takes what lies nearer than whomever the ray points at, or else hails them. */
+function reachAlong(key, origin, dir) {
+  const reach = DESK_CLICK_M * herScale()
+  const aim = conversations === null || hands.holding(key) !== null ? null : conversations.aimed(origin, dir, herScale())
+  const got = hands.pressRay(key, origin, dir, aim === null ? reach : Math.min(reach, aim.t), handsHead())
+  if (got === null && aim !== null) conversations.hailAimed(aim.person)
+  return got
 }
 
 // Whether a ray lands anywhere on the open menu -- a button or the plate
@@ -6944,14 +6952,14 @@ const HOTKEYS = [
       { keys: 't', what: 'hold to lob a teleport arc at the cursor, release to go -- the same throw the headset makes' },
       { keys: 'u', what: 'unstick: hop to the nearest walkable ground when wedged on a slope' },
       { keys: 'g', what: 'take the nearest thing under two metres within reach of a hand under the camera -- a mushroom, carrot, fern, stone, skull, dragon egg, spider, butterfly, grasshopper, fish or crab -- and stow what it holds if the hand is over the backpack; the trigger in the headset, and a grip lets go of what a hand holds' },
-      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
+      { keys: 'click', what: `take the thing under the cursor -- the centre of the view while the mouse is captured -- within ${DESK_CLICK_M} m, or with an empty hand hail the townsperson or leafkin under it within a few metres, or fire the flare gun or strike the flint it holds, or stow what it holds over the backpack; with the backpack open, press a slot to stow, take or swap, and a click past the menu still reaches the world` },
       { keys: 'hold click', what: `with a carrot, fish or mushroom in the hand, hold for ${EAT.holdS} s to eat it; in the headset, hold it to your mouth` },
       { keys: 'drag', what: `with chalk in the hand in a cave, draw on the rock under the cursor within ${DESK_CLICK_M} m; in the headset, hold the chalk to the rock` },
       { keys: 'e', what: 'let go of what the hand holds, where the hand is (a click no longer does)' },
       { keys: 'v', what: 'put what the hand holds in the backpack; over the shoulder in the headset' },
       { keys: 'on a strider', what: 'click its back from the side to mount a strider that trusts you; up / W walks it on, with shift gallops, back backs it up, left / right steers, and space gets off -- A / X with an empty hand in the headset' },
       { keys: 'q', what: 'the flare gun in the hand: on safe, or armed with the next colour, shown in its window -- it fires only armed, and on safe recalls the flare it is aimed at for a charge back; A / X in the headset' },
-      { keys: 'c', what: 'hail the townsperson or leafkin you face, within a few metres -- in the headset, point an empty hand at them and pull the trigger; click the grid that opens to talk' },
+      { keys: 'c', what: 'hail the townsperson or leafkin you face, within a few metres, as a click on them does -- in the headset, point an empty hand at them and pull the trigger; click the grid that opens to talk' },
     ],
   },
   {
