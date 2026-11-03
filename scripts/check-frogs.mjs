@@ -40,6 +40,7 @@ import { Frogs, DENSITY, TILE, SHORE_M, SIZE_M, MAX, TETHER_M, BREATH_S, BREATH_
 import { MEAL } from '../src/v2/eating.js'
 import { taken } from '../src/v2/taken.js'
 import { GRID_S, keyHash } from '../src/sim/score.js'
+import { FROG_ANIM_URL, HOP_FADE, hopWeight, idleWeight, parseFrogAnim } from '../src/v2/render/frog-anim.js'
 import { CRITTER_GLB, GLINT, LOD_HYSTERESIS, TIER_TINTS, critterLodUrl, critterTier, cullRange, lodReach, setTierTint } from '../src/v2/render/critters.js'
 import { TEX_PX_MAX, TEX_PX_SMALL } from '../tools/creatures/creature-roster.mjs'
 import { webpSize } from '../tools/tripo-pack.mjs'
@@ -78,7 +79,7 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
 // --- the shipped asset -------------------------------------------------------
 {
   const file = new URL(`../public/${CRITTER_GLB.frog}`, import.meta.url)
-  check(fs.existsSync(file), `${CRITTER_GLB.frog} is shipped -- run tools/creatures/ship.mjs`)
+  check(fs.existsSync(file), `${CRITTER_GLB.frog} is shipped -- run tools/creatures/ship-frog.mjs`)
   if (fs.existsSync(file)) {
     const buf = fs.readFileSync(file)
     check(buf.toString('latin1', 0, 4) === 'glTF', 'the frog GLB has a glTF header')
@@ -86,7 +87,7 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
     const json = JSON.parse(buf.toString('utf8', 20, 20 + jsonLen))
     check(json.meshes?.length === 1 && json.meshes[0].primitives.length === 1, 'one mesh, one primitive', `${json.meshes?.length} meshes`)
     check(json.images?.length >= 1 && json.materials?.[0]?.pbrMetallicRoughness?.baseColorTexture !== undefined, 'a base colour texture to draw')
-    // Packed (tools/creatures/ship.mjs): the colour map is a WebP beside the GLB at the roster's small size, and Tripo's own JPEGs -- colour, ORM, normal -- are gone.
+    // Packed (tools/creatures/ship-frog.mjs): the colour map is a WebP beside the GLB at the roster's small size, and Tripo's own JPEGs -- colour, ORM, normal -- are gone.
     const image = json.images?.[0]
     check(image?.uri?.endsWith('.webp') && image.bufferView === undefined && json.images.length === 1, 'the one image is the packed WebP beside the GLB, not an embedded JPEG', JSON.stringify(json.images))
     check(image?.uri && fs.existsSync(new URL(image.uri, file)), 'and it is shipped')
@@ -97,7 +98,7 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
     check(json.extensionsRequired?.includes('EXT_texture_webp') && json.textures?.[0]?.extensions?.EXT_texture_webp?.source === 0, 'the texture declares EXT_texture_webp')
     const pbr = json.materials?.[0]?.pbrMetallicRoughness
     check(pbr?.metallicFactor === 0 && pbr.metallicRoughnessTexture === undefined && json.materials[0].normalTexture === undefined, 'no metalness, and the ORM and normal maps are gone', JSON.stringify(json.materials?.[0]))
-    // Facing: the eyes are the top of a crouched frog, so the highest vertices' centroid lies ahead of the body's, and ahead must be +X once the node's matrix is applied -- ship.mjs turns the pick there by the roster's faceTurnDeg, measured per pick, and its ladder the same.
+    // Facing: the eyes are the top of a crouched frog, so the highest vertices' centroid lies ahead of the body's, and ahead must be +X once the node's matrix is applied.
     const node = json.nodes.find((n) => n.mesh !== undefined)
     check(!node.rotation && !node.translation && !node.scale, 'the mesh node carries its transform as one matrix')
     const { ahead, tris } = shape(buf, json)
@@ -116,7 +117,44 @@ const ground = { lift: 0.05, groundVersion: 0, groundAt() { return GROUND + this
       check(Math.abs(t.ahead) < 25, `tier ${k} faces +X`, `head ${t.ahead.toFixed(1)} deg from +X`)
       last = t.tris
     }
+    // The skin: every tier carries four influences a vertex onto bones the baked texture has, and each clip's last frame is its first, so a loop or a hop closes on itself.
+    const anim = readAnim()
+    for (let k = 0; k < LOD_TIERS; k++) {
+      const b = fs.readFileSync(new URL(`../public/${k ? critterLodUrl(CRITTER_GLB.frog, k) : CRITTER_GLB.frog}`, import.meta.url))
+      const j = JSON.parse(b.toString('utf8', 20, 20 + b.readUInt32LE(12)))
+      const attrs = j.meshes[0].primitives[0].attributes
+      const joints = accessor(b, j, attrs.JOINTS_0), weights = accessor(b, j, attrs.WEIGHTS_0)
+      const n = j.accessors[attrs.POSITION].count
+      let worstSum = 0
+      for (let v = 0; v < n; v++) worstSum = Math.max(worstSum, Math.abs(weights[v * 4] + weights[v * 4 + 1] + weights[v * 4 + 2] + weights[v * 4 + 3] - 1))
+      check(joints?.length === n * 4 && weights?.length === n * 4 && Math.max(...joints) < anim.bones && worstSum < 1e-3, `tier ${k} is skinned onto the ${anim.bones} baked bones, its weights summing to one`, `worst sum off ${worstSum.toExponential(1)}`)
+    }
+    const closes = (c) => { let d = 0; const w = anim.bones * 12; for (let i = 0; i < w; i++) d = Math.max(d, Math.abs(halfToFloat(anim.data[c.base * w + i]) - halfToFloat(anim.data[(c.base + c.frames) * w + i]))); return d }
+    check(anim.idle.frames > 1 && anim.hop.frames > 1 && anim.idle.base + anim.idle.frames < anim.rows && anim.hop.base + anim.hop.frames < anim.rows, 'the idle and the hop are in the texture, each over its frames and one closing row', `idle ${anim.idle.frames}, hop ${anim.hop.frames} frames of ${anim.rows} rows`)
+    check(closes(anim.idle) < 1e-2 && closes(anim.hop) < 1e-2, 'each clip ends on the pose it starts on', `idle ${closes(anim.idle).toExponential(1)}, hop ${closes(anim.hop).toExponential(1)}`)
   }
+}
+
+/** The shipped animation, parsed; a Buffer's ArrayBuffer may be a larger pool, so only its own bytes are cut out. */
+function readAnim() {
+  const b = fs.readFileSync(new URL(`../public/${FROG_ANIM_URL}`, import.meta.url))
+  return parseFrogAnim(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength))
+}
+
+/** A GLB accessor's values as plain numbers, or null. */
+function accessor(buf, json, index) {
+  if (index === undefined) return null
+  const acc = json.accessors[index]
+  const view = json.bufferViews[acc.bufferView]
+  const off = buf.byteOffset + 20 + buf.readUInt32LE(12) + 8 + (view.byteOffset ?? 0) + (acc.byteOffset ?? 0)
+  const per = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[acc.type]
+  const Ctor = { 5121: Uint8Array, 5123: Uint16Array, 5126: Float32Array }[acc.componentType]
+  return Array.from(new Ctor(buf.buffer.slice(off, off + acc.count * per * Ctor.BYTES_PER_ELEMENT)))
+}
+
+function halfToFloat(h) {
+  const e = (h >> 10) & 31, m = h & 1023, s = h >> 15 ? -1 : 1
+  return e === 0 ? s * m * 2 ** -24 : e === 31 ? s * Infinity : s * (1 + m / 1024) * 2 ** (e - 15)
 }
 
 /** A GLB's triangle count and the bearing of its highest vertices from its centroid, degrees from +X, after the mesh node's matrix. */
@@ -141,16 +179,20 @@ function shape(buf, json) {
   return { ahead: Math.atan2(-(head[2] - body[2]), head[0] - body[0]) * 180 / Math.PI, tris: json.accessors[prim.indices].count / 3 }
 }
 
-// --- stand-in assets: a unit box, feet at y = 0, and a coarser one for each tier --------------
+// --- stand-in assets: a unit box, feet at y = 0, every vertex on bone 0, and a coarser one for each tier; the shipped animation --------------
 const boxAsset = (segments) => {
   const box = new THREE.BoxGeometry(1, 0.5, 0.7, segments, segments, segments).translate(0, 0.25, 0)
-  return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
+  const n = box.getAttribute('position').count
+  const skinWeight = new Float32Array(n * 4)
+  for (let v = 0; v < n; v++) skinWeight[v * 4] = 1
+  return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), skinIndex: new Float32Array(n * 4), skinWeight, map: null }
 }
 const asset = Array.from({ length: LOD_TIERS }, (_, k) => boxAsset(LOD_TIERS - k))
+const ANIM = readAnim()
 
 // --- construction and the shader hook -----------------------------------------
 const scene = new THREE.Scene()
-const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset })
+const frogs = new Frogs(scene, height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
 check(frogs.loaded && frogs.tiers.length === LOD_TIERS && frogs.tiers.every((t) => t.visible && t.parent === frogs.batch) && Math.abs(frogs.span - 1) < 1e-6, 'assets set: every tier visible in the batch, span 1', `span ${frogs.span}`)
 // The stand-in is half as tall as it is long, so a floating frog's feet sit SINK of that under the surface, per metre of size.
 check(Math.abs(frogs.sink - SINK * 0.5) < 1e-6 && SINK === 0.5, 'a floating frog sinks half its height', `sink ${frogs.sink} per metre of size`)
@@ -159,17 +201,25 @@ check(frogs.tiers.every((t, k) => t.geometry.index.count === asset[k].idx.length
 check(frogs.tiers.every((t) => t.instanceColor && t.instanceColor.isInstancedBufferAttribute), 'tint rides in instanceColor')
 check(frogs.tiers.every((t, k) => t.geometry.getAttribute('aHue') === frogs.hues[k] && frogs.hues[k].isInstancedBufferAttribute) && frogs.mesh === frogs.tiers[0], 'hue rides in aHue on every tier')
 {
-  const shader = { uniforms: {}, vertexShader: 'void main() {\n#include <common>\n#include <begin_vertex>\n}', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
+  const shader = { uniforms: {}, vertexShader: '#include <common>\nvoid main() {\n#include <beginnormal_vertex>\n#include <begin_vertex>\n}', fragmentShader: '#include <common>\n#include <map_fragment>\n#include <roughnessmap_fragment>\n#include <lights_fragment_end>\n' }
   frogs.material.onBeforeCompile(shader)
   // The hue turn: read per instance, carried across, and applied to the sampled map before it is lit.
   check(shader.vertexShader.includes('gpuInstanceMatrix = gpuMotion();') && shader.vertexShader.includes('attribute float aBreath;') && shader.vertexShader.includes('uniform vec2 uFrogPhase;') && shader.uniforms.uFrogPhase === frogs.uPhase && shader.uniforms.uMotion.value === frogs.table.texture, 'the vertex shader poses an instance from its row of the phrase table, breathing on the shared phase')
-  check(shader.vertexShader.indexOf('uniform vec2 uFrogPhase;') < shader.vertexShader.indexOf('mat4 gpuMotion()'), 'the frog\'s uniform and attribute are declared ahead of the motion block that reads them')
+  check(shader.vertexShader.indexOf('uniform vec2 uFrogPhase;') < shader.vertexShader.indexOf('mat4 gpuMotion()') && shader.vertexShader.indexOf('vec4 frogHop(') < shader.vertexShader.indexOf('mat4 gpuMotion()'), 'the frog\'s uniforms, attributes and clip helpers are declared ahead of the motion block that reads them')
+  // The skin: four influences through the baked texture, the normal and then the position, every motion branch choosing a clip.
+  const vs = shader.vertexShader
+  check(shader.uniforms.uFrogAnim.value === ANIM.texture && shader.uniforms.uFrogClips === frogs.uClips && frogs.uClips.value.toArray().join() === [ANIM.idle.base, ANIM.idle.frames, ANIM.hop.base, ANIM.hop.frames].join(), 'the shader reads the baked texture and both clips\' rows', frogs.uClips.value.toArray().join())
+  check(vs.indexOf('objectNormal = vec3( dot( frogR0.xyz') > vs.indexOf('#include <beginnormal_vertex>') && vs.indexOf('transformed = vec3( dot( frogR0.xyz') > vs.indexOf('#include <begin_vertex>') && vs.includes('skinWeight[ j ]'), 'the skin moves the normal after beginnormal_vertex and the vertex after begin_vertex, over four weights')
+  check(/A\.z > 2\.5 \) \{ frogAnim = aAnim;/.test(vs) && vs.includes('frogAnim = frogHop( u );') && vs.includes('frogAnim = frogIdle(') && !vs.includes('0.25 * s'), 'a CPU row plays aAnim, a hop the hop clip (unsquashed), a sit the idle')
   check(shader.vertexShader.includes('attribute float aHue;') && shader.vertexShader.includes('vHue = aHue;') && /<map_fragment>\s*\{[^}]*cross\( hueK, diffuseColor\.rgb \)/.test(shader.fragmentShader), 'the hue turns the sampled colour after map_fragment')
   // The glint: a Standard at the hand-set wet roughness, no metalness, three's own roughness sampler left alone, the lobe scaled by GLINT.
   check(frogs.material.isMeshStandardMaterial && frogs.material.roughness === WET_ROUGHNESS && WET_ROUGHNESS > 0 && WET_ROUGHNESS < 1 && frogs.material.metalness === 0, 'a Standard material at WET_ROUGHNESS with no metalness', `${frogs.material.type} roughness ${frogs.material.roughness}`)
   check(shader.fragmentShader.includes('<roughnessmap_fragment>') && !shader.fragmentShader.includes('sampledDiffuseColor.a'), 'the colour alpha is not read as roughness')
   check(shader.fragmentShader.includes(`reflectedLight.directSpecular *= ${GLINT.toFixed(2)};`) && GLINT > 0 && GLINT < 1, 'the glint is scaled down after lights_fragment_end', `GLINT ${GLINT}`)
 }
+// The pose weights: a hop fades in from the bind pose and out to it, a sit's idle the same at its ends.
+check(hopWeight(0) === 0 && hopWeight(1) === 0 && hopWeight(0.5) === 1 && hopWeight(HOP_FADE) === 1 && hopWeight(HOP_FADE / 2) > 0 && hopWeight(HOP_FADE / 2) < 1, 'a hop\'s pose is the bind pose at take-off and landing, full between')
+check(idleWeight(0, 2) === 0 && idleWeight(2, 2) === 0 && idleWeight(1, 2) === 1 && idleWeight(5, Infinity) === 1 && idleWeight(5, 0) === 1, 'a sit\'s idle fades in and out at its ends, and in only when its end is not known')
 // The tint row (critters.js TIER_TINTS): four tiers on one material cannot each wear a uniform, so each tier's mesh is swapped onto its own flat colour on the next update, and back.
 {
   setTierTint(true)
@@ -350,7 +400,7 @@ const poseOf = (f) => [f.key, f.x, f.y, f.z, f.yaw, f.nx, f.ny, f.nz, f.state, f
 const poses = (layer) => layer.slots.filter((f) => f.tile !== null).map(poseOf).sort((a, b) => (a[0] < b[0] ? -1 : 1))
 const same = (a, b) => a.length === b.length && a.every((p, i) => p.every((v, k) => (typeof v === 'number' ? Math.abs(v - b[i][k]) < 1e-9 : v === b[i][k])))
 {
-  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset })
+  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
   twin.place(0, 0)
   // A client that has run since before the bed was grown, on a rougher, uneven frame.
   let t = T0 - 100
@@ -359,7 +409,7 @@ const same = (a, b) => a.length === b.length && a.every((p, i) => p.every((v, k)
   twin.update(...HEAD, T0 + SECONDS)
   check(same(poses(frogs), poses(twin)) && alive().length > 20, 'two clients on different frames have every frog in one pose', `${alive().length} frogs`)
   // And one that joins now, with no history, mid-segment for nearly every frog.
-  const late = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset })
+  const late = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
   late.place(0, 0)
   late.update(...HEAD, T0 + SECONDS)
   check(same(poses(frogs), poses(late)), 'a client joining mid-segment has every frog where the others do')
@@ -517,7 +567,7 @@ let NOW = T0 + SECONDS + 10
   const GX = 0.4
   const SEAM = HALF + 2
   const slope = { ...height, heightAndSlopeAt: (x) => (x > SEAM ? { h: GROUND, tan: GX, gx: GX, gz: 0 } : { h: GROUND, tan: 0, gx: 0, gz: 0 }) }
-  const tilted = new Frogs(new THREE.Scene(), slope, water, { seed: 7, rocks, ground, assets: asset })
+  const tilted = new Frogs(new THREE.Scene(), slope, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
   tilted.place(0, 0)
   tilted.update(0, GROUND + 1.6, 0, NOW)
   const want = [-GX, 1, 0].map((c) => c / Math.hypot(GX, 1))
@@ -562,7 +612,7 @@ let NOW = T0 + SECONDS + 10
 {
   frogs.place(0, 0)
   // A twin client with no lure in it, to say where the frog would be on its plan.
-  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset })
+  const twin = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
   twin.place(0, 0)
   const step = (head, lures) => { NOW += DT; frogs.update(...head, NOW, lures); twin.update(...head, NOW) }
   step(HEAD)
@@ -668,8 +718,8 @@ let NOW = T0 + SECONDS + 10
 // --- her hands: a frog taken, let go, and fed, and a peer's client told of each --------
 {
   const eaten = []
-  const me = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, eat: (l) => { eaten.push(l); return true } })
-  const peer = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset })
+  const me = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM, eat: (l) => { eaten.push(l); return true } })
+  const peer = new Frogs(new THREE.Scene(), height, water, { seed: 7, rocks, ground, assets: asset, anim: ANIM })
   const mine = () => me.slots.filter((g) => g.tile !== null)
   const heard = (a) => { const b = a.slice(); b[8] = 7; return b }
   let head = [HALF + 1, GROUND + 1.6, 0]
@@ -790,7 +840,7 @@ let NOW = T0 + SECONDS + 10
         if (f.state === 'sit') {
           if (f.wet) lift = BOB_AMP * Math.sin(((NOW * Math.PI * 2) / BOB_S) + f.breath)
           else { const b = BREATH_AMP * (0.5 + 0.5 * Math.sin(((NOW * Math.PI * 2) / BREATH_S) + f.breath)); sy = 1 + b; sx = sz = 1 + b * 0.4 }
-        } else { const sn = Math.sin(Math.PI * f.u); sx = 1 + 0.25 * sn; sy = 1 - 0.15 * sn }
+        }
         const k = f.size / frogs.span
         q.setFromAxisAngle(up, f.yaw)
         tl.setFromUnitVectors(up, new THREE.Vector3(f.nx, f.ny, f.nz))

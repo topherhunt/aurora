@@ -1108,7 +1108,16 @@ export class TownLife {
       }
       default: throw new Error(`TownLife: no mount state named ${m.state}`)
     }
-    if (this.grounded) m.y = this.heightAt(m.x, m.z, m.y)
+    if (this.grounded) m.y = this._floor(m)
+  }
+
+  /** The ground under `b` from its last tick's height, re-read once it has moved or a second on: one standing still stands on what it stood on. */
+  _floor(b) {
+    if (b.x !== b.fx || b.z !== b.fz || b.y !== b.fy || this.tick - b.ft >= TICK_HZ) {
+      b.fx = b.x; b.fz = b.z; b.fy = b.y; b.ft = this.tick
+      b.fh = this.heightAt(b.x, b.z, b.y)
+    }
+    return b.fh
   }
 
   _meet(c) {
@@ -1221,7 +1230,7 @@ export class TownLife {
     c.left -= dt
     if (c.left <= 0) this._step(c)
     if (c.hidden || !this.grounded) return
-    c.y = this.heightAt(c.x, c.z, c.y)
+    c.y = this._floor(c)
     // Up and down its door's stoop: the door it is at is the only one it can be on.
     const at = this.graph.nodes[c.at]
     if (at.kind === 'door') c.y = Math.max(c.y, stoopY(at.sill, c.x, c.z))
@@ -2276,9 +2285,11 @@ export class Townsfolk {
     for (const c of this.shown) {
       const name = c.job ? TOOL_OF[c.job.kind] : undefined
       if (name === undefined || c.hidden) continue
+      const p = c.puppet
+      if (p.baked && p.baking) continue
       const mesh = this.tools[name].meshes[used[name]++]
       if (!mesh) continue
-      const p = c.puppet, b = this.bodies[p.pool]
+      const b = this.bodies[p.pool]
       const wrist = _hand.setFromMatrixPosition(p.skeleton.bones[b.wrist].matrixWorld).applyMatrix4(p.group.matrix)
       const f = _head.setFromMatrixPosition(p.skeleton.bones[b.elbow].matrixWorld).applyMatrix4(p.group.matrix).subVectors(wrist, _head).normalize()
       const side = _side.set(0, 0, 1).applyAxisAngle(UP, c.pose.heading)

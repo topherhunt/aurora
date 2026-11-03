@@ -34,6 +34,7 @@ import { createGenPropMaterial } from '../src/v2/render/gen-props.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Crabs } from '../src/v2/render/crabs.js'
 import { Frogs, LOD_TIERS } from '../src/v2/render/frogs.js'
+import { FROG_ANIM_URL, parseFrogAnim } from '../src/v2/render/frog-anim.js'
 import { CRAB_ANIM_URL, parseCrabAnim } from '../src/v2/render/crab-anim.js'
 import { Wreaths } from '../src/v2/render/wreaths.js'
 import { Precip } from '../src/v2/render/precip.js'
@@ -1005,10 +1006,14 @@ for (const wind of [true, false]) for (const instancedFade of [false, true]) {
   const rocks = { blockTopAt: () => -Infinity, perchesInto: () => 0 }
   const anim = { ...parseCrabAnim(readFileSync(new URL(`../public/${CRAB_ANIM_URL}`, import.meta.url)).buffer.slice(0)), tiers: [new Array(box.getAttribute('position').count).fill(0)] }
   const crabs = new Crabs(new THREE.Scene(), flat, water, { seed: 1, rocks, cards: new LitterCards(64), assets: boxAsset, anim })
-  const frogs = new Frogs(new THREE.Scene(), flat, water, { seed: 1, rocks, ground: { groundVersion: 0, groundAt: () => 0 }, assets: Array.from({ length: LOD_TIERS }, () => boxAsset) })
+  const n = box.getAttribute('position').count
+  const frogBox = { ...boxAsset, skinIndex: new Float32Array(n * 4), skinWeight: Float32Array.from({ length: n * 4 }, (_, i) => (i % 4 === 0 ? 1 : 0)) }
+  const frogBuf = readFileSync(new URL(`../public/${FROG_ANIM_URL}`, import.meta.url))
+  const frogAnim = parseFrogAnim(frogBuf.buffer.slice(frogBuf.byteOffset, frogBuf.byteOffset + frogBuf.byteLength))
+  const frogs = new Frogs(new THREE.Scene(), flat, water, { seed: 1, rocks, ground: { groundVersion: 0, groundAt: () => 0 }, assets: Array.from({ length: LOD_TIERS }, () => frogBox), anim: frogAnim })
   for (const [label, material, marks] of [
     ['crab mesh            ', crabs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform highp sampler2D uCrabAnim;']],
-    ['frog mesh            ', frogs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform vec2 uFrogPhase;']],
+    ['frog mesh            ', frogs.material, ['gpuInstanceMatrix = gpuMotion();', 'uniform vec2 uFrogPhase;', 'objectNormal = vec3( dot( frogR0.xyz', 'transformed = vec3( dot( frogR0.xyz']],
   ]) {
     new WorldLighting().patch(material, { mode: 'vertex', cacheKey: `check-${label.trim().replace(' ', '-')}` })
     const lib = THREE.ShaderLib.standard

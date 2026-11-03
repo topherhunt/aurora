@@ -41,6 +41,7 @@ import { buildTextureArray } from '../src/textures.js'
 import { Crabs } from '../src/v2/render/crabs.js'
 import { Fish } from '../src/v2/render/fish.js'
 import { Frogs, LOD_TIERS } from '../src/v2/render/frogs.js'
+import { FROG_ANIM_URL, parseFrogAnim } from '../src/v2/render/frog-anim.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
@@ -1117,7 +1118,13 @@ console.log('\nthe creatures')
     const box = new THREE.BoxGeometry(1, 0.5, 0.7, segments, segments, segments).translate(0, 0.25, 0)
     return { pos: box.getAttribute('position').array, nrm: box.getAttribute('normal').array, uv: box.getAttribute('uv').array, idx: Array.from(box.index.array), map: null }
   }
-  const frogAssets = Array.from({ length: LOD_TIERS }, (_, k) => boxAsset(LOD_TIERS - k))
+  const frogAssets = Array.from({ length: LOD_TIERS }, (_, k) => {
+    const a = boxAsset(LOD_TIERS - k)
+    const n = a.pos.length / 3
+    return { ...a, skinIndex: new Float32Array(n * 4), skinWeight: Float32Array.from({ length: n * 4 }, (_, i) => (i % 4 === 0 ? 1 : 0)) }
+  })
+  const frogBuf = readFileSync(new URL(`../public/${FROG_ANIM_URL}`, import.meta.url))
+  const frogAnim = parseFrogAnim(frogBuf.buffer.slice(frogBuf.byteOffset, frogBuf.byteOffset + frogBuf.byteLength))
   const fishAssets = JSON.parse(readFileSync('public/fauna/fish.json', 'utf8'))
   let frogsSeated = 0
   for (const { seed, room, layers, field } of builds) {
@@ -1132,7 +1139,7 @@ console.log('\nthe creatures')
     hoppers.place(room.clearing.x, room.clearing.z)
     const crabs = new Crabs(scene, field, water, { seed, rocks, assets: boxAsset(1) })
     crabs.place(room.lake.x, room.lake.z)
-    const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets })
+    const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets, anim: frogAnim })
     frogs.place(room.lake.x, room.lake.z)
     let seated = 0
     for (const t of frogs.tiles.values()) seated += t.frogs.length

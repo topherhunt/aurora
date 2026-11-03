@@ -16,7 +16,8 @@ import { CardHash, bakedCard, cardsOn, keepCard } from '../../props/card-cache.j
 
 // What tools/creatures/ship.mjs writes for each critter, relative to the page like avatar.js's URLs: the pick, and its ladder as critterLodUrl.
 export const CRITTER_GLB = {
-  frog: 'creatures/marsh-frog.glb',
+  // Skinned, with its clips baked beside it (tools/creatures/ship-frog.mjs, frog-anim.js).
+  frog: 'creatures/bogpip.glb',
   crab: 'creatures/shore-crab.glb',
   butterfly: 'creatures/meadow-butterfly.glb',
   grasshopper: 'creatures/meadow-grasshopper.glb',
@@ -87,11 +88,15 @@ export async function loadCritterGlb(url, { origin = null } = {}) {
   map.colorSpace = THREE.SRGBColorSpace
   map.anisotropy = 4
   mat.dispose()
+  // A skinned creature's bone influences (a baked animation's, e.g. frog-anim.js), or null.
+  const si = geo.getAttribute('skinIndex'), sw = geo.getAttribute('skinWeight')
   return {
     pos: geo.getAttribute('position').array,
     nrm: geo.getAttribute('normal').array,
     uv: geo.getAttribute('uv').array,
     idx: Array.from(geo.index.array),
+    skinIndex: si ? Float32Array.from(si.array) : null,
+    skinWeight: sw ? Float32Array.from(sw.array) : null,
     map,
     origin: move,
   }

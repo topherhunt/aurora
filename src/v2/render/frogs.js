@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Frogs: the Tripo marsh frog, scattered on dry ground within a few metres of
+// Frogs: the bogpip, skinned and played from a baked texture (frog-anim.js), scattered on dry ground within a few metres of
 // every riverbank and lake shore below the cold, sitting and hopping about.
 //
 // PLACEMENT IS A PURE FUNCTION OF POSITION. Each 8 m tile around her rolls its
@@ -33,7 +33,7 @@
 // the DRAWN ground, and is put back on it whenever the terrain's render set
 // changes under it (_reseat), so a chunk re-splitting at distance never
 // buries it; a frog whose home turns out to be inside a boulder that landed
-// after it leaves. The mesh faces +X; a hop turns it to face where it is
+// after it leaves. The mesh faces +X; a hop plays the hop clip and turns it to face where it is
 // going, and it sits with its up along the field's normal there (the world's
 // up on the water), turning from the one slope to the other in the air.
 //
@@ -91,6 +91,7 @@ import {
 import { MEAL } from '../eating.js'
 import { KEEP_UP, headway } from '../keep-up.js'
 import { PhraseTable, ROW_W, motionSplice } from './gpu-motion.js'
+import { FROG_ANIM_NORMAL, FROG_ANIM_PARS, FROG_ANIM_VERTEX, hopWeight, idleWeight, loadFrogAnim, writeAnim } from './frog-anim.js'
 
 // Frogs per square metre, a quarter of the brief's figure (which crowded the banks); candidates per tile before the shore band rejects most of them.
 export const DENSITY = 0.025
@@ -184,11 +185,11 @@ export const SWEEP_S = 0.25
 // The most a frog strays from its home, on its plan: TETHER_M to a post, and a leap's swing off the line to the next.
 const EXCURSION_M = TETHER_M + 4
 
-// The body of gpuMotion (gpu-motion.js) for a frog. Phrase texels: A = start, dur, kind, a hop's rise; B = x, y, z, yaw of the sit or the hop's take-off; D = ground normal there. A hop runs to the NEXT phrase's B (landing spot and yaw) and D (landing normal): a segment always ends in a sit. uFrogPhase is the breath's and the surface bob's phase, a turn of 2 pi each, aBreath the frog's own offset.
+// The body of gpuMotion (gpu-motion.js) for a frog. Phrase texels: A = start, dur, kind, a hop's rise; B = x, y, z, yaw of the sit or the hop's take-off; D = ground normal there. A hop runs to the NEXT phrase's B (landing spot and yaw) and D (landing normal): a segment always ends in a sit. uFrogPhase is the breath's and the surface bob's phase, a turn of 2 pi each, aBreath the frog's own offset, which also sets its place in the idle loop. Each branch sets `frogAnim` (frog-anim.js); the CPU row hands back the mesh's own matrix and aAnim.
 const MOTION_GLSL = /* glsl */ `
   int p = phraseAt( row, n, e );
   vec4 A = texel( row, 1 + 4 * p );
-  if ( A.z > 2.5 ) return instanceMatrix;
+  if ( A.z > 2.5 ) { frogAnim = aAnim; return instanceMatrix; }
   vec4 B = texel( row, 2 + 4 * p );
   vec3 pos = B.xyz;
   vec3 nrm = texel( row, 4 + 4 * p ).xyz;
@@ -205,13 +206,15 @@ const MOTION_GLSL = /* glsl */ `
     vec2 d = T.xz - B.xz;
     float bear = dot( d, d ) < 1e-18 ? T.w : atan( -d.y, d.x );
     yaw = bear + atan( sin( T.w - bear ), cos( T.w - bear ) ) * v;
-    float s = sin( 3.14159265 * u );
-    sc = vec3( 1.0 + 0.25 * s, 1.0 - 0.15 * s, 1.0 );
-  } else if ( A.z > 0.5 ) {
-    pos.y += ${BOB_AMP.toFixed(4)} * sin( uFrogPhase.y + aBreath );
+    frogAnim = frogHop( u );
   } else {
-    float s = ${BREATH_AMP.toFixed(4)} * ( 0.5 + 0.5 * sin( uFrogPhase.x + aBreath ) );
-    sc = vec3( 1.0 + s * 0.4, 1.0 + s, 1.0 + s * 0.4 );
+    frogAnim = frogIdle( aBreath * ${(1 / (2 * Math.PI)).toFixed(7)}, e - A.x, A.y );
+    if ( A.z > 0.5 ) {
+      pos.y += ${BOB_AMP.toFixed(4)} * sin( uFrogPhase.y + aBreath );
+    } else {
+      float s = ${BREATH_AMP.toFixed(4)} * ( 0.5 + 0.5 * sin( uFrogPhase.x + aBreath ) );
+      sc = vec3( 1.0 + s * 0.4, 1.0 + s, 1.0 + s * 0.4 );
+    }
   }
   nrm = normalize( nrm );
   vec4 q = normalize( vec4( nrm.z, 0.0, -nrm.x, 1.0 + nrm.y ) );
@@ -265,10 +268,11 @@ export class Frogs {
    * @param water   WaterSurfaces: levelAt, shoreDistAt
    * @param opts.rocks   Rocks, for blockTopAt; a frog never sits on stone
    * @param opts.ground  TerrainV2 or null: the drawn surface to seat on, falling back to the field
-   * @param opts.assets  a parsed asset (critters.js shape) for a gate; the world fetches the GLB
+   * @param opts.assets  parsed assets (critters.js shape, skinned) for a gate; the world fetches the GLBs
+   * @param opts.anim    the parsed animation (frog-anim.js) that goes with `assets`
    * @param opts.eat     (lure) => true once her hand holding it has lost it (hands.js eatLure)
    */
-  constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null, eat = () => false } = {}) {
+  constructor(scene, height, water, { seed = 1, rocks, ground = null, assets = null, anim = null, eat = () => false } = {}) {
     if (!height || typeof height.heightAt !== 'function' || typeof height.heightAndSlopeAt !== 'function' || typeof height.snowLineAt !== 'function') {
       throw new Error('Frogs needs a height field with heightAt, heightAndSlopeAt and snowLineAt')
     }
@@ -293,11 +297,23 @@ export class Frogs {
     this.table = new PhraseTable(MAX + 1)
     this.table.write(0, 0, 1, [{ kind: CPU, start: 0, dur: 1, apex: 0, yaw: 0, a: { x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0 }, b: null }])
     this.uPhase = { value: new THREE.Vector2() }
+    this.uClips = { value: new THREE.Vector4() }
+    this.uIdle = { value: 0 }
     this.material.onBeforeCompile = (shader) => {
+      if (this.anim === null) throw new Error('Frogs: drawn before its animation landed')
       shader.uniforms.uFrogPhase = this.uPhase
+      shader.uniforms.uFrogAnim = { value: this.anim.texture }
+      shader.uniforms.uFrogClips = this.uClips
+      shader.uniforms.uFrogIdle = this.uIdle
       // Before the frog's own declarations, which must come ahead of the motion block.
       motionSplice(shader, this.table, MOTION_GLSL)
-      shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n#ifdef USE_INSTANCING\nuniform vec2 uFrogPhase;\nattribute float aBreath;\n#endif')
+      for (const chunk of ['#include <common>', '#include <beginnormal_vertex>', '#include <begin_vertex>']) {
+        if (!shader.vertexShader.includes(chunk)) throw new Error(`Frogs: the shader has no ${chunk}`)
+      }
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${FROG_ANIM_PARS}\n#ifdef USE_INSTANCING\nuniform vec2 uFrogPhase;\nattribute float aBreath;\n#endif`)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>\n${FROG_ANIM_NORMAL}`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>\n${FROG_ANIM_VERTEX}`)
       glint(shader)
       hueVary(shader)
     }
@@ -327,6 +343,14 @@ export class Frogs {
       mesh.geometry.setAttribute('aBreath', a)
       return a
     })
+    // The pose of each CPU-drawn instance (frog-anim.js writeAnim); a GPU one builds its own.
+    this.animAttrs = this.tiers.map((mesh) => {
+      const a = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4)
+      a.setUsage(THREE.DynamicDrawUsage)
+      mesh.geometry.setAttribute('aAnim', a)
+      return a
+    })
+    this.anim = null
     // Per tier: the instances the GPU poses (the head of the tier's arrays) and the CPU-driven tail after them, and this frame's sweep tallies.
     this.gpuCounts = this.tiers.map(() => 0)
     this.tails = this.tiers.map(() => 0)
@@ -407,32 +431,44 @@ export class Frogs {
     this.mates = []
 
     if (assets) {
-      this.setAsset(assets)
+      if (!anim) throw new Error('Frogs: an asset needs its anim')
+      this.setAsset(assets, anim)
       this.ready = Promise.resolve(true)
     } else {
       this.ready = this.load()
     }
   }
 
-  /** The pick and its ladder, the tiers moved as the pick was so they stay in register whatever each one's own box. */
+  /** The pick, its ladder and the animation; the bake's bones are in the shipped frame, so the pick must need no move to sit centred on its feet. */
   async load() {
-    const pick = await loadCritterGlb(CRITTER_GLB.frog)
+    const [pick, anim] = await Promise.all([loadCritterGlb(CRITTER_GLB.frog), loadFrogAnim()])
+    if (pick.origin.some((v) => Math.abs(v) > 1e-3)) throw new Error(`Frogs: ${CRITTER_GLB.frog} is off its feet by ${pick.origin.join(', ')} -- rerun tools/creatures/ship-frog.mjs`)
     const tiers = await Promise.all(Array.from({ length: LOD_TIERS - 1 }, (_, k) => loadCritterGlb(critterLodUrl(CRITTER_GLB.frog, k + 1), { origin: pick.origin })))
-    this.setAsset([pick, ...tiers])
+    this.setAsset([pick, ...tiers], anim)
     return true
   }
 
-  /** One asset per tier, the pick first; a gate may pass fewer, and the last given stands in for the rest. */
-  setAsset(assets) {
+  /** One asset per tier, the pick first, each skinned to `anim`'s bones; a gate may pass fewer, and the last given stands in for the rest. */
+  setAsset(assets, anim) {
     if (!Array.isArray(assets) || assets.length < 1 || assets.length > LOD_TIERS) throw new Error(`Frogs.setAsset: ${LOD_TIERS} tiers at most, the pick first`)
-    this.bounds = setCritterAsset(this.tiers[0], this.material, assets[0], 'frogs')
-    this.span = this.bounds.span
-    this.sink = (SINK * this.bounds.height) / this.span
-    for (let k = 1; k < LOD_TIERS; k++) {
+    this.anim = anim
+    this.uClips.value.set(anim.idle.base, anim.idle.frames, anim.hop.base, anim.hop.frames)
+    for (let k = 0; k < LOD_TIERS; k++) {
       const asset = assets[Math.min(k, assets.length - 1)]
-      // Its own decode of the same WebP: the pick's is the one drawn.
-      if (k < assets.length) asset.map?.dispose()
-      setCritterAsset(this.tiers[k], this.material, { ...asset, map: null }, `frogs lod${k}`)
+      const n = asset.pos.length / 3
+      if (asset.skinIndex?.length !== n * 4 || asset.skinWeight?.length !== n * 4) throw new Error(`Frogs: tier ${k} has no skin of ${n} vertices`)
+      if (asset.skinIndex.some((b) => b < 0 || b >= anim.bones)) throw new Error(`Frogs: tier ${k} names a bone past the animation's ${anim.bones}`)
+      if (k === 0) {
+        this.bounds = setCritterAsset(this.tiers[0], this.material, asset, 'frogs')
+        this.span = this.bounds.span
+        this.sink = (SINK * this.bounds.height) / this.span
+      } else {
+        // Its own decode of the same WebP: the pick's is the one drawn.
+        if (k < assets.length) asset.map?.dispose()
+        setCritterAsset(this.tiers[k], this.material, { ...asset, map: null }, `frogs lod${k}`)
+      }
+      this.tiers[k].geometry.setAttribute('skinIndex', new THREE.BufferAttribute(Float32Array.from(asset.skinIndex), 4))
+      this.tiers[k].geometry.setAttribute('skinWeight', new THREE.BufferAttribute(Float32Array.from(asset.skinWeight), 4))
     }
     this.loaded = true
     this._relay()
@@ -1040,7 +1076,7 @@ export class Frogs {
   take(hit, stowMax) {
     const f = hit.f
     const k = f.size / this.span
-    const rec = { kind: 'frog', name: 'frog', size: f.size, geometry: this.mesh.geometry, material: this.material, attrs: { aHue: [f.hue] }, color: [f.r, f.g, f.b], scale: [k, k, k], stowable: f.size < stowMax }
+    const rec = { kind: 'frog', name: 'frog', size: f.size, geometry: this.mesh.geometry, material: this.material, attrs: { aAnim: [0, 0, 0, 0], aHue: [f.hue] }, color: [f.r, f.g, f.b], scale: [k, k, k], stowable: f.size < stowMax }
     if (f.tile !== null) {
       taken.add('frog', f.homeX, f.homeZ)
       this._drop(f)
@@ -1274,11 +1310,6 @@ export class Frogs {
         sy = 1 + s
         sx = sz = 1 + s * 0.4
       }
-    } else {
-      // Stretched along the leap in the air, flattened a little on landing.
-      const s = Math.sin(Math.PI * f.u)
-      sx = 1 + 0.25 * s
-      sy = 1 - 0.15 * s
     }
     // The tier its apparent size calls for; past the ladder's foot it is not drawn.
     f.lod = critterTier(f.size, Math.hypot(f.x - hx, f.y - hy, f.z - hz), f.lod, LOD_TIERS)
@@ -1297,6 +1328,10 @@ export class Frogs {
     const c = tier.instanceColor.array
     c[w * 3] = f.r; c[w * 3 + 1] = f.g; c[w * 3 + 2] = f.b
     this.hues[f.lod].array[w] = f.hue
+    if (this.anim === null) return
+    const anim = this.animAttrs[f.lod].array
+    if (f.state === 'sit') writeAnim(this.anim.idle, (this.uIdle.value + f.breath / (2 * Math.PI)) % 1, idleWeight(f.t, f.ph.dur), anim, w * 4)
+    else writeAnim(this.anim.hop, f.u, hopWeight(f.u), anim, w * 4)
   }
 
   // --- the GPU ----------------------------------------------------------------
@@ -1523,8 +1558,6 @@ export class Frogs {
       const ddx = tx - d[q + 4], ddz = tz - d[q + 6]
       const head = ddx * ddx + ddz * ddz < 1e-18 ? tyaw : Math.atan2(-ddz, ddx)
       yaw = head + Math.atan2(Math.sin(tyaw - head), Math.cos(tyaw - head)) * v
-      const s = Math.sin(Math.PI * u)
-      sx = 1 + 0.25 * s; sy = 1 - 0.15 * s
     } else if (kind === SIT_WET) {
       y += BOB_AMP * Math.sin(this.uPhase.value.y + this.breathAttrs[k].array[i])
     } else {
@@ -1574,6 +1607,8 @@ export class Frogs {
     const bob = (now * Math.PI * 2) / BOB_S
     this.table.setTime(now)
     this.uPhase.value.set(breath % (Math.PI * 2), bob % (Math.PI * 2))
+    // Frogs are planned and stepped while the asset loads; they are drawn only once it has landed.
+    if (this.anim !== null) this.uIdle.value = (now / this.anim.idle.seconds) % 1
     const counts = this.tiers.map(() => 0)
 
     if (this.cpuAll) {
@@ -1635,6 +1670,7 @@ export class Frogs {
         tier.instanceMatrix.needsUpdate = true
         tier.instanceColor.needsUpdate = true
         this.hues[k].needsUpdate = true
+        this.animAttrs[k].needsUpdate = true
       }
       this.tails[k] = counts[k]
       tier.count = this.gpuCounts[k] + counts[k]
@@ -1652,5 +1688,6 @@ export class Frogs {
     this.material.map?.dispose()
     this.material.dispose()
     this.table.dispose()
+    this.anim?.texture.dispose()
   }
 }

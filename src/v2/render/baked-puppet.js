@@ -19,8 +19,10 @@ const RATES = [5, 10, 15, 30]
 // Of the body's pose-sphere radius, on a per-bone bound that overstates the vertex error: on townsfolk it costs at most 0.4% of body height.
 const TOL = 0.025
 const MAX_ROWS = 4096
-// Clips a flush may bake; a body whose skeleton is still waiting is drawn from the flush that finishes it.
-const CLIPS_PER_FLUSH = 1
+// Milliseconds of bake a flush may spend, over every skeleton waiting; a body whose skeleton is still waiting is drawn from the flush that finishes it.
+const BAKE_MS = 0.5
+// Values converted to half float between budget checks.
+const HALF_CHUNK = 4096
 const MODE_KEY = 'v2.puppets'
 const IDENTITY = new THREE.Matrix4()
 // The longest a body glides on from its last write: one the layer stops writing stops this far on.
@@ -119,7 +121,7 @@ export function tintOf(key, roll, out) {
 }
 
 // ---------------------------------------------------------------------------
-// THE BAKE, once per skeleton and kept, one clip a flush from the first flush
+// THE BAKE, once per skeleton and kept, BAKE_MS a flush from the first flush
 // that draws one of its bodies (or all at once on a bone read). Each clip is n+1 rows at duration/n apart, the last row the clip's
 // end, so a sample between two rows never wraps; n is set by the clip's own
 // rate (RATES). A row is three half-float texels a bone: the top three rows of
@@ -193,8 +195,20 @@ function blendError(got, n, truth, m, nb, reach) {
   return worst
 }
 
-/** One more clip of `v` sampled; the last lays every clip's rows into the texture. */
-function bakeClip(v) {
+/** Every `stride`th row of `truth`'s n+1. */
+function strided(truth, n, stride, nb) {
+  const m = n / stride, w = nb * 12
+  const out = new Float32Array((m + 1) * w)
+  for (let r = 0; r <= m; r++) out.set(truth.subarray(r * stride * w, (r * stride + 1) * w), r * w)
+  return out
+}
+
+/**
+ * More of `v`'s bake, until `budgetMs` has gone (Infinity: all of it); the last step lays every
+ * clip's rows into the texture. A clip is sampled once, at RATES[last] rounded up to a multiple of
+ * every coarser rate's step count, so each coarser rate's rows are a stride of those samples.
+ */
+function bakeSome(v, budgetMs) {
   const t0 = performance.now()
   const { asset, nb } = v
   const src = asset.skeleton
@@ -206,48 +220,61 @@ function bakeClip(v) {
       if (!c) throw new Error(`BakedPuppet: bone ${b.name} is not under the root`)
       return c
     })
-    v.job = { rig, bones, mixer: new THREE.AnimationMixer(rig), chosen: [], ms: 0 }
+    v.job = { rig, bones, mixer: new THREE.AnimationMixer(rig), chosen: [], ms: 0, flushes: 0, clip: null, half: null }
     v.reach ??= boneReach(asset, nb)
   }
-  const { rig, bones, mixer, chosen } = v.job
-  const m = new THREE.Matrix4()
-  /** `clip` at n+1 even times as 3x4 rows. */
-  const sample = (clip, n) => {
-    const out = new Float32Array((n + 1) * nb * 12)
-    mixer.stopAllAction()
-    const action = mixer.clipAction(clip).reset().play()
-    for (let f = 0; f <= n; f++) {
-      action.time = (clip.duration * f) / n
+  const job = v.job
+  const { rig, bones, mixer, chosen } = job
+  const top = RATES[RATES.length - 1]
+  for (const r of RATES) if (top % r) throw new Error(`BakedPuppet: rate ${r} does not divide ${top}`)
+  const m = _m4
+  while (chosen.length < asset.clips.length && performance.now() - t0 < budgetMs) {
+    if (job.half) {
+      const h = job.half, end = Math.min(h.from.length, h.i + HALF_CHUNK)
+      for (; h.i < end; h.i++) h.to[h.i] = THREE.DataUtils.toHalfFloat(h.from[h.i])
+      if (h.i === h.from.length) { chosen.push(h.to); job.half = null }
+      continue
+    }
+    if (!job.clip) {
+      const clip = asset.clips[chosen.length]
+      const n = Math.max(1, Math.ceil(clip.duration * RATES[0])) * (top / RATES[0])
+      mixer.stopAllAction()
+      job.clip = { clip, n, f: 0, r: 0, truth: new Float32Array((n + 1) * nb * 12), action: mixer.clipAction(clip).reset().play() }
+    }
+    const c = job.clip
+    if (c.f <= c.n) {
+      c.action.time = (c.clip.duration * c.f) / c.n
       mixer.update(0)
       rig.updateMatrixWorld(true)
+      const out = c.truth
       for (let j = 0; j < nb; j++) {
         m.multiplyMatrices(bones[j].matrixWorld, src.boneInverses[j])
-        const e = m.elements, o = (f * nb + j) * 12
+        const e = m.elements, o = (c.f * nb + j) * 12
         // Rows of the column-major 4x4: the shader rebuilds it with transpose().
         out[o] = e[0]; out[o + 1] = e[4]; out[o + 2] = e[8]; out[o + 3] = e[12]
         out[o + 4] = e[1]; out[o + 5] = e[5]; out[o + 6] = e[9]; out[o + 7] = e[13]
         out[o + 8] = e[2]; out[o + 9] = e[6]; out[o + 10] = e[10]; out[o + 11] = e[14]
       }
+      c.f++
+      continue
     }
-    return out
+    // One coarser rate tried a step, coarsest first; the first within TOL is the clip's, else all its samples are.
+    const k = v.clips.get(c.clip.name)
+    let got = null
+    if (c.r < RATES.length - 1) {
+      const stride = top / RATES[c.r++], rows = strided(c.truth, c.n, stride, nb)
+      if (blendError(rows, c.n / stride, c.truth, c.n, nb, v.reach) > TOL * v.sphere.radius) continue
+      k.n = c.n / stride
+      got = rows
+    } else {
+      k.n = c.n
+      got = c.truth
+    }
+    job.half = { from: got, to: new Uint16Array(got.length), i: 0 }
+    job.clip = null
   }
-  const steps = (clip, fps) => Math.max(1, Math.ceil(clip.duration * fps))
-
-  const clip = asset.clips[chosen.length]
-  const c = v.clips.get(clip.name)
-  const mTop = steps(clip, RATES[RATES.length - 1])
-  const truth = sample(clip, mTop)
-  const tol = TOL * v.sphere.radius
-  let got = null
-  for (const fps of RATES.slice(0, -1)) {
-    const n = steps(clip, fps)
-    if (n >= mTop) break
-    const rows = sample(clip, n)
-    if (blendError(rows, n, truth, mTop, nb, v.reach) <= tol) { c.n = n; got = rows; break }
-  }
-  if (!got) { c.n = mTop; got = truth }
-  chosen.push(got)
-  v.job.ms += performance.now() - t0
+  job.ms += performance.now() - t0
+  job.flushes++
   if (chosen.length < asset.clips.length) return
 
   mixer.stopAllAction()
@@ -257,7 +284,7 @@ function bakeClip(v) {
   if (rows > MAX_ROWS) throw new Error(`BakedPuppet: ${rows} rows of clip, past ${MAX_ROWS}`)
   const data = new Uint16Array(rows * nb * 12)
   let o = 0
-  for (const rowsOf of chosen) for (let k = 0; k < rowsOf.length; k++) data[o++] = THREE.DataUtils.toHalfFloat(rowsOf[k])
+  for (const rowsOf of chosen) { data.set(rowsOf, o); o += rowsOf.length }
 
   const texture = new THREE.DataTexture(data, nb * 3, rows, THREE.RGBAFormat, THREE.HalfFloatType)
   texture.minFilter = texture.magFilter = THREE.NearestFilter
@@ -267,13 +294,13 @@ function bakeClip(v) {
   v.texture = texture
   v.uVat.value = texture
   v.rows = rows
-  console.log(`[baked-puppet] ${nb} bones x ${rows} rows (${(data.byteLength / 1024).toFixed(0)} KB) in ${v.job.ms.toFixed(0)} ms over ${asset.clips.length} flushes`)
+  console.log(`[baked-puppet] ${nb} bones x ${rows} rows (${(data.byteLength / 1024).toFixed(0)} KB) in ${v.job.ms.toFixed(0)} ms over ${v.job.flushes} flushes`)
   v.job = null
 }
 
 /** `v` baked, now, whatever the flush budget: a bone read cannot wait. */
 function ensureBaked(v) {
-  while (!v.data) bakeClip(v)
+  if (!v.data) bakeSome(v, Infinity)
 }
 
 /** The asset's tiers are gone: the texture goes with them. */
@@ -619,14 +646,14 @@ export function flushBaked() {
     _frustum.setFromProjectionMatrix(_pv.multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse))
     _eye.setFromMatrixPosition(view.matrixWorld)
   }
-  let clips = CLIPS_PER_FLUSH
+  const bakeBy = performance.now() + BAKE_MS
   for (const p of active) {
     if (p.done) { active.delete(p); continue }
     if (!drawn(p.group)) continue
     if (!p.vat.data) {
-      if (clips === 0) continue
-      clips--
-      bakeClip(p.vat)
+      const left = bakeBy - performance.now()
+      if (left <= 0) continue
+      bakeSome(p.vat, left)
       if (!p.vat.data) continue
     }
     p.group.updateWorldMatrix(true, false)
@@ -816,6 +843,8 @@ export class BakedPuppet {
   }
 
   get done() { return this.to === -1 && this.fade >= 1 }
+  /** Its skeleton still baking: it is not drawn, and a bone read now bakes the rest in one go. */
+  get baking() { return this.vat.data === null }
 
   /** Puppet.play without the crossfade: a new clip cuts in at 0, or at `at` seconds. */
   play(name, cue = 0, at = -1) {

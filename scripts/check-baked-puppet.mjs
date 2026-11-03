@@ -332,17 +332,21 @@ console.log('the bake budget')
   const b = new BakedPuppet(makeAsset(), makePuppetMaterials('check-baked-3', plain3))
   for (const p of [a, b]) { scene.add(p.group); p.show(0, 0); p.play('wave') }
   const drawnOf = (p) => bakedBatches().filter((x) => x.mesh.material.customProgramCacheKey().startsWith(p.mats.plain.customProgramCacheKey())).reduce((s, x) => s + x.n, 0)
-  const clips = a.vat.asset.clips.length
-  const sampled = () => [a, b].reduce((s, p) => s + (p.vat.data ? clips : p.vat.job ? p.vat.job.chosen.length : 0), 0)
-  let flushes = 0
-  for (let f = 1; f <= clips; f++) {
-    flushBaked(); flushes++
-    check(sampled() === f, `flush ${f} samples one clip in all`, `${sampled()}`)
+  // A clock that moves 0.05 ms each time it is read, so the budget runs out after a fixed number of bake steps.
+  const realNow = performance.now
+  let fake = 0
+  performance.now = () => (fake += 0.05)
+  const done = () => [a, b].filter((p) => p.vat.data).length
+  let flushes = 0, firstDrawn = -1
+  for (; flushes < 200 && done() < 2; flushes++) {
+    flushBaked()
+    if (done() === 1 && firstDrawn < 0) firstDrawn = drawnOf(a) + drawnOf(b)
   }
-  const firstDrawn = drawnOf(a) + drawnOf(b)
-  check(firstDrawn === 1 && [a, b].filter((p) => p.vat.data).length === 1, 'a skeleton is drawn from the flush that samples its last clip, the other still waiting', `${firstDrawn} drawn`)
-  for (let f = 0; f < clips; f++) { flushBaked(); flushes++ }
-  check(a.vat.data && b.vat.data && drawnOf(a) === 1 && drawnOf(b) === 1, 'the other is baked clip by clip after it and both are drawn', `${flushes} flushes`)
+  performance.now = realNow
+  check(flushes > 4, 'a flush bakes only its budget\'s worth, so a skeleton takes several', `${flushes} flushes for two`)
+  check(firstDrawn === 1, 'a skeleton is drawn from the flush that finishes its bake, the other still waiting', `${firstDrawn} drawn`)
+  flushBaked()
+  check(done() === 2 && drawnOf(a) === 1 && drawnOf(b) === 1, 'the other is baked after it and both are drawn')
   const tex = b.vat.texture
   scene.remove(b.group)
   for (let f = 0; f < 3; f++) flushBaked()
