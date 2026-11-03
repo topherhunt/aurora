@@ -22,10 +22,14 @@ const FIXED = 2
 const CANOPY = 3
 const HEADING = 4
 
+// Seconds a card walks on from its last write (PropArena.setDriftAt) before it holds: a layer writes a moving card more often than this.
+export const CARD_DRIFT_S = 0.25
+
 const VERTEX_COMMON = /* glsl */ `
   #define PROP_FADE_ATTRIBUTE
   attribute float aPropFade;
   attribute float aLayerShift;
+  attribute vec4 aCardDrift;
   uniform float uPropClock;
   uniform vec4 uCardBox[${MAX_PICTURES}];
   uniform vec4 uCardMode[${MAX_PICTURES}];
@@ -67,6 +71,9 @@ const VERTEX_BODY = /* glsl */ `
       transformed = vec3( cb.x + 2.0 * position.x * cb.z, cb.y + 2.0 * position.y * cb.w, 0.0 );
       ${billboardVertex(false, 'vCardUv', 'cm.y')}
     }
+    // The walk since the layer last wrote the card, in world units, taken into the instance's frame. Capped, so a card its layer stops writing stands still rather than walking off; across the prop clock's wrap the age goes negative and the card holds until its next write.
+    float cAge = clamp( uPropClock - aCardDrift.w, 0.0, ${CARD_DRIFT_S.toFixed(3)} );
+    transformed += inverse( mat3( modelMatrix * instanceMatrix ) ) * ( aCardDrift.xyz * cAge );
     ${FADE_VERTEX}
   }`
 
@@ -123,7 +130,7 @@ export class LitterCards {
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]), 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]), 3))
     geo.setIndex([0, 1, 2, 0, 2, 3])
-    this.meshes = new PropMeshes([{ geometries: [geo] }], [capacity], this.material, 'v2-litter-cards', { layerShift: true })
+    this.meshes = new PropMeshes([{ geometries: [geo] }], [capacity], this.material, 'v2-litter-cards', { layerShift: true, drift: true })
     this.meshes.budgeted = true
     this.group = new THREE.Group()
     this.group.name = 'v2-litter-cards'

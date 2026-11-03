@@ -502,11 +502,28 @@ const onTicks = (s) => Math.abs(s * TICK_HZ - Math.round(s * TICK_HZ)) < 1e-6
   for (let f = 0; f < 100 && (c.lod !== LOD_RUNGS || c.puppet); f++) step(k, 0, GROUND + 1.6, 0, dt)
   const steps = new Set([c.x])
   let at = timeOf(k)
+  // Where the card's shader walk (litter-cards.js) puts it at the next step, from the origin and drift the last step wrote; the CPU writes nothing between.
+  const V = k.cardView
+  const cardAt = (t) => {
+    const m = V.mat, d = V.drift, i = c.card
+    return [0, 1, 2].map((a) => m[i * 16 + 12 + a] + d[i * 4 + a] * (t - written))
+  }
+  let written = NaN, walked = 0, missed = 0, between = 0
+  const writes = V.setMatrixAt.bind(V)
+  V.setMatrixAt = (id, mat) => { if (id === c.card) between++; writes(id, mat) }
   for (let f = 0; f < 2 * CARD_EVERY * CARD_EVERY; f++) {
+    const was = c.card >= 0 && Number.isFinite(written) ? cardAt(timeOf(k) + dt) : null
+    between = 0
     const t = step(k, 0, GROUND + 1.6, 0, dt)
-    if (!steps.has(c.x)) at = t
+    if (!steps.has(c.x)) {
+      at = t
+      if (was) walked = Math.max(walked, Math.hypot(was[0] - c.x, was[2] - c.z))
+      written = t
+    } else if (between) missed++
     steps.add(c.x)
   }
+  V.setMatrixAt = writes
+  check(c.card >= 0 && walked < 1e-4 && missed === 0 && Math.hypot(V.drift[c.card * 4], V.drift[c.card * 4 + 2]) > 0.5 * c.speed, 'and between steps its card walks on in the shader, onto the very spot the next step puts it, with nothing written to it on the frames between', `${walked.toFixed(6)} m off at a step, ${missed} frames between written`)
   const movedFar = Math.hypot(c.x - from.x, c.z - from.z)
   const owedFar = c.speed * (at - c.phraseTick0 * TICK_S)
   check(c.lod === LOD_RUNGS && steps.size === 2 * CARD_EVERY + 1 && Math.abs(movedFar - owedFar) < 1e-6, `on the card rung it moves on one frame in ${CARD_EVERY}, and is exactly where the score has it on each`, `${steps.size - 1} moves in ${2 * CARD_EVERY * CARD_EVERY} frames, ${movedFar.toFixed(4)} m of ${owedFar.toFixed(4)}, rung ${c.lod}`)

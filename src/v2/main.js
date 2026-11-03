@@ -4837,7 +4837,11 @@ function castleTest() {
     const [x, y, z] = act.at
     climb.startRope({ x, z, top: y, bottom: walk.heightAt(x, z, y - 1.5) })
   } else if (act.kind === 'locked') tryDungeonDoor(act)
-  else castlePortal(act).catch(reportRuntimeError)
+  else if (act.kind === 'enter' && act.ward >= 0 && !(wardMasks(act.site).open & (1 << act.ward))) {
+    if (ambience) sound.play('flintClick', { bus: 'near', rate: 0.5, gain: 0.6 })
+    const [x, y, z] = act.back
+    if (conversations) conversations.say('Warded door', 'A ward seals it from within. Its gem must lie on the other side.', { x, y: y + 1.6, z })
+  } else castlePortal(act).catch(reportRuntimeError)
   return inCastle !== null
 }
 

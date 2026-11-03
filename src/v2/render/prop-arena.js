@@ -110,13 +110,17 @@ export class PropMeshes {
    * @param layerShift    attach `aLayerShift` to every geometry, for a material
    *                      compiled with `layerShift: true`: the per-instance
    *                      offset added to the geometry's `texLayer`, 0 at rest.
+   * @param drift         attach `aCardDrift` (vx, vy, vz, prop-clock stamp), for
+   *                      a material that walks the instance on from its matrix
+   *                      (litter-cards.js); 0 at rest.
    */
-  constructor(tiers, caps, material, name, { layerShift = false } = {}) {
+  constructor(tiers, caps, material, name, { layerShift = false, drift = false } = {}) {
     const materialFor = typeof material === 'function' ? material : () => material
     this.name = name
     const variantCount = tiers[0].geometries.length
     this.variantCount = variantCount
     this.layerShift = layerShift
+    this.drift = drift
     this.meshes = []
     this.owner = []
     this.ownerView = []
@@ -140,6 +144,7 @@ export class PropMeshes {
         if (layerShift) {
           geo.setAttribute('aLayerShift', new THREE.InstancedBufferAttribute(new Float32Array(cap), 1))
         }
+        if (drift) geo.setAttribute('aCardDrift', new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4))
         const mesh = new THREE.InstancedMesh(geo, materialFor(t, v), cap)
         mesh.name = `${name}-t${t}-v${v}`
         // Nothing is drawn until an instance takes a slot; `count` is the live
@@ -172,6 +177,7 @@ export class PropMeshes {
     this._colRange = this.meshes.map(() => ({ start: 0, count: 0 }))
     this._fadeRange = this.meshes.map(() => ({ start: 0, count: 0 }))
     this._layerRange = layerShift ? this.meshes.map(() => ({ start: 0, count: 0 })) : null
+    this._driftRange = drift ? this.meshes.map(() => ({ start: 0, count: 0 })) : null
     /** Shows and tier moves a full mesh turned away, for the readouts. */
     this.refused = 0
     this._warned = new Uint8Array(this.meshes.length)
@@ -257,6 +263,11 @@ export class PropMeshes {
       shift.array[s] = view.layer[instanceId]
       this._dirty(shift, this._layerRange[g], s, 1)
     }
+    if (this.drift) {
+      const drift = mesh.geometry.getAttribute('aCardDrift')
+      drift.array.set(view.drift.subarray(instanceId * 4, instanceId * 4 + 4), s * 4)
+      this._dirty(drift, this._driftRange[g], s, 4)
+    }
   }
 
   /**
@@ -339,6 +350,7 @@ export class PropArena extends THREE.Group {
     this.col = new Float32Array(maxInstances * 3).fill(1)
     this.fade = new Float32Array(maxInstances).fill(1)
     this.layer = this.shared.layerShift || cards ? new Float32Array(maxInstances) : null
+    this.drift = this.shared.drift || cards?.drift ? new Float32Array(maxInstances * 4) : null
   }
 
   /** A view of `maxInstances` ids over a mesh set another view, or the owner, shows. */
@@ -513,6 +525,24 @@ export class PropArena extends THREE.Group {
     if (attr.array[s] === this.layer[instanceId]) return
     attr.array[s] = value
     set._dirty(attr, set._layerRange[l], s, 1)
+  }
+
+  /** The instance walking on from its matrix at (vx, vy, vz) per second from prop-clock time `stamp`; the mesh set that draws it must have been built with `drift`. A still instance written still again keeps its old stamp, so it uploads nothing. */
+  setDriftAt(instanceId, vx, vy, vz, stamp) {
+    const d = this.drift
+    if (!d) throw new Error(`${this.name}: built without drift`)
+    const i = instanceId * 4
+    if (vx === 0 && vy === 0 && vz === 0 && d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 0) return
+    d[i] = vx; d[i + 1] = vy; d[i + 2] = vz; d[i + 3] = stamp
+    const s = this.slot[instanceId]
+    if (s < 0) return
+    const g = this.geoAt[instanceId]
+    const set = this._setFor(g)
+    if (!set.drift) return
+    const l = this._localOf(g)
+    const attr = set.meshes[l].geometry.getAttribute('aCardDrift')
+    attr.array.set(d.subarray(i, i + 4), s * 4)
+    set._dirty(attr, set._driftRange[l], s, 4)
   }
 
   /** See PropMeshes.roomAt. */

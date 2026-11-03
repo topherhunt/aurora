@@ -146,7 +146,7 @@ import { makePuppet, tintFor, tintRange } from './baked-puppet.js'
 import { EAT, MEAL, atMost } from '../eating.js'
 import { FELL, SINGE, recut, redAt, reddened, touches } from '../singe.js'
 import { KEEP_UP, headway } from '../keep-up.js'
-import { setPropSolidAt } from '../../material.js'
+import { getPropClock, setPropSolidAt } from '../../material.js'
 import { cardPicture } from './litter-cards.js'
 import { PropArena } from './prop-arena.js'
 
@@ -223,9 +223,10 @@ const REJOIN_PAD_S = 3
 // pixels tall while it does.
 export const PROBE_EVERY = [6, 8, 12, 16, 32]
 // On the card rung an animal is stepped only every CARD_EVERY frames, the
-// ticks between run then, and its card is pushed as it last was on the others:
-// at a dozen pixels a stride four frames long is under a pixel. The card rung's
-// probe cadence is a multiple, so the probe lands on a stepped frame.
+// ticks between run then; on the others its card walks on in the shader at the
+// velocity of the tick it was last written in (_drawCard), and the CPU does not
+// touch it. The card rung's probe cadence is a multiple, so the probe lands on a
+// stepped frame.
 export const CARD_EVERY = 4
 // Ticks between a live follower's look-ahead seat tests.
 const LIVE_PROBE_TICKS = 4
@@ -534,7 +535,7 @@ export class Wildlife {
           // Whether the card is the thing this animal should be drawing, and how
           // far through the dissolve into or out of that it is (1 is settled).
           cardWant: false, cardP: 1,
-          // Where its card was last drawn: drawn again on the frames a card animal is not stepped, and the dissolve on a seized one's drop.
+          // Where its card was last drawn, for the dissolve on a seized one's drop.
           cardMat: new THREE.Matrix4(),
           // Its id in the card pool while a card is drawn (-1 otherwise), and the frame it was last drawn on.
           card: -1, cardDrawn: -1,
@@ -2331,11 +2332,14 @@ export class Wildlife {
     _pos.set(c.x, c.y, c.z)
     _quat.setFromAxisAngle(UP, c.heading)
     _scl.setScalar(c.k)
-    this._cardAt(c, c.cardMat.compose(_pos, _quat, _scl))
+    // The card walks on in the shader at the tick's own velocity (_pose lerps lx..sx across it), up the plane its feet walk between probes, so the frames it is not stepped on still move it.
+    const vx = (c.sx - c.lx) / TICK_S
+    const vz = (c.sz - c.lz) / TICK_S
+    this._cardAt(c, c.cardMat.compose(_pos, _quat, _scl), vx, -(c.nx * vx + c.nz * vz) / c.ny, vz)
   }
 
-  /** The card on `mat` -- a carried kill's is the carrier's matrix, not the slot's place and heading -- with the slot's dissolve, taking a pool id if it has none. Nothing until the species' picture is baked. */
-  _cardAt(c, mat) {
+  /** The card on `mat` -- a carried kill's is the carrier's matrix, not the slot's place and heading -- walking on at (vx, vy, vz) per second, with the slot's dissolve, taking a pool id if it has none. Nothing until the species' picture is baked. */
+  _cardAt(c, mat, vx = 0, vy = 0, vz = 0) {
     const picture = c.sp.picture
     if (picture < 0) return
     const V = this.cardView
@@ -2347,6 +2351,7 @@ export class Wildlife {
     }
     c.cardDrawn = this.frame
     V.setMatrixAt(c.card, mat)
+    V.setDriftAt(c.card, vx, vy, vz, getPropClock())
     setCardFadeAt(V, c.card, c.cardWant ? c.cardP : -(1 - c.cardP))
     V.setColorAt(c.card, _dim.setScalar(1 - this.dark))
     V.setVisibleAt(c.card, true)
@@ -2495,8 +2500,10 @@ export class Wildlife {
         if (!live && critterTier(s.lodSize, Math.hypot(c.x - hx, c.y - hy, c.z - hz), CARD_RUNGS, CARD_RUNGS) === CARD_RUNGS) { c.lod = CARD_RUNGS; continue }
         c.lod = tier
         // A card animal with no puppet left dissolving against it is stepped every CARD_EVERY frames (see the constant); with one, every frame, for the fade; and on its first frame after a placement, for the ground.
+        // Between steps its card walks on in the shader (_drawCard): only a dissolve's stamp is rewritten, which would otherwise run on.
         if (tier === LOD_RUNGS && !c.puppet && !Number.isNaN(c.px) && (this.frame + c.id) % CARD_EVERY !== 0) {
-          if (c.cardWant || c.cardP < 1) this._cardAt(c, c.cardMat)
+          if (c.cardWant || c.cardP < 1) c.cardDrawn = this.frame
+          if (c.cardP < 1 && c.card >= 0) setCardFadeAt(this.cardView, c.card, c.cardWant ? c.cardP : -(1 - c.cardP))
           continue
         }
         // Too far behind to replay in a frame -- back from past the card rung, or a tab that slept -- it is placed afresh where the score (or the room) has it now, which a planned phrase gives closed-form; a live one is integrated, so it is dropped and noticed again.

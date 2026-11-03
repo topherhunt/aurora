@@ -1,18 +1,30 @@
 # Castle wards
 
-Glowing barriers on castle doors, opened with 3-rune codes read off floating runebooks (`src/v2/castles/wards.js`). Gated by `scripts/check-castle-layout.mjs` (planning) and `scripts/check-castle-walk.mjs` (a shut ward stops her, an opened one does not). Previewed with `tmp/ward-probe/drive.mjs <outdir> <seed> --torch`.
+Glowing barriers on castle doorways and spiral tunnels, opened with 3-rune codes read off floating runebooks (`src/v2/castles/wards.js`). Gated by `scripts/check-castle-layout.mjs` (planning) and `scripts/check-castle-walk.mjs` (a shut ward stops her, an opened one does not). Previewed with `tmp/ward-probe/drive.mjs <outdir> <seed> --torch`.
 
 ## Planning
 
-`planWards` puts 5-8 wards on doors between two rooms that have exactly one doorway, and the same number of runebooks, or one more 30% of the time. Each ward has a gem side, which is the side nearer the entry 80% of the time. The other side is impassable and shows nothing. Books go in distinct dead-end rooms first. Neither a book nor a gem goes in a drum room: a one-cell room a spiral climbs through, or a room every cell of which a shaft seals (`layout.js` re-plans around those once `planShafts` has run).
+Wards are placed by construction on the floor plan (design/44 §Layout), never rerolled; `planWards` checks its result with `wardSearch` and throws if construction ever fails it.
 
-A book's code opens any one ward, once. So the keys are fungible, and `wardSearch` checks every set of opened wards (at most 2^8 states). In each reachable state, the books she can reach number more than the wards she has opened, and some shut ward's gem is in reach. In the final state, every used node is reached. Rope and barred edges are left out of reach, since both lead only to where she already is. Of 150 seeded trials, the plan kept is the one whose summit needs the most wards opened, then the one that shuts nearest half the rooms at the start. A layout with too few eligible doors takes unpicked room-room door candidates as extra shortcuts. A layout with no plan fails `stats.ok`, so `layers/castles.js` redraws its seed.
+Wardable ways: room-room doors, outer doors, bridges, outstairs with a door, and a spiral's tunnel. A tunnel can take a ward when it is the one exit of a shaft's bottom or top storey into its room (`layout.js` `tunnelWards`), its gem on the room side or the drum side; the helix itself never takes one. Neither a book nor a gem goes in a drum room, one every cell of which a shaft seals.
 
-Over 300 seeds, about 9 more fail than did before wards. Wards needed before the summit: {0: 27, 1: 98, 2: 77, 3: 39, 4: 6, 5: 1}.
+- Spine: the bridge edges (Tarjan) on the entry-summit route with a wardable gem on her side. 5 or more are needed. Every one must be opened, so `toSummit` is at least the spine count.
+- Detours: up to 10 wards in all. They are the loop edges whose shutting adds the most metres to her walks to the summit and the dungeon, while the castle stays whole.
+- Books: one per ward, plus one 30% of the time. Each goes in a room of a dominator cell of its ward's gem cell, matched by Kuhn; dead ends score first, then distance from other books and gems.
+
+A book's code opens any one ward, once, so the keys are fungible. `wardSearch` checks every set of opened wards (at most 2^10 states):
+- in each reachable state, the books in reach outnumber the wards opened, and some shut ward's gem is in reach;
+- in the final state, every used node is reached.
+
+Rope and barred edges are left out of reach. A castle whose plans give no spine of 5 fails `stats.ok`, and `layers/castles.js` redraws its seed.
+
+Over 300 seeds, 296 pass. Each passing castle averages 2.4 tunnel wards and 1.8 on outer doors or bridges.
+- Wards per castle: {5: 59, 6: 84, 7: 80, 8: 48, 9: 17, 10: 8}.
+- Wards before the summit: {5: 133, 6: 94, 7: 51, 8: 16, 9: 1, 10: 1}.
 
 ## Runtime
 
-Collision: each ward is a 0.25 m slab box on the gem room's wall face (`solids.js` `wardFrame`). `interiorSpans` skips it when its bit is set in `it.open`.
+Collision: each ward is a 0.25 m slab box just inside the gem side's wall face, or across a spiral tunnel 0.2 m short of its room mouth (`solids.js` `wardFrame`). `interiorSpans` skips it when its bit is set in `it.open`. An outer door's portal sets her down past its membrane, so a door portal carries its ward's index and main.js `castleTest` refuses entry while that ward is shut.
 
 Drawing: `render/castle-wards.js` `WardSet` draws, as children of the interior mesh:
 - the membrane, near opaque, with banded noise, a dissolve and a white flash;

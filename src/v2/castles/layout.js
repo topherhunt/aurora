@@ -339,7 +339,7 @@ const mod16 = (v) => ((v % 16) + 16) % 16
 // grows with L), on a top storey over its floor short of the hole.
 const WINDOW = { bottom: [8, 15], pass: [16, 14], top: [16, 22] }
 const LANDING_MAX = 9, SKEW = 1, GAP = 3
-const LADDER_CLEAR = 3, REVEAL = 2.95 / CASTLE.scale
+const LADDER_CLEAR = 3, REVEAL_M = 2.95, REVEAL = REVEAL_M / CASTLE.scale, DRUM_RING = 1.75 + 0.12 // spiral.js SHAFT.reveal, SPIRAL.well + wall
 
 /**
  * The spiral shafts (design/44-castles.md, Spiral shafts). Every storey a helix climbs from or to is sealed round its cell: she
@@ -467,7 +467,7 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
     const per = []
     for (let k = r.ks[0]; k <= r.ks.at(-1) + 1; k++) {
       const n = r.rooms.get(k), role = k === r.ks[0] ? 'bottom' : k === r.ks.at(-1) + 1 ? 'top' : 'pass'
-      const doors = new Map(), comps = [], turn = new Map()
+      const doors = new Map(), comps = [], turn = new Map(), span = new Map()
       if (n === null) {
         const [x, z] = centreOf(r.gx, r.gz)
         const c = Math.abs(x) >= Math.abs(z) ? (x > 0 ? 2 : 0) : (z > 0 ? 3 : 1)
@@ -481,6 +481,7 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
           const [sx, sz] = SIDES[c], lat = (d) => (d.x - x) * -sz + (d.z - z) * sx
           const mid = (Math.min(...ds.map((d) => lat(d) - d.w / 2)) + Math.max(...ds.map((d) => lat(d) + d.w / 2))) / 2
           turn.set(c, Math.round(Math.atan2(mid, REVEAL) / (Math.PI / 8)))
+          span.set(c, [Math.min(...ds.map((d) => lat(d) * CASTLE.scale - d.w / 2)), Math.max(...ds.map((d) => lat(d) * CASTLE.scale + d.w / 2))])
         }
         const open = cellsOf(n).filter(([x, z]) => !sealed.has(sk(x, z, k))), seen = new Set()
         for (const [x0, z0] of open) {
@@ -497,7 +498,7 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
       }
       const ladder = drumLadders.get(sk(r.gx, r.gz, k)) ?? null
       if (ladder && role !== 'top') throw new Error(`castle ${seed}: a ladder stands in a shaft's ${role} storey`)
-      per.push({ k, role, node: n, doors, turn, comps, ladder, links: [] })
+      per.push({ k, role, node: n, doors, turn, span, comps, ladder, links: [] })
     }
     return per
   })
@@ -566,6 +567,13 @@ function windowOf(role, a, L) {
  * doorway's centre segment o, skewed up to SKEW segments off the one facing it (a door's turn included), its tunnel slanting
  * through the stone; doorways GAP apart, the least total skew; null when they cannot all fall inside. */
 function exitsOf(p, hand, lo, hi) {
+  // The tunnel spiral.js cuts from the drum ring round segment o to the door's span [w0, w1] at the reveal, too narrow to stand in.
+  const pinched = (c, o, [w0, w1]) => {
+    const [nx, nz] = SIDES[c], ring = (a) => [Math.cos(a) * DRUM_RING, Math.sin(a) * DRUM_RING], pt = (w) => [nx * REVEAL_M - nz * w, nz * REVEAL_M + nx * w]
+    const [a, b, q, d] = [ring((o - 1) * Math.PI / 8), pt(w0), pt(w1), ring((o + 1) * Math.PI / 8)]
+    const gap = (p, u, v) => { const dx = v[0] - u[0], dz = v[1] - u[1], t = Math.max(0, Math.min(1, ((p[0] - u[0]) * dx + (p[1] - u[1]) * dz) / (dx * dx + dz * dz))); return Math.hypot(p[0] - u[0] - t * dx, p[1] - u[1] - t * dz) }
+    return Math.min(gap(a, q, d), gap(b, q, d), gap(q, a, b), gap(d, a, b)) < 0.8
+  }
   const want = [...p.doors].map(([c, doors]) => [{ c, kind: 'door', doors, at: 4 * c + p.turn.get(c) }])
   for (const c of new Set(p.links)) if (!p.doors.has(c)) want.push([{ c, kind: 'link', at: 4 * c }])
   for (const faces of p.comps) if (!faces.some((c) => p.doors.has(c))) want.push(faces.map((c) => ({ c, kind: 'room', at: 4 * c })))
@@ -577,7 +585,7 @@ function exitsOf(p, hand, lo, hi) {
     if (i === want.length) { best = { cost, exits }; return }
     for (const { at, ...w } of want[i]) for (let d = -SKEW; d <= SKEW; d++) {
       const o = mod16(at + d)
-      if (off(o) <= hi - lo && !exits.some((x) => x.c === w.c) && apart(o, exits)) pick(i + 1, [...exits, { ...w, o }], cost + Math.abs(d))
+      if (off(o) <= hi - lo && !exits.some((x) => x.c === w.c) && apart(o, exits) && !(w.kind === 'door' && p.span.has(w.c) && pinched(w.c, o, p.span.get(w.c)))) pick(i + 1, [...exits, { ...w, o }], cost + Math.abs(d))
     }
   }
   pick(0, [], 0)

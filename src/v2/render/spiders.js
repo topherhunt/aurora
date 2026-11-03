@@ -118,7 +118,8 @@ import {
 } from './critters.js'
 import { loadSkinnedAsset } from './puppet.js'
 import { PropArena } from './prop-arena.js'
-import { cardPicture } from './litter-cards.js'
+import { CARD_DRIFT_S, cardPicture } from './litter-cards.js'
+import { getPropClock } from '../../material.js'
 import { PERCH_STRIDE } from './rocks.js'
 import { TRUNK_STRIDE } from './trees.js'
 import { WALK } from '../walk.js'
@@ -176,7 +177,7 @@ export const RESEAT_EVERY = 45
 export const MAX = 256
 // Far cards drawn at once (litter-cards.js claim); one past it is refused with a warning.
 const CARD_CLAIM = 16
-// A card-rung spider is stepped every CARD_EVERY frames (wildlife.js does the same): its pose is closed-form in the world second, so the next step lands exactly where every-frame stepping would, and at its distance a stride four frames long is under two pixels.
+// A card-rung spider is stepped every CARD_EVERY frames (wildlife.js does the same): its pose is closed-form in the world second, so the next step lands exactly where every-frame stepping would, and between steps its card walks on in the shader (_writeCard).
 const CARD_EVERY = 4
 const HOST_BUF = 64
 
@@ -435,6 +436,8 @@ export class Spiders {
         ex: 0, ey: 0, ez: 0, togo: 0, stall: 0, near: false, tick: 0, alpha: 0, bolt: null,
         // Its rung on the arc ladder (-1 before its first frame) and the mesh tier it is drawn at, LOD_TIERS for the card; the legs' phase, the phase it rolled to start from and their swing amplitude; how far it has reared, 0 to 1; its world matrix, and whether that trails its seat.
         cardOn: false, cardStamp: -1, rung: -1, lod: LOD_TIERS, gait: 0, gait0: 0, amp: 0, rear: 0, m: new Float32Array(16), dirty: true,
+        // Where and when its card was last written, and whether the shader walks it on from there (_writeCard).
+        cardX: 0, cardY: 0, cardZ: 0, cardT: NaN, drifting: false,
       })
     }
     this.free = this.slots.slice()
@@ -1765,7 +1768,8 @@ export class Spiders {
               counts[lod] = n + 1
             }
           } else if (cards) {
-            if (rebuilt || !c.cardOn) this._writeCard(c)
+            if (rebuilt || !c.cardOn) this._writeCard(c, now)
+            else if (c.drifting) { this.cards.setDriftAt(c.id, 0, 0, 0, 0); c.drifting = false }
             c.cardStamp = this.frame
           }
         }
@@ -1799,9 +1803,15 @@ export class Spiders {
     this.cardCount = n
   }
 
-  _writeCard(c) {
+  /** The card where the spider is, walking on in the shader (litter-cards.js) at the velocity since the last write: a phrase crosses at one speed, so between steps that is where every-frame stepping would put it. */
+  _writeCard(c, now) {
     _mat.fromArray(c.m).multiply(_flat.makeTranslation(0, this.cardLift, 0).multiply(_lay))
     this.cards.setMatrixAt(c.id, _mat)
+    const e = _mat.elements, span = now - c.cardT
+    const k = c.cardOn && span > 0 && span <= CARD_DRIFT_S ? 1 / span : 0
+    this.cards.setDriftAt(c.id, (e[12] - c.cardX) * k, (e[13] - c.cardY) * k, (e[14] - c.cardZ) * k, getPropClock())
+    c.drifting = k > 0 && (e[12] !== c.cardX || e[13] !== c.cardY || e[14] !== c.cardZ)
+    c.cardX = e[12]; c.cardY = e[13]; c.cardZ = e[14]; c.cardT = now
     _col.setRGB(c.tr, c.tg, c.tb)
     this.cards.setColorAt(c.id, _col)
     if (!c.cardOn) {

@@ -619,7 +619,8 @@ export class Castles {
 
   /**
    * After the step, her feet now at `feet` and before it at `from` (world): the portal she just went through, as { kind: 'enter' |
-   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world) }, { kind: 'locked', site, at }
+   * 'leave' | 'rope', site, at: world [x, y, z], face: world [fx, fz], back: an enter's way out (world), ward: a door enter's ward
+   * index or -1 }, { kind: 'locked', site, at }
    * at the dungeon's locked door (`at` over it), or null. The rope fires
    * walking at it; the rest on entering their zone, so an arrival inside one stays put.
    */
@@ -641,7 +642,7 @@ export class Castles {
     const atLeaves = (p, hw) => Math.abs(ly - p.y) <= ZONE.rise && Math.abs((lx - p.x) * p.nx + (lz - p.z) * p.nz) <= ZONE.door && Math.abs((lx - p.x) * p.nz - (lz - p.z) * p.nx) <= hw
     P.doors.forEach((d, i) => {
       if (zone !== null) return
-      if (!inside && atLeaves(d.ext, d.hw)) { zone = `d${i}`; act = { kind: 'enter', site: s, at: world(d.in, s.y + CASTLE_RISE), face: face(-d.ext.nx, -d.ext.nz), back: world(d.out, s.y) } }
+      if (!inside && atLeaves(d.ext, d.hw)) { zone = `d${i}`; act = { kind: 'enter', site: s, at: world(d.in, s.y + CASTLE_RISE), face: face(-d.ext.nx, -d.ext.nz), back: world(d.out, s.y), ward: d.ward } }
       if (inside && atLeaves(d.int, d.hw * CASTLE.scale)) { zone = `d${i}`; act = { kind: 'leave', site: s, at: world(d.out, s.y), face: face(d.ext.nx, d.ext.nz) } }
     })
     if (inside) {
@@ -651,7 +652,7 @@ export class Castles {
       })
     } else {
       P.ladders.forEach((l, i) => {
-        if (zone === null && near(l.hatch[0], l.hatch[2], ZONE.hatch, l.hatch[1])) { zone = `t${i}`; act = { kind: 'enter', site: s, at: world(l.down, s.y + CASTLE_RISE), face: face(-l.x, -l.z), back: world(l.roof, s.y) } }
+        if (zone === null && near(l.hatch[0], l.hatch[2], ZONE.hatch, l.hatch[1])) { zone = `t${i}`; act = { kind: 'enter', site: s, at: world(l.down, s.y + CASTLE_RISE), face: face(-l.x, -l.z), back: world(l.roof, s.y), ward: -1 } }
       })
     }
     const fire = zone !== null && zone !== this._zone

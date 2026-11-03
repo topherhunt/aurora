@@ -2,13 +2,14 @@
 //
 //   node scripts/check-castle-layout.mjs
 //
-// Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing the maze score, a passing
+// Ways a layout goes wrong without throwing: a seed that differs between runs, too many seeds failing their layout, a passing
 // layout with a stranded node, a route that does not run gate to summit along real edges, a summit that is not the castle's
 // highest point, a route edge whose door sits on neither of its rooms, shells over their triangle budget, exterior faces that z-fight
 // or crack open under the warp, door leaves hidden behind stone,
 // collision that throws (over a wide seed sweep) or passes the walk's span cap, a castle without its doors, spirals and rope, or a
 // dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget; wards
-// outside 5-8, a ward order that leaves her facing a gem with no unspent code, or two runebooks sharing a code.
+// outside 5-10, two on one way, fewer than 5 she must open to reach the summit, a ward order that leaves her facing a gem with no
+// unspent code, or two runebooks sharing a code.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { readFileSync } from 'node:fs'
@@ -38,10 +39,8 @@ const good = lays.filter((l) => l.stats.ok)
 
 const sig = (l) => JSON.stringify([l.nodes.map((n) => [n.id, n.pos]), l.edges.map((e) => [e.a.id, e.b.id, e.kind])])
 check([1, 7, 42].every((s) => sig(castleLayout(s)) === sig(lays[s - 1])), 'a seed lays out the same castle twice')
-check(good.length >= SEEDS * 0.8, 'four seeds in five pass the maze score', `${good.length}/${SEEDS}`)
+check(good.length >= SEEDS * 0.95, 'nineteen seeds in twenty lay out a castle that passes', `${good.length}/${SEEDS}`)
 check(good.every((l) => l.stats.stranded === 0), 'a passing castle strands no node')
-check(good.every((l) => l.stats.routeEdges >= CASTLE.minRoute && l.stats.switches >= CASTLE.minSwitches), 'a passing route is long and goes in and out',
-  `min ${Math.min(...good.map((l) => l.stats.routeEdges))} edges`)
 
 const routeOk = (l) => {
   const ns = l.route.nodes, es = l.route.edges
@@ -49,9 +48,13 @@ const routeOk = (l) => {
   return es.every((e, i) => l.edges.includes(e) && new Set([e.a, e.b]).has(ns[i]) && new Set([e.a, e.b]).has(ns[i + 1]))
 }
 check(good.every(routeOk), 'the route runs entry to summit along chosen edges')
-check(good.every((l) => l.wards.length >= WARDS.min && l.wards.length <= WARDS.max && l.books.length >= l.wards.length), 'a passing castle has 5-8 wards and a runebook for each', good.filter((l) => !(l.wards.length >= WARDS.min && l.wards.length <= WARDS.max)).map((l) => `${l.seed}:${l.wards.length}`).slice(0, 5).join(' '))
-const stuckWards = good.filter((l) => !wardSearch(l.nodes, l.edges, l.nodes.find((n) => n.kind === 'entry'), l.nodes.find((n) => n.kind === 'summit'), l.wards, l.books).ok)
-check(stuckWards.length === 0, 'in every order she opens wards, she knows an unspent code for a gem she can reach, and ends with every room open', stuckWards.map((l) => l.seed).slice(0, 5).join(' '))
+check(good.every((l) => l.wards.length >= WARDS.min && l.wards.length <= WARDS.max && l.books.length >= l.wards.length), 'a passing castle has 5-10 wards and a runebook for each', good.filter((l) => !(l.wards.length >= WARDS.min && l.wards.length <= WARDS.max)).map((l) => `${l.seed}:${l.wards.length}`).slice(0, 5).join(' '))
+check(good.every((l) => new Set(l.wards.map((w) => w.edge)).size === l.wards.length), 'no two wards guard the same way')
+const searched = good.map((l) => [l, wardSearch(l.nodes, l.edges, l.nodes.find((n) => n.kind === 'entry'), l.nodes.find((n) => n.kind === 'summit'), l.wards, l.books)])
+const stuckWards = searched.filter(([, r]) => !r.ok).map(([l]) => l.seed)
+check(stuckWards.length === 0, 'in every order she opens wards, she knows an unspent code for a gem she can reach, and ends with every room open', stuckWards.slice(0, 5).join(' '))
+const shortWards = searched.filter(([, r]) => r.toSummit < WARDS.min).map(([l, r]) => `${l.seed}:${r.toSummit}`)
+check(shortWards.length === 0, 'every order she opens wards in opens at least 5 before the summit', shortWards.slice(0, 5).join(' '))
 check(good.every((l) => new Set(l.books.map((b) => b.code.join())).size === l.books.length && l.books.every((b) => new Set(b.code).size === 3)), 'every runebook has its own code of three different runes')
 check(good.every((l) => { const top = l.nodes.find((n) => n.kind === 'summit'); return l.nodes.every((n) => n === top || n.pos[1] < top.pos[1]) }), 'the summit is the highest node')
 

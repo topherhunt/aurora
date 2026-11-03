@@ -543,11 +543,28 @@ spiders.place(0, 0)
   let cardFrames = 0, cardMoved = 0
   const legs = { walking: 0, sitting: 0, wrong: 0, phase: 0, over: 0 }
   // Card-rung spiders are stepped every CARD_EVERY frames and draw no legs, so only the mesh rungs are held to this.
+  // A card's shader walk (litter-cards.js): from one write, its drift must carry it onto the next, wherever the spider holds one phrase across both.
+  const D = spiders.cards.drift
+  const walk = { steps: 0, drifting: 0, worst: 0 }
   for (let f = 0; f < 600; f++) {
-    for (const c of alive()) { gaitWas.set(c, c.gait); if (c.rung === LOD_RUNGS && c.cardOn) cardWas.set(c, c.m.slice()) }
+    const wrote = new Map()
+    for (const c of alive()) {
+      gaitWas.set(c, c.gait)
+      if (c.rung === LOD_RUNGS && c.cardOn) {
+        cardWas.set(c, c.m.slice())
+        wrote.set(c, { t: c.cardT, phrase: c.phrase, at: [0, 1, 2].map((a) => spiders.cards.mat[c.id * 16 + 12 + a]), v: [0, 1, 2].map((a) => D[c.id * 4 + a]) })
+      }
+    }
     const t0 = performance.now()
     tick(spiders, ...HER, 1 / 60)
     ms += performance.now() - t0
+    for (const [c, w] of wrote) {
+      if (!c.cardOn || c.cardT === w.t || c.phrase !== w.phrase || !c.drifting) continue
+      walk.steps++
+      if (w.v.some((v) => v !== 0)) walk.drifting++
+      const now = [0, 1, 2].map((a) => spiders.cards.mat[c.id * 16 + 12 + a])
+      walk.worst = Math.max(walk.worst, Math.hypot(...now.map((x, a) => x - (w.at[a] + w.v[a] * (c.cardT - w.t)))))
+    }
     for (const [c, m] of cardWas) {
       if (c.rung !== LOD_RUNGS || !c.cardOn) { cardWas.delete(c); continue }
       cardFrames++
@@ -568,6 +585,8 @@ spiders.place(0, 0)
     }
   }
   check(cardFrames > 60 && cardMoved > 0 && cardMoved <= cardFrames / 3, 'a spider on the card rung is stepped every fourth frame, not every one', `${cardMoved} of ${cardFrames} spider-frames moved a matrix`)
+  // The drift is a straight line and a trunk crawl an arc, so it lands a chord's sag off on a tree; a card's first write has no velocity yet.
+  check(walk.steps > 10 && walk.drifting >= walk.steps * 0.9 && walk.worst < 5e-3, 'and between steps its card walks on in the shader, to within 5 mm of where the next step of the same phrase puts it', `${walk.steps} steps, ${walk.drifting} drifting, worst ${(walk.worst * 1000).toFixed(3)} mm off`)
   const sim = before.filter(({ c }) => c.rung < CARD_RUNGS)
   const moved = sim.filter(({ c, x, y, z }) => Math.hypot(c.x - x, c.y - y, c.z - z) > 0.02)
   check(sim.length >= 3 && moved.length > sim.length / 2, 'most of the spiders within their cull have crawled somewhere in ten seconds', `${moved.length} of ${sim.length}, ${before.length} alive`)

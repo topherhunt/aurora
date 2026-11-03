@@ -213,17 +213,31 @@ export function outsideCast(lay, site, trail) {
   })
   const entry = lay.nodes.find((n) => n.kind === 'entry')
   GATE_GUARDS.forEach((body, i) => out.push({ who: 'gate', body, clip: 'idle', x: entry.pos[0] + (i ? 2.2 : -2.2), z: entry.pos[2] - 3, h: facing(0, 1) }))
-  // The summit guard, on the side of the chest farthest from the rope and the way up, looking out.
+  // The summit guard, on the side of the chest farthest from the rope and the way up, looking out. The chest can stand off the
+  // middle of a small round lookout, so a spot must lie 0.6 m inside its outer face.
   const summit = lay.nodes.find((n) => n.kind === 'summit'), [sx, sy, sz] = summit.pos, rope = lay.edges.find((e) => e.rope).rope
+  const sec = summit.sec, cx = (lay.X(sec.x0) + lay.X(sec.x0 + sec.w)) / 2, cz = (lay.Z(sec.z0) + lay.Z(sec.z0 + sec.d)) / 2
+  const hx = (lay.X(sec.x0 + sec.w) - lay.X(sec.x0)) / 2 - 0.6, hz = (lay.Z(sec.z0 + sec.d) - lay.Z(sec.z0)) / 2 - 0.6
+  const onFloor = (x, z) => (sec.round ? Math.hypot(x - cx, z - cz) <= hx : Math.abs(x - cx) <= hx && Math.abs(z - cz) <= hz)
   const keep = [[rope.x, rope.z]]
   for (const e of lay.edges) {
     if (e.a !== summit && e.b !== summit) continue
-    if (e.ladder) keep.push([e.ladder.x, e.ladder.z])
+    // The hatch, and where solids.js portals sets her off it: spotNear's first bearing 1.2 m out, fanning from the castle's middle,
+    // clear of the chest.
+    if (e.ladder) {
+      const { x, z } = e.ladder, a0 = Math.atan2(-z, -x)
+      const off = Array.from({ length: 16 }, (_, i) => a0 + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * Math.PI / 8).map((a) => [x + Math.cos(a) * 1.2, z + Math.sin(a) * 1.2])
+      const land = off.find(([px, pz]) => onFloor(px, pz) && Math.hypot(px - sx, pz - sz) > 0.7)
+      if (land === undefined) throw new Error(`castle ${lay.seed}: no landing off the summit hatch`)
+      keep.push([x, z], land)
+    }
     if (e.kind === 'step') keep.push([e.pts[1][0], e.pts[1][2]])
     for (const d of e.doors) if (Math.abs(d.y - (sy - 0.4)) < 0.1) keep.push([d.x, d.z])
   }
   const clear = ([ux, uz]) => Math.min(...keep.map(([x, z]) => Math.hypot(sx + ux * FOLK.lore - x, sz + uz * FOLK.lore - z)))
-  const [ux, uz] = [[1, 0], [-1, 0], [0, 1], [0, -1]].reduce((a, b) => (clear(b) > clear(a) ? b : a))
+  const bearings = Array.from({ length: 8 }, (_, i) => [Math.cos(i * Math.PI / 4), Math.sin(i * Math.PI / 4)]).filter(([ux, uz]) => onFloor(sx + ux * FOLK.lore, sz + uz * FOLK.lore))
+  if (!bearings.length) throw new Error(`castle ${lay.seed}: no floor for the summit guard`)
+  const [ux, uz] = bearings.reduce((a, b) => (clear(b) > clear(a) ? b : a))
   out.push({ who: 'lore', body: 'guard', clip: 'idle', x: sx + ux * FOLK.lore, y: sy - 0.4, z: sz + uz * FOLK.lore, h: facing(ux, uz) })
   const well = courtProps(lay).find((o) => o.kind === 'well')
   if (well !== undefined) out.push({ who: 'yard', body: 'woodcutter', clip: 'gather', x: well.x + 1.35, z: well.z, h: facing(-1, 0) })

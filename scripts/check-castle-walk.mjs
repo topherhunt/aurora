@@ -45,7 +45,7 @@ const G = 0.4, SUB = 0.1, N8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1
 const missed = [], unkeyed = [], unlooted = []
 for (const seed of [1, 3, 8, 258641]) {
   const lay = castleLayout(seed)
-  if (!lay.stats.ok) throw new Error(`castle ${seed} fails its maze score; pick a seed that passes`)
+  if (!lay.stats.ok) throw new Error(`castle ${seed} fails its layout; pick a seed that passes`)
   const sol = castleSolids(lay), { at, surface, player } = rig(sol.it)
   sol.it.open = (1 << lay.wards.length) - 1
   const seen = new Map(), queue = []
@@ -87,15 +87,17 @@ check(!missed.length, 'she can walk into every chamber from the doors and ladder
 check(!unkeyed.length, "she can walk to the dungeon's key", unkeyed.join(' '))
 check(!unlooted.length, "she can walk to the dungeon's chest once its door is unlocked", unlooted.join(' '))
 
-// Wards: from 0.6 m before each one on its gem side, straight through its doorway 1.5 m, with it shut and then opened.
+// Wards: from 0.6 m before each one on its gem side, straight through its doorway 1.5 m (an outer door's 0.4 m: its reveal ends at the
+// leaves, where the portal takes her), with it shut and then opened.
 const leaky = [], stuck = []
 for (const seed of [1, 3, 8]) {
   const lay = castleLayout(seed), it = castleSolids(lay).it, { at, surface, player } = rig(it)
   lay.wards.forEach((w, i) => {
     const m = wardFrame(w), [ux, uz] = m.axis === 'x' ? [m.sgn, 0] : [0, m.sgn]
+    const outer = !w.tunnel && (w.edge.kind === 'bridge' || w.edge.a.kind !== 'room' || w.edge.b.kind !== 'room')
     const through = () => {
       let x = m.axis === 'x' ? m.a - m.sgn * 0.6 : m.c, z = m.axis === 'x' ? m.c : m.a - m.sgn * 0.6, y = m.y
-      for (let s = 0; s < 15; s++) {
+      for (let s = 0; s < (outer ? 4 : 15); s++) {
         at.hint = y
         const h = player._walkable(x, z, y, ux * 0.1, uz * 0.1, 0.1)
         if (Number.isNaN(h) || !surface.fits(x + ux * 0.1, z + uz * 0.1, Math.max(y, h))) return false

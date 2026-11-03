@@ -195,6 +195,7 @@ function renderPanel() {
     ['descents', st.descents],
     ['dead-end rooms', st.deadEnds],
     ['loops', st.loops],
+    ['wards (to summit)', lay.wards ? `${lay.wards.length} (${st.wardsToSummit})` : '-'],
     ['stranded', st.stranded],
     ['layout ms', st.ms.toFixed(1)],
     ['exterior tris', tris(exterior.geometry)],
