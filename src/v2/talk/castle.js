@@ -10,14 +10,15 @@ import { QUIRKS, quirkLines } from './quirks.js'
 import { castleNews, tellCastle, allCastleBodies } from './castle-news.js'
 import { heardOf, nothingMore, NEWS_CLIPS } from './gossip.js'
 import { NEXT } from './grid.js'
+import { allGiftLines } from './castle-gifts.js'
 
 export const CASTLE_TALK = {
   // Questions answered before they send her off; the summit guard never tires of her.
   patience: { lore: 40, guard: 4, rest: 5 },
   // Odds a greeting, or an answer about the castle, goes on to the summit's view.
   view: 0.55,
-  // Odds a greeting, while any of the castle's wards is unopened, is their distress about it.
-  distress: 0.7,
+  // Odds a greeting, and a goodbye once any ward is open, is about the wards (WARD_TALK).
+  tone: 0.7,
   // Of the summit guard's tales, the odds it is the dungeon's ghost.
   ghost: 0.3,
   alone: { bye: 60, dismissed: 45, declined: 30 },
@@ -87,17 +88,71 @@ const CASTLE = [
   'Mind the walls in the wind. The parapets are good, but the wind is better.',
 ]
 
-// While any ward in the castle is unopened: the keep half locked down, folk trapped in the walls, her warned and begged.
-const WARDED_GREET = [
-  'Oh, a visitor! Half the keep is locked down by an enchantment, and some of us are trapped in the walls.',
-  'Please, mind yourself. An enchantment has sealed half the keep, and folk are stuck in the walls.',
-  'Thank goodness. Half the keep is shut up by sorcery, and people are trapped inside the walls.',
-]
-const WARDED_CASTLE = [
-  'Half the keep is locked down by an enchantment. If you go in, be careful, or you will be trapped in the walls too.',
-  'Some of us are trapped in the walls. Mind yourself in there, lest you be caught as well.',
-  'If you can unknot this enchantment, we will be deeply grateful. Only take care it does not trap you too.',
-]
+// What folk say of the wards by how many are open (wardTier): all shut, distress and a warning; some open, thanks and hope; most open, warm and
+// effusive; all open, jubilant. `greet` opens a talk, `castle` answers the castle topic, `bye` (once any is open) is a warm goodbye.
+export const WARD_TALK = {
+  shut: {
+    greet: [
+      'Oh, a visitor! Half the keep is locked down by an enchantment, and some of us are trapped in the walls.',
+      'Please, mind yourself. An enchantment has sealed half the keep, and folk are stuck in the walls.',
+      'Thank goodness. Half the keep is shut up by sorcery, and people are trapped inside the walls.',
+    ],
+    castle: [
+      'Half the keep is locked down by an enchantment. If you go in, be careful, or you will be trapped in the walls too.',
+      'Some of us are trapped in the walls. Mind yourself in there, lest you be caught as well.',
+      'If you can unknot this enchantment, we will be deeply grateful. Only take care it does not trap you too.',
+    ],
+    bye: [],
+  },
+  some: {
+    greet: [
+      'Oh, a visitor! Some of the wards are broken, I hear. Bless you for it.',
+      'Is it true? A few doors are free of the sorcery. We have you to thank, I think.',
+      'Thank you, truly. Part of the keep breathes again. Please, keep on.',
+    ],
+    castle: [
+      'Some of the doors are free now, and folk are slipping out of the walls. Thank you! There are more to unknot, if you can.',
+      'You have broken a few of the wards, and we are grateful. The rest still hold, so take care.',
+      'A little of the enchantment has lifted, bless you. Unknot the others, and we will be forever grateful.',
+    ],
+    bye: ['Go well, and thank you.', 'Bless you for the doors.'],
+  },
+  most: {
+    greet: [
+      'You! The one unknotting the wards! Bless you a hundred times, the keep is nearly free.',
+      'Oh, my friend! Nearly every ward is broken. We cannot thank you enough.',
+      'Welcome, welcome, and thank you! The keep breathes again, because of you.',
+    ],
+    castle: [
+      'The keep is nearly free, and all because of you! Only a ward or two still hold. Bless you, truly.',
+      'We cannot thank you enough. Nearly the whole keep is open to us again. One more push, and we are free.',
+      'You are a marvel! Almost every ward is broken. We will sing of you in the kitchens.',
+    ],
+    bye: ['Bless you! Come again soon.', 'A hundred thanks, and a hundred more.'],
+  },
+  all: {
+    greet: [
+      'The wards are all broken! You saved us, you did. Welcome, welcome, a thousand times!',
+      'Our saviour! The whole keep is free. We are in your debt forever.',
+      'You did it! Every ward is gone. Whatever you need here is yours, with our thanks.',
+    ],
+    castle: [
+      'The enchantment is gone, every knot of it, and we are free. We owe you everything.',
+      'No more trapped in the walls, thanks to you. This castle is yours as long as you wish it.',
+      'You broke every ward! There will be feasting tonight, and you are the guest of honour.',
+    ],
+    bye: ['Our thanks go with you, always.', 'Come back and feast with us!', 'You are always welcome here.'],
+  },
+}
+const TIERS = Object.keys(WARD_TALK)
+
+/** How far `open` of a castle's `total` wards are open: 'shut' none, 'some' under half, 'most' half or more but not all, 'all'. */
+export function wardTier(open, total) {
+  if (!Number.isInteger(open) || !Number.isInteger(total) || total < 1 || open < 0 || open > total) throw new Error(`wardTier: ${open} of ${total} wards`)
+  if (open === 0) return 'shut'
+  if (open === total) return 'all'
+  return open * 2 < total ? 'some' : 'most'
+}
 
 const VIEW_HERE = [
   'That is the road to town. That speck? A sheep. Or a cloud. Hard to say from up here.',
@@ -131,7 +186,7 @@ const GHOST = {
 
 /** Every tale the summit guard can tell, for check-talk to walk against the caption. */
 export function allCastleLines() {
-  const out = [...VIEW, ...CASTLE, ...WARDED_GREET, ...WARDED_CASTLE, ...allCastleBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
+  const out = [...VIEW, ...CASTLE, ...TIERS.flatMap((t) => Object.values(WARD_TALK[t]).flat()), ...allGiftLines(), ...allCastleBodies(), ...VIEW_HERE, ...Object.values(SELF).flat()]
   for (const o of TALE.open) for (const w of TALE.who) for (const [d, t] of TALE.did) out.push(`${o} ${w} ${d}, ${t}`)
   for (const g of GHOST.of) for (const t of GHOST.then) out.push(ghostTale(g, t))
   return out
@@ -141,14 +196,14 @@ const ghostTale = (of, then) => `Old stories say the dungeon is haunted by the f
 
 /**
  * Her conversation with castle folk `mind` ({ id, name, who, castle, h, traits, mood }, `castle` its castle's seed): `open()` their greeting, `ask(topic)` the answer to a grid sentence,
- * `menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms, `ctx.warded` whether any of its wards is unopened; `approached` whether they came to her.
+ * `menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms, `ctx.wards` its `{ open, total }` wards (wardTier); `approached` whether they came to her.
  */
 export class CastleChat {
-  constructor(mind, { rooms, warded }, { approached = false, salt = 0 } = {}) {
-    if (typeof warded !== 'boolean') throw new Error(`CastleChat: ${mind.id} needs ctx.warded as a boolean, not ${warded}`)
+  constructor(mind, { rooms, wards }, { approached = false, salt = 0 } = {}) {
+    if (wards === undefined || wards === null) throw new Error(`CastleChat: ${mind.id} needs ctx.wards as { open, total }`)
     this.mind = mind
     this.rooms = rooms
-    this.warded = warded
+    this.tier = wardTier(wards.open, wards.total)
     this.approached = approached
     this.rand = mulberry32(hash32(strHash(mind.id), salt))
     this.turns = 0
@@ -200,7 +255,10 @@ export class CastleChat {
 
   open() {
     const who = this.mind.who
-    if (this.warded && this.rand() < CASTLE_TALK.distress) return line(this._pick(WARDED_GREET), 'talk-gesture', { moment: this.approached ? 'castle.halt' : who === 'lore' ? 'greet.stranger' : { lord: 'castle.lord', steward: 'castle.steward', cook: 'castle.cook', maid: 'castle.maid', servant: 'castle.servant' }[who] ?? 'greet.stranger' })
+    if (this.rand() < CASTLE_TALK.tone) {
+      if (this.tier === 'shut') return line(this._pick(WARD_TALK.shut.greet), 'talk-gesture', { moment: this.approached ? 'castle.halt' : who === 'lore' ? 'greet.stranger' : { lord: 'castle.lord', steward: 'castle.steward', cook: 'castle.cook', maid: 'castle.maid', servant: 'castle.servant' }[who] ?? 'greet.stranger' })
+      return line(this._pick(WARD_TALK[this.tier].greet), this.tier === 'some' ? 'talk-nod' : 'wave', { moment: 'give.thanks' })
+    }
     if (who === 'lore') return line(this._pick(['Welcome to the top! Finest view in the realm, this. Ask me anything about the castle.', 'Up at last! Catch your breath. I know every tale these walls have.']), 'wave', { moment: 'greet.stranger' })
     if (this.approached) return line(this._urge(this._mood(this._pick(['Hold there. A visitor? Mind yourself, then.', 'You there. No trouble, now.']), 'greet')), 'talk-point', { moment: 'castle.halt' })
     const hi = { lord: 'castle.lord', steward: 'castle.steward', cook: 'castle.cook', maid: 'castle.maid', servant: 'castle.servant' }[who]
@@ -215,6 +273,7 @@ export class CastleChat {
       if (topic !== NEXT.topic) throw new Error(`CastleChat: ${this.mind.id} is parting and takes only ${NEXT.topic}, not ${topic}`)
       return this._end(this.parting, 'dismissed')
     }
+    if (topic === 'bye' && this.tier !== 'shut' && this.rand() < CASTLE_TALK.tone) return this._end(line(this._pick(WARD_TALK[this.tier].bye), 'wave', { moment: 'bye.warm' }), 'bye')
     if (topic === 'bye') return this._end(line(this._mood(this._pick(BYE), 'bye'), 'wave', { moment: 'bye.warm' }), 'bye')
     this.turns++
     const said = this._answer(topic)
@@ -230,7 +289,8 @@ export class CastleChat {
       const text = this._pick(SELF[GUARDS.has(who) && who !== 'lore' ? 'guard' : who]), more = this.mind.mood === 'plain' ? '' : ` ${quirkLines({ kind: this.mind.mood }).self}`
       return line(fits(text + more) ? text + more : text, 'talk-gesture', { moment: 'answer.self' })
     }
-    if (topic === 'castle' && this.warded) return line(this._pick(WARDED_CASTLE), 'talk-gesture', { moment: 'answer.muse' })
+    if (topic === 'castle' && this.tier !== 'shut') return line(this._pick(WARD_TALK[this.tier].castle), 'talk-gesture', { moment: 'give.thanks' })
+    if (topic === 'castle') return line(this._pick(WARD_TALK.shut.castle), 'talk-gesture', { moment: 'answer.muse' })
     if (topic === 'castle') return line(this._urge(this._mood(this._pick(CASTLE), 'aside')), 'talk-gesture', { moment: 'answer.muse' })
     if (topic === 'news') {
       const fresh = this.news.filter((s) => !this.used.has(s))

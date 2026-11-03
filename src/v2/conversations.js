@@ -208,6 +208,11 @@ export class Conversations {
     return this.log.state(q.id) !== 'done' || (this.scold !== null && this.scold.ghost === q.id)
   }
 
+  /** Whether she is neither talking nor has someone coming to her. */
+  idle() {
+    return this.chat === null && this.coming === null
+  }
+
   /** A line for `moment` from `mind`, one with no town (castle folk, a ghost), at its `mouth` ({ x, y, z }); `reply` always plays,
    * `only` limits it to those utterance ids. */
   bark(mind, moment, mouth, head, { reply = false, only = null } = {}) {
@@ -407,7 +412,7 @@ export class Conversations {
       if (warmth < RAPPORT.fed) this.rapport.warm(p.mind.id, RAPPORT.fed - warmth)
     }
     this._hold(p)
-    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms, warded: this.castle().warded(p.c.site) }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
+    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms, wards: this.castle().wards(p.c.site) }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
     const [lo, hi] = TALK.answer
     this.chat = { p, chat, closing: null, trusted, answerAt: approached ? this.now : this.now + lo + Math.random() * (hi - lo) }
     this.grid.reset()

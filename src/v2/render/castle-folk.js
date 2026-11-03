@@ -17,7 +17,8 @@ import { INNER_LIGHT } from './castles.js'
 import { TriFlames, TRI_TORCH } from './fire-tris.js'
 import { flicker } from './fire.js'
 import { bodyVoice, VOICE } from '../talk/mind.js'
-import { castleName, castleTemper } from '../talk/castle.js'
+import { castleName, castleTemper, wardTier } from '../talk/castle.js'
+import { giftSays, offerable, planGifts } from '../talk/castle-gifts.js'
 
 export const FOLK = {
   size: 1.75,
@@ -56,6 +57,15 @@ export const FOLK = {
   torchNight: 0.05,
   torchReach: 12,
   torch: { len: 0.62, grip: 0.2 },
+  // A giver (talk/castle-gifts.js) checks every `giftPollS` s, with odds `giftOdds`, while she is free and on their level; stops `giftM` m from her,
+  // holds the gift `giftReach` m out at `giftY` m up, and gives up after `giftWaitS` s or when she is past `comeM`, offering again `giftAgainS` s later.
+  giftPollS: 1.5,
+  giftOdds: 0.5,
+  giftM: 1.1,
+  giftReach: 0.45,
+  giftY: 1.05,
+  giftWaitS: 60,
+  giftAgainS: 90,
 }
 const TORCH_BEARERS = new Set(['watch', 'gate'])
 
@@ -122,10 +132,19 @@ const SH = CASTLE.storey * CASTLE.tall
 const frame = (o, u, v) => [o.x + u * Math.cos(o.yaw) + v * Math.sin(o.yaw), o.z - u * Math.sin(o.yaw) + v * Math.cos(o.yaw)]
 const facing = (nx, nz) => Math.atan2(-nz, nx)
 
+// What the kitchen maid opens with by wardTier; the keep's wards are none of her business when the caller passes no tier.
+const MAID_WARDS = {
+  shut: 'Half the keep is locked down by an enchantment, and some are trapped in the walls! Be careful in there, and unknot it if you can. ',
+  some: 'Some of the wards are broken, bless you, but the rest still hold the keep. ',
+  most: 'Nearly the whole keep is free again, and I have you to thank! ',
+  all: 'The keep is free at last, and we owe it all to you! ',
+}
+
 /** What the kitchen maid says in castle `lay`: the ghost she has seen when it `haunted`, the noises below, and while the dungeon is
- * still locked where its key is said to be (keyChamber); first, while a ward is unopened (`warded`), what has befallen the keep. */
-export function maidSays(lay, haunted, unlocked, warded) {
-  const ward = warded ? 'Half the keep is locked down by an enchantment, and some are trapped in the walls! Be careful in there, and unknot it if you can. ' : ''
+ * still locked where its key is said to be (keyChamber); first, by the wards' `tier` (talk/castle.js wardTier), what has befallen the keep. */
+export function maidSays(lay, haunted, unlocked, tier = null) {
+  if (tier !== null && MAID_WARDS[tier] === undefined) throw new Error(`maidSays: no ward tier ${tier}`)
+  const ward = tier === null ? '' : MAID_WARDS[tier]
   if (unlocked) return `${ward}You went down the dungeons? Rather you than me. I still hear it, some nights.`
   const hint = { throne: 'The lord keeps its key about his hall.', treasury: 'Its key lies in the treasury, they say.', bedchamber: 'The lord keeps its key in his bedchamber.' }[keyChamber(lay).c.role]
   return `${ward}${haunted ? 'I saw a ghost, all white and drifting! ' : ''}Things scratch and moan behind the dungeon door at night. ${hint}`
@@ -219,14 +238,19 @@ const _v = new THREE.Vector3()
 
 export class CastleFolk {
   /** `castles` render/castles.js Castles; `ground(x, z)` the overworld's ground or stone top; `patch(material, cacheKey)` the
-   * lighting's vertex patch; `trails` the keep trails' road records (layers/castles.js planCastles, `{ id, pts }`); `warded(site)` whether any ward in castle `site` is unopened. */
-  constructor(scene, { castles, ground, patch, trails, warded }) {
+   * lighting's vertex patch; `trails` the keep trails' road records (layers/castles.js planCastles, `{ id, pts }`); `wards(site)` castle `site`'s `{ open, total }` wards;
+   * `gifts` `{ open(site), taken(site, bit) }`: whether every ward in `site` is open, and whether gift `bit` there is already hers. */
+  constructor(scene, { castles, ground, patch, trails, wards, gifts }) {
     this.scene = scene
     this.castles = castles
     this.ground = ground
     this.patch = patch
     this.trails = trails
-    this.warded = warded
+    this.wards = wards
+    this.giftsOf = gifts
+    // The gift being offered `{ cast, g, laid, since }`, or null; the clock the next giver is looked for at.
+    this.offer = null
+    this.giftAt = 0
     this.bodies = new Map()
     this.hailAt = -Infinity
     this.inner = new THREE.Group()
@@ -347,13 +371,63 @@ export class CastleFolk {
         let moment = folkMoment(p.spec.who, p.spoke === 0, Math.random)
         if (moment !== null && seconds - this.hailAt < FOLK.hailGapS) moment = null
         if (moment !== null) this.hailAt = seconds
-        if (moment !== null || p.spec.who === 'maid') out.push({ who: p.spec.who, warded: this.warded(cast.site), mind: p.mind, moment, feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
+        if (moment !== null || p.spec.who === 'maid') out.push({ who: p.spec.who, tier: this.tier(cast.site), mind: p.mind, moment, feet, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
         p.spoke++
       }
       if (close) p.near = true
       else if (d > near + 2) p.near = false
     }
     return out
+  }
+
+  /** Castle `site`'s wardTier. */
+  tier(site) {
+    const { open, total } = this.wards(site)
+    return wardTier(open, total)
+  }
+
+  /** Once a frame in the castle she is in, at `seconds`; `free` whether she is neither talking nor awaiting someone. Once every ward there is open, a giver
+   * (GIFT.max of them, talk/castle-gifts.js) comes to her unasked and holds a gift out. Returns the events for the caller to carry out:
+   * `{ type: 'offer', site, bit, kind, mind, text, at, mouth }` to lay the gift at the hand `at`, and `{ type: 'end', site, bit }` when it is taken, or the giver gave up or lost her. */
+  gifts(seconds, free) {
+    const cast = this.inner.visible ? this.inside : null, out = []
+    const o = this.offer
+    if (o !== null) {
+      const p = o.g.p, her = this._herIn(o.cast)
+      const gone = cast !== o.cast, taken = !gone && this.giftsOf.taken(o.cast.site, o.g.bit)
+      const talked = !gone && !taken && !p.held && p.greet === null
+      const far = !gone && o.laid && Math.hypot(her.x - p.obj.position.x, her.z - p.obj.position.z) > FOLK.comeM
+      const stale = o.laid && seconds - o.since > FOLK.giftWaitS
+      if (gone || taken || talked || far || stale) {
+        if (!talked) this.release(p)
+        this.offer = null
+        if (!taken) this.giftAt = seconds + FOLK.giftAgainS
+        out.push({ type: 'end', site: o.cast.site, bit: o.g.bit })
+      } else if (!o.laid && p.greet.at !== Infinity) {
+        o.laid = true
+        o.since = seconds
+        this.gesture(p, 'talk-gesture', seconds)
+        const feet = p.obj.getWorldPosition(new THREE.Vector3()), dx = this.her.x - feet.x, dz = this.her.z - feet.z, d = Math.hypot(dx, dz)
+        const at = { x: feet.x + (dx / d) * FOLK.giftReach, y: feet.y + FOLK.giftY, z: feet.z + (dz / d) * FOLK.giftReach }
+        out.push({ type: 'offer', site: o.cast.site, bit: o.g.bit, kind: o.g.kind, mind: p.mind, text: giftSays(o.g.kind, hash32(o.cast.site.seed, o.g.bit)), at, mouth: { x: feet.x, y: feet.y + FOLK.mouth, z: feet.z } })
+      }
+      return out
+    }
+    if (cast === null || !free || seconds < this.giftAt || !this.giftsOf.open(cast.site)) return out
+    this.giftAt = seconds + FOLK.giftPollS
+    if (Math.random() >= FOLK.giftOdds) return out
+    if (cast.givers === undefined) cast.givers = planGifts(cast.people.map((p) => p.spec.who), cast.site.seed).map((g) => ({ p: cast.people[g.person], bit: g.bit, kind: g.kind }))
+    const g = offerable(cast.givers, (bit) => this.giftsOf.taken(cast.site, bit)).find((q) => q.p.obj !== null && q.p.obj.visible && q.p.lod < q.p.tiers.length && !q.p.held && q.p.greet === null && q.p.home === null && this.near(q.p))
+    if (g === undefined) return out
+    this.approach(g.p, FOLK.giftM)
+    this.offer = { cast, g, laid: false, since: seconds }
+    return out
+  }
+
+  /** Her position in `cast`'s local frame. */
+  _herIn(cast) {
+    cast.group.updateMatrixWorld()
+    return cast.group.worldToLocal(new THREE.Vector3(this.her.x, this.her.y, this.her.z))
   }
 
   /** The turns of the drawn cast's talk among themselves due at `seconds` while `her` ({ x, y, z }) is in earshot:
@@ -527,9 +601,13 @@ export class CastleFolk {
     p.greet = null
   }
 
-  /** Whether guard `p` can come to her: on her level within FOLK.comeM, and inside, in its own chamber. */
+  /** Whether guard `p` can come to her (`near`). */
   reaches(p) {
-    if (!['guard', 'watch', 'gate'].includes(p.spec.who)) return false
+    return ['guard', 'watch', 'gate'].includes(p.spec.who) && this.near(p)
+  }
+
+  /** Whether `p` is on her level within FOLK.comeM, and inside, in its own chamber. */
+  near(p) {
     const cast = this.inner.visible ? this.inside : this.outside
     const her = cast.group.worldToLocal(_v.set(this.her.x, this.her.y, this.her.z)), o = p.obj.position
     if (Math.hypot(her.x - o.x, her.z - o.z) > FOLK.comeM || Math.abs(her.y - o.y - FOLK.mouth) > 1.2) return false

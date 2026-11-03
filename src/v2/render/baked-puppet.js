@@ -19,10 +19,8 @@ const RATES = [5, 10, 15, 30]
 // Of the body's pose-sphere radius, on a per-bone bound that overstates the vertex error: on townsfolk it costs at most 0.4% of body height.
 const TOL = 0.025
 const MAX_ROWS = 4096
-// A skeleton none of whose puppets is in the scene this long gives its texture back; the next to show re-bakes it.
-const EVICT_S = 30
-// Bakes a flush may run; a body whose skeleton is still waiting is drawn from the next flush on.
-const BAKES_PER_FLUSH = 1
+// Clips a flush may bake; a body whose skeleton is still waiting is drawn from the flush that finishes it.
+const CLIPS_PER_FLUSH = 1
 const MODE_KEY = 'v2.puppets'
 const IDENTITY = new THREE.Matrix4()
 
@@ -98,15 +96,14 @@ export function tintOf(key, roll, out) {
 }
 
 // ---------------------------------------------------------------------------
-// THE BAKE, once per skeleton, on the first flush that draws one of its
-// bodies. Each clip is n+1 rows at duration/n apart, the last row the clip's
+// THE BAKE, once per skeleton and kept, one clip a flush from the first flush
+// that draws one of its bodies (or all at once on a bone read). Each clip is n+1 rows at duration/n apart, the last row the clip's
 // end, so a sample between two rows never wraps; n is set by the clip's own
 // rate (RATES). A row is three half-float texels a bone: the top three rows of
 // bone.matrixWorld x boneInverse. A layer reading a bone gets that times the
 // bone's bind matrix, so no creature-space copy is kept.
 // ---------------------------------------------------------------------------
 const vats = new WeakMap()
-const baked = new Set()
 
 /** A skeleton's layout, known before its bake: clip lengths, bones, feet, sphere. `clips` rows (start, n) are filled by the bake. */
 function vatFor(asset) {
@@ -119,7 +116,7 @@ function vatFor(asset) {
     const bind = new Float32Array(nb * 16)
     src.boneInverses.forEach((m, j) => _m4.copy(m).invert().toArray(bind, j * 16))
     v = {
-      asset, texture: null, data: null, uVat: { value: null }, nb, rows: 0, usedAt: 0, bind,
+      asset, texture: null, data: null, job: null, uVat: { value: null }, nb, rows: 0, bind,
       clips: new Map(asset.clips.map((c) => [c.name, { start: -1, n: 0, duration: c.duration }])),
       feet: asset.legs ? restFeet(rig, asset.legs) : null,
       sphere: poseSphere(asset.tiers),
@@ -173,18 +170,23 @@ function blendError(got, n, truth, m, nb, reach) {
   return worst
 }
 
-function bake(v) {
+/** One more clip of `v` sampled; the last lays every clip's rows into the texture. */
+function bakeClip(v) {
   const t0 = performance.now()
   const { asset, nb } = v
   const src = asset.skeleton
-  const copies = new Map()
-  const rig = cloneBones(asset.root, copies)
-  const bones = src.bones.map((b) => {
-    const c = copies.get(b)
-    if (!c) throw new Error(`BakedPuppet: bone ${b.name} is not under the root`)
-    return c
-  })
-  const mixer = new THREE.AnimationMixer(rig)
+  if (!v.job) {
+    const copies = new Map()
+    const rig = cloneBones(asset.root, copies)
+    const bones = src.bones.map((b) => {
+      const c = copies.get(b)
+      if (!c) throw new Error(`BakedPuppet: bone ${b.name} is not under the root`)
+      return c
+    })
+    v.job = { rig, bones, mixer: new THREE.AnimationMixer(rig), chosen: [], ms: 0 }
+    v.reach ??= boneReach(asset, nb)
+  }
+  const { rig, bones, mixer, chosen } = v.job
   const m = new THREE.Matrix4()
   /** `clip` at n+1 even times as 3x4 rows. */
   const sample = (clip, n) => {
@@ -208,29 +210,27 @@ function bake(v) {
   }
   const steps = (clip, fps) => Math.max(1, Math.ceil(clip.duration * fps))
 
-  // A re-bake keeps the rates the first chose.
-  const chosen = asset.clips.map((clip) => {
-    const c = v.clips.get(clip.name)
-    if (c.n > 0) return sample(clip, c.n)
-    const top = RATES[RATES.length - 1]
-    const mTop = steps(clip, top)
-    const truth = sample(clip, mTop)
-    v.reach ??= boneReach(asset, nb)
-    const tol = TOL * v.sphere.radius
-    for (const fps of RATES.slice(0, -1)) {
-      const n = steps(clip, fps)
-      if (n >= mTop) break
-      const got = sample(clip, n)
-      if (blendError(got, n, truth, mTop, nb, v.reach) <= tol) { c.n = n; return got }
-    }
-    c.n = mTop
-    return truth
-  })
+  const clip = asset.clips[chosen.length]
+  const c = v.clips.get(clip.name)
+  const mTop = steps(clip, RATES[RATES.length - 1])
+  const truth = sample(clip, mTop)
+  const tol = TOL * v.sphere.radius
+  let got = null
+  for (const fps of RATES.slice(0, -1)) {
+    const n = steps(clip, fps)
+    if (n >= mTop) break
+    const rows = sample(clip, n)
+    if (blendError(rows, n, truth, mTop, nb, v.reach) <= tol) { c.n = n; got = rows; break }
+  }
+  if (!got) { c.n = mTop; got = truth }
+  chosen.push(got)
+  v.job.ms += performance.now() - t0
+  if (chosen.length < asset.clips.length) return
+
   mixer.stopAllAction()
   mixer.uncacheRoot(rig)
-
   let rows = 0
-  for (const clip of asset.clips) { const c = v.clips.get(clip.name); c.start = rows; rows += c.n + 1 }
+  for (const cl of asset.clips) { const k = v.clips.get(cl.name); k.start = rows; rows += k.n + 1 }
   if (rows > MAX_ROWS) throw new Error(`BakedPuppet: ${rows} rows of clip, past ${MAX_ROWS}`)
   const data = new Uint16Array(rows * nb * 12)
   let o = 0
@@ -244,21 +244,20 @@ function bake(v) {
   v.texture = texture
   v.uVat.value = texture
   v.rows = rows
-  baked.add(v)
-  console.log(`[baked-puppet] ${nb} bones x ${rows} rows (${(data.byteLength / 1024).toFixed(0)} KB) in ${(performance.now() - t0).toFixed(0)} ms`)
+  console.log(`[baked-puppet] ${nb} bones x ${rows} rows (${(data.byteLength / 1024).toFixed(0)} KB) in ${v.job.ms.toFixed(0)} ms over ${asset.clips.length} flushes`)
+  v.job = null
 }
 
-/** `v` baked, now; its use stamped so it is not evicted under a reader. */
+/** `v` baked, now, whatever the flush budget: a bone read cannot wait. */
 function ensureBaked(v) {
-  if (!v.data) bake(v)
-  v.usedAt = performance.now()
+  while (!v.data) bakeClip(v)
 }
 
+/** The asset's tiers are gone: the texture goes with them. */
 function evict(v) {
   if (!v.texture) return
   v.texture.dispose()
   v.texture = v.data = v.uVat.value = null
-  baked.delete(v)
 }
 
 /** Each leg's last joint at rest, creature space -- FootIK's `feet`, for a layer to read the ground under. */
@@ -561,17 +560,15 @@ export function flushBaked() {
     _frustum.setFromProjectionMatrix(_pv.multiplyMatrices(view.projectionMatrix, view.matrixWorldInverse))
     _eye.setFromMatrixPosition(view.matrixWorld)
   }
-  const now = performance.now()
-  let bakes = BAKES_PER_FLUSH
+  let clips = CLIPS_PER_FLUSH
   for (const p of active) {
     if (p.done) { active.delete(p); continue }
     if (!drawn(p.group)) continue
-    // Stamped before the frustum test: a body she has only turned from keeps its skeleton's texture.
-    p.vat.usedAt = now
     if (!p.vat.data) {
-      if (bakes === 0) continue
-      bakes--
-      bake(p.vat)
+      if (clips === 0) continue
+      clips--
+      bakeClip(p.vat)
+      if (!p.vat.data) continue
     }
     p.group.updateWorldMatrix(true, false)
     if (view && !inView(p)) continue
@@ -600,7 +597,6 @@ export function flushBaked() {
   }
   live.clear()
   for (const b of touched) live.add(b)
-  for (const v of baked) if (now - v.usedAt > EVICT_S * 1000) evict(v)
 }
 
 /** The batches drawing right now, for a check script: `[{ mesh, n, fade }]`. */

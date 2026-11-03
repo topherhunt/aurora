@@ -250,34 +250,33 @@ console.log('the batches')
   check(bakedRoot.children.length < before && bakedBatches().length === 0, 'disposing the plain drops its look, its batches and its puppets', `${before} -> ${bakedRoot.children.length}`)
 }
 
-console.log('the bake budget and eviction')
+console.log('the bake budget')
 {
-  const realNow = performance.now
-  let t = realNow.call(performance)
-  performance.now = () => t
   const plain2 = makeSettledMaterial('check-baked-2'), plain3 = makeSettledMaterial('check-baked-3')
   const a = new BakedPuppet(makeAsset(), makePuppetMaterials('check-baked-2', plain2))
   const b = new BakedPuppet(makeAsset(), makePuppetMaterials('check-baked-3', plain3))
   for (const p of [a, b]) { scene.add(p.group); p.show(0, 0); p.play('wave') }
-  flushBaked()
   const drawnOf = (p) => bakedBatches().filter((x) => x.mesh.material.customProgramCacheKey().startsWith(p.mats.plain.customProgramCacheKey())).reduce((s, x) => s + x.n, 0)
-  check([a, b].filter((p) => p.vat.data).length === 1 && drawnOf(a) + drawnOf(b) === 1, 'one flush bakes one waiting skeleton, and draws only the bodies it can')
-  flushBaked()
-  check(a.vat.data && b.vat.data && drawnOf(a) === 1 && drawnOf(b) === 1, 'the next bakes the other and both are drawn')
-  const rows = a.vat.clips.get('wave').n
+  const clips = a.vat.asset.clips.length
+  const sampled = () => [a, b].reduce((s, p) => s + (p.vat.data ? clips : p.vat.job ? p.vat.job.chosen.length : 0), 0)
+  let flushes = 0
+  for (let f = 1; f <= clips; f++) {
+    flushBaked(); flushes++
+    check(sampled() === f, `flush ${f} samples one clip in all`, `${sampled()}`)
+  }
+  const firstDrawn = drawnOf(a) + drawnOf(b)
+  check(firstDrawn === 1 && [a, b].filter((p) => p.vat.data).length === 1, 'a skeleton is drawn from the flush that samples its last clip, the other still waiting', `${firstDrawn} drawn`)
+  for (let f = 0; f < clips; f++) { flushBaked(); flushes++ }
+  check(a.vat.data && b.vat.data && drawnOf(a) === 1 && drawnOf(b) === 1, 'the other is baked clip by clip after it and both are drawn', `${flushes} flushes`)
+  const tex = b.vat.texture
   scene.remove(b.group)
-  t += 29e3
-  flushBaked()
-  check(b.vat.data !== null, 'a skeleton out of the scene keeps its texture for a while')
-  t += 2e3
-  flushBaked()
-  check(b.vat.data === null && b.vat.texture === null && a.vat.data !== null, 'and gives it back past EVICT_S, while one still drawn keeps its own')
-  scene.add(b.group)
-  flushBaked()
-  check(b.vat.data !== null && drawnOf(b) === 1 && b.vat.clips.get('wave').n === rows, 'back in the scene it is baked again, at the rates it had')
+  for (let f = 0; f < 3; f++) flushBaked()
+  check(b.vat.texture === tex && b.vat.data !== null, 'a skeleton out of the scene keeps its texture')
+  const c = new BakedPuppet(makeAsset(), mats())
+  void c.bones[0].matrixWorld
+  check(c.vat.data !== null && c.vat.job === null, 'a bone read bakes every clip at once, whatever the budget')
   for (const p of [a, b]) { scene.remove(p.group); p.release() }
   plain2.dispose(); plain3.dispose()
-  performance.now = realNow
 }
 
 console.log('the colours')

@@ -7,7 +7,7 @@ export const RUNE_PANEL = { cols: 6, cell: 0.16, slotsH: 0.2, pxPerM: 700, ahead
 const CLEAR = 10, CLOSE = 11
 
 export class RunePanel {
-  /** `runes` the rune atlas texture; `upload(texture)` as for the dialog panel. */
+  /** `runes()` the rune atlas texture (a canvas strip); `upload(texture)` as for the dialog panel. */
   constructor(scene, runes, upload) {
     const P = RUNE_PANEL, w = P.cols * P.cell, h = P.slotsH + 2 * P.cell
     this.runes = runes
@@ -77,15 +77,12 @@ export class RunePanel {
   }
 
   _draw() {
-    const img = this.runes.image
-    // The atlas may still be loading the first time she opens a panel: draw once it lands.
-    if (!img) throw new Error('RunePanel: the rune atlas has not loaded')
-    if (!img.complete) img.addEventListener('load', () => this._draw(), { once: true })
+    const img = this.runes().image
     const P = RUNE_PANEL, g = this.canvas.getContext('2d'), W = this.canvas.width, px = P.pxPerM, cell = P.cell * px, top = P.slotsH * px
     g.clearRect(0, 0, W, this.canvas.height)
     g.fillStyle = 'rgba(14, 20, 40, 0.88)'
     g.fillRect(0, 0, W, this.canvas.height)
-    const icon = (r, x, y, s) => { if (img.complete) g.drawImage(img, r * img.width / RUNES.length, 0, img.width / RUNES.length, img.height, x, y, s, s) }
+    const icon = (r, x, y, s) => { g.drawImage(img, r * img.width / RUNES.length, 0, img.width / RUNES.length, img.height, x, y, s, s) }
     for (let s = 0; s < 3; s++) {
       const sz = top - 16, x = W / 2 + (s - 1) * top * 1.05 - sz / 2, y = 8
       g.strokeStyle = '#6fb4ff'; g.lineWidth = 3

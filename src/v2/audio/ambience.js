@@ -146,6 +146,10 @@ export const SOUNDS = {
   uiOpen: 'sounds/ui-open-backpack.mp3',
   uiClose: 'sounds/ui-close-backpack.mp3',
   uiPop: 'sounds/ui-pop.mp3',
+  // A castle ward (main.js pressRunes, audio/ward-hum.js): a wrong code's cast, the unlocking, and the hum near a shut ward.
+  wardCast: 'sounds/effect-magic-spellcast1.mp3',
+  wardUnlock: 'sounds/effect-magic-unlock.mp3',
+  wardHum: 'sounds/ambience-magic-resonance.mp3',
   flaregun: 'sounds/ui-flaregun-shoot.mp3',
   extinguish: 'sounds/action-extinguish.mp3',
 }

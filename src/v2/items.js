@@ -86,6 +86,14 @@ export class Items {
     if (this.worn.has(kind)) this._draw(spot)
   }
 
+  /** Thing `bit` of `place` withdrawn without being taken (a gift its giver took back); nothing if it is not lying there, as when it was taken first. */
+  unlay(place, bit) {
+    const i = this.spots.findIndex((s) => s.place === place && s.bit === bit)
+    if (i < 0) return
+    if (this.spots[i].mesh) this.group.remove(this.spots[i].mesh)
+    this.spots.splice(i, 1)
+  }
+
   /** Every spot gone, for a world being rebuilt. */
   clear() {
     for (const spot of this.spots) if (spot.mesh) this.group.remove(spot.mesh)

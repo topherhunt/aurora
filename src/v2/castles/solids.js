@@ -151,11 +151,20 @@ function interiorSolids(lay) {
 }
 
 /**
- * Ward `w`'s doorway in interior metres: `axis` its tunnel runs along, `a` along it where the membrane stands (just inside the gem
- * room's wall face), `c` across, floor `y`, `hw` and `h` its half width and height, `sgn` the way from the gem's room to the far one.
+ * Ward `w`'s doorway in interior metres: `axis` its tunnel runs along, `a` along it where the membrane stands, `c` across, floor
+ * `y`, `hw` and `h` its half width and height, `sgn` the way from the gem's side to the far one. A doorway's membrane stands just
+ * inside the gem room's wall face; a spiral tunnel's near its room mouth, where the tunnel runs square to the face.
  */
 export function wardFrame(w) {
-  const d = w.edge.doors[0], sgn = w.gem === w.edge.a ? d.side : -d.side, k = Math.round(d.y / H)
+  if (w.tunnel) {
+    const { x, z, c, k, room } = w.tunnel, [nx, nz] = [[1, 0], [0, 1], [-1, 0], [0, -1]][c], n = nx + nz, axis = nx ? 'x' : 'z'
+    const [along, across] = axis === 'x' ? [x * S, z * S] : [z * S, x * S]
+    return { axis, a: along + n * (SHAFT.box - 0.2), c: across, y: k * SH, hw: SHAFT.room, h: SHAFT.roomH, sgn: room ? -n : n, k }
+  }
+  // Each door's side points out of the room it was cut for: a bridge's each its own, any other edge's its room end, edge.a's
+  // between two rooms.
+  const e = w.edge, d = e.kind === 'bridge' ? e.doors[w.gem === e.a ? 0 : 1] : e.doors[0], k = Math.round(d.y / H)
+  const sgn = e.kind !== 'bridge' && e.a.kind === 'room' && e.b.kind === 'room' && w.gem === e.b ? -d.side : d.side
   const [along, across] = d.axis === 'x' ? [d.x * S, d.z * S] : [d.z * S, d.x * S]
   return { axis: d.axis, a: along - sgn * (G + WT - 0.05), c: across, y: k * SH, hw: d.w / 2, h: d.h, sgn, k }
 }
@@ -397,7 +406,10 @@ function portals(lay, ex, it) {
       if (d.look === 'barred') continue
       const [nx, nz] = doorAlong(d), depth = doorDepth(d), k = Math.round(d.y / H)
       const iy = k * SH, ix = d.x * S - nx * (G + WT + 0.9), iz = d.z * S - nz * (G + WT + 0.9)
+      // She is set down past the membrane, so the portal keeps shut what its ward does.
+      const ward = lay.wards.findIndex((w) => !w.tunnel && w.edge === e && (e.kind !== 'bridge' || e.doors[w.gem === e.a ? 0 : 1] === d))
       doors.push({
+        ward,
         hw: d.w / 2,
         ext: { x: d.x + nx * depth, y: d.y, z: d.z + nz * depth, nx, nz },
         int: { x: d.x * S - nx * (G - 0.05), y: iy, z: d.z * S - nz * (G - 0.05), nx, nz },

@@ -190,6 +190,20 @@ export class WardSet {
     return best
   }
 
+  /** The shut ward whose membrane is nearest `eye` (interior frame): `{ d, at }`, its distance and the nearest point on the sheet, or null when none is shut. */
+  nearestShut(eye) {
+    let best = null
+    for (const w of this.wards) {
+      if (!w.shut) continue
+      const { x, y, z } = w.sheet.position, a = w.sheet.rotation.y, { width, height } = w.sheet.geometry.parameters
+      const along = Math.max(-width / 2, Math.min(width / 2, (eye.x - x) * Math.cos(a) - (eye.z - z) * Math.sin(a)))
+      const up = Math.max(-height / 2, Math.min(height / 2, eye.y - y))
+      const px = x + along * Math.cos(a), py = y + up, pz = z - along * Math.sin(a), d = Math.hypot(eye.x - px, eye.y - py, eye.z - pz)
+      if (best === null || d < best.d) best = { d, at: [px, py, pz] }
+    }
+    return best
+  }
+
   /** Ward `i`'s gem, interior frame. */
   gemAt(i) { return this.wards[i].gem.position }
 

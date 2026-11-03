@@ -90,6 +90,8 @@ import { Wisps } from './render/wisps.js'
 import { CastleGhost, GHOST } from './render/ghost.js'
 import { CastleFolk, FOLK, maidSays } from './render/castle-folk.js'
 import { RunePanel } from './ui/rune-panel.js'
+import { buildRuneAtlas } from './render/rune-atlas.js'
+import { WardHum } from './audio/ward-hum.js'
 import { Sheets } from './render/sheets.js'
 import { TREAT, Treats, doorOnRay, nightOf } from './treats.js'
 import { Giants } from './render/giants.js'
@@ -2962,7 +2964,7 @@ function syncTrust() {
 let chalkWelcomes = 0
 let lootWelcomes = 0
 
-// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins. A castle's dungeon key is its bit 8, its dungeon chest's coins and gem bits 9 and 10, and bit 16 marks its door unlocked; ward i opened is bit 20 + i and runebook j spent bit 40 + j (design/46-castle-wards.md).
+// A labyrinth's altar holds one gem by its rings, only the largest a diamond, and 20-60 coins; a roost's floor a hoard of 1-2 of HOARD and 30-80 coins; a castle's summit chest 2-3 of HOARD and 40-90 coins (design/42-valuables.md). Bit 0 is the coins. A castle's dungeon key is its bit 8, its dungeon chest's coins and gem bits 9 and 10, and bit 16 marks its door unlocked; ward i opened is bit 20 + i, runebook j spent bit 40 + j, and gift n taken from a giver bit 60 + n, n < 3 (design/46-castle-wards.md).
 const RINGS_MOST = Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRINTH.pitch)
 const ALTAR_GEMS = ['diamond', 'sapphire', 'ruby']
 const HOARD = ['diamond', 'sapphire', 'ruby', 'firestone']
@@ -2980,10 +2982,12 @@ function wardMasks(site) {
   return { open, spent, wards }
 }
 
-/** Whether any ward in built castle `site` is still shut. */
-function castleWarded(site) {
+/** Built castle `site`'s wards `{ open, total }`, counted off the loot ledger. */
+function castleWards(site) {
   const m = wardMasks(site)
-  return m.open !== (1 << m.wards) - 1
+  let open = 0
+  for (let i = 0; i < m.wards; i++) if (m.open & (1 << i)) open++
+  return { open, total: m.wards }
 }
 
 /** A ray from `origin` along unit `dir` onto a shut ward's gem in the castle she is in: the rune panel opens at it. */
@@ -3007,13 +3011,14 @@ function pressRunes(hit) {
   const site = inCastle.site, k = place('k', castleKey(site)), j = castles.bookCodes().findIndex((c, j) => c.join() === r.code.join() && !loot.taken(k, WARD_BITS.book + j))
   if (j < 0) {
     castles.failWard(r.ward)
+    if (ambience) sound.play('wardCast', { bus: 'near', at: runePanel.gem, gain: 0.8 })
     harm(10, 'ward')
     return true
   }
   loot.take(k, WARD_BITS.ward + r.ward)
   loot.take(k, WARD_BITS.book + j)
   castles.openWard(r.ward, j)
-  if (ambience) sound.play('door', { bus: 'near', rate: 1.3, gain: 0.5 })
+  if (ambience) sound.play('wardUnlock', { bus: 'near', at: runePanel.gem, gain: 0.8 })
   return true
 }
 
@@ -3937,6 +3942,13 @@ let palisades = null
 // The sited castles (render/castles.js), and while she is in one { site, back, stone, outside }.
 let castles = null
 let runePanel = null
+let wardHum = null
+// The ward runes' silhouettes, cut from the room's far cards the first time a castle's wards are built (render/rune-atlas.js).
+let runeTexture = null
+function runeAtlas() {
+  if (runeTexture === null) runeTexture = buildRuneAtlas({ renderer, litterCards, propTextures, frogs, crabs, wildlife, wildStriders, dragons, castles })
+  return runeTexture
+}
 let castleFolk = null
 // The world plan's keep trails (layers/castles.js planCastles records), for the castles' travellers.
 let castleTrails = []
@@ -4884,6 +4896,7 @@ function openCastle(site, back) {
 function closeCastle() {
   if (!inCastle) return
   runePanel.hide()
+  if (wardHum !== null) wardHum.stop()
   castles.closeInterior()
   for (const o of castleHidden) o.visible = true
   castleHidden.clear()
@@ -5666,11 +5679,11 @@ async function buildRoom(room, at) {
     window.v2palisades = palisades // console: `v2palisades.stats`
   }
   if (layers.castles.list.length) {
-    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden })
+    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden, runes: runeAtlas })
     castles.update(spawn, fireNow(), lampNight(), dayness)
     window.v2castles = castles // console: `v2castles.stats`
-    runePanel = new RunePanel(scene, castles.runes, uploadQuestTexture)
-    castleFolk = new CastleFolk(scene, { castles, ground: (x, z) => walk.heightAt(x, z), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), trails: castleTrails, warded: (site) => castleWarded(site) })
+    runePanel = new RunePanel(scene, runeAtlas, uploadQuestTexture)
+    castleFolk = new CastleFolk(scene, { castles, ground: (x, z) => walk.heightAt(x, z), patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), trails: castleTrails, wards: (site) => castleWards(site), gifts: { open: (site) => { const w = castleWards(site); return w.open === w.total }, taken: (site, bit) => loot.taken(place('k', castleKey(site)), bit) } })
     window.v2castleFolk = castleFolk
   }
 
@@ -9262,15 +9275,27 @@ function stepOverworld(dt, now) {
   const ghostQuest = inCastle !== null && castleGhost.at !== null && conversations !== null ? conversations.ghostOf(inCastle.site.id) : null
   castleGhost.update(dt, clock.seconds, headTmp, ghostQuest !== null && conversations.haunt(ghostQuest, castleGhost.at, headTmp, GHOST.near * herScale(), () => castleGhost.whisper(clock.seconds)))
   if (runePanel !== null) runePanel.keep(headTmp, herScale())
+  if (ambience && inCastle !== null) {
+    if (wardHum === null) wardHum = new WardHum(sound)
+    wardHum.update(castles.nearShutWard(headTmp))
+  }
   if (castleFolk) {
     castleFolk.update(dt, clock.seconds, headTmp, inCastle === null ? null : inCastle.site, inCastle === null ? 0 : inCastle.stone.oy, lampNight(), fireNow())
     if (conversations !== null) for (const b of castleFolk.barks(headTmp, FOLK.near * herScale(), clock.seconds)) {
       if (b.moment !== null) conversations.bark(b.mind, b.moment, b.mouth, headTmp)
-      if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked), b.warded), b.feet)
+      if (b.who === 'maid') conversations.say('Kitchen maid', maidSays(castleFolk.inside.lay, conversations.ghostOf(inCastle.site.id) !== null, loot.taken(place('k', castleKey(inCastle.site)), DUNGEON_BITS.unlocked), b.tier), b.feet)
     }
     if (conversations !== null) for (const t of castleFolk.chatter(headTmp, clock.seconds)) {
       const [moment, ids] = t.step.split(': ')
       conversations.bark(t.mind, moment, t.mouth, headTmp, { only: ids === undefined ? null : ids.split(' ') })
+    }
+    if (conversations !== null) for (const e of castleFolk.gifts(clock.seconds, conversations.idle())) {
+      if (e.type === 'end') items.unlay(place('k', castleKey(e.site)), e.bit)
+      else {
+        items.lay(place('k', castleKey(e.site)), e.bit, e.kind, e.at.x, e.at.y, e.at.z)
+        conversations.say(e.mind.name, e.text, e.mouth)
+        conversations.bark(e.mind, 'give.thanks', e.mouth, headTmp)
+      }
     }
   }
   if (giants) {

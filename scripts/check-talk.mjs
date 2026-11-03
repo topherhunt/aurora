@@ -30,7 +30,8 @@ import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
 import { ITEMS } from '../src/v2/items.js'
 import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
 import { walkTalks } from './lib/talk-walk.mjs'
-import { CastleChat, VIEW, allCastleLines, castleTemper } from '../src/v2/talk/castle.js'
+import { CastleChat, VIEW, WARD_TALK, allCastleLines, castleTemper, wardTier } from '../src/v2/talk/castle.js'
+import { GIFT, GIFT_KINDS, allGiftLines, giftSays, offerable, planGifts } from '../src/v2/talk/castle-gifts.js'
 import { allCastleBodies, castleNews, tellCastle } from '../src/v2/talk/castle-news.js'
 import { maidSays } from '../src/v2/render/castle-folk.js'
 import { castleLayout } from '../src/v2/castles/layout.js'
@@ -1016,7 +1017,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const unvoiced = [], urged = new Set(), ghosts = []
   for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let salt = 0; salt < 40; salt++) {
     const id = `castle:1:${who}:${salt}`
-    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17, warded: salt % 2 === 0 }, { approached: salt % 4 === 0, salt })
+    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17, wards: [{ open: 0, total: 6 }, { open: 2, total: 6 }, { open: 4, total: 6 }, { open: 6, total: 6 }][salt % 4] }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
     for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
     for (const l of lines) {
@@ -1026,21 +1027,61 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
       if (who === 'lore' && l.text.includes('forlorn ghost')) ghosts.push(l.text)
     }
   }
-  const distress = (text) => /locked down|sealed half|shut up by sorcery|trapped in the walls|stuck in the walls|unknot/.test(text)
-  const seen = { warded: [], plain: [] }
-  for (const warded of [true, false]) for (const who of ['lord', 'maid', 'guard', 'lore']) for (let salt = 0; salt < 40; salt++) {
+  const said = (wards, who, salt) => {
     const id = `castle:2:${who}:${salt}`
-    const chat = new CastleChat({ id, name: who, who, castle: 2, ...castleTemper(who, id) }, { rooms: 17, warded }, { approached: salt % 4 === 0, salt })
+    const chat = new CastleChat({ id, name: who, who, castle: 2, ...castleTemper(who, id) }, { rooms: 17, wards }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
     for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
-    for (const l of lines) if (distress(l.text)) seen[warded ? 'warded' : 'plain'].push(l.text)
+    if (!chat.ended) lines.push(chat.ask('bye'))
+    return lines
   }
-  check(seen.warded.length > 0 && seen.plain.length === 0, 'castle folk speak in distress of the locked keep while a ward is unopened, and not once all are open', `${seen.warded.length} warded, ${seen.plain.length} plain: ${seen.warded[0]}`)
-  check(seen.warded.some((t) => /grateful/.test(t)) && seen.warded.some((t) => /careful|mind yourself|take care/i.test(t)), 'the distress warns her of being trapped and promises gratitude', '')
-  check(maidSays(castleLayout(1), false, true, true).includes('locked down') && !maidSays(castleLayout(1), false, true, false).includes('locked down') && maidSays(castleLayout(1), false, true, true).includes('dungeons'), 'the kitchen maid tells of the locked keep only while a ward is unopened, and still tells her tale', '')
+  const tiersOf = { shut: { open: 0, total: 7 }, some: { open: 2, total: 7 }, most: { open: 4, total: 7 }, all: { open: 7, total: 7 } }
+  const owner = new Map()
+  for (const [tier, lists] of Object.entries(WARD_TALK)) for (const t of Object.values(lists).flat()) owner.set(t, [...(owner.get(t) ?? []), tier])
+  const heard = { shut: [], some: [], most: [], all: [] }, stray = []
+  for (const tier of Object.keys(tiersOf)) for (const who of ['lord', 'maid', 'guard', 'lore']) for (let salt = 0; salt < 40; salt++) for (const l of said(tiersOf[tier], who, salt)) {
+    const o = owner.get(l.text)
+    if (o === undefined) continue
+    if (!o.includes(tier)) stray.push(`${tier}: ${l.text}`)
+    else heard[tier].push(l.text)
+  }
+  check(Object.entries(tiersOf).every(([t, w]) => wardTier(w.open, w.total) === t) && wardTier(3, 7) === 'some' && wardTier(4, 8) === 'most' && wardTier(7, 8) === 'most' && wardTier(1, 8) === 'some', 'wardTier is shut at none open, some under half, most from half up to all but one, all when every ward is open', '')
+  check(Object.values(heard).every((h) => h.length > 0) && stray.length === 0, 'castle folk speak the lines of the tier their opened wards earn, and never another tier\'s', `${Object.entries(heard).map(([t, h]) => `${t} ${h.length}`).join(', ')}; stray ${stray[0]}`)
+  check([...owner.values()].every((o) => o.length === 1), 'no ward line is shared between two tiers', [...owner].find(([, o]) => o.length > 1)?.[0])
+  check(WARD_TALK.shut.castle.some((t) => /grateful/.test(t)) && WARD_TALK.shut.castle.some((t) => /careful|mind yourself|take care/i.test(t)) && heard.shut.some((t) => /trapped|stuck|locked/.test(t)), 'while every ward is shut the folk are distressed, warn her of being trapped and promise gratitude', '')
+  check(WARD_TALK.some.greet.every((t) => /thank|bless/i.test(t)) && WARD_TALK.most.greet.every((t) => /thank|bless/i.test(t)) && WARD_TALK.all.greet.every((t) => /thank|debt|saved|saviour|did it/i.test(t)) && !Object.values(WARD_TALK.all).flat().some((t) => /trapped in the walls too|unknot this|take care/.test(t)), 'once wards are open the folk are thankful, and once all are open jubilant with nothing left to fear', '')
+  check(['some', 'most', 'all'].every((t) => WARD_TALK[t].bye.length > 0) && WARD_TALK.shut.bye.length === 0, 'folk say a warm goodbye once any ward is open and none while all are shut', '')
+  check(Object.values(WARD_TALK).flatMap((l) => Object.values(l).flat()).every((t) => captionRows(t) <= CAPTION.rows && !t.includes('\u2014')), 'every ward line fits the caption', '')
+  const lay = castleLayout(1)
+  check(maidSays(lay, false, true, 'shut').includes('locked down') && maidSays(lay, false, true, 'shut').includes('dungeons') && !maidSays(lay, false, true, 'all').includes('locked down') && /owe it all/.test(maidSays(lay, false, true, 'all')) && /Nearly the whole keep/.test(maidSays(lay, false, true, 'most')) && /Some of the wards/.test(maidSays(lay, false, true, 'some')), 'the kitchen maid tells of the keep by how many wards are open, and still tells her tale', '')
   let threw = false
   try { new CastleChat({ id: 'castle:3:lord:0', name: 'x', who: 'lord', castle: 3, ...castleTemper('lord', 'castle:3:lord:0') }, { rooms: 17 }) } catch { threw = true }
-  check(threw, 'a castle chat built without a warded flag fails explicitly', '')
+  check(threw, 'a castle chat built without its wards fails explicitly', '')
+  threw = false
+  try { wardTier(8, 7) } catch { threw = true }
+  check(threw, 'more wards open than there are fails explicitly', '')
+
+  // Gifts: who gives what, once.
+  const roles = ['lord', 'steward', 'cook', 'maid', 'servant', 'servant', 'servant', 'guard']
+  const badKind = [], overMax = [], dup = []
+  for (let seed = 1; seed <= 200; seed++) {
+    const gifts = planGifts(roles, seed)
+    if (gifts.length > GIFT.max) overMax.push(seed)
+    if (new Set(gifts.map((g) => g.bit)).size !== gifts.length || new Set(gifts.map((g) => g.person)).size !== gifts.length) dup.push(seed)
+    for (const g of gifts) if (!GIFT_KINDS[roles[g.person]].includes(g.kind) || !ITEMS[g.kind] || g.bit < GIFT.bit || g.bit >= GIFT.bit + GIFT.max) badKind.push(`${roles[g.person]} ${g.kind} bit ${g.bit}`)
+  }
+  check(badKind.length === 0, 'each giver holds out a kind their role gives, that the game has as an item, on a reserved gift bit', badKind[0])
+  check(overMax.length === 0 && planGifts(roles, 1).length === 3 && GIFT.max === 3, 'a castle has at most 3 gifts, and 3 when it has the folk for them', overMax.join(' '))
+  check(dup.length === 0, 'no giver and no ledger bit is used twice in one castle', dup.join(' '))
+  const kindsFor = (who) => new Set(Array.from({ length: 200 }, (_, seed) => planGifts([who], seed)[0].kind))
+  check(['sword', 'shield', 'knife'].every((k) => kindsFor('guard').has(k)) && [...kindsFor('lord')].every((k) => ['coin', 'diamond', 'sapphire', 'ruby'].includes(k)) && kindsFor('cook').has('knife') && kindsFor('maid').has('flare-charges'), 'guards give blades and shields, lords coins and gems, cooks a knife, maids a flare recharge bottle', '')
+  check(planGifts(['maid', 'servant'], 1).length === 2 && planGifts(['yard', 'traveller', 'lore', 'watch'], 1).length === 0, 'only folk with a gift to give are chosen, and a castle without them gives none', '')
+  const taken = new Set([GIFT.bit])
+  const stillOffered = offerable(planGifts(roles, 1), (bit) => taken.has(bit))
+  check(stillOffered.length === 2 && stillOffered.every((g) => g.bit !== GIFT.bit), 'a gift whose ledger bit is taken is not offered again', stillOffered.map((g) => g.bit).join(' '))
+  const says = Object.keys(ITEMS).filter((k) => Object.values(GIFT_KINDS).flat().includes(k)).map((k) => giftSays(k, 12345))
+  check(says.every((t) => captionRows(t) <= CAPTION.rows && /[a-z]/.test(t)) && allGiftLines().every((t) => captionRows(t) <= CAPTION.rows), 'every thanks a giver says fits the caption', allGiftLines().find((t) => captionRows(t) > CAPTION.rows))
+  check(says.some((t) => t.includes('knife')) && says.some((t) => t.includes('flare recharge bottle')), 'the thanks names the thing held out', says[0])
   check(unvoiced.length === 0, 'every castle line is voiced by a recorded moment and fits', unvoiced[0])
   check(['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller'].every((w) => urged.has(w)) && !urged.has('lore'), 'everyone in a castle but the summit guard presses the view from the top of the highest tower', [...urged].join(' '))
   check(ghosts.length > 0, "the summit guard tells of the dungeon's forlorn ghost", ghosts[0])
@@ -1078,7 +1119,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const hedged = told.filter(([, t]) => HEDGED.test(t))
   const clumsy = told.find(([, t]) => CLUMSY.test(t) || /\ba [aeiou]/i.test(t))
   check(hedged.length > 0 && clumsy === undefined && hedged.every(([x, t]) => hedgeTrue(x, t)), 'castle gossip never says "a owl", stacks two leads or hedges between a question and its answer, and a muddled teller\'s second thought names the true detail', clumsy?.[1] ?? hedged.find(([x, t]) => !hedgeTrue(x, t))?.[1] ?? hedged[0]?.[1])
-  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17, warded: false }, { salt: 7 })
+  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17, wards: { open: 5, total: 5 } }, { salt: 7 })
   sent.open()
   let pushed = null
   for (let i = 0; i < 20 && sent.parting === null; i++) pushed = sent.ask(sent.menu().find((c) => c.topic !== 'bye').topic)

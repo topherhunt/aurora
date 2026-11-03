@@ -1,12 +1,12 @@
-// Castle layouts: sections on a 4 m grid ringed round a court, every path their rooms, walks and roofs could hold, and the maze picked
-// from those paths. Pure and deterministic per seed; positions are exterior metres about the castle's centre, and the interior is the
+// Castle layouts: sections on a 4 m grid ringed round a court, every path their rooms, walks and roofs could hold, and the floor plan
+// picked from those paths; wards.js makes it a maze. Pure and deterministic per seed; positions are exterior metres about the castle's centre, and the interior is the
 // same layout at CASTLE.scale across and CASTLE.tall upward about that centre, so a door inside lands on its door outside.
 import { mulberry32 } from '../../sim/mathx.js'
-import { planWards } from './wards.js'
+import { planWards, wardable } from './wards.js'
 
 // `raise`: how far the castle's floor (y 0) stands above the ground it is sited on (design/44-castles.md, Siting).
 // `scale` and `tall`: interior metres per exterior metre, in plan and upward.
-export const CASTLE = { cell: 4, storey: 4, scale: 2, tall: 1.5, wallT: 2.4, raise: 1.2, trials: 60, minRoute: 12, minSwitches: 3 }
+export const CASTLE = { cell: 4, storey: 4, scale: 2, tall: 1.5, wallT: 2.4, raise: 1.2, trials: 60, plans: 12, spine: 7, loops: 0.15 }
 const C = CASTLE.cell, H = CASTLE.storey
 // A door's width and height, in metres outside and in alike (the interior does not scale doors). 2 m clears her 1.9 m crown over
 // the exterior notch's 6 cm sill.
@@ -297,20 +297,22 @@ export function castleLayout(seed) {
     .reduce((p, q) => (Math.hypot(...q) > Math.hypot(...p) ? q : p))
   fixed.push({ a: look.roof, b: entry, kind: 'rope', doors: [], rope: { x: rx, z: rz, top: look.floors * H }, pts: [look.roof.pos, [rx, look.floors * H + 0.6, rz], [rx, 0.4 - CASTLE.raise, rz], entry.pos] })
 
-  const best = pickMaze(seed, nodes, rooms, cands, entry, look.roof)
-  for (const n of nodes) n.unused = best.unused.has(n)
-  const edges = [...best.pick, ...fixed]
-  // A castle too short of doors between rooms for its wards takes spare ones from the candidates, one at a time.
-  const summitNode = look.roof, spare = cands.filter((e) => !best.pick.has(e) && e.kind === 'door' && e.a.kind === 'room' && e.b.kind === 'room' && !e.a.unused && !e.b.unused)
-  let wards = planWards(seed, nodes, edges, entry, summitNode, [])
-  for (let i = 0; !wards && i < spare.length; i++) { edges.push(spare[i]); wards = planWards(seed, nodes, edges, entry, summitNode, []) }
-  const planned = planShafts(seed, secs, edges, X, Z, (x, z) => occ.get(key(x, z)) ?? null, isCourt, claimed)
-  // A room every cell of which a shaft seals has no floor for a book or a gem; the wards plan round any the first plan used.
-  if (wards && planned) {
+  // The best plan whose shafts fit and whose spine keeps enough wardable doorways once they have; planShafts moves the stairs,
+  // doors and ladders of each plan it tries, the same way for a seed every time.
+  const ranked = pickPlan(seed, nodes, rooms, cands, entry, look.roof)
+  let best, edges, planned, wards = null
+  for (const plan of ranked.slice(0, CASTLE.plans)) {
+    best = plan
+    for (const n of nodes) n.unused = best.unused.has(n)
+    edges = [...best.pick, ...fixed]
+    planned = planShafts(seed, secs, edges, X, Z, (x, z) => occ.get(key(x, z)) ?? null, isCourt, claimed)
+    if (!best.ok || !planned) continue
+    // A room every cell of which a shaft seals has no floor for a book or a gem.
     const sealed = new Map()
     for (const sh of planned.shafts) for (const st of sh.storeys) if (st.node) sealed.set(st.node, (sealed.get(st.node) ?? 0) + 1)
-    const drum = [...sealed].filter(([n, c]) => c >= n.w * n.d).map(([n]) => n)
-    if (wards.books.some((b) => drum.includes(b.node)) || wards.wards.some((w) => drum.includes(w.gem))) wards = planWards(seed, nodes, edges, entry, summitNode, drum)
+    const drum = new Set([...sealed].filter(([n, c]) => c >= n.w * n.d).map(([n]) => n))
+    wards = planWards(seed, nodes, edges, entry, [look.roof, planned.dungeon.node], drum, tunnelWards(planned.shafts, edges))
+    if (wards) break
   }
   const onRoute = new Set(best.route.edges)
   for (const e of edges) e.onRoute = onRoute.has(e)
@@ -320,7 +322,7 @@ export function castleLayout(seed) {
     route: best.route, wards: wards && wards.wards, books: wards && wards.books,
     occAt: (x, z) => occ.get(key(x, z)) ?? null,
     stats: {
-      ok: best.ok && planned !== null && wards !== null, wardsToSummit: wards && wards.toSummit, trial: best.trial, rooms: rooms.length, outdoor: nodes.filter((n) => n.out && !n.unused).length,
+      ok: best.ok && planned !== null && wards !== null, wardsToSummit: wards && wards.toSummit, spine: best.spine, trial: best.trial, rooms: rooms.length, outdoor: nodes.filter((n) => n.out && !n.unused).length,
       candidates: cands.length, edges: best.pick.size, loops: best.loops, routeEdges: best.route.edges.length,
       switches: best.switches, descents: best.descents, deadEnds: best.deadEnds, stranded: best.stranded,
       sections: count(secs, (s) => s.kind), kinds: count([...best.pick], (e) => e.kind), ms: performance.now() - t0,
@@ -528,11 +530,30 @@ function planShafts(seed, secs, edges, X, Z, occAt, isCourt, claimed) {
         // The summit's chest stands across the drum from the hatch; its pos is shared by reference with every edge's waypoints.
         if (p.ladder.b.kind === 'summit') { const top = p.ladder.b.pos; top[0] = x - Math.cos(b) * 0.9; top[2] = z - Math.sin(b) * 0.9 }
       }
-      return { k: p.k, role: p.role, node: p.node, exits }
+      return { k: p.k, role: p.role, node: p.node, exits, ladder: p.ladder !== null }
     })
     return { gx: r.gx, gz: r.gz, x: r.x, z: r.z, hand, flights, storeys }
   })
   return shafts.includes(null) ? null : { shafts, dungeon }
+}
+
+/**
+ * Where a stair can take a ward: the tunnel at a shaft's bottom or top storey, when it is that storey's one way between its drum and
+ * the rest of its room, so shutting it cuts just the stair's edge. Per stair edge, its options: the node she reaches the gem from,
+ * and the tunnel ({ x, z, c, k } exterior, `room` true when the gem stands on the room's side).
+ */
+function tunnelWards(shafts, edges) {
+  const out = new Map()
+  for (const sh of shafts) for (const st of sh.storeys) {
+    if (st.role === 'pass' || st.node === null || st.ladder || st.exits.length !== 1 || st.exits[0].kind !== 'room') continue
+    const k = st.role === 'bottom' ? st.k : st.k - 1
+    if (k < 0) continue
+    const e = edges.find((q) => q.stair && q.stair.k === k && q.stair.x === sh.x && q.stair.z === sh.z)
+    if (!e) throw new Error(`shaft ${sh.gx},${sh.gz}: no stair edge leaves storey ${st.k}`)
+    const [mine, other] = st.node === e.a ? [e.a, e.b] : [e.b, e.a], at = { x: sh.x, z: sh.z, c: st.exits[0].c, k: st.k }
+    out.set(e, [...(out.get(e) ?? []), { gem: mine, tunnel: { ...at, room: true } }, { gem: other, tunnel: { ...at, room: false } }])
+  }
+  return out
 }
 
 /** A storey's doorway window [lo, hi] in the helix's own (handed) segments, from its flight's start `a` and its landing `L`. */
@@ -595,18 +616,23 @@ function solveShaft(per, hand) {
   return [...states.values()].sort((p, q) => p.cost - q.cost)[0] ?? null
 }
 
-/** Random spanning trees over the candidates, leaf roofs dropped, loops added back while the gate-to-summit route stays long; the best of CASTLE.trials. */
-function pickMaze(seed, nodes, rooms, cands, entry, summit) {
+/**
+ * The floor plan (design/44-castles.md, The plan): a spanning tree that takes the court's doors, the wall stairs and each section's
+ * stairs first, so it reads hub and spoke; leaf roofs dropped; then a few loops, none bypassing `CASTLE.spine` single-file doorways
+ * spread along the entry-summit route, which wards.js can ward. Every trial, the most such doorways first, then the longest route.
+ */
+function pickPlan(seed, nodes, rooms, cands, entry, summit) {
   const idx = new Map(nodes.map((n, i) => [n, i]))
   const forced = cands.filter((e) => e.forced), free = cands.filter((e) => !e.forced)
+  const hub = (e) => (e.a.kind === 'court' || e.b.kind === 'court' ? 0.5 : 1) * ({ stair: 0.5, outstair: 0.6, ladder: 1.4, bridge: 1.2 }[e.kind] ?? 1)
   const degrees = (pick) => {
     const d = new Map()
     for (const e of pick) for (const n of [e.a, e.b]) d.set(n, (d.get(n) ?? 0) + 1)
     return d
   }
-  const path = (pick, from, to) => {
+  const path = (pick, from, to, cut = new Set()) => {
     const adj = new Map()
-    for (const e of pick) for (const [p, q] of [[e.a, e.b], [e.b, e.a]]) { if (!adj.has(p)) adj.set(p, []); adj.get(p).push([q, e]) }
+    for (const e of pick) if (!cut.has(e)) for (const [p, q] of [[e.a, e.b], [e.b, e.a]]) { if (!adj.has(p)) adj.set(p, []); adj.get(p).push([q, e]) }
     const prev = new Map([[from, null]]), queue = [from]
     for (let i = 0; i < queue.length; i++) for (const [q, e] of adj.get(queue[i]) ?? []) if (!prev.has(q)) { prev.set(q, [queue[i], e]); queue.push(q) }
     if (!prev.has(to)) return { reach: prev, nodes: null, edges: [] }
@@ -614,10 +640,10 @@ function pickMaze(seed, nodes, rooms, cands, entry, summit) {
     for (let n = to; prev.get(n); n = prev.get(n)[0]) { es.unshift(prev.get(n)[1]); ns.unshift(prev.get(n)[0]) }
     return { reach: prev, nodes: ns, edges: es }
   }
-  let best = null
+  const trials = []
   for (let trial = 0; trial < CASTLE.trials; trial++) {
     const r = mulberry32(Math.imul(seed + 1, 40503) + trial * 7919)
-    const order = free.map((e) => [r(), e]).sort((p, q) => p[0] - q[0]).map((p) => p[1])
+    const order = free.map((e) => [r() * hub(e), e]).sort((p, q) => p[0] - q[0]).map((p) => p[1])
     const parent = nodes.map((_, i) => i)
     const find = (i) => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i }
     const pick = new Set(), spare = []
@@ -646,16 +672,23 @@ function pickMaze(seed, nodes, rooms, cands, entry, summit) {
         more = true
       }
     }
-    let route = path(pick, entry, summit)
-    const floor = Math.max(CASTLE.minRoute, route.edges.length * 0.85)
+    // The spine: wardable doorways on the tree's route, the gem on her side, clear of one-cell stair rooms (all drum), and stairs
+    // whose shaft may have a tunnel to ward (tunnelWards), spread evenly.
+    const tree = path(pick, entry, summit), drum = new Set([...pick].filter((e) => e.stair).flatMap((e) => [e.a, e.b]).filter((n) => n.kind === 'room' && n.w * n.d === 1))
+    const one = (n) => n.w * n.d === 1
+    const all = tree.edges.filter((e, i) => (wardable(e, tree.nodes[i]) && !drum.has(tree.nodes[i])) || (e.stair && !(one(e.a) && one(e.b))))
+    const spine = new Set(all.length <= CASTLE.spine ? all : range(0, CASTLE.spine).map((i) => all[Math.floor((i + 0.5) * all.length / CASTLE.spine)]))
+    // Loops join only what the spine leaves joined, so each spine doorway stays the one way on.
+    const part = new Map()
+    for (const n of nodes) if (!part.has(n)) for (const q of path(pick, n, n, spine).reach.keys()) part.set(q, n)
     let loops = 0
     for (const e of spare) {
-      if (loops >= Math.round(rooms.length * 0.12)) break
-      if (unused.has(e.a) || unused.has(e.b)) continue
+      if (loops >= Math.round(rooms.length * CASTLE.loops) + 2) break
+      if (unused.has(e.a) || unused.has(e.b) || part.get(e.a) !== part.get(e.b)) continue
       pick.add(e)
-      const next = path(pick, entry, summit)
-      if (next.edges.length >= floor) { route = next; loops++ } else pick.delete(e)
+      loops++
     }
+    const route = path(pick, entry, summit)
     const stranded = nodes.filter((n) => !unused.has(n) && !route.reach.has(n)).length
     let switches = 0, descents = 0
     const seq = route.nodes ?? []
@@ -664,9 +697,9 @@ function pickMaze(seed, nodes, rooms, cands, entry, summit) {
       if (seq[i].pos[1] < seq[i - 1].pos[1] - 1) descents++
     }
     const d = degrees(pick), deadEnds = rooms.filter((n) => d.get(n) === 1).length
-    const ok = stranded === 0 && route.edges.length >= CASTLE.minRoute && switches >= CASTLE.minSwitches && descents >= 1
-    const score = (ok ? 1000 : 0) + route.edges.length + 1.5 * switches + 2 * Math.min(descents, 3)
-    if (!best || score > best.score) best = { score, ok, pick, unused, route, switches, descents, deadEnds, loops, stranded, trial }
+    const ok = stranded === 0 && spine.size >= 5
+    const score = 100 * spine.size + route.edges.length + 1.5 * switches + (ok ? 10000 : 0)
+    trials.push({ score, ok, pick, unused, route, switches, descents, deadEnds, loops, stranded, trial, spine: spine.size })
   }
-  return best
+  return trials.sort((p, q) => q.score - p.score)
 }

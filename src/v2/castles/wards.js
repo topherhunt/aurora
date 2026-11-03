@@ -1,23 +1,76 @@
 // Ward barriers and their runebooks (design/46-castle-wards.md): pure topology over a layout's nodes and edges, no geometry.
 import { mulberry32 } from '../../sim/mathx.js'
 
-export const WARDS = { min: 5, max: 8, trials: 150, runes: 10 }
+export const WARDS = { min: 5, max: 10, runes: 10, extra: 0.3 }
 /** The runes, in the order the panel and atlas lay them out. */
 export const RUNES = ['strider', 'crab', 'frog', 'rabbit', 'deer', 'fox', 'dragon', 'pine', 'rock', 'castle']
 
 /** Rope and barred door each lead only out to where she already stands, so neither widens what she can reach. */
 const walkable = (e) => e.kind !== 'rope' && e.kind !== 'barred'
 
+/** Whether edge `e` can hold a ward whose gem stands on room `gem`'s side: a doorway, the gem indoors. A spiral's helix cannot; the
+ * doors into its drum can. */
+export function wardable(e, gem) {
+  return (e.kind === 'door' || e.kind === 'bridge' || (e.kind === 'outstair' && e.doors.length > 0)) && gem.kind === 'room' && (e.a === gem || e.b === gem)
+}
+
+function graphOf(nodes, edges) {
+  const adj = new Map(nodes.map((n) => [n, []]))
+  for (const e of edges) if (walkable(e)) { adj.get(e.a).push([e.b, e]); adj.get(e.b).push([e.a, e]) }
+  return adj
+}
+/** Hops from `from` and the edge each node was first reached by, skipping `blocked` edges. */
+function bfs(adj, from, blocked) {
+  const hops = new Map([[from, 0]]), via = new Map([[from, null]]), queue = [from]
+  for (let i = 0; i < queue.length; i++) for (const [q, e] of adj.get(queue[i])) {
+    if (hops.has(q) || blocked.has(e)) continue
+    hops.set(q, hops.get(queue[i]) + 1); via.set(q, [queue[i], e]); queue.push(q)
+  }
+  return { hops, via }
+}
+const lengthOf = (e) => e.pts.reduce((s, p, i) => (i ? s + Math.hypot(p[0] - e.pts[i - 1][0], p[1] - e.pts[i - 1][1], p[2] - e.pts[i - 1][2]) : 0), 0)
+/** Metres walked from `from` to `to` with `blocked` edges shut. */
+function metres(adj, len, from, to, blocked) {
+  const d = new Map([[from, 0]]), done = new Set()
+  for (;;) {
+    let v = null
+    for (const [n, x] of d) if (!done.has(n) && (v === null || x < d.get(v))) v = n
+    if (v === null) return Infinity
+    if (v === to) return d.get(v)
+    done.add(v)
+    for (const [q, e] of adj.get(v)) if (!blocked.has(e) && !done.has(q) && (!d.has(q) || d.get(v) + len.get(e) < d.get(q))) d.set(q, d.get(v) + len.get(e))
+  }
+}
+/** The edges whose loss would split the walkable graph (Tarjan's bridges, iterative). */
+function bridgesOf(adj, root) {
+  const disc = new Map([[root, 0]]), low = new Map([[root, 0]]), out = new Set(), stack = [[root, null, 0]]
+  let t = 1
+  while (stack.length) {
+    const top = stack.at(-1), [v, pe] = top, list = adj.get(v)
+    if (top[2] < list.length) {
+      const [q, e] = list[top[2]++]
+      if (e === pe) continue
+      if (!disc.has(q)) { disc.set(q, t); low.set(q, t++); stack.push([q, e, 0]) } else low.set(v, Math.min(low.get(v), disc.get(q)))
+      continue
+    }
+    stack.pop()
+    if (!stack.length) continue
+    const p = stack.at(-1)[0]
+    low.set(p, Math.min(low.get(p), low.get(v)))
+    if (low.get(v) > disc.get(p)) out.add(pe)
+  }
+  return out
+}
+
 /**
  * The search over every order she might open wards in: from each reachable set of opened wards, she knows every book in reach and
  * has spent one per ward opened. Fails when some state leaves wards shut with no gem in reach or no code unspent, or ends with a
- * used node out of reach. Returns { ok, states, toSummit, shut } -- toSummit the fewest wards any order opens before the summit is in reach, shut the
- * share of rooms out of reach before any.
+ * used node out of reach. Returns { ok, states, toSummit, shut } -- toSummit the fewest wards any order opens before the summit is
+ * in reach, shut the share of rooms out of reach before any.
  */
 export function wardSearch(nodes, edges, entry, summit, wards, books) {
   const W = wards.length, full = (1 << W) - 1, wardOf = new Map(wards.map((w, i) => [w.edge, i]))
-  const adj = new Map(nodes.map((n) => [n, []]))
-  for (const e of edges) if (walkable(e)) { adj.get(e.a).push([e.b, e]); adj.get(e.b).push([e.a, e]) }
+  const adj = graphOf(nodes, edges)
   const used = nodes.filter((n) => !n.unused)
   const reach = (S) => {
     const seen = new Set([entry]), queue = [entry]
@@ -48,53 +101,113 @@ export function wardSearch(nodes, edges, entry, summit, wards, books) {
 }
 
 /**
- * 5-8 wards on doors between two rooms, each with its gem on one side, and as many runebooks (one more at times) in distinct rooms,
- * dead ends first, each with its own 3-rune code. Of the trials that pass wardSearch, the one whose summit needs the most wards opened
- * and that shuts nearest half the rooms at the start. Returns { wards: [{ edge, gem }], books: [{ node, code }], toSummit, trial }
- * or null.
+ * 5-10 wards and a runebook for each (one more at times), each book with its own 3-rune code; design/46-castle-wards.md, Planning.
+ * The spine: single-file doorways on the entry-summit route, spread along it, every one of which she must open. The detours: doorways
+ * on loops, each chosen to add the most metres to her walks to `goals` (summit first) while the castle stays whole without them.
+ * Each book lies in a room she must pass through before she can reach its ward's gem. `drum` rooms take neither, except as the node
+ * a stair's tunnel gem is reached from (`tunnels`, layout.js tunnelWards). Returns { wards: [{ edge, gem, tunnel? }], books:
+ * [{ node, code }], toSummit, spine } or null when the route has too few single-file doorways.
  */
-export function planWards(seed, nodes, edges, entry, summit, avoid) {
-  // A one-cell room a spiral climbs through is all drum (planShafts): no floor for a book or a gem. `avoid` adds
-  // rooms known to be all drum besides.
-  const drum = new Set([...avoid, ...edges.filter((e) => e.stair).flatMap((e) => [e.a, e.b]).filter((n) => n.kind === 'room' && n.w * n.d === 1)])
-  const rooms = nodes.filter((n) => n.kind === 'room' && !n.unused && !drum.has(n))
-  const doors = edges.filter((e) => e.kind === 'door' && e.a.kind === 'room' && e.b.kind === 'room' && e.doors.length === 1 && !(drum.has(e.a) && drum.has(e.b)))
-  if (doors.length < WARDS.min) return null
-  const deg = new Map()
-  for (const e of edges) if (walkable(e)) for (const n of [e.a, e.b]) deg.set(n, (deg.get(n) ?? 0) + 1)
-  // Hops from the entry with every door open: a gem mostly faces the way she comes.
-  const hops = new Map([[entry, 0]]), queue = [entry]
-  for (let i = 0; i < queue.length; i++) for (const e of edges) if (walkable(e)) for (const [p, q] of [[e.a, e.b], [e.b, e.a]]) {
-    if (p === queue[i] && !hops.has(q)) { hops.set(q, hops.get(p) + 1); queue.push(q) }
+export function planWards(seed, nodes, edges, entry, goals, drum, tunnels) {
+  const r = mulberry32(Math.imul(seed + 3, 69069))
+  const adj = graphOf(nodes, edges), none = new Set(), used = nodes.filter((n) => !n.unused)
+  // A ward's record for edge e with its gem on node gem's side, or null.
+  const fits = (e, gem) => {
+    if (wardable(e, gem)) return drum.has(gem) ? null : { edge: e, gem }
+    const t = (tunnels.get(e) ?? []).find((q) => q.gem === gem)
+    return t ? { edge: e, gem, tunnel: t.tunnel } : null
   }
-  const dead = rooms.filter((n) => deg.get(n) === 1)
-  let best = null
-  for (let trial = 0; trial < WARDS.trials; trial++) {
-    const r = mulberry32(Math.imul(seed + 3, 69069) + trial * 104729)
-    const shuffle = (list) => list.map((x) => [r(), x]).sort((p, q) => p[0] - q[0]).map((p) => p[1])
-    const n = Math.min(doors.length, WARDS.min + Math.floor(r() * (WARDS.max - WARDS.min + 1)))
-    const wards = shuffle(doors).slice(0, n).map((edge) => {
-      const [near, far] = hops.get(edge.a) <= hops.get(edge.b) ? [edge.a, edge.b] : [edge.b, edge.a]
-      const flip = r() < 0.2
-      return { edge, gem: drum.has(near) ? far : drum.has(far) ? near : flip ? far : near }
+  const { hops, via } = bfs(adj, entry, none)
+  const route = []
+  for (let n = goals[0]; via.get(n); n = via.get(n)[0]) route.unshift(via.get(n))
+  const bridges = bridgesOf(adj, entry)
+  const spine = route.filter(([from, e]) => bridges.has(e) && fits(e, from)).map(([from, e]) => fits(e, from))
+  if (spine.length < WARDS.min) return null
+  const n = WARDS.min + Math.floor(r() * (WARDS.max - WARDS.min + 1))
+
+  const len = new Map(edges.map((e) => [e, lengthOf(e)]))
+  const walk = (blocked) => goals.reduce((s, g) => s + metres(adj, len, entry, g, blocked), 0)
+  const detours = [], blocked = new Set()
+  let base = walk(blocked)
+  const pool = edges.filter((e) => walkable(e) && !bridges.has(e) && !e.a.unused && !e.b.unused)
+  while (detours.length < n - WARDS.min) {
+    let best = null
+    for (const e of pool) {
+      if (blocked.has(e)) continue
+      const [near, far] = hops.get(e.a) <= hops.get(e.b) ? [e.a, e.b] : [e.b, e.a], w = fits(e, near) ?? fits(e, far)
+      if (!w) continue
+      blocked.add(e)
+      const whole = bfs(adj, entry, blocked).hops.size === used.length, d = whole ? walk(blocked) : 0
+      blocked.delete(e)
+      const gain = d - base + r()
+      if (whole && gain > 2 && (!best || gain > best.gain)) best = { gain, w, d }
+    }
+    if (!best) break
+    detours.push(best.w)
+    blocked.add(best.w.edge)
+    base = best.d
+  }
+  const b = Math.min(spine.length, n - detours.length)
+  const wards = [...spine.map((w, i) => [r(), i, w]).sort((p, q) => p[0] - q[0]).slice(0, b).sort((p, q) => p[1] - q[1]).map((p) => p[2]), ...detours]
+
+  // Cells: what joins up with every ward shut. She crosses a ward from its gem's cell; a cell's dominators are those she must
+  // stand in before she can reach it.
+  const shutAll = new Set(wards.map((w) => w.edge)), cellOf = new Map(), cells = []
+  for (const s of used) {
+    if (cellOf.has(s)) continue
+    const c = cells.length
+    cells.push([])
+    for (const q of bfs(adj, s, shutAll).hops.keys()) { cellOf.set(q, c); cells[c].push(q) }
+  }
+  const out = cells.map(() => [])
+  for (const w of wards) out[cellOf.get(w.gem)].push(cellOf.get(w.edge.a === w.gem ? w.edge.b : w.edge.a))
+  const reachCells = (skip) => {
+    const seen = new Set([cellOf.get(entry)]), queue = [cellOf.get(entry)]
+    for (let i = 0; i < queue.length; i++) for (const q of out[queue[i]]) if (q !== skip && !seen.has(q)) { seen.add(q); queue.push(q) }
+    return seen
+  }
+  if (reachCells(-1).size !== cells.length) throw new Error(`castle ${seed}: a ward cell cannot be reached from its gems`)
+  const doms = cells.map((_, c) => new Set([c, cellOf.get(entry)]))
+  cells.forEach((_, d) => { const seen = reachCells(d); cells.forEach((__, c) => { if (!seen.has(c)) doms[c].add(d) }) })
+
+  // Books: dead ends first, then the room farthest in hops from the books and gems placed so far; each pick keeps every ward matched.
+  const deg = new Map(used.map((q) => [q, adj.get(q).length]))
+  const roomsIn = (cs) => used.filter((q) => q.kind === 'room' && !drum.has(q) && cs.has(cellOf.get(q)))
+  const opts = wards.map((w) => roomsIn(doms[cellOf.get(w.gem)]))
+  const hopsFrom = new Map()
+  const apart = (p, q) => { if (!hopsFrom.has(p)) hopsFrom.set(p, bfs(adj, p, none).hops); return hopsFrom.get(p).get(q) }
+  const taken = new Map()
+  const matched = (left) => {
+    const own = new Map()
+    const seat = (i, seen) => opts[i].some((q) => {
+      if (taken.has(q) || seen.has(q)) return false
+      seen.add(q)
+      if (own.has(q) && !seat(own.get(q), seen)) return false
+      own.set(q, i)
+      return true
     })
-    const count = n + (r() < 0.3 ? 1 : 0)
-    if (count > rooms.length) continue
-    const places = [...shuffle(dead), ...shuffle(rooms.filter((q) => deg.get(q) !== 1))].slice(0, count)
-    const books = places.map((node) => ({ node, code: null }))
-    const res = wardSearch(nodes, edges, entry, summit, wards, books)
-    if (!res.ok) continue
-    const score = 10 * res.toSummit + n - 4 * Math.abs(res.shut - 0.5) + r() * 0.01
-    if (!best || score > best.score) best = { score, wards, books, toSummit: res.toSummit, trial, r }
+    return left.every((i) => seat(i, new Set()))
   }
-  if (!best) return null
+  const order = wards.map((_, i) => i).sort((p, q) => opts[p].length - opts[q].length)
+  if (!matched(order)) return null
+  const marks = wards.map((w) => w.gem)
+  const worth = (q) => (deg.get(q) === 1 ? 3 : 0) + Math.min(6, ...[...taken.keys(), ...marks].map((p) => apart(p, q))) + r()
+  order.forEach((i, j) => {
+    const pick = opts[i].filter((q) => !taken.has(q)).map((q) => [worth(q), q]).sort((p, q) => q[0] - p[0])
+      .find(([, q]) => { taken.set(q, i); const ok = matched(order.slice(j + 1)); taken.delete(q); return ok })
+    taken.set(pick[1], i)
+  })
+  const spare = roomsIn(new Set(cells.keys())).filter((q) => !taken.has(q))
+  if (r() < WARDS.extra && spare.length) taken.set(spare.map((q) => [worth(q), q]).sort((p, q) => q[0] - p[0])[0][1], -1)
+  const books = [...taken.keys()].map((node) => ({ node, code: null }))
   const codes = new Set()
-  for (const b of best.books) {
-    do b.code = shuffleCode(best.r); while (codes.has(b.code.join()))
-    codes.add(b.code.join())
+  for (const bk of books) {
+    do bk.code = shuffleCode(r); while (codes.has(bk.code.join()))
+    codes.add(bk.code.join())
   }
-  const { wards, books, toSummit, trial } = best
-  return { wards, books, toSummit, trial }
+  const res = wardSearch(nodes, edges, entry, goals[0], wards, books)
+  if (!res.ok || res.toSummit < b) throw new Error(`castle ${seed}: wards planned by construction fail the search (toSummit ${res.toSummit}, spine ${b})`)
+  return { wards, books, toSummit: res.toSummit, spine: b }
 }
 
 /** Three distinct runes. */

@@ -190,8 +190,9 @@ export function interiorMaterials(maps, uTorch) {
 
 export class Castles {
   /** `sites` layers/castles.js CastleSites.list; `patch(material, cacheKey)` lighting.js's vertex patch; `uTorch` lighting.js's
-   * held torches, shared by reference; `probeHidden` what the dungeon water's probe must not capture (main.js's world probe's). */
-  constructor(scene, sites, { patch, uTorch, probeHidden }) {
+   * held torches, shared by reference; `probeHidden` what the dungeon water's probe must not capture (main.js's world probe's);
+   * `runes()` the rune atlas texture (render/rune-atlas.js), asked for when a castle's wards are built. */
+  constructor(scene, sites, { patch, uTorch, probeHidden, runes }) {
     if (!uTorch || uTorch.value.length !== TORCHES) throw new Error('Castles: needs lighting.uniforms.uTorch')
     if (!Array.isArray(probeHidden)) throw new Error('Castles: needs the world probe\'s hidden list')
     this.scene = scene
@@ -205,8 +206,7 @@ export class Castles {
     this.courtMaterial = patch(glowed(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.maps.cobble }), this.glow), 'v2-castle-court')
     Object.assign(this, interiorMaterials(this.maps, uTorch))
     this.probeHidden = probeHidden
-    this.runes = new THREE.TextureLoader().load('/buildings/runes.png')
-    this.runes.colorSpace = THREE.SRGBColorSpace
+    this.runes = runes
     this.ropeMaterial = patch(new THREE.MeshLambertMaterial({ map: ropeTexture() }), 'v2-castle-rope')
     // Sites whose summit rope she has let down, for the session.
     this.ropesDown = new Set()
@@ -517,7 +517,7 @@ export class Castles {
     const c = this.inside, P = c.solids.portals
     c.wardSet.group.removeFromParent()
     c.wardSet.dispose()
-    c.wardSet = new WardSet(P, this.runes, open, spent)
+    c.wardSet = new WardSet(P, this.runes(), open, spent)
     c.innerMesh.add(c.wardSet.group)
     c.solids.it.open = open
   }
@@ -530,6 +530,12 @@ export class Castles {
     const m = c.innerMesh, o = m.worldToLocal(origin.clone()), d = dir.clone().transformDirection(m.matrixWorld.clone().invert())
     const i = c.wardSet.gemOn(o, d, maxDist)
     return i < 0 ? null : { i, at: m.localToWorld(c.wardSet.gemAt(i).clone()) }
+  }
+
+  /** The shut ward membrane nearest world `eye` in the castle she is in: `{ d, at }` with `at` a world Vector3 on the sheet, or null when none is shut. */
+  nearShutWard(eye) {
+    const m = this.inside.innerMesh, n = this.inside.wardSet.nearestShut(m.worldToLocal(this._eye.set(eye.x, eye.y, eye.z)))
+    return n === null ? null : { d: n.d, at: m.localToWorld(new THREE.Vector3(...n.at)) }
   }
 
   /** The runebooks' codes in the castle she is in, by index. */
@@ -590,7 +596,7 @@ export class Castles {
       this.waterUniforms.uMirrorB.value = c.probe.textureB
     }
     c.solids.it.open = 0
-    c.wardSet = new WardSet(c.solids.portals, this.runes, 0, 0)
+    c.wardSet = new WardSet(c.solids.portals, this.runes(), 0, 0)
     mesh.add(c.wardSet.group)
     c.innerStone = new CastleInteriorStone(c)
     this._zone = null
