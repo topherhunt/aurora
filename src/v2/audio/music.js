@@ -5,8 +5,7 @@
 // song and after every one, a song is drawn at random from the pool standing
 // when the silence ends, and it plays to its end unless the pool changes
 // under it, which fades it out over FADE_OUT_S. Indoors (only ever a town's
-// or a glade's house) the song goes on, and may start, through a low-pass and
-// at INDOOR_GAIN.
+// or a glade's house) the song goes on, and may start, at INDOOR_GAIN.
 //
 // THE ROOM OWNER LEADS. Every client puts wire() on its pose; the relay names
 // the owner (its oldest client). A client in the owner's pool follows it
@@ -16,10 +15,15 @@
 // silent. Out of the owner's pool it runs its own, from a fresh silence.
 //
 // THE SONGS ARE STREAMED, NOT DECODED: a decoded three-minute song is 60 MB of
-// PCM. Each is an HTMLMediaElement made the first time it is drawn, through
-// its own gain (its fade) onto the master bus, so the panel's Sound row takes
-// it; the Music row is `fader` (MUSIC_VOLUMES). No three, no DOM beyond the elements: the gate hands in a fake engine,
-// a fake element factory and a seeded random.
+// PCM. Each is an HTMLMediaElement made the first time it is drawn.
+//
+// THEY STAY OUT OF THE AUDIOCONTEXT. Fed through createMediaElementSource, a
+// playing song held one Quest 2's audio clock and whole process at about half
+// speed (_notes/perf-ledger.md, The malaise). So a song's level is its
+// el.volume, set each frame: its fade times the room, the Music row
+// (MUSIC_VOLUMES) and the Sound row (engine.muted). No three, no DOM beyond
+// the elements: the gate hands in a fake engine, a fake element factory and a
+// seeded random.
 // ---------------------------------------------------------------------------
 
 /** Each pool's songs, public/-relative under music/<pool>/. check-music.mjs pins these to the folders on disk; the wire carries a song as its index here. poolFor() never names `climbing` yet. */
@@ -46,10 +50,8 @@ export const FADE_OUT_S = 10
 /** A followed song joined more than LATE_S into it fades in over FADE_IN_S; one joined sooner just starts. */
 export const FADE_IN_S = 3
 export const LATE_S = 1
-/** Indoors: the song's level is multiplied by INDOOR_GAIN and low-passed at INDOOR_LP Hz, eased over INDOOR_TAU. */
+/** Indoors: the song's level is multiplied by INDOOR_GAIN, eased over INDOOR_TAU. */
 export const INDOOR_GAIN = 0.7
-export const INDOOR_LP = 2000
-export const OPEN_LP = 20000
 export const INDOOR_TAU = 0.3
 /** The settings panel's Music row, in the order a press steps through: a multiplier on LEVEL. */
 export const MUSIC_VOLUMES = [{ name: 'On', gain: 1 }, { name: '50%', gain: 0.5 }, { name: 'Off', gain: 0 }]
@@ -77,35 +79,25 @@ export function musicFromWire(w) {
 
 export class Music {
   /**
-   * @param engine         a SoundEngine (or the gate's fake): `ctx` and `master`.
+   * @param engine         a SoundEngine (or the gate's fake), read for `muted`.
    * @param createElement  url -> an HTMLMediaElement (or the gate's fake); `new Audio(url)`.
    * @param random         () -> [0, 1); Math.random.
-   * @param volume         the fader's gain, one of MUSIC_VOLUMES.
+   * @param volume         the Music row's multiplier, one of MUSIC_VOLUMES.
    */
   constructor({ engine, createElement = (url) => new Audio(encodeURI(url)), random = Math.random, volume = 1 }) {
-    if (!engine || !engine.ctx || !engine.master) throw new Error('Music: missing engine')
+    if (!engine) throw new Error('Music: missing engine')
     this.engine = engine
     this.createElement = createElement
     this.random = random
-    const ctx = engine.ctx
-    // Each song's gain -> room (indoor gain) -> muffle -> fader (the Music row) -> master.
-    this.room = ctx.createGain()
-    this.room.gain.value = 1
-    this.muffle = ctx.createBiquadFilter()
-    this.muffle.type = 'lowpass'
-    this.muffle.frequency.value = OPEN_LP
-    this.fader = ctx.createGain()
-    this.fader.gain.value = volume
-    this.room.connect(this.muffle)
-    this.muffle.connect(this.fader)
-    this.fader.connect(engine.master)
-    // url -> { el, gain }, made on first draw: an element attaches to a source node once for good.
+    this.fader = volume
+    // The indoor multiplier, easing to INDOOR_GAIN or 1.
+    this.room = 1
+    // url -> { el, url, level, slope }: `level` is its fade, moving `slope` a second.
     this.tracks = new Map()
     this.silence = this._rollPause()
-    // { track, pool, song, startS } while a song plays; the fading tracks with the ctx time each lands.
+    // { track, pool, song, startS } while a song plays; the fading tracks with the seconds each has left.
     this.playing = null
     this.fading = []
-    this.indoors = false
     this.pool = null
     this.following = false
     // The followed song's `pool/song@startS` since she came into the owner's pool, so one that has ended here is not started again while the owner still says it plays.
@@ -115,7 +107,7 @@ export class Music {
   }
 
   setVolume(gain) {
-    this.fader.gain.value = gain
+    this.fader = gain
   }
 
   _rollPause() {
@@ -125,30 +117,26 @@ export class Music {
   _track(url) {
     let t = this.tracks.get(url)
     if (t === undefined) {
-      const ctx = this.engine.ctx
       const el = this.createElement(url)
       el.preload = 'auto'
-      const gain = ctx.createGain()
-      gain.gain.value = 0
-      gain.connect(this.room)
-      ctx.createMediaElementSource(el).connect(gain)
-      t = { el, gain, url }
+      t = { el, url, level: 0, slope: 0 }
       this.tracks.set(url, t)
     }
     return t
+  }
+
+  _sound(track) {
+    track.el.volume = this.engine.muted ? 0 : track.level * this.room * this.fader
   }
 
   /** Song `song` of `pool` from `offset` seconds in, which the room calls world second `startS`. */
   _start(pool, song, startS, offset) {
     const track = this._track(songUrl(pool, song))
     this.fading = this.fading.filter((f) => f.track !== track)
-    const now = this.engine.ctx.currentTime
-    const g = track.gain.gain
-    g.cancelScheduledValues(now)
-    if (offset > LATE_S) {
-      g.setValueAtTime(0, now)
-      g.linearRampToValueAtTime(LEVEL, now + FADE_IN_S)
-    } else g.setValueAtTime(LEVEL, now)
+    const late = offset > LATE_S
+    track.level = late ? 0 : LEVEL
+    track.slope = late ? LEVEL / FADE_IN_S : 0
+    this._sound(track)
     track.el.currentTime = offset
     this.playing = { track, pool, song, startS }
     const p = track.el.play()
@@ -157,12 +145,8 @@ export class Music {
 
   _fade() {
     const { track } = this.playing
-    const now = this.engine.ctx.currentTime
-    const g = track.gain.gain
-    g.cancelScheduledValues(now)
-    g.setValueAtTime(g.value, now)
-    g.linearRampToValueAtTime(0, now + FADE_OUT_S)
-    this.fading.push({ track, until: now + FADE_OUT_S })
+    track.slope = -track.level / FADE_OUT_S
+    this.fading.push({ track, left: FADE_OUT_S })
     this.playing = null
     this.stoppedAt = performance.now()
   }
@@ -203,17 +187,19 @@ export class Music {
   update(dt, { pool, indoors, seconds, lead }) {
     if (pool !== null && !(pool in POOLS)) throw new Error(`Music.update: no pool ${pool}`)
     this.pool = pool
-    const now = this.engine.ctx.currentTime
-    if (indoors !== this.indoors) {
-      this.indoors = indoors
-      this.room.gain.setTargetAtTime(indoors ? INDOOR_GAIN : 1, now, INDOOR_TAU)
-      this.muffle.frequency.setTargetAtTime(indoors ? INDOOR_LP : OPEN_LP, now, INDOOR_TAU)
-    }
+    this.room += ((indoors ? INDOOR_GAIN : 1) - this.room) * (1 - Math.exp(-dt / INDOOR_TAU))
     this.fading = this.fading.filter((f) => {
-      if (now < f.until) return true
+      f.left -= dt
+      if (f.left > 0) return true
+      f.track.level = 0
+      f.track.slope = 0
       f.track.el.pause()
       return false
     })
+    for (const track of this.tracks.values()) {
+      track.level = Math.min(LEVEL, Math.max(0, track.level + track.slope * dt))
+      this._sound(track)
+    }
     if (this.playing !== null) {
       const { el, url } = this.playing.track
       if (el.error) console.error(`[music] ${url} failed to load:`, el.error)

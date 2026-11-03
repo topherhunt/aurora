@@ -3,19 +3,19 @@
 // (CASTLE.scale across, CASTLE.tall upward). Neither follows the warp, which bends the masonry up to about 0.27 m.
 import { mulberry32 } from '../../sim/mathx.js'
 import { CASTLE, LADDER } from './layout.js'
-import { courtProps, dungeonProps, keySpot, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
+import { courtProps, dungeonProps, keySpot, roofFrame, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { dungeonCell, dungeonPlan } from './dungeon.js'
-import { COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, wallRails } from './shell.js'
+import { BED_TOP, COURT_RUN, doorDepth, sectionFrame, edgeNormals, interiorWarp, offsetLoop, ROOT, wallRails } from './shell.js'
 import { SEG, shaftsOf, SHAFT, SPIRAL } from './spiral.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall, SH = H * V
 const INSET = 0.4, WT = 0.3, G = INSET * S
 // Collision tops; 0 for what hangs on a wall, lies on the floor or stands on a table, which stops nothing.
 const PROP_TOP = {
-  barrel: 0.9, crate: 0.8, sacks: 0.9, bench: 0.47, table: 0.82, longtable: 0.82, stool: 0.47, bed: 0.95, chest: 0.6, rack: 1.9, shelf: 1.8,
+  barrel: 0.9, crate: 0.8, sacks: 0.9, bench: 0.47, table: 0.82, longtable: 0.82, stool: 0.47, bed: 0.6, chest: 0.6, rack: 1.9, shelf: 1.8,
   hay: 0.8, stack3: 1.24, stack5: 1.24, stand3: 1.8, stand5: 1.8, cart: 1.0, well: 2.3, dummy: 1.7, throne: 1.76, brazier: 1.0, woodpile: 0.5, banner: 0,
   hearth: 1.5, oven: 1.5, cauldron: 0.8, herbs: 0, cask: 0.88, bucket: 0.4, basket: 0.45, bunk: 1.9, shields: 0, armour: 1.85, arrows: 1.1,
-  grind: 1.05, anvil: 0.75, dais: 0.3, carpet: 0, tapestry: 0, chandelier: 0, fourposter: 0.95, wardrobe: 2.0, desk: 0.8, rug: 0, altar: 1.0,
+  grind: 1.05, anvil: 0.75, dais: 0.3, carpet: 0, tapestry: 0, chandelier: 0, fourposter: 0.6, wardrobe: 2.0, desk: 0.8, rug: 0, altar: 1.0,
   maptable: 0.83, cot: 0.5, workbench: 0.9, candles: 1.2, sconce: 0, target: 1.6, pell: 1.6, yard: 0, forge: 2.3, trough: 0.6, block: 0.5,
   bowrack: 1.5, stones: 0.45, chair: 1.0, dresser: 1.0, grain: 0.62, veg: 0.45, kegs: 0.77, jars: 0.85, coal: 0.4, hams: 0, chains: 0, straw: 0, bones: 0,
   wreck: 0.4, cage: 1.95, jug: 0, bowl: 0, loaf: 0, cup: 0, candle: 0, book: 0, torch: 2.0,
@@ -169,7 +169,24 @@ export function wardFrame(w) {
   return { axis: d.axis, a: along - sgn * (G + WT - 0.05), c: across, y: k * SH, hw: d.w / 2, h: d.h, sgn, k }
 }
 
-/** Where book `b` hovers (interior metres, unwarped): over the floor of its room's chambers farthest from any standing prop and portal. */
+/** Where book `b` hovers on its tower top (exterior metres): farthest from any standing prop and portal. */
+function roofBookSpot(lay, b, i) {
+  const rng = mulberry32(lay.seed * 9341 + i), { y, rect: [x0, z0, x1, z1], round, portals } = roofFrame(lay, b.node)
+  const props = roofProps(lay).filter((o) => o.y === y && solid(o)), cx = (x0 + x1) / 2, cz = (z0 + z1) / 2
+  let best = null
+  for (let u = 0; u <= 6; u++) for (let v = 0; v <= 6; v++) {
+    const x = x0 + 0.3 + (x1 - x0 - 0.6) * u / 6, z = z0 + 0.3 + (z1 - z0 - 0.6) * v / 6
+    if (round && Math.hypot(x - cx, z - cz) > (x1 - x0) / 2 - 0.5) continue
+    let near = Infinity
+    for (const o of props) near = Math.min(near, Math.hypot(o.x - x, o.z - z) - Math.hypot(o.w, o.d) / 2)
+    for (const [px, pz] of portals) near = Math.min(near, Math.hypot(px - x, pz - z) - 0.5)
+    const score = Math.min(near, 3) + rng() * 0.05
+    if (!best || score > best.score) best = { score, at: [x, y + 1.2 + rng() * 0.25, z] }
+  }
+  return best.at
+}
+
+/** Where book `b` hovers in its room (interior metres, unwarped): over the floor of its chambers farthest from any standing prop and portal. */
 function bookSpot(lay, b, i) {
   const rng = mulberry32(lay.seed * 9341 + i), y = b.node.k * SH
   const props = roomProps(lay).filter((o) => o.k === b.node.k && solid(o)), cs = roomPlan(lay).chambers.filter((c) => c.node === b.node)
@@ -437,8 +454,16 @@ function portals(lay, ex, it) {
     const [wx, , wz] = at([x, m.y + m.h / 2, z])
     return { x: wx, y: m.y, z: wz, nx, nz, hw: m.hw, h: m.h, gem: at([x + nx * 0.45, m.y + 1.35, z + nz * 0.45]) }
   })
-  const books = lay.books.map((b, i) => ({ at: at(bookSpot(lay, b, i)), code: b.code.slice() }))
-  return { doors, ladders, wards, books, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice(), dungeon }
+  const books = lay.books.map((b, i) => {
+    const roof = b.node.kind === 'roof'
+    return { at: roof ? roofBookSpot(lay, b, i) : at(bookSpot(lay, b, i)), code: b.code.slice(), roof }
+  })
+  // Beds as vitals.js takes them, interior metres: `yaw` faces the pillow, as a house bed's does.
+  const beds = roomProps(lay).filter((o) => o.kind === 'bed' || o.kind === 'fourposter').map((o) => {
+    const [x, , z] = warp(o.x, o.y, o.z)
+    return { x, z, top: o.y + BED_TOP, floor: o.y, yaw: o.yaw + Math.PI, len: o.d, wid: o.w }
+  })
+  return { doors, ladders, wards, books, beds, rope: { x: rope.x, z: rope.z, top: rope.top, from: [summit.pos[0], summit.pos[2]] }, chest: summit.pos.slice(), dungeon }
 }
 
 /** Of ladder portals `ls` (interior metres), the one whose foot (x, z) stands within `reach` of with her feet `y` on its floor; else null. */

@@ -14,7 +14,6 @@ import { TOWNSFOLK } from './townsfolk.js'
 import { KIND as PUMPKIN, SIZE_M as PUMPKIN_M } from './pumpkins.js'
 import { caveSpot, castleSpot } from '../hideout-spot.js'
 import { castleLayout } from '../castles/layout.js'
-import { roomProps } from '../castles/furnish.js'
 import { toWorld } from '../layers/castles.js'
 
 export const SKELETON = {
@@ -34,6 +33,9 @@ export const SKELETON = {
   friendsMax: 4, fidgetS: [5, 11], dugMax: 12,
   // A still loose thing she threw, at least fetchMinM from her and inside fetchM of a follower, is brought back to her feet.
   fetchM: 15, fetchMinM: 3,
+  // Its footing on the walk: a shoulder bodyM wide, a rise of at most stepM a step, and stuckS seconds pressed on stone before it
+  // is put where it can stand (beside her, or home).
+  bodyM: 0.25, stepM: 0.45, stuckS: 3,
   // Bones laid by the hideout spot for her to feed it with.
   stash: 3,
   // Ghost caps (eating.js EAT.ghost) growing round its hideout, `capR` m out.
@@ -193,16 +195,16 @@ export class Skeletons {
   intoCave(sys, graph, oy, walk) {
     const key = `cave:${sys.id}`
     const spot = this._isHideout(key) ? caveSpot(graph) : null
-    this._enter(walk, spot && { key, x: spot.x, y: spot.y + oy, z: spot.z, heading: Math.random() * Math.PI * 2 })
+    this._enter(walk, spot && { key, x: spot.x, y: spot.y + oy, z: spot.z, heading: Math.random() * Math.PI * 2, boy: null })
   }
 
   /** Into castle `site`'s interior, its floor at world height `oy`, walked on `walk`. */
   intoCastle(site, oy, walk) {
     const key = `castle:${site.id}`
     const lay = this._isHideout(key) ? castleLayout(site.seed) : null
-    const spot = lay && castleSpot(lay, roomProps(lay))
+    const spot = lay && castleSpot(lay)
     const at = spot && toWorld(site, spot.lx, spot.lz)
-    this._enter(walk, spot && { key, x: at[0], y: oy + spot.ly, z: at[1], heading: spot.face + site.yaw })
+    this._enter(walk, spot && { key, x: at[0], y: oy + spot.ly, z: at[1], heading: spot.face + site.yaw, boy: toWorld(site, spot.boy.lx, spot.boy.lz) })
   }
 
   /** Back out on the overworld's `walk`. */
@@ -226,14 +228,35 @@ export class Skeletons {
     this.rejoin = true
     if (place === null) return
     for (let i = 0; i < SKELETON.stash; i++) {
-      const a = place.heading + 0.6 + i * 0.9
-      this.lying.push({ x: place.x + Math.cos(a) * (0.7 + 0.25 * i), y: place.y + 0.024, z: place.z - Math.sin(a) * (0.7 + 0.25 * i), yaw: Math.random() * Math.PI })
+      const [x, z] = this._openNear(place, place.heading + 0.6 + i * 0.9, 0.7 + 0.25 * i)
+      this.lying.push({ x, y: place.y + 0.024, z, yaw: Math.random() * Math.PI })
     }
     for (let i = 0; i < SKELETON.caps; i++) {
-      const a = place.heading + Math.PI + (i - 1.5) * 0.7, r = between(SKELETON.capR)
-      const x = place.x + Math.cos(a) * r, z = place.z - Math.sin(a) * r
+      const [x, z] = this._openNear(place, place.heading + Math.PI + (i - 1.5) * 0.7, between(SKELETON.capR))
       this.caps.push({ x, y: this._ground(x, z, place.y), z, yaw: Math.random() * Math.PI * 2 })
     }
+  }
+
+  /** The point `r` out from `place` on bearing `a` if it is open floor of the place's storey, else the first such about the circle at `r`, then nearer in; a cave's slope may leave none, and then the point itself. */
+  _openNear(place, a, r) {
+    for (const rr of [r, r * 0.6, 0.4]) {
+      for (let t = 0; t < 12; t++) {
+        const b = a + (t % 2 ? 1 : -1) * Math.ceil(t / 2) * (Math.PI / 6)
+        const x = place.x + Math.cos(b) * rr, z = place.z - Math.sin(b) * rr
+        if (this._open(x, z, place.y)) return [x, z]
+      }
+    }
+    return [place.x + Math.cos(a) * r, place.z - Math.sin(a) * r]
+  }
+
+  /** Whether a bone or cap can lie at (x, z) on the floor at `y`. */
+  _open(x, z, y) {
+    return this._stands(x, z, y, 0.1, 0.1)
+  }
+
+  /** Whether a body can stand at (x, z) with its feet at about `y`: no stone within `r` of it or over it, and no floor more than `rise` off `y`. */
+  _stands(x, z, y, r, rise) {
+    return this.walk.fits(x, z, y, null, r) && Math.abs(this.walk.heightAt(x, z, y) - y) <= rise
   }
 
   // -------------------------------------------------------------------------
@@ -285,7 +308,7 @@ export class Skeletons {
       key, tame, puppet, x, z, y: y === null ? this.her.y : y, heading, aim: heading, home: { x, z, y: y === null ? this.her.y : y, heading },
       size: SKELETON.heightM, k: SKELETON.heightM / this.asset.height, speed: 0, clip: 'idle', cue: 0, cycle: 1, lod: LOD_RUNGS,
       state: tame ? 'follow' : 'hide', t: 0, squash: 0, rate: 1, until: 0, nextFidget: now + between(SKELETON.fidgetS), angle: 0,
-      lure: null, carrier: null, fetching: null, near: Infinity, lastD: Infinity, whimperAt: 0,
+      lure: null, carrier: null, fetching: null, near: Infinity, lastD: Infinity, whimperAt: 0, stuck: 0,
     }
     this.batch.add(puppet.group)
     this.list.push(b)
@@ -304,10 +327,19 @@ export class Skeletons {
   /** A follower put on her ring, the `j`th of them, after she went through a door. */
   _beside(b, j) {
     const a = j * 1.6 + 2.4
-    b.x = this.her.x + Math.cos(a) * SKELETON.followM
-    b.z = this.her.z - Math.sin(a) * SKELETON.followM
+    // The first free place round her ring, else her own.
+    b.x = this.her.x
+    b.z = this.her.z
+    for (let t = 0; t < 8; t++) {
+      const x = this.her.x + Math.cos(a + t * Math.PI / 4) * SKELETON.followM, z = this.her.z - Math.sin(a + t * Math.PI / 4) * SKELETON.followM
+      if (!this._stands(x, z, this.her.y, SKELETON.bodyM, SKELETON.stepM)) continue
+      b.x = x
+      b.z = z
+      break
+    }
     b.y = this._ground(b.x, b.z, this.her.y)
     b.heading = b.aim = a + Math.PI
+    b.stuck = 0
     if (b.state !== 'pile') this._go(b, 'follow')
   }
 
@@ -331,7 +363,7 @@ export class Skeletons {
 
   /** The ground under (x, z), unless it is another storey's than `ref`'s. */
   _ground(x, z, ref) {
-    const y = this.walk.heightAt(x, z)
+    const y = this.walk.heightAt(x, z, ref)
     return Number.isFinite(y) && Math.abs(y - ref) < STOREY_M ? y : ref
   }
 
@@ -344,8 +376,14 @@ export class Skeletons {
     if (b.clip !== clip) this._play(b, clip)
     const turn = this._turn(b, dt)
     const step = Math.min(d - stop, b.speed * dt * Math.max(0, turn))
-    b.x += Math.cos(b.heading) * step
-    b.z -= Math.sin(b.heading) * step
+    const mx = Math.cos(b.heading) * step, mz = -Math.sin(b.heading) * step
+    // Straight on, else sliding along whichever axis is free; a slide that gains under a fifth of the step toward the goal counts as pressed against the stone.
+    const way = [[mx, mz], [mx, 0], [0, mz]].find(([ax, az]) => (ax !== 0 || az !== 0) && this._stands(b.x + ax, b.z + az, b.y, SKELETON.bodyM, SKELETON.stepM))
+    if (way === undefined) { b.stuck += dt; return false }
+    if ((way[0] * dx + way[1] * dz) / d < step * 0.2) b.stuck += dt
+    else b.stuck = 0
+    b.x += way[0]
+    b.z += way[1]
     b.y = this._ground(b.x, b.z, b.y)
     return false
   }
@@ -405,6 +443,7 @@ export class Skeletons {
     const cut = this.blades.some((p) => Math.hypot(p.x - b.x, p.z - b.z) < SKELETON.bladeM && p.y > b.y && p.y < b.y + b.size)
     if (rushed || cut) this._collapse(b, now)
     if (b.tame && d > SKELETON.lostM && b.state !== 'pile') this._beside(b, this.list.indexOf(b))
+    if (b.stuck > SKELETON.stuckS) this._unstick(b)
     const holding = b.carrier !== null && b.carrier.count() > 0
     const busy = b.state === 'pile' || b.state === 'rise' || b.state === 'eat' || b.state === 'take' || b.state === 'joy' || b.state === 'romp'
     const pumpkin = !holding && !busy && b.fetching === null ? this._lure(b, PUMPKINS, SKELETON.pumpkinM) : null
@@ -544,6 +583,13 @@ export class Skeletons {
     }
   }
 
+  /** A body pressed against stone for stuckS: a follower is put beside her, a shy one sent home. */
+  _unstick(b) {
+    b.fetching = null
+    if (b.tame) this._beside(b, this.list.indexOf(b))
+    else { b.x = b.home.x; b.z = b.home.z; b.y = b.home.y; b.stuck = 0; this._go(b, 'hide') }
+  }
+
   /** A loose thing come to rest that it fetches: hers to bring back, far enough from her to want bringing, no other follower after it. */
   _thrown(b) {
     for (const item of this.hands.loose) {
@@ -591,9 +637,9 @@ export class Skeletons {
       for (const m of [this.boyPlain, this.boyMats.in, this.boyMats.out]) { m.map = body.asset.map; m.needsUpdate = true }
       const puppet = makePuppet(body.asset, this.boyMats, { clipFade: FADE_S })
       this.batch.add(puppet.group)
-      // Crouched over his bones by the skeleton, a step off its side.
+      // Crouched over his bones by the skeleton, a step off its side: a castle's spot is verified (hideout-spot.js), a cave's is not.
       const a = p.heading + Math.PI / 2
-      const x = p.x + Math.cos(a) * 0.9, z = p.z - Math.sin(a) * 0.9
+      const [x, z] = p.boy === null ? [p.x + Math.cos(a) * 0.9, p.z - Math.sin(a) * 0.9] : p.boy
       this.boy = { quest: lost.quest, puppet, x, y: p.y, z, heading: p.heading - Math.PI / 4, k: body.heightM / body.height, size: body.heightM, speed: 0, clip: 'gather', cue: 0, lod: LOD_RUNGS, foundAt: null }
     }
     const boy = this.boy

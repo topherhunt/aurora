@@ -8,9 +8,10 @@
 
 import * as THREE from 'three'
 import { setPuppetMode } from '../src/v2/render/baked-puppet.js'
-import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
-import { roomProps } from '../src/v2/castles/furnish.js'
-import { caveSpot, castleSpot, ghostSpot } from '../src/v2/hideout-spot.js'
+import { castleLayout } from '../src/v2/castles/layout.js'
+import { castleSolids, interiorSpans, SPANS } from '../src/v2/castles/solids.js'
+import { WalkSurface } from '../src/v2/walk.js'
+import { caveSpot, castleSpot, ghostSpot, BODY_M, HEAD_M } from '../src/v2/hideout-spot.js'
 import { CastleGhost, GHOST } from '../src/v2/render/ghost.js'
 import { dungeonCell, dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { TRADES } from '../src/v2/layers/trades.js'
@@ -24,6 +25,28 @@ import { Treats, doorOnRay, nightOf } from '../src/v2/treats.js'
 
 setPuppetMode('skinned')
 
+/** Whether interior (x, z) is floor at `y` with `head` m of air over it, by the castle's real collision. */
+function floorOpen(it, x, z, y, head, tol = 0.05) {
+  const n = interiorSpans(it, x, z, y + 0.5)
+  for (let i = 0; i < n; i++) if (Math.abs(SPANS.HI[i] - y) < tol && (i + 1 >= n || SPANS.LO[i + 1] - SPANS.HI[i] >= head)) return true
+  return false
+}
+/** Whether the `r` disc about (x, z) at floor `y` is open floor with HEAD_M over it: its centre and a ring of sixteen. */
+const discOpen = (it, x, z, y, r) => floorOpen(it, x, z, y, HEAD_M) && Array.from({ length: 16 }, (_, k) => floorOpen(it, x + Math.cos(k * Math.PI / 8) * r, z + Math.sin(k * Math.PI / 8) * r, y, HEAD_M)).every(Boolean)
+/** Whether dungeon cell `to` is reached from the foot's cells over open dungeon cells. */
+function connected(d, [i0, j0], to) {
+  const seen = new Set([i0 + j0 * d.W]), queue = [i0 + j0 * d.W]
+  for (let q = 0; q < queue.length; q++) {
+    const c = queue[q], i = c % d.W, j = Math.floor(c / d.W)
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const n = i + di + (j + dj) * d.W
+      if (i + di < 0 || i + di >= d.W || j + dj < 0 || j + dj >= d.D || seen.has(n) || Number.isNaN(d.lo[n])) continue
+      seen.add(n); queue.push(n)
+    }
+  }
+  return seen.has(to)
+}
+
 let failures = 0
 const check = (ok, label, detail = '') => {
   if (!ok) failures++
@@ -32,19 +55,19 @@ const check = (ok, label, detail = '') => {
 
 // --- the hideout spots -----------------------------------------------------------
 {
-  const S = CASTLE.scale
-  for (const seed of [1, 2, 3, 77, 991, 4242]) {
-    const lay = castleLayout(seed)
-    const props = roomProps(lay)
-    const spot = castleSpot(lay, props)
-    const room = spot && lay.nodes.find((n) => n.id === spot.room)
-    check(spot !== null && room.k === 0 && !room.unused, `castle ${seed}: the boy hides on a ground floor in use`, spot && `${room.id} ${room.sec.kind}`)
+  for (const seed of [1, 3, 8, 215679, 311021, 2, 77]) {
+    const lay = castleLayout(seed), d = dungeonPlan(lay), it = castleSolids(lay).it
+    const spot = castleSpot(lay)
+    check(spot !== null, `castle ${seed}: it has a hideout`)
     if (spot === null) continue
-    const tall = Math.max(...lay.nodes.filter((n) => n.kind === 'room' && !n.unused && n.k === 0 && (n.sec.kind === 'lookout' || n.sec.kind === 'tower')).map((n) => n.sec.floors), -1)
-    check(tall < 0 || ((room.sec.kind === 'lookout' || room.sec.kind === 'tower') && room.sec.floors === tall), `castle ${seed}: at the foot of its tallest tower, never the courtyard`, `${room.sec.kind} ${room.sec.floors} of ${tall}`)
-    const x0 = lay.X(room.x0) * S, x1 = lay.X(room.x0 + room.w) * S, z0 = lay.Z(room.z0) * S, z1 = lay.Z(room.z0 + room.d) * S
-    check(spot.lx > x0 && spot.lx < x1 && spot.lz > z0 && spot.lz < z1, `castle ${seed}: inside its room's walls`)
-    check(props.every((p) => p.k !== 0 || Math.hypot(p.x - spot.lx, p.z - spot.lz) >= Math.hypot(p.w, p.d) / 2 + 0.5), `castle ${seed}: clear of the room's furniture`)
+    const room = d.rooms[spot.room], cell = dungeonCell(d, spot.lx, spot.lz), boyCell = dungeonCell(d, spot.boy.lx, spot.boy.lz)
+    const g = ghostSpot(lay), ghostRoom = d.rooms.find((r) => r.rect[0] < g.lx && g.lx < r.rect[2] && r.rect[1] < g.lz && g.lz < r.rect[3])
+    check(spot.ly < 0 && Math.abs(spot.ly - d.lo[cell]) < 1e-9, `castle ${seed}: the boy hides in the dungeon, below storey 0, on its floor`, `ly ${spot.ly}`)
+    check(room.rect[0] < spot.lx && spot.lx < room.rect[2] && room.rect[1] < spot.lz && spot.lz < room.rect[3] && !room.flooded && Number.isNaN(d.water[cell]) && Number.isNaN(d.water[boyCell]), `castle ${seed}: in a dry dungeon room`)
+    check(spot.room !== d.chest && room !== ghostRoom, `castle ${seed}: not the chest's room nor the ghost's`, `room ${spot.room} chest ${d.chest}`)
+    check(discOpen(it, spot.lx, spot.lz, spot.ly, BODY_M) && discOpen(it, spot.boy.lx, spot.boy.lz, spot.ly, BODY_M), `castle ${seed}: a ${BODY_M} m disc about the skeleton and about the boy is open floor with ${HEAD_M} m of head room`)
+    check(Math.abs(Math.hypot(spot.boy.lx - spot.lx, spot.boy.lz - spot.lz) - 0.9) < 1e-6, `castle ${seed}: the boy sits beside the skeleton, 0.9 m off`)
+    check(connected(d, d.foot.cells, cell), `castle ${seed}: its room is reachable on dungeon floor from the foot chamber`)
   }
   // A graph: two mouths, a chamber two walks in, a deeper one past it, a deeper still behind a climb, and a wet one deepest.
   const nodes = [
@@ -92,8 +115,12 @@ function makeAsset(height = 1) {
 }
 
 // --- a world: flat ground, her hands, a hideout and its lost boy ------------------
-function makeWorld() {
-  const walk = { heightAt: () => 0, normalAt: (x, z, e, out) => out, obstacleAt: () => null }
+/** Flat ground at the foot height asked of it, with a wall slab 0.4 m thick across x = `wallX` (none while Infinity). */
+function stubWalk() {
+  const walk = { wallX: Infinity, heightAt: (x, z, y) => (y === undefined ? 0 : y), fits: (x, z, y, out, r) => Math.abs(x - walk.wallX) >= 0.2 + r, normalAt: (x, z, e, out) => out, obstacleAt: () => null }
+  return walk
+}
+function makeWorld(walk = stubWalk()) {
   const lures = []
   const eaten = []
   const carriers = []
@@ -161,7 +188,7 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   check(w.layer.list.length === 1 && !b.tame && b.state === 'hide' && b.clip === 'cower', 'the hideout\'s skeleton is shy: cowering at home')
   check(w.layer.lying.length === SKELETON.stash, `${SKELETON.stash} bones lie by it for her to feed it with`)
   check(w.layer.boy !== null && w.layer.boy.clip === 'gather' && Math.hypot(w.layer.boy.x - place.x, w.layer.boy.z - place.z) < 1.5, 'the lost boy crouches by it, playing with its bones')
-  check(Math.abs(place.y - (320 + castleSpot(castleLayout(3), roomProps(castleLayout(3))).ly)) < 1e-9, 'it stands on the hideout room\'s floor, the interior\'s height over the castle')
+  check(Math.abs(place.y - (320 + castleSpot(castleLayout(3)).ly)) < 1e-9, 'it stands on the dungeon room\'s floor, the interior\'s height over the castle')
 
   // Her pick of a stash bone, by the hands source.
   const lie = w.layer.lying[0]
@@ -180,7 +207,7 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   // Rushing it collapses it; it gets up again where it was.
   const home = { x: b.x, z: b.z }
   let rush = 4.5
-  run(w, 0.6, () => { rush -= 4 * DT; return { x: place.x + rush * Math.cos(away), y: 320, z: place.z + rush * Math.sin(away) } }, clock)
+  run(w, 0.6, () => { rush -= 4 * DT; return { x: place.x + rush * Math.cos(away), y: place.y, z: place.z + rush * Math.sin(away) } }, clock)
   check(b.state === 'pile' || b.state === 'rise', 'she running at a shy one collapses it into a pile', b.state)
   check(w.layer.said.some((v) => v.sound === 'skeletonCollapse'), 'it clatters down')
   check(w.layer.carriers === undefined && w.carriers.length === 0, 'with nothing to drop')
@@ -189,8 +216,8 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   check(w.layer.voices([]).some((v) => v.sound === 'skeletonReassemble'), 'with a rattle of putting itself together')
 
   // A bone held out draws it out; held at its head, it eats and is hers.
-  const stand = { x: place.x + 3 * Math.cos(away), y: 320, z: place.z + 3 * Math.sin(away) }
-  const bone = { kind: 'bone', x: stand.x - 0.4, y: 320 + 0.95, z: stand.z, by: null }
+  const stand = { x: place.x + 3 * Math.cos(away), y: place.y, z: place.z + 3 * Math.sin(away) }
+  const bone = { kind: 'bone', x: stand.x - 0.4, y: place.y + 0.95, z: stand.z, by: null }
   w.lures.push(bone)
   run(w, 8, () => stand, clock)
   check(w.eaten.some((e) => e.kind === 'bone' && e.eater === 'skeleton'), 'a bone held out within reach of a shy one: it walks up and eats it from her hand')
@@ -199,7 +226,7 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   check(b.state === 'follow' || b.state === 'fidget', 'and follows her', b.state)
 
   // Finding the boy.
-  run(w, 3, () => ({ x: w.layer.boy.x + 1, y: 320, z: w.layer.boy.z }), clock)
+  run(w, 3, () => ({ x: w.layer.boy.x + 1, y: place.y, z: w.layer.boy.z }), clock)
   check(w.conv.state === 'found' && w.layer.boy !== null && w.layer.boy.clip === 'wave', 'her walking up to the lost boy finds him, and he waves')
   run(w, SKELETON.goneS + 2, () => stand, clock)
   check(w.layer.boy === null, 'then he is off home')
@@ -279,6 +306,76 @@ const site = { id: '3,4', seed: 3, x: 100, z: 50, yaw: 0.4 }
   run(w, 0.2, () => ({ x: 0, y: -2000, z: 0 }))
   check(w.layer.list.length === 2 && w.layer.list.every((b) => b.tame), 'its own hideout entered again, a tamed skeleton is not there twice')
   check(w.layer.lying.length === SKELETON.stash, 'though its bones are')
+}
+
+// --- walls: the hideout's bones and caps, and every step, stay on open floor -----------
+/** The real interior walk of `lay`, in interior metres (a site at the origin, unturned, its floor at 0). */
+function interiorWalk(it) {
+  const stone = {
+    columnAt(x, z, _m, out, foot) {
+      const n = interiorSpans(it, x, z, (foot === undefined ? -5.5 : foot) + 0.5)
+      for (let i = 0; i < n; i++) { out[i * 2] = SPANS.LO[i]; out[i * 2 + 1] = SPANS.HI[i] }
+      return n
+    },
+    blockTopAt(x, z) {
+      const n = interiorSpans(it, x, z, -5.5)
+      let top = -Infinity
+      for (let i = 0; i < n; i++) if (SPANS.HI[i] < 999) top = Math.max(top, SPANS.HI[i])
+      return top
+    },
+    deckAt: () => true,
+  }
+  return new WalkSurface({ heightAt: () => it.base }, stone, { trunkAt: () => false })
+}
+/** Whether a body of `r` can stand at interior (x, z) on floor `y` (a body rides up to 0.15 m off a floor): open floor at its centre and ring, `head` of air over each. */
+const bodyOpen = (it, x, z, y, r, head) => floorOpen(it, x, z, y, head, 0.15) && Array.from({ length: 8 }, (_, k) => floorOpen(it, x + Math.cos(k * Math.PI / 4) * r, z + Math.sin(k * Math.PI / 4) * r, y, head, 0.15)).every(Boolean)
+
+for (const seed of [1, 3, 8, 215679, 311021]) {
+  const lay = castleLayout(seed), it = castleSolids(lay).it, w = makeWorld(interiorWalk(it))
+  const there = { id: '3,4', seed, x: 0, z: 0, yaw: 0 }
+  w.layer.intoCastle(there, 0, w.walk)
+  run(w, 0.2, () => ({ x: 40, y: 0, z: 40 }))
+  const b = w.layer.list[0], boy = w.layer.boy, y = w.layer.place.y
+  check(b !== undefined && boy !== null && b.y === y, `castle ${seed}: the skeleton and the lost boy stand on the dungeon floor`)
+  check(bodyOpen(it, b.x, b.z, y, SKELETON.bodyM, SKELETON.heightM) && bodyOpen(it, boy.x, boy.z, y, SKELETON.bodyM, SKELETON.heightM), `castle ${seed}: neither is in the wall: both stand on open floor with a shoulder clear of stone`)
+  check(w.layer.lying.length === SKELETON.stash && w.layer.lying.every((l) => floorOpen(it, l.x, l.z, y, 0.5)), `castle ${seed}: every bone laid out lies on open floor`)
+  check(w.layer.caps.length === SKELETON.caps && w.layer.caps.every((c) => floorOpen(it, c.x, c.z, y, 0.5)), `castle ${seed}: every ghost cap grows on open floor`)
+}
+
+{
+  // Walking at a wall: a stand-in slab across its way.
+  const w = makeWorld()
+  w.layer.intoCastle({ ...site, id: '9,9' }, 0, w.walk)
+  w.friends.add('castle:3,4')
+  const clock = { now: 0 }
+  run(w, 0.2, () => ({ x: 0, y: 0, z: 0 }), clock)
+  const b = w.layer.list[0]
+  w.walk.wallX = 5
+  const across = () => ({ x: 12, y: 0, z: 0 })
+  let deepest = -Infinity
+  for (let i = 0; i < Math.round(2.9 / DT); i++) { run(w, DT, across, clock); deepest = Math.max(deepest, b.x) }
+  check(b.x > 3 && deepest + SKELETON.bodyM <= w.walk.wallX - 0.2 + 1e-6, 'a follower sent at a wall walks up to it and stops there, never into it', `x ${b.x.toFixed(2)} deepest ${deepest.toFixed(2)}`)
+  check(b.stuck > 0 && b.x < w.walk.wallX, 'and stays pressed against it, not through')
+  run(w, SKELETON.stuckS, across, clock)
+  check(Math.hypot(b.x - 12, b.z) < SKELETON.followM + 0.5, 'pressed on it too long, it is put beside her on the far side', `x ${b.x.toFixed(2)}`)
+}
+
+{
+  // The same on the real dungeon: she on the far side of rock from it.
+  const seed = 3, lay = castleLayout(seed), it = castleSolids(lay).it, d = dungeonPlan(lay), w = makeWorld(interiorWalk(it))
+  const at = castleSpot(lay)
+  const far = d.rooms.filter((r, i) => i !== at.room && r.rect[2] - r.rect[0] >= 3 && Math.hypot(r.node.i + d.x0 - at.lx, r.node.j + d.z0 - at.lz) < 25).map((r) => ({ r, x: d.x0 + r.node.i + 0.5, z: d.z0 + r.node.j + 0.5 })).filter(({ x, z }) => { for (let t = 0.1; t < 0.9; t += 0.05) if (!floorOpen(it, at.lx + (x - at.lx) * t, at.lz + (z - at.lz) * t, at.ly, 0.5)) return true; return false })
+  check(far.length > 0, 'a dungeon room beyond rock from the hideout to walk her to')
+  w.friends.add('castle:3,4')
+  w.layer.intoCastle({ id: '3,4', seed, x: 0, z: 0, yaw: 0 }, 0, w.walk)
+  const clock = run(w, 0.3, () => ({ x: at.lx, y: at.ly, z: at.lz }))
+  const b = w.layer.list[0], goal = far[0]
+  let inStone = 0, frames = 0
+  const to = () => ({ x: goal.x, y: at.ly, z: goal.z })
+  for (let s = 0; s < 2.9; s += DT) { run(w, DT, to, clock); frames++; if (!bodyOpen(it, b.x, b.z, b.y, SKELETON.bodyM, SKELETON.heightM)) inStone++ }
+  check(frames > 0 && inStone === 0, 'a follower sent at her through the dungeon\'s rock is never once in stone', `${inStone} of ${frames} frames, at ${b.x.toFixed(1)},${b.z.toFixed(1)}`)
+  for (let s = 0; s < 20; s += DT) { run(w, DT, to, clock); if (!bodyOpen(it, b.x, b.z, b.y, SKELETON.bodyM, SKELETON.heightM)) inStone++ }
+  check(inStone === 0, 'nor in the twenty seconds after, whether it finds its way round or is put beside her', `${inStone} frames in stone`)
 }
 
 // --- the wisps -------------------------------------------------------------------

@@ -1,5 +1,5 @@
-// The wards, their anchor gems and the runebooks inside the castle she is in (design/46-castle-wards.md): children of the interior
-// mesh, so in interior metres. Built on the main thread from the worker's portals.
+// The wards, their anchor gems and the runebooks of a castle (design/46-castle-wards.md), built on the main thread from the worker's
+// portals: indoors a child of the interior mesh, in interior metres; the tower tops' books a set of their own on the exterior.
 import THREE from '../../three-instance.js'
 import { RUNES } from '../castles/wards.js'
 
@@ -78,8 +78,8 @@ function runeStrip(code, w) {
 const BURST = 90
 
 export class WardSet {
-  /** `P` the castle's portals, `runes` the rune atlas texture, `open` and `spent` bitmasks of wards opened and books used. */
-  constructor(P, runes, open, spent) {
+  /** `P` the castle's portals, `runes` the rune atlas texture, `open` and `spent` bitmasks of wards opened and books used. `roof`: draw the tower tops' books rather than the rooms'. */
+  constructor(P, runes, open, spent, roof = false) {
     this.group = new THREE.Group()
     this.group.name = 'qa-castle-wards'
     this.halo = haloTexture()
@@ -102,7 +102,7 @@ export class WardSet {
       this.group.add(g)
       const shut = !(open & (1 << i))
       g.visible = shut
-      return { g, sheet, gem, mat, at: w.gem.slice(), shut, fade: shut ? 0 : 1, opening: false, flash: 0 }
+      return { g, sheet, gem, mat, at: w.gem.slice(), nx: w.nx, nz: w.nz, shut, fade: shut ? 0 : 1, opening: false, flash: 0 }
     })
     this.books = P.books.map((b, j) => {
       const g = new THREE.Group(), mat = glowMaterial(j * 0.53 + 2.1, THREE.NormalBlending), [W, D] = WARD_LOOK.book
@@ -123,7 +123,7 @@ export class WardSet {
       g.name = 'qa-runebook'
       this.group.add(g)
       const live = !(spent & (1 << j))
-      g.visible = live
+      g.visible = live && b.roof === roof
       return { g, mat, strip, at: b.at.slice(), code: b.code.slice(), live, fade: live ? 0 : 1, going: false }
     })
     const bp = new Float32Array(BURST * 3)
@@ -178,11 +178,12 @@ export class WardSet {
     }
   }
 
-  /** The shut ward whose gem the ray from `o` along unit `d` (interior frame) passes within WARD_LOOK.grab of inside `maxDist`, or -1. */
+  /** The shut ward whose gem the ray from `o` along unit `d` (interior frame) passes within WARD_LOOK.grab of inside `maxDist`, or -1.
+   * Only from the gem's side of its membrane: the search that plans the wards assumes she cannot open one from beyond it. */
   gemOn(o, d, maxDist) {
     let best = -1, bestT = maxDist
     this.wards.forEach((w, i) => {
-      if (!w.shut) return
+      if (!w.shut || (o.x - w.sheet.position.x) * w.nx + (o.z - w.sheet.position.z) * w.nz <= 0) return
       const [x, y, z] = [w.gem.position.x - o.x, w.gem.position.y - o.y, w.gem.position.z - o.z], t = x * d.x + y * d.y + z * d.z
       if (t < 0 || t > bestT) return
       if (Math.hypot(x - d.x * t, y - d.y * t, z - d.z * t) < WARD_LOOK.grab) { best = i; bestT = t }
@@ -213,6 +214,12 @@ export class WardSet {
     if (!w.shut || !b.live) throw new Error(`WardSet: opening ward ${i} with book ${j}, one already spent`)
     w.shut = false; w.opening = true
     b.live = false; b.going = true
+  }
+
+  /** Wards `open` and books `spent` (bitmasks) that someone else opened or spent since: each dissolves or fades as if opened here. */
+  catchUp(open, spent) {
+    this.wards.forEach((w, i) => { if (w.shut && open & (1 << i)) { w.shut = false; w.opening = true } })
+    this.books.forEach((b, j) => { if (b.live && spent & (1 << j)) { b.live = false; b.going = true } })
   }
 
   /** Ward `i` shimmers and bursts at its gem. */

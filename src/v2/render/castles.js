@@ -191,8 +191,9 @@ export function interiorMaterials(maps, uTorch) {
 export class Castles {
   /** `sites` layers/castles.js CastleSites.list; `patch(material, cacheKey)` lighting.js's vertex patch; `uTorch` lighting.js's
    * held torches, shared by reference; `probeHidden` what the dungeon water's probe must not capture (main.js's world probe's);
-   * `runes()` the rune atlas texture (render/rune-atlas.js), asked for when a castle's wards are built. */
-  constructor(scene, sites, { patch, uTorch, probeHidden, runes }) {
+   * `runes()` the rune atlas texture (render/rune-atlas.js), asked for when a castle's wards are built; `spentOf(site)` a built
+   * castle's spent runebooks as a bitmask (main.js wardMasks), read while its tower tops' books are drawn. */
+  constructor(scene, sites, { patch, uTorch, probeHidden, runes, spentOf }) {
     if (!uTorch || uTorch.value.length !== TORCHES) throw new Error('Castles: needs lighting.uniforms.uTorch')
     if (!Array.isArray(probeHidden)) throw new Error('Castles: needs the world probe\'s hidden list')
     this.scene = scene
@@ -207,6 +208,7 @@ export class Castles {
     Object.assign(this, interiorMaterials(this.maps, uTorch))
     this.probeHidden = probeHidden
     this.runes = runes
+    this.spentOf = spentOf
     this.ropeMaterial = patch(new THREE.MeshLambertMaterial({ map: ropeTexture() }), 'v2-castle-rope')
     // Sites whose summit rope she has let down, for the session.
     this.ropesDown = new Set()
@@ -315,6 +317,8 @@ export class Castles {
     const B = CASTLE_BANDS
     let cards = false
     const flicker = 0.9 + 0.06 * Math.sin(t * 7.3) + 0.04 * Math.sin(t * 13.7 + 1.3)
+    const wardDt = Math.min(0.1, Math.max(0, t - (this._wardT ?? t)))
+    this._wardT = t
     this.glow.value.setRGB(...INNER_LIGHT.fire).multiplyScalar(night * flicker)
     for (const s of this.sites) {
       const d = Math.hypot(eye.x - s.x, eye.z - s.z), c = this.live.get(s.id)
@@ -333,6 +337,7 @@ export class Castles {
         c.flames.update(t, [night, night, night])
         c.flames.mesh.visible &&= shown && full && night > 0.05
       }
+      if (c.roofBooks) this._roofBooks(c, t, wardDt, eye, shown && full)
     }
     if (this.inside !== null) {
       if (this.inside.innerFlames !== null) this.inside.innerFlames.update(t, [1, 1, 1])
@@ -341,13 +346,36 @@ export class Castles {
       this.waterUniforms.uTime.value = t % 1024
       const w = this.inside.wardSet, m = this.inside.innerMesh
       this._eye.set(eye.x, eye.y, eye.z)
-      w.update(t, Math.min(0.1, Math.max(0, t - (this._wardT ?? t))), m.worldToLocal(this._eye))
-      this._wardT = t
+      w.update(t, wardDt, m.worldToLocal(this._eye))
     }
     if (cards) this._placeCards()
     this.stats.live = this.live.size
     this.stats.full = [...this.live.values()].filter((c) => c.state === 'ready' && c.shown && c.full.visible).length
     this.stats.low = [...this.live.values()].filter((c) => c.state === 'ready' && c.shown && c.low.visible).length
+  }
+
+  /** Castle `c`'s tower-top runebooks, on its exterior while that is `drawn` in full, fading as the ledger spends them. */
+  _roofBooks(c, t, dt, eye, drawn) {
+    if (!drawn) {
+      if (c.roofSet !== null) { c.roofSet.group.removeFromParent(); c.roofSet.dispose(); c.roofSet = null }
+      return
+    }
+    const spent = this.spentOf(c.site)
+    if (c.roofSet === null) {
+      c.roofSet = new WardSet({ wards: [], books: c.solids.portals.books }, this.runes(), 0, spent, true)
+      c.group.add(c.roofSet.group)
+    }
+    c.roofSet.catchUp(0, spent)
+    c.roofSet.update(t, dt, c.group.worldToLocal(this._eye.set(eye.x, eye.y, eye.z)))
+  }
+
+  /** Castle site `id` built, whatever the frame loop has reached: a save wakes her inside it before the first frame. Its site. */
+  whenBuilt(id) {
+    const s = this.sites.find((q) => q.id === id)
+    if (s === undefined) throw new Error(`Castles: no castle ${id} to wake in`)
+    if (!this.live.has(id)) this._build(s)
+    const c = this.live.get(id)
+    return c.state === 'ready' ? s : new Promise((resolve) => { c.arrived = resolve })
   }
 
   _build(s) {
@@ -396,8 +424,11 @@ export class Castles {
     c.flames = flamesOf(s, d.flames.exterior, s.y)
     if (c.flames !== null) this.scene.add(c.flames.group)
     c.innerFlameList = d.flames.interior
+    c.roofBooks = d.solids.portals.books.some((b) => b.roof)
+    c.roofSet = null
     c.state = 'ready'
     this.stats.built++
+    if (c.arrived) c.arrived(s)
   }
 
   _drop(c) {
@@ -406,6 +437,7 @@ export class Castles {
     c.group.removeFromParent()
     for (const m of [c.full, c.low, c.court, c.rope.hang, c.rope.coil]) m.geometry.dispose()
     if (c.flames !== null) { c.flames.group.removeFromParent(); c.flames.dispose() }
+    if (c.roofSet !== null) c.roofSet.dispose()
   }
 
   /** The built castle whose footprint holds world (x, z), with (x, z) in its local metres; null where there is none. */
@@ -448,6 +480,15 @@ export class Castles {
     if (c === undefined || c.state !== 'ready') return null
     const [x, y, z] = c.solids.portals.chest, [wx, wz] = turn(c.site, x, z)
     return [c.site.x + wx, c.site.y + y + 0.2, c.site.z + wz]
+  }
+
+  /** The beds of the castle she is in, as solids.js portals has them but in world metres and turned with the site. */
+  bedsInside() {
+    const c = this.inside, s = c.site
+    return c.solids.portals.beds.map((b) => {
+      const [wx, wz] = turn(s, b.x, b.z), oy = s.y + CASTLE_RISE
+      return { ...b, x: s.x + wx, z: s.z + wz, top: oy + b.top, floor: oy + b.floor, yaw: b.yaw + s.yaw }
+    })
   }
 
   /** The dungeon key's and dungeon chest's spots in built castle site `id`'s interior, world [x, y, z] while it is drawn at
@@ -546,6 +587,15 @@ export class Castles {
     const c = this.inside
     c.wardSet.open(i, j)
     c.solids.it.open |= 1 << i
+  }
+
+  /** The castle she is in after the room's ledger arrives: wards `open` and books `spent` by anyone dissolve, and the dungeon door
+   * opens when `unlocked`. */
+  catchUp(open, spent, unlocked) {
+    const c = this.inside
+    c.wardSet.catchUp(open, spent)
+    c.solids.it.open |= open
+    if (unlocked && !c.solids.it.unlocked) this.unlock(c.site)
   }
 
   /** Ward `i` of the castle she is in rejects a code: it shimmers and bursts. */

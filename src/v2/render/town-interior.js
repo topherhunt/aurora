@@ -529,6 +529,23 @@ function upperFloor(M, K, room, timber) {
 
 // --- the furniture -------------------------------------------------------------------
 
+/** A bed in frame F, its headboard at +z: `it` gives wid, len, top, posts, pillows and `coarse` (a quarter of the linen's facets), `col` its wood, mattress, blanket and linen. Castles draw theirs with it too. */
+export function bedMesh(M, K, F, it, col) {
+  const tint = col.wood, hw = it.wid / 2, hl = it.len / 2, T = it.top, fine = it.coarse ? { segs: 8, rows: 4 } : {}
+  const post = it.posts ? 1.7 : 0.95
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) hewn(M.grain, K, F, [sx * hw - 0.045, 0, sz * hl - 0.045], [sx * hw + 0.045, sz > 0 ? post : 0.7, sz * hl + 0.045], tint, 0.004)
+  for (const s of [-1, 1]) hewn(M.grain, K, F, [s * hw - 0.03, 0.2, -hl], [s * hw + 0.03, T - 0.12, hl], tint, 0.004)
+  hewn(M.grain, K, F, [-hw, 0.2, hl - 0.04], [hw, 0.9, hl], tint, 0.004)
+  hewn(M.grain, K, F, [-hw, 0.2, -hl], [hw, 0.62, -hl + 0.04], tint, 0.004)
+  if (it.posts) for (const s of [-1, 1]) hewn(M.grain, K, F, [-hw - 0.03, 1.62, s * hl - 0.03], [hw + 0.03, 1.7, s * hl + 0.03], tint, 0.004)
+  K.box(M.linen, F, 0, T - 0.08, 0, hw - 0.04, 0.08, hl - 0.05, col.mattress, { round: 0.5, uvM: 0.4, ...fine })
+  K.box(M.linen, F, 0, T - 0.02, -0.18, hw - 0.01, 0.06, hl - 0.25, col.blanket, { round: 0.5, uvM: 0.4, ...fine })
+  K.box(M.linen, F, 0, T + 0.035, hl - 0.48, hw - 0.01, 0.015, 0.1, col.linen, { round: 0.6, uvM: 0.4, ...fine })
+  for (let p = 0; p < it.pillows; p++) {
+    const x = it.pillows === 1 ? 0 : (p - 0.5) * (hw - 0.05)
+    K.blob(M.linen, F, [x + K.j(0.02), T + 0.03, hl - 0.24], it.pillows === 1 ? hw - 0.12 : hw / 2 - 0.06, 0.06, 0.15, col.linen, { rough: 0.04, ...fine })
+  }
+}
 const F0 = (it, y = it.y) => frame(it.x, y, it.z, it.yaw)
 /** A turned or hewn leg from (x, z) on the floor of `F` to height h. */
 const leg = (M, K, F, x, z, h, r, tint, splay = 0) => hewn(M.grain, K, { ...F, x: put(F, x, 0, z)[0], y: F.y, z: put(F, x, 0, z)[2] }, [-r, 0, -r], [r, h, r], tint, 0.006 + splay)
@@ -892,22 +909,8 @@ const ITEMS = {
       }
     })
   },
-  bed(it, M, K, room, rng) {
-    const F = F0(it), tint = WOOD(it.hue, -0.07), hw = it.wid / 2, hl = it.len / 2, T = it.top
-    const post = it.posts ? 1.7 : 0.95
-    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) hewn(M.grain, K, F, [sx * hw - 0.045, 0, sz * hl - 0.045], [sx * hw + 0.045, sz > 0 ? post : 0.7, sz * hl + 0.045], tint, 0.004)
-    for (const s of [-1, 1]) hewn(M.grain, K, F, [s * hw - 0.03, 0.2, -hl], [s * hw + 0.03, T - 0.12, hl], tint, 0.004)
-    hewn(M.grain, K, F, [-hw, 0.2, hl - 0.04], [hw, 0.9, hl], tint, 0.004)
-    hewn(M.grain, K, F, [-hw, 0.2, -hl], [hw, 0.62, -hl + 0.04], tint, 0.004)
-    if (it.posts) for (const s of [-1, 1]) hewn(M.grain, K, F, [-hw - 0.03, 1.62, s * hl - 0.03], [hw + 0.03, 1.7, s * hl + 0.03], tint, 0.004)
-    K.box(M.linen, F, 0, T - 0.08, 0, hw - 0.04, 0.08, hl - 0.05, rgb(0.11, 0.25, 0.62), { round: 0.5, uvM: 0.4 })
-    K.box(M.linen, F, 0, T - 0.02, -0.18, hw - 0.01, 0.06, hl - 0.25, cloth(room, it.blanket), { round: 0.5, uvM: 0.4 })
-    K.box(M.linen, F, 0, T + 0.035, hl - 0.48, hw - 0.01, 0.015, 0.1, CREAM, { round: 0.6, uvM: 0.4 })
-    for (let p = 0; p < it.pillows; p++) {
-      const x = it.pillows === 1 ? 0 : (p - 0.5) * (hw - 0.05)
-      K.blob(M.linen, F, [x + K.j(0.02), T + 0.03, hl - 0.24], it.pillows === 1 ? hw - 0.12 : hw / 2 - 0.06, 0.06, 0.15, CREAM, { rough: 0.04 })
-    }
-    void rng
+  bed(it, M, K, room) {
+    bedMesh(M, K, F0(it), it, { wood: WOOD(it.hue, -0.07), mattress: rgb(0.11, 0.25, 0.62), blanket: cloth(room, it.blanket), linen: CREAM })
   },
   press(it, M, K) {
     const F = F0(it), tint = WOOD(it.hue, -0.09), hx = it.hx, hz = it.hz, T = it.top

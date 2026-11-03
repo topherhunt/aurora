@@ -78,6 +78,9 @@ const TRAIN_KINDS = ['dummy', 'dummy', 'pell', 'rack', 'hay']
 const TORCHES = new Set(['sconce', 'brazier']), MAX_TORCHES = 2
 const WORK_KINDS = ['trough', 'block', 'woodpile', 'anvil', 'barrel', 'crate']
 const ROOF_KINDS = ['arrows', 'arrows', 'bowrack', 'stones', 'stones', 'barrel']
+const ROOF_MUST = ['bowrack', 'arrows', 'chair', 'brazier']
+// A one-cell tower's floor is 2.8 m across with a ladder through it: its must kinds stand along the walls beside the ladder, leaving the aisle.
+const ROOF_KIT = { must: ROOF_MUST, wall: ROOF_KINDS, tries: 60 }, SMALL_TOP_KIT = { must: ROOF_MUST, wall: [], clear: 0.65, tries: 60 }
 const DUNGEON_KINDS = ['barrel', 'crate', 'crate', 'sacks', 'grain', 'kegs', 'bucket', 'stones', 'cot', 'cask', 'chains', 'chains', 'straw', 'straw', 'bones', 'wreck', 'wreck', 'cage']
 const CLEAR = 1.3, LANE = 0.75, GAP = 0.15
 // The court's torch posts (castles/glow.js bakes their light): how many for a court of fewer than `big` open cells and for more, how
@@ -110,12 +113,12 @@ const frame = (o, u, v) => [o.x + u * Math.cos(o.yaw) + v * Math.sin(o.yaw), o.z
 
 /** Places props along the inside of rect r [x0, z0, x1, z1] (or a disc when `round`), their backs to the walls, then a centre
  * piece; no edge within CLEAR of a portal, no corner within LANE of a lane between portals, or overlapping what is placed. */
-function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity, laned = true) {
+function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity, laned = true, clear = CLEAR) {
   const placed = out.map((o) => cornersOf(o.x, o.z, o.yaw, o.w, o.d)), n0 = out.length
   const lanes = []
   if (laned) for (let i = 0; i < portals.length; i++) for (let j = i + 1; j < portals.length; j++) lanes.push([portals[i], portals[j]])
   const free = (pts, cx, cz) => pts.every((p) => lanes.every(([a, b]) => segDist(p, a, b) > LANE))
-    && portals.every((q) => Math.hypot(cx - q[0], cz - q[1]) > CLEAR && pts.every((p, i) => segDist(q, p, pts[(i + 1) % 4]) > CLEAR))
+    && portals.every((q) => Math.hypot(cx - q[0], cz - q[1]) > clear && pts.every((p, i) => segDist(q, p, pts[(i + 1) % 4]) > clear))
     && placed.every((q) => apart(pts, q))
   const put = (kind, x, z, yaw) => {
     const [w, d] = PROP[kind], pts = cornersOf(x, z, yaw, w, d)
@@ -125,13 +128,15 @@ function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity,
     return true
   }
   const [x0, z0, x1, z1] = r, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2
-  const inside = round ? (p) => Math.hypot(p[0] - cx, p[1] - cz) < (x1 - x0) / 2 * Math.cos(Math.PI / 12) - 0.02
+  const inR = (x1 - x0) / 2 * Math.cos(Math.PI / 12) - 0.02
+  const inside = round ? (p) => Math.hypot(p[0] - cx, p[1] - cz) < inR
     : (p) => p[0] > x0 - 0.01 && p[0] < x1 + 0.01 && p[1] > z0 - 0.01 && p[1] < z1 + 0.01
   const tries = Math.round(((x1 - x0) + (z1 - z0)) * 0.8)
   for (let t = 0; kinds.length && t < tries; t++) {
     const kind = kinds[Math.floor(rng() * kinds.length)], [w, d] = PROP[kind]
     if (round) {
-      const R = (x1 - x0) / 2, a = rng() * Math.PI * 2, rr = R - d / 2 - 0.1
+      // On a tight top a long prop sits on a chord, as near the wall as its corners stay inside; in a room it would stand across her way.
+      const R = (x1 - x0) / 2, a = rng() * Math.PI * 2, wallR = R - d / 2 - 0.1, rr = clear < CLEAR ? Math.min(wallR, Math.sqrt(inR * inR - w * w / 4) - d / 2 - 0.01) : wallR
       put(kind, cx + Math.cos(a) * rr, cz + Math.sin(a) * rr, Math.atan2(Math.cos(a), Math.sin(a)) + Math.PI)
       continue
     }
@@ -157,7 +162,8 @@ function fillRect(rng, r, round, portals, kinds, y, centre, out, cap = Infinity,
 /** `must` kinds one each (six rounds clear of the lanes, then six against a wall across them: she walks round), then `wall` kinds,
  * `centre`, and `wall` kinds again, into `out`. */
 function fillKit(rng, r, round, portals, kit, y, out) {
-  for (const kind of kit.must ?? []) for (let t = 0, n = out.length; t < 12 && out.length === n; t++) fillRect(rng, r, round, portals, [kind], y, null, out, 1, t < 6)
+  const tries = kit.tries ?? 12
+  for (const kind of kit.must ?? []) for (let t = 0, n = out.length; t < tries && out.length === n; t++) fillRect(rng, r, round, portals, [kind], y, null, out, 1, t < tries / 2, kit.clear)
   fillRect(rng, r, round, portals, kit.wall, y, kit.centre ?? null, out)
   fillRect(rng, r, round, portals, kit.wall, y, null, out)
 }
@@ -194,7 +200,8 @@ function nodePortals(lay, n) {
   for (const e of lay.edges) {
     if (e.a !== n && e.b !== n) continue
     for (const d of e.doors) if (Math.abs(d.y - n.k * H) < 0.1) out.push([d.x * S, d.z * S])
-    if (e.ladder) out.push([e.ladder.x * S, e.ladder.z * S])
+    // Ahead of a ladder, so its disc is the floor she walks out onto from its foot.
+    if (e.ladder) out.push([e.ladder.x * S + e.ladder.ux * 0.6, e.ladder.z * S + e.ladder.uz * 0.6])
   }
   for (const st of shaftsOf(lay).storeys) if (st.node === n) for (const ex of st.exits) if (ex.kind === 'room') {
     const a = ex.c * Math.PI / 2
@@ -209,8 +216,8 @@ const plans = new WeakMap()
  * at, lo, hi, door: [g0, g1] } -- a partition on the plane axis = at from lo to hi, open over door. A used room node's cells less those
  * its shafts fill (spiral.js) are split into the largest rectangles first, walled from each other where they meet; each is then cut
  * on cell lines (a ladder's back is to a room wall, so a partition is 1.2 interior metres off its trap door at the least, and its
- * doorway between the cells' doors), the throne's
- * node into pieces of 6 cells at most, the rest 2 or 1; the keep's ground (the hall's) is left whole.
+ * doorway between the cells' doors): the throne's node, the keep's ground (the hall's) and the gate's ground room into halves through
+ * their middles, the rest into 2 cells or 1, round rooms left whole.
  */
 export function roomPlan(lay) {
   if (plans.has(lay)) return plans.get(lay)
@@ -258,24 +265,25 @@ export function roomPlan(lay) {
         }
       }
     }))
-    const cap = n === throneNode ? 6 : n === hallNode || n.sec.round || (n.sec.kind === 'gate' && n.k === 0) ? Infinity : 2
-    const cut = (p) => {
+    // The grand rooms (throne, hall, the gate's ground room) are halved through their middle; the rest are cut to 2 cells or 1.
+    const grand = !n.sec.round && (n === throneNode || n === hallNode || (n.sec.kind === 'gate' && n.k === 0))
+    const cut = (p, cap = n.sec.round ? Infinity : grand ? Math.ceil((p.w * p.d) / 2) : 2) => {
       const many = p.w * p.d
-      if (many <= 1 || many <= cap && !(cap === 2 && many === 2 && rng() < 0.5)) {
+      if (many <= 1 || many <= cap && !(!grand && many === 2 && rng() < 0.5)) {
         chambers.push({ node: n, k: n.k, rect: p.r, cells: many, round: n.sec.round, role: null, portals: [] })
         return
       }
-      const alongX = p.w > p.d || (p.w === p.d && rng() < 0.5), span = alongX ? p.w : p.d, i = 1 + Math.floor(rng() * (span - 1))
+      const alongX = p.w > p.d || (p.w === p.d && rng() < 0.5), span = alongX ? p.w : p.d, i = grand ? Math.floor(span / 2) + (span % 2 && rng() < 0.5 ? 1 : 0) : 1 + Math.floor(rng() * (span - 1))
       const line = (alongX ? lay.X(p.x0 + i) : lay.Z(p.z0 + i)) * S, t = Math.floor(rng() * (alongX ? p.d : p.w))
       const mid = (alongX ? lay.Z(p.z0 + t + 0.5) : lay.X(p.x0 + t + 0.5)) * S
       const [lo, hi] = alongX ? [p.r[1], p.r[3]] : [p.r[0], p.r[2]]
       walls.push({ k: n.k, axis: alongX ? 'x' : 'z', at: line, lo, hi, door: [mid - PARTITION.door / 2, mid + PARTITION.door / 2], y: n.k * SH })
       if (alongX) {
-        cut({ x0: p.x0, z0: p.z0, w: i, d: p.d, r: [p.r[0], p.r[1], line - PT / 2, p.r[3]] })
-        cut({ x0: p.x0 + i, z0: p.z0, w: p.w - i, d: p.d, r: [line + PT / 2, p.r[1], p.r[2], p.r[3]] })
+        cut({ x0: p.x0, z0: p.z0, w: i, d: p.d, r: [p.r[0], p.r[1], line - PT / 2, p.r[3]] }, cap)
+        cut({ x0: p.x0 + i, z0: p.z0, w: p.w - i, d: p.d, r: [line + PT / 2, p.r[1], p.r[2], p.r[3]] }, cap)
       } else {
-        cut({ x0: p.x0, z0: p.z0, w: p.w, d: i, r: [p.r[0], p.r[1], p.r[2], line - PT / 2] })
-        cut({ x0: p.x0, z0: p.z0 + i, w: p.w, d: p.d - i, r: [p.r[0], line + PT / 2, p.r[2], p.r[3]] })
+        cut({ x0: p.x0, z0: p.z0, w: p.w, d: i, r: [p.r[0], p.r[1], p.r[2], line - PT / 2] }, cap)
+        cut({ x0: p.x0, z0: p.z0 + i, w: p.w, d: p.d - i, r: [p.r[0], line + PT / 2, p.r[2], p.r[3]] }, cap)
       }
     }
     for (const p of pieces) cut(p)
@@ -420,7 +428,26 @@ export function courtProps(lay) {
   return out
 }
 
-/** Every used roof's archers' stores and brazier, and the walks' along their outer parapets, in exterior metres at their floors. */
+/** Roof node `n`'s floor height `y`, its plan rect inside the parapet and whether that is a `round` disc's bounds, the `portals` to keep clear, and whether it is a `small` one-cell tower top, exterior metres. */
+export function roofFrame(lay, n) {
+  const s = n.sec, y = s.floors * H, m = 0.6, small = s.w === 1 && s.d === 1
+  const r = [lay.X(s.x0) + m, lay.Z(s.z0) + m, lay.X(s.x0 + s.w) - m, lay.Z(s.z0 + s.d) - m], cx = (r[0] + r[2]) / 2, cz = (r[1] + r[3]) / 2
+  const portals = s.round || small ? [] : [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
+  for (const e of lay.edges) {
+    if (e.a !== n && e.b !== n) continue
+    const pts = []
+    for (const d of e.doors) if (Math.abs(d.y - y) < 0.1) pts.push([d.x, d.z])
+    if (e.kind === 'step') pts.push([e.pts[1][0], e.pts[1][2]])
+    if (e.ladder) pts.push([e.ladder.x, e.ladder.z])
+    for (const [x, z] of pts) {
+      const l = Math.hypot(cx - x, cz - z) || 1
+      portals.push([x, z], [x + (cx - x) / l * 1.2, z + (cz - z) / l * 1.2])
+    }
+  }
+  return { y, rect: s.round ? [cx - (s.w * C / 2 - m), cz - (s.w * C / 2 - m), cx + (s.w * C / 2 - m), cz + (s.w * C / 2 - m)] : r, round: s.round, portals, small }
+}
+
+/** Every used roof's brazier, archery racks, chair and stores, and the walks' along their outer parapets, in exterior metres at their floors. */
 export function roofProps(lay) {
   const out = []
   lay.nodes.forEach((n, ni) => {
@@ -438,22 +465,8 @@ export function roofProps(lay) {
       }
       return
     }
-    const y = s.floors * H, m = 0.6
-    const r = [lay.X(s.x0) + m, lay.Z(s.z0) + m, lay.X(s.x0 + s.w) - m, lay.Z(s.z0 + s.d) - m], cx = (r[0] + r[2]) / 2, cz = (r[1] + r[3]) / 2
-    const portals = s.round ? [] : [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
-    for (const e of lay.edges) {
-      if (e.a !== n && e.b !== n) continue
-      const pts = []
-      for (const d of e.doors) if (Math.abs(d.y - y) < 0.1) pts.push([d.x, d.z])
-      if (e.kind === 'step') pts.push([e.pts[1][0], e.pts[1][2]])
-      if (e.ladder) pts.push([e.ladder.x, e.ladder.z])
-      for (const [x, z] of pts) {
-        const l = Math.hypot(cx - x, cz - z) || 1
-        portals.push([x, z], [x + (cx - x) / l * 1.2, z + (cz - z) / l * 1.2])
-      }
-    }
-    const list = []
-    fillKit(rng, s.round ? [cx - (s.w * C / 2 - m), cz - (s.w * C / 2 - m), cx + (s.w * C / 2 - m), cz + (s.w * C / 2 - m)] : r, s.round, portals, { must: ['brazier'], wall: ROOF_KINDS }, y, list)
+    const { y, rect, round, portals, small } = roofFrame(lay, n), list = []
+    fillKit(rng, rect, round, portals, small ? SMALL_TOP_KIT : ROOF_KIT, y, list)
     out.push(...list)
   })
   return out

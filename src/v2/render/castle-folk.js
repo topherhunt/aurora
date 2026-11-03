@@ -305,7 +305,7 @@ export class CastleFolk {
       const size = FOLK.size * (1 + FOLK.sizeVar * (((hash32(site.seed, i) % 200) / 100) - 1))
       // `greet` while coming to her or waiting there (conversations.js), `held` while she talks with them; `home` where to walk back
       // to after, and `lag` the seconds a pacer or traveller has stood out of its round.
-      const p = { spec, obj: null, mixer: null, actions: null, clip: null, mind, near: false, spoke: 0, chatAt: null, tiers: null, lod: -1, size, pose: { x: 0, y: 0, z: 0 }, rooms, site, greet: null, held: false, home: null, lag: 0, gestureUntil: 0, torch: null }
+      const p = { spec, obj: null, mixer: null, actions: null, clip: null, mind, near: false, spoke: 0, chatAt: null, tiers: null, lod: -1, size, pose: { x: 0, y: 0, z: 0 }, rooms, site, lay, greet: null, held: false, home: null, lag: 0, gestureUntil: 0, torch: null }
       cast.people.push(p)
       this._body(spec.body).then((gltf) => {
         if (group.userData.cast !== cast) return

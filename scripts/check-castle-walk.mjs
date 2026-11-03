@@ -7,16 +7,20 @@
 // the middle of the treads or the drum, or that pops her up onto a landing's slab on the way down. The flood is slow, so it sweeps
 // few seeds: ones whose one-cell towers are entered only by their spirals, and 258641, whose dungeon is reached only by one; the flood
 // runs with every ward open. A shut ward that lets her step through its doorway, or an opened one that does not. And a ladder she
-// cannot climb by walking at it, or that she starts climbing walking past it.
+// cannot climb by walking at it, or that she starts climbing walking past it. A bed she lands on but is not laid in, or has nowhere
+// beside to get up onto. A teleport lob into the side of a prop that lands under the floor it stands on. A ward's gem she can aim at through its membrane, and
+// wards another player opened that do not dissolve. A runebook drawn in the wrong one of the interior and the exterior.
 
 import THREE from '../src/three-instance.js'
 import { Player } from '../src/player.js'
-import { WalkSurface } from '../src/v2/walk.js'
+import { WalkSurface, lobLanding } from '../src/v2/walk.js'
 import { castleLayout, CASTLE } from '../src/v2/castles/layout.js'
 import { castleSolids, interiorSpans, ladderFoot, SPANS, wardFrame } from '../src/v2/castles/solids.js'
 import { Climb } from '../src/v2/climb.js'
 import { SEG, SPIRAL } from '../src/v2/castles/spiral.js'
-import { roomPlan } from '../src/v2/castles/furnish.js'
+import { roomPlan, roomProps } from '../src/v2/castles/furnish.js'
+import { interiorWarp, warpedProp } from '../src/v2/castles/shell.js'
+import { besideBed, feetOnBed } from '../src/v2/vitals.js'
 
 let failures = 0
 function check(ok, label, detail = '') {
@@ -201,6 +205,81 @@ for (let seed = 1; seed <= 5; seed++) {
 }
 check(!stalled.length, `she can drive every spiral down and up, along its post, treads and drum (${runs} runs)`, stalled.slice(0, 6).join(' | '))
 check(!popped.length, "driving down a spiral never pops her up onto a landing's slab", popped.slice(0, 6).join(' | '))
+
+// The wards' gems as main.js aims at them, on a stubbed canvas (WardSet draws its halo on one).
+globalThis.document = { createElement: () => ({ getContext: () => ({ createRadialGradient: () => ({ addColorStop() {} }), fillRect() {} }) }) }
+const { WardSet, WARD_LOOK } = await import('../src/v2/render/castle-wards.js')
+const wrongSide = [], rightSide = [], caught = [], wrongPlace = []
+for (const seed of [1, 3, 215679, 311021]) {
+  const lay = castleLayout(seed), P = castleSolids(lay).portals
+  const set = new WardSet(P, null, 0, 0)
+  P.wards.forEach((w, i) => {
+    for (const s of [1, -1]) {
+      const o = new THREE.Vector3(w.x + w.nx * 0.6 * s, w.gem[1], w.z + w.nz * 0.6 * s), d = new THREE.Vector3(...w.gem).sub(o).normalize()
+      const hit = set.gemOn(o, d, 3)
+      if (s > 0 && hit !== i) rightSide.push(`${seed}:${i}`)
+      if (s < 0 && hit === i) wrongSide.push(`${seed}:${i}`)
+    }
+  })
+  set.catchUp(0b101, 0b11)
+  set.update(0, WARD_LOOK.open + 0.1, null)
+  if (set.wards[0].g.visible || set.wards[2].g.visible || !set.wards[1].g.visible || set.books[1].live || !set.books[2].live) caught.push(seed)
+  const up = P.books.flatMap((b, j) => (b.roof ? [j] : []))
+  if (!up.length) throw new Error(`castle ${seed} has no tower-top runebook; pick a seed that has`)
+  const inRooms = new WardSet(P, null, 0, 0), onRoofs = new WardSet({ wards: [], books: P.books }, null, 0, 1 << up[0], true)
+  P.books.forEach((b, j) => {
+    if (inRooms.books[j].g.visible === b.roof) wrongPlace.push(`${seed}:${j} indoors`)
+    if (onRoofs.books[j].g.visible !== (b.roof && j !== up[0])) wrongPlace.push(`${seed}:${j} on the roofs`)
+  })
+  if (up.length > 1) {
+    onRoofs.catchUp(0, (1 << up[0]) | (1 << up[1]))
+    for (let i = 0; i < 40; i++) onRoofs.update(i * 0.1, 0.1, null)
+    if (onRoofs.books[up[1]].g.visible) wrongPlace.push(`${seed}:${up[1]} stays after it is spent`)
+  }
+}
+check(!wrongPlace.length, 'indoors draws only the rooms\' runebooks, the exterior only the tower tops\' still unspent', wrongPlace.slice(0, 6).join(' '))
+check(!rightSide.length, "she can aim at a shut ward's gem from its own side", rightSide.slice(0, 6).join(' '))
+check(!wrongSide.length, "she cannot aim at a shut ward's gem through its membrane", wrongSide.slice(0, 6).join(' '))
+check(!caught.length, 'wards and books another player opened and spent dissolve here, and no others', caught.join(' '))
+
+// Beds: landing on the middle of one is lying in it, and getting up finds floor beside it.
+const badBeds = []
+for (const seed of [1, 3, 7, 215679, 311021]) {
+  const sol = castleSolids(castleLayout(seed)), { surface } = rig(sol.it)
+  for (const b of sol.portals.beds) {
+    const land = surface.heightAt(b.x, b.z, b.floor + 1.2)
+    let stand = true
+    try { besideBed(b, surface) } catch { stand = false }
+    if (!stand || !feetOnBed(b, { x: b.x, y: land, z: b.z }, 0)) badBeds.push(`${seed}@${b.x.toFixed(1)},${b.z.toFixed(1)}`)
+  }
+}
+check(!badBeds.length, 'every castle bed lays her in it where she lands on it, and has floor beside it to get up onto', badBeds.slice(0, 6).join(' '))
+
+// Lobs as main.js aimTeleport throws them (6.5 m/s, 0.04 s samples, bisected), at every prop from round it: a crossing into its
+// side lands on the floor she threw from, never the storey or dungeon under it.
+const sunk = []
+for (const seed of [215679, 311021]) {
+  const lay = castleLayout(seed), sol = castleSolids(lay), { at, surface } = rig(sol.it), warp = interiorWarp(lay)
+  for (const o of roomProps(lay).map((p) => warpedProp(warp, p))) for (let a = 0; a < 8; a++) {
+    const fx = o.x + Math.cos(a * Math.PI / 4) * 1.6, fz = o.z + Math.sin(a * Math.PI / 4) * 1.6, fy = surface.heightAt(fx, fz, o.y + 0.3)
+    if (Math.abs(fy - o.y) > 0.01 || !surface.fits(fx, fz, fy, null)) continue
+    at.hint = fy
+    for (const pitch of [-0.5, -0.35, -0.2, 0]) {
+      const h = Math.atan2(o.z - fz, o.x - fx), d = [Math.cos(h) * Math.cos(pitch), Math.sin(pitch), Math.sin(h) * Math.cos(pitch)]
+      const P = (t) => ({ x: fx + d[0] * 6.5 * t, y: fy + 1.2 + d[1] * 6.5 * t - 4.905 * t * t, z: fz + d[2] * 6.5 * t })
+      const clear = (t) => { const p = P(t); return p.y > sol.it.base && surface.ceilingAt(p.x, p.z, p.y) !== -Infinity }
+      let prev = 0
+      for (let i = 1; i < 40; i++) {
+        if (clear(i * 0.04)) { prev = i * 0.04; continue }
+        let lo = prev, hi = i * 0.04
+        for (let k = 0; k < 12; k++) { const m = (lo + hi) / 2; if (clear(m)) lo = m; else hi = m }
+        if (fy - lobLanding(surface, P(lo), P(hi), 1).y > 1) sunk.push(`${seed}:${o.kind}@${o.x.toFixed(1)},${o.y},${o.z.toFixed(1)}`)
+        break
+      }
+    }
+  }
+}
+check(!sunk.length, 'a teleport lob into the side of a castle prop lands on the floor it stands on, not the storey under it', `${sunk.length}: ${sunk.slice(0, 4).join(' ')}`)
 
 console.log(failures ? `\n${failures} FAILED` : '\nall castle walk checks passed')
 process.exit(failures ? 1 : 0)

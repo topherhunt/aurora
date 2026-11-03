@@ -64,11 +64,11 @@ function bridgesOf(adj, root) {
 
 /**
  * The search over every order she might open wards in: from each reachable set of opened wards, she knows every book in reach and
- * has spent one per ward opened. Fails when some state leaves wards shut with no gem in reach or no code unspent, or ends with a
- * used node out of reach. Returns { ok, states, toSummit, shut } -- toSummit the fewest wards any order opens before the summit is
+ * has spent one per ward opened. Fails when some state leaves wards shut with no gem in reach, no code unspent (`slack` unspent where
+ * two gems are in reach), or ends with a used node out of reach. Returns { ok, states, toSummit, shut } -- toSummit the fewest wards any order opens before the summit is
  * in reach, shut the share of rooms out of reach before any.
  */
-export function wardSearch(nodes, edges, entry, summit, wards, books) {
+export function wardSearch(nodes, edges, entry, summit, wards, books, slack = 1) {
   const W = wards.length, full = (1 << W) - 1, wardOf = new Map(wards.map((w, i) => [w.edge, i]))
   const adj = graphOf(nodes, edges)
   const used = nodes.filter((n) => !n.unused)
@@ -94,17 +94,17 @@ export function wardSearch(nodes, edges, entry, summit, wards, books) {
     }
     const known = books.filter((b) => R.has(b.node)).length
     const open = wards.map((w, i) => i).filter((i) => !(S & (1 << i)) && R.has(wards[i].gem))
-    if (known <= opened || !open.length) return { ok: false, states: visited.size, toSummit, shut }
+    if (known < opened + (open.length > 1 ? slack : 1) || !open.length) return { ok: false, states: visited.size, toSummit, shut }
     for (const i of open) { const T = S | (1 << i); if (!visited.has(T)) { visited.add(T); stack.push(T) } }
   }
   return { ok: true, states: visited.size, toSummit, shut }
 }
 
 /**
- * 5-10 wards and a runebook for each (one more at times), each book with its own 3-rune code; design/46-castle-wards.md, Planning.
+ * 5-10 wards and a runebook for each, one spare (two at times), each book with its own 3-rune code; design/46-castle-wards.md, Planning.
  * The spine: single-file doorways on the entry-summit route, spread along it, every one of which she must open. The detours: doorways
  * on loops, each chosen to add the most metres to her walks to `goals` (summit first) while the castle stays whole without them.
- * Each book lies in a room she must pass through before she can reach its ward's gem. `drum` rooms take neither, except as the node
+ * Each book lies in a room or on a tower top she must pass through before she can reach its ward's gem. `drum` rooms take neither, except as the node
  * a stair's tunnel gem is reached from (`tunnels`, layout.js tunnelWards). Returns { wards: [{ edge, gem, tunnel? }], books:
  * [{ node, code }], toSummit, spine } or null when the route has too few single-file doorways.
  */
@@ -170,9 +170,9 @@ export function planWards(seed, nodes, edges, entry, goals, drum, tunnels) {
   const doms = cells.map((_, c) => new Set([c, cellOf.get(entry)]))
   cells.forEach((_, d) => { const seen = reachCells(d); cells.forEach((__, c) => { if (!seen.has(c)) doms[c].add(d) }) })
 
-  // Books: dead ends first, then the room farthest in hops from the books and gems placed so far; each pick keeps every ward matched.
+  // Books: tower tops and dead ends first, then the place farthest in hops from the books and gems placed so far; each pick keeps every ward matched.
   const deg = new Map(used.map((q) => [q, adj.get(q).length]))
-  const roomsIn = (cs) => used.filter((q) => q.kind === 'room' && !drum.has(q) && cs.has(cellOf.get(q)))
+  const roomsIn = (cs) => used.filter((q) => (q.kind === 'room' || q.kind === 'roof') && !drum.has(q) && cs.has(cellOf.get(q)))
   const opts = wards.map((w) => roomsIn(doms[cellOf.get(w.gem)]))
   const hopsFrom = new Map()
   const apart = (p, q) => { if (!hopsFrom.has(p)) hopsFrom.set(p, bfs(adj, p, none).hops); return hopsFrom.get(p).get(q) }
@@ -191,14 +191,20 @@ export function planWards(seed, nodes, edges, entry, goals, drum, tunnels) {
   const order = wards.map((_, i) => i).sort((p, q) => opts[p].length - opts[q].length)
   if (!matched(order)) return null
   const marks = wards.map((w) => w.gem)
-  const worth = (q) => (deg.get(q) === 1 ? 3 : 0) + Math.min(6, ...[...taken.keys(), ...marks].map((p) => apart(p, q))) + r()
+  const worth = (q) => (deg.get(q) === 1 ? 3 : 0) + (q.kind === 'roof' ? 3 : 0) + Math.min(6, ...[...taken.keys(), ...marks].map((p) => apart(p, q))) + r()
   order.forEach((i, j) => {
     const pick = opts[i].filter((q) => !taken.has(q)).map((q) => [worth(q), q]).sort((p, q) => q[0] - p[0])
       .find(([, q]) => { taken.set(q, i); const ok = matched(order.slice(j + 1)); taken.delete(q); return ok })
     taken.set(pick[1], i)
   })
+  // A spare in the free room fewest wards in: a code to lose before she first has a choice of gems.
+  const best = (qs) => qs.map((q) => [worth(q), q]).sort((p, q) => q[0] - p[0])[0][1]
   const spare = roomsIn(new Set(cells.keys())).filter((q) => !taken.has(q))
-  if (r() < WARDS.extra && spare.length) taken.set(spare.map((q) => [worth(q), q]).sort((p, q) => q[0] - p[0])[0][1], -1)
+  if (!spare.length) return null
+  const depth = (q) => doms[cellOf.get(q)].size
+  taken.set(best(spare.filter((q) => depth(q) === Math.min(...spare.map(depth)))), -1)
+  const more = spare.filter((q) => !taken.has(q))
+  if (r() < WARDS.extra && more.length) taken.set(best(more), -1)
   const books = [...taken.keys()].map((node) => ({ node, code: null }))
   const codes = new Set()
   for (const bk of books) {

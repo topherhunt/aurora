@@ -4,7 +4,7 @@
 import { DUNGEON, dungeonCell, dungeonPlan } from './dungeon.js'
 import { dungeonProps, propFlames } from './furnish.js'
 import { Mesher, interiorWarp, leaves, prop, rgb, shaftStorey, spiralSteps, wellWarp } from './shell.js'
-import { shaftsOf } from './spiral.js'
+import { SPIRAL, shaftsOf } from './spiral.js'
 import { faceShade } from './light.js'
 
 const ROCK = rgb(0x77716a), FLOOR = rgb(0x5f5a52), SILT = rgb(0x4a4a3c), WATER = rgb(0x24403f), MOSS = rgb(0x4d6338), IRON = rgb(0x3a3836)
@@ -38,21 +38,35 @@ export function dungeonGeometry(lay) {
   const m = new Mesher(lay.seed * 53 + 11), wm = new Mesher(lay.seed * 53 + 12)
   const open = (i, j) => i >= 0 && i < W && j >= 0 && j < D && !Number.isNaN(lo[i + j * W])
   const wetNear = (i, j) => [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => open(i + a, j + b) && !Number.isNaN(water[i + a + (j + b) * W]))
+  // Walls are cut at every height any face meets their corners at: the warp bends with height, so a corner midway up another
+  // wall's straight edge sits off it, a crack through to the void.
+  // The foot's outer cells run in under the ground room's walls, past its slab's edge: they rise to the slab's top and are capped
+  // there, behind the slab's underside, wherever clear of the well's hole.
+  const capped = (c) => !roof[c] && Math.max(Math.abs(x0 + (c % W) + 0.5 - g.foot.x), Math.abs(z0 + Math.floor(c / W) + 0.5 - g.foot.z)) - 0.5 >= SPIRAL.square
+  const top = (c) => (roof[c] ? hi[c] : capped(c) ? 0 : -0.3)
+  const walls = [], breaks = new Map(), mark = (P, y) => { const k = `${P[0]},${P[1]}`; if (!breaks.has(k)) breaks.set(k, new Set()); breaks.get(k).add(y) }
   for (let j = 0; j < D; j++) for (let i = 0; i < W; i++) {
     const c = i + j * W
     if (!open(i, j)) continue
-    const xa = x0 + i, xb = xa + 1, za = z0 + j, zb = za + 1, y0 = lo[c], y1 = roof[c] ? hi[c] : -0.3, wet = !Number.isNaN(water[c])
+    const xa = x0 + i, xb = xa + 1, za = z0 + j, zb = za + 1, y0 = lo[c], y1 = top(c), wet = !Number.isNaN(water[c])
     m.quad([xa, y0, za], [xb, y0, za], [xb, y0, zb], [xa, y0, zb], m.tint(wet ? SILT : FLOOR, 0.12), [0, 1, 0])
     if (wet) { const w = water[c]; wm.quad([xa, w, za], [xb, w, za], [xb, w, zb], [xa, w, zb], WATER, [0, 1, 0], [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]) }
-    if (roof[c]) m.quad([xa, y1, za], [xb, y1, za], [xb, y1, zb], [xa, y1, zb], m.tint(ROCK), [0, -1, 0])
+    if (roof[c] || capped(c)) m.quad([xa, y1, za], [xb, y1, za], [xb, y1, zb], [xa, y1, zb], m.tint(ROCK), [0, -1, 0])
     // Each side: rock the full height, or the step up to a higher floor or down to a lower ceiling next door, drawn from this side.
     for (const [di, dj, P, Q] of [[-1, 0, [xa, za], [xa, zb]], [1, 0, [xb, za], [xb, zb]], [0, -1, [xa, za], [xb, za]], [0, 1, [xa, zb], [xb, zb]]]) {
       const n = [-di, 0, -dj], col = m.tint(ROCK)
-      const wall = (ya, yb) => yb - ya > 0.005 && m.quad([P[0], ya, P[1]], [Q[0], ya, Q[1]], [Q[0], yb, Q[1]], [P[0], yb, P[1]], col, n)
+      const wall = (ya, yb) => { if (yb - ya > 0.005) { walls.push({ P, Q, ya, yb, col, n }); for (const y of [ya, yb]) { mark(P, y); mark(Q, y) } } }
       if (!open(i + di, j + dj)) { wall(y0, y1); continue }
       const o = i + di + (j + dj) * W
       wall(y0, Math.min(lo[o], y1))
-      wall(Math.max(roof[o] ? hi[o] : -0.3, y0), y1)
+      wall(Math.max(top(o), y0), y1)
+    }
+  }
+  for (const { P, Q, ya, yb, col, n } of walls) {
+    const side = (C) => [...breaks.get(`${C[0]},${C[1]}`)].filter((y) => y >= ya && y <= yb).sort((a, b) => a - b).map((y) => [C[0], y, C[1]])
+    const L = side(P), R = side(Q)
+    for (let a = 0, b = 0; a < L.length - 1 || b < R.length - 1;) {
+      if (b === R.length - 1 || (a < L.length - 1 && L[a + 1][1] <= R[b + 1][1])) { m.face([L[a], R[b], L[a + 1]], n, col); a++ } else { m.face([L[a], R[b], R[b + 1]], n, col); b++ }
     }
   }
   const stair = m.bufs.map((b) => b.p.length)

@@ -140,7 +140,7 @@ import { setSnow, setMoss, setPropClock, setDissolves, setStripTiling, getStripT
 // the build if it ever does.
 import { Player, LOCOMOTION } from '../player.js'
 import { EyeLevel } from './eye-level.js'
-import { WalkSurface } from './walk.js'
+import { WalkSurface, lobLanding } from './walk.js'
 import { Hands, REACH_M } from './hands.js'
 import { HandsNet } from './hands-net.js'
 import { FLAREGUN_GLB, FlareGuns, GunWindows, ShotFlash, KIND as FLAREGUN, CHARGES as FLARE_CHARGES, PALETTE, MUZZLE, RECALL_M, RECALL_DEG, aimTarget, strikeAt, pressSafety, roomKey } from './flaregun.js'
@@ -968,6 +968,7 @@ function migrateSave(doc) {
     const uncut = (slot) => (slot !== null && slot.kind === LANTERN ? { ...slot, carve: UNCUT } : slot)
     doc = { ...doc, backpack: doc.backpack.map(uncut), held: Object.fromEntries(Object.entries(doc.held ?? {}).map(([k, slot]) => [k, uncut(slot)])), lanterns: {} }
   }
+  if (doc.castle === undefined) doc = { ...doc, castle: null }
   if (doc.flares === undefined) return doc
   return { ...doc, flares: doc.flares.map((a) => (a.length === 10 ? [...a, REST_M] : a)) }
 }
@@ -1040,10 +1041,12 @@ function saveGame() {
   const q = rig.quaternion
   const back = indoors ? indoors.back : cave ? cave.back : inCastle ? inCastle.back : null
   const doc = {
-    // Her feet; in a house, the landing before its door, which the room is built around; in a cave, the apron before the mouth she came in by. `y` keeps a load under an awning from the roof.
+    // Her feet; in a house, the landing before its door, which the room is built around; in a cave, the apron before the mouth she came in by; in a castle, the ground outside the door she came in by, where leaving it sets her down. `y` keeps a load under an awning from the roof.
     x: back ? back.x : rig.position.x, y: back ? back.y : player.standY, z: back ? back.z : rig.position.z,
     // In a house, which one and which of its beds she slept in: a load opens it again (it is rolled, not saved) and stands her beside that bed.
     house: indoors ? { ...(indoors.town ? { town: indoors.town } : { k: indoors.e.k }), bed: sleptIn } : null,
+    // In a castle, the same: a load opens its interior again and stands her beside that bed.
+    castle: inCastle ? { site: inCastle.site.id, bed: sleptIn } : null,
     rigYaw: 2 * Math.atan2(q.y, q.w),
     camYaw: camera.rotation.y, camPitch: camera.rotation.x,
     backpack: backpack.slice(),
@@ -1069,7 +1072,7 @@ function saveGame() {
     pets: { ...Object.fromEntries(petsIn), ...(wildlife ? { [petRoom]: wildlife.pets() } : {}) },
     lanterns: { ...Object.fromEntries(lanternsIn), ...(hands ? { [petRoom]: roomLanterns() } : {}) },
   }
-  if (indoors && sleptIn === null) throw new Error('v2: a save in a house names no bed she slept in')
+  if ((indoors || inCastle) && sleptIn === null) throw new Error('v2: a save indoors names no bed she slept in')
   for (const key of HAND_KEYS) {
     const rec = hands.holding(key)
     if (rec !== null) doc.held[key] = hands.pack(rec)
@@ -1263,7 +1266,7 @@ let warnMark = null
 let laid = null
 // Whether her feet were on a bed last frame: stepping onto one lays her in it, standing up by it does not.
 let feetWereOnBed = false
-// Which of the house's beds (worldBeds' `i`) she last fell asleep in: the save stands her beside it.
+// Which of the house's or castle's beds (worldBeds' `i`) she last fell asleep in: the save stands her beside it.
 let sleptIn = null
 // A key, click or button this frame, taken by sleep rather than by the world.
 let vitalsPress = false
@@ -1280,15 +1283,16 @@ const vitalsHold = () => health.dead || laid !== null || sleep.state === 'closin
 
 const roomBeds = (room) => room.spots.filter((b) => b.kind === 'bed')
 
-/** The beds of the house she is in, in world metres, as vitals.js takes them, each with its index `i` among the room's beds and whether it is `free` of a leafkin on it and a peer in it; none outdoors. */
+/** The beds of the house or castle she is in, in world metres, as vitals.js takes them, each with its index `i` among the room's beds and whether it is `free` of a leafkin on it and a peer in it; none outdoors. */
 function worldBeds() {
-  if (!indoors) return []
-  const o = indoors.view.group.position
+  if (!indoors && !inCastle) return []
   const peers = [...netplay.peers.values()]
+  const peerIn = (bed) => peers.some((p) => inBed(bed, { x: p.pose[0], y: p.pose[1], z: p.pose[2] }, p.scale === undefined ? 1 : p.scale))
+  if (inCastle) return inCastle.beds.map((b, i) => { const bed = { ...b, i }; bed.free = !peerIn(bed); return bed })
+  const o = indoors.view.group.position
   return roomBeds(indoors.room).map((b, i) => {
     const bed = { x: o.x + b.x, z: o.z + b.z, top: o.y + b.top, floor: o.y + b.floor, yaw: b.yaw, len: b.len, wid: b.wid, i }
-    bed.free = !indoors.residents.all.some((r) => r.spot === b && r.state === 'act') &&
-      !peers.some((p) => inBed(bed, { x: p.pose[0], y: p.pose[1], z: p.pose[2] }, p.scale === undefined ? 1 : p.scale))
+    bed.free = !indoors.residents.all.some((r) => r.spot === b && r.state === 'act') && !peerIn(bed)
     return bed
   })
 }
@@ -1339,17 +1343,24 @@ function unlay() {
   laid = null
 }
 
+/** Her on her feet beside bed `i` of the house or castle she is in, facing away from it as if just up. */
+function standBesideBed(i) {
+  const list = indoors ? roomBeds(indoors.room) : inCastle.beds
+  if (!list[i]) throw new Error(`v2: no bed ${i} here to stand beside`)
+  // besideBed stands her on the side away from `o`: a house's middle, or a castle's.
+  const o = indoors ? indoors.view.group.position : { x: inCastle.site.x, y: 0, z: inCastle.site.z }
+  const bed = indoors ? list[i] : { ...list[i], x: list[i].x - o.x, z: list[i].z - o.z }
+  const at = besideBed(bed, walk, o)
+  player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
+  faceAlong(-at.fx, -at.fz)
+}
+
 /** Out of the bed she was laid in, onto her feet; saved if she slept. */
 function getUp() {
   const { bed: i, beside, pos, upAt } = laid
   unlay()
-  if (beside) {
-    const o = indoors.view.group.position
-    const bed = roomBeds(indoors.room)[i]
-    const at = besideBed(bed, walk, o)
-    player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
-    faceAlong(-at.fx, -at.fz)
-  } else rig.position.copy(pos)
+  if (beside) standBesideBed(i)
+  else rig.position.copy(pos)
   const slept = upAt !== null
   feetWereOnBed = true
   if (slept) { saveGame(); vitalsHud.showSaved() }
@@ -1404,6 +1415,7 @@ async function revive(doc) {
   if (doc === null) newGame()
   else applySave(doc)
   if (doc !== null && doc.house) await intoSavedHouse(doc.house)
+  if (doc !== null && doc.castle) await intoSavedCastle(doc.castle, [doc.x, doc.y, doc.z])
   health.heal()
   effects.clear()
   bites.clear()
@@ -1536,7 +1548,7 @@ function stepVitals(dt, now) {
   camera.getWorldPosition(vitalsHead)
   camera.getWorldDirection(vitalsFwd)
   if (laid !== null && laid.upAt !== null && (vitalsPress || now >= laid.upAt)) { getUp(); vitalsPress = false }
-  if (laid === null && !health.dead && indoors && sleep.state === 'awake' && !player.flying) {
+  if (laid === null && !health.dead && (indoors || inCastle) && sleep.state === 'awake' && !player.flying) {
     const on = worldBeds().find((b) => feetOnBed(b, rig.position, walk.radius + 0.05))
     if (on && on.free && !feetWereOnBed) lieDown(on, true)
     feetWereOnBed = on !== undefined
@@ -2957,6 +2969,7 @@ function syncTrust() {
     const mined = minedOf(caveBuild.sys.seed, caveBuild.veins)
     if (mined.size !== caveBuild.room.mined.size) caveBuild.room.setMined(mined)
   }
+  if (netplay.loot.length > 0 && inCastle !== null) catchUpCastle(inCastle.site)
   netplay.loot.length = 0
   if (netplay.welcomes !== lootWelcomes) { lootWelcomes = netplay.welcomes; loot.resend() }
   loot.flush((batch) => netplay.sendLoot(batch))
@@ -2969,7 +2982,7 @@ const RINGS_MOST = Math.round((LABYRINTH.radius[1] - LABYRINTH.centre) / LABYRIN
 const ALTAR_GEMS = ['diamond', 'sapphire', 'ruby']
 const HOARD = ['diamond', 'sapphire', 'ruby', 'firestone']
 
-const DUNGEON_BITS = { key: 8, coins: 9, gem: 10, unlocked: 16 }
+const DUNGEON_BITS = { key: 8, coins: 9, gem: 10, spare: 11, spares: 5, unlocked: 16 }
 const WARD_BITS = { ward: 20, book: 40 }
 const castleKey = (s) => { const [rx, rz] = s.id.split(',').map(Number); return (rx + 0x8000) * 0x10000 + (rz + 0x8000) }
 
@@ -2982,12 +2995,12 @@ function wardMasks(site) {
   return { open, spent, wards }
 }
 
-/** Built castle `site`'s wards `{ open, total }`, counted off the loot ledger. */
+/** Built castle `site`'s wards `{ open, total, mask }` off the loot ledger: how many are open, of how many, and which. */
 function castleWards(site) {
   const m = wardMasks(site)
   let open = 0
   for (let i = 0; i < m.wards; i++) if (m.open & (1 << i)) open++
-  return { open, total: m.wards }
+  return { open, total: m.wards, mask: m.open }
 }
 
 /** A ray from `origin` along unit `dir` onto a shut ward's gem in the castle she is in: the rune panel opens at it. */
@@ -3002,13 +3015,23 @@ function touchWard(origin, dir) {
   return true
 }
 
+/** Castle `site`, which she is in, to what the room's ledger now holds: wards someone else opened dissolve, their books fade, the
+ * dungeon door opens, and a rune panel left open on a ward now open closes, so no second code is spent on it. */
+function catchUpCastle(site) {
+  const wm = wardMasks(site)
+  castles.catchUp(wm.open, wm.spent, loot.taken(place('k', castleKey(site)), DUNGEON_BITS.unlocked))
+  if (runePanel.open && wm.open & (1 << runePanel.ward)) runePanel.hide()
+}
+
 /** A press `hit` on the rune panel: whether it took it. Its third rune opens the ward on the first unspent runebook with that code,
  * or the ward bursts on her. */
 function pressRunes(hit) {
   const r = runePanel.press(hit)
   if (r === null) return false
   if (r.code === null) return true
-  const site = inCastle.site, k = place('k', castleKey(site)), j = castles.bookCodes().findIndex((c, j) => c.join() === r.code.join() && !loot.taken(k, WARD_BITS.book + j))
+  const site = inCastle.site, k = place('k', castleKey(site))
+  if (loot.taken(k, WARD_BITS.ward + r.ward)) { catchUpCastle(site); return true }
+  const j = castles.bookCodes().findIndex((c, j) => c.join() === r.code.join() && !loot.taken(k, WARD_BITS.book + j))
   if (j < 0) {
     castles.failWard(r.ward)
     if (ambience) sound.play('wardCast', { bus: 'near', at: runePanel.gem, gain: 0.8 })
@@ -3032,6 +3055,7 @@ function layLoot() {
       for (let k = 1; k <= gems; k++) items.lay(place('k', key), k, HOARD[Math.floor(rand() * HOARD.length)], x + 0.1 * k, y, z + (k % 2 ? 0.08 : -0.08))
       const [kx, ky, kz] = castles.keyOf(s.id), [dx, dy, dz] = castles.dungeonChestOf(s.id)
       items.lay(place('k', key), DUNGEON_BITS.key, 'key', kx, ky + 0.01, kz)
+      laySpareKey(place('k', key), kx, ky + 0.01, kz)
       items.lay(place('k', key), DUNGEON_BITS.coins, 'coin', dx - 0.2, dy, dz, 60 + Math.floor(rand() * 61))
       items.lay(place('k', key), DUNGEON_BITS.gem, HOARD[Math.floor(rand() * HOARD.length)], dx + 0.15, dy, dz)
     }
@@ -4494,6 +4518,7 @@ async function bootWorld() {
   if (saved) {
     applySave(saved)
     if (saved.house) await intoSavedHouse(saved.house)
+    if (saved.castle) await intoSavedCastle(saved.castle, [saved.x, saved.y, saved.z])
     console.log(`[v2] resumed at ${saved.x.toFixed(0)}, ${saved.z.toFixed(0)} in ${currentRoom.id}${saved.house ? `, house ${saved.house.k}` : ''}`)
   }
   else { giveFlareGun(); giveFlint() }
@@ -4726,13 +4751,18 @@ async function intoSavedHouse(house) {
     villagers.settle(clock.seconds)
     await openHouse(roomProps.entries()[house.k])
   }
-  const o = indoors.view.group.position
-  const bed = roomBeds(indoors.room)[house.bed]
-  if (!bed) throw new Error(`v2: the save's house ${house.k} has no bed ${house.bed}`)
-  const at = besideBed(bed, walk, o)
-  player.teleportTo(o.x + at.x, o.z + at.z, o.y + bed.floor)
-  faceAlong(-at.fx, -at.fz)
+  standBesideBed(house.bed)
   // As getUp leaves her: beside the bed is within its reach, and must not lay her straight back in it.
+  feetWereOnBed = true
+}
+
+/** A saved game's castle open again, and her beside the bed she slept in. `back` (world) is the ground outside the door she came in by. */
+async function intoSavedCastle(castle, back) {
+  openCastle(await castles.whenBuilt(castle.site), back)
+  if (!inCastle.beds[castle.bed]) throw new Error(`v2: the save's castle ${castle.site} has no bed ${castle.bed}`)
+  inCastle.stone.hint = inCastle.beds[castle.bed].floor
+  standBesideBed(castle.bed)
+  castles.arrived(player.originPosition())
   feetWereOnBed = true
 }
 
@@ -4847,8 +4877,7 @@ function castleTest() {
 
 /** At a castle's locked dungeon door (`act` from Castles.portalAt): open for good if she has its iron key in hand or pack. */
 function tryDungeonDoor(act) {
-  const hasKey = HAND_KEYS.some((k) => hands.holding(k)?.kind === 'key') || backpack.some((s) => s !== null && s.kind === 'key')
-  if (hasKey) {
+  if (carriesKey()) {
     castles.unlock(act.site)
     loot.take(place('k', castleKey(act.site)), DUNGEON_BITS.unlocked)
     if (ambience) sound.play('door', { bus: 'near', rate: 0.8, gain: 0.4 })
@@ -4857,6 +4886,18 @@ function tryDungeonDoor(act) {
   if (ambience) sound.play('flintClick', { bus: 'near', rate: 0.5, gain: 0.6 })
   const [x, y, z] = act.at
   if (conversations) conversations.say('Locked door', 'It will not budge. Somewhere in the castle there must be a key.', { x, y, z })
+}
+
+const carriesKey = () => HAND_KEYS.some((k) => hands.holding(k)?.kind === 'key') || backpack.some((s) => s !== null && s.kind === 'key')
+
+/** A key taken from the ledger can still be lost (a reload drops what was in hand), and none other opens the dungeon: while its door is locked and she carries none, another lies where the first did. */
+function laySpareKey(k, x, y, z) {
+  if (loot.taken(k, DUNGEON_BITS.unlocked) || carriesKey()) return
+  for (let bit = DUNGEON_BITS.key; bit < DUNGEON_BITS.spare + DUNGEON_BITS.spares; bit = bit === DUNGEON_BITS.key ? DUNGEON_BITS.spare : bit + 1) {
+    if (loot.taken(k, bit)) continue
+    if (bit !== DUNGEON_BITS.key) items.lay(k, bit, 'key', x, y, z)
+    return
+  }
 }
 
 /** Through castle portal `act` under the fade: in or out of its interior. */
@@ -4886,7 +4927,7 @@ function openCastle(site, back) {
   castles.setWards(wm.open, wm.spent)
   const inner = new WalkSurface(flatField(stone.base), stone, { trunkAt: () => null }, { scale: herScale() })
   inner.flyThrough = true
-  inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk }
+  inCastle = { site, back: { x: back[0], y: back[1], z: back[2] }, stone, outside: walk, beds: castles.bedsInside() }
   if (sound) sound.setIndoors(true, { stone: true })
   walk = window.v2walk = inner
   player.setGround(inner)
@@ -5683,7 +5724,7 @@ async function buildRoom(room, at) {
     window.v2palisades = palisades // console: `v2palisades.stats`
   }
   if (layers.castles.list.length) {
-    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden, runes: runeAtlas })
+    castles = new Castles(scene, layers.castles.list, { patch: (m, cacheKey) => lighting.patch(m, { mode: 'vertex', cacheKey }), uTorch: lighting.uniforms.uTorch, probeHidden: worldProbe.hidden, runes: runeAtlas, spentOf: (site) => wardMasks(site).spent })
     castles.update(spawn, fireNow(), lampNight(), dayness)
     window.v2castles = castles // console: `v2castles.stats`
     runePanel = new RunePanel(scene, runeAtlas, uploadQuestTexture)
@@ -8275,12 +8316,8 @@ function aimTeleport(origin, dir) {
         p.y = end.y
         p.z = end.z
       } else {
-        // The surface just crossed: the highest ground at or a hair above the
-        // crossing, never the awning over it -- or the water standing over that.
-        // A stair is one block to the lob: one into its side, or into the wall over it, lands on the tread there, not the floor under it.
-        const ground = walk.heightAt(end.x, end.z, end.y - walk.reach + 0.05 * k), back = at(lo)
-        const tread = walk.stairAt(end.x, end.y, end.z) !== null ? walk.stairAt(end.x, end.y, end.z) : walk.stairAt(back.x, ground + 0.01, back.z)
-        hit = { x: end.x, y: tread !== null ? tread : ground, z: end.z }
+        // The surface just crossed, never the awning over it -- or the water standing over that.
+        hit = lobLanding(walk, at(lo), end, k)
         const level = waterLevelAt(hit.x, hit.z)
         if (level !== null && hit.y < level) {
           hit.y = level

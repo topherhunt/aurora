@@ -42,6 +42,7 @@ import { Crabs } from '../src/v2/render/crabs.js'
 import { Fish } from '../src/v2/render/fish.js'
 import { Frogs, LOD_TIERS } from '../src/v2/render/frogs.js'
 import { FROG_ANIM_URL, parseFrogAnim } from '../src/v2/render/frog-anim.js'
+import { CRAB_ANIM_URL, parseCrabAnim } from '../src/v2/render/crab-anim.js'
 import { Grasshoppers } from '../src/v2/render/grasshoppers.js'
 import { Rocks } from '../src/v2/render/rocks.js'
 import { WaterSurfaces } from '../src/v2/render/water-surfaces.js'
@@ -1125,6 +1126,9 @@ console.log('\nthe creatures')
   })
   const frogBuf = readFileSync(new URL(`../public/${FROG_ANIM_URL}`, import.meta.url))
   const frogAnim = parseFrogAnim(frogBuf.buffer.slice(frogBuf.byteOffset, frogBuf.byteOffset + frogBuf.byteLength))
+  const crabAsset = boxAsset(1)
+  // The real baked clips with every stand-in vertex on the body bone.
+  const crabAnim = { ...parseCrabAnim(readFileSync(new URL(`../public/${CRAB_ANIM_URL}`, import.meta.url)).buffer.slice(0)), tiers: [new Array(crabAsset.pos.length / 3).fill(0)] }
   const fishAssets = JSON.parse(readFileSync('public/fauna/fish.json', 'utf8'))
   let frogsSeated = 0
   for (const { seed, room, layers, field } of builds) {
@@ -1137,7 +1141,7 @@ console.log('\nthe creatures')
     const hoppers = new Grasshoppers(scene, field, water, { seed, walk, assets: boxAsset(1) })
     // Rolled about the clearing rather than the lake: a grasshopper's tiles reach 14 m (grasshoppers.js RADIUS) and the water fills that much of some lakes, where the crabs' and frogs' 40 m still find a shore.
     hoppers.place(room.clearing.x, room.clearing.z)
-    const crabs = new Crabs(scene, field, water, { seed, rocks, cards: new LitterCards(4096), assets: boxAsset(1) })
+    const crabs = new Crabs(scene, field, water, { seed, rocks, cards: new LitterCards(4096), assets: crabAsset, anim: crabAnim })
     crabs.place(room.lake.x, room.lake.z)
     const frogs = new Frogs(scene, field, water, { seed, rocks, ground: null, assets: frogAssets, anim: frogAnim, cards: new LitterCards(4096) })
     frogs.place(room.lake.x, room.lake.z)

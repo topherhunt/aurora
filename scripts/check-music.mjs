@@ -4,11 +4,11 @@
 //
 // POOLS is checked against the folders under public/music/, and poolFor
 // against every place and hour. The PLAYER runs against a fake engine and
-// fake elements that record play/pause and what each param is told, driven
+// fake elements that record play/pause and their volume, driven
 // frame by frame: nothing before the first silence ends, a song from the pool
 // standing when it does, a silence in PAUSE_S after a song ends, a pool change
 // (a step out of town, into a cave, dusk) fading the song over FADE_OUT_S and
-// pausing it when the fade lands, and indoors muffling it without stopping it.
+// pausing it when the fade lands, and indoors quietening it without stopping it.
 // Then the room owner's lead: a client in its pool plays the owner's song
 // from the owner's world second, fading it in when late, starts none of its
 // own while the owner is silent, and runs its own silences outside it.
@@ -17,7 +17,7 @@
 // under the ambience. That needs ears.
 
 import fs from 'node:fs'
-import { Music, POOLS, ALOFT_M, PAUSE_S, LEVEL, MUSIC_VOLUMES, FADE_OUT_S, FADE_IN_S, LATE_S, INDOOR_GAIN, INDOOR_LP, OPEN_LP, poolFor, musicFromWire } from '../src/v2/audio/music.js'
+import { Music, POOLS, ALOFT_M, PAUSE_S, LEVEL, MUSIC_VOLUMES, FADE_OUT_S, FADE_IN_S, LATE_S, INDOOR_GAIN, poolFor, musicFromWire } from '../src/v2/audio/music.js'
 
 let failures = 0
 const check = (ok, label, detail = '') => {
@@ -62,27 +62,15 @@ console.log('wire')
 }
 
 // --- a fake engine and fake elements ----------------------------------------------
-function fakeParam(value) {
-  return {
-    value, log: [],
-    setValueAtTime(v, t) { this.log.push({ op: 'set', v, t }); this.value = v },
-    linearRampToValueAtTime(v, t) { this.log.push({ op: 'ramp', v, t }) },
-    setTargetAtTime(v, t) { this.log.push({ op: 'target', v, t }); this.value = v },
-    cancelScheduledValues(t) { this.log.push({ op: 'cancel', t }) },
-  }
-}
+// Songs stay out of the AudioContext (music.js): any touch of this one throws, and with it the whole gate.
 function fakeEngine() {
-  const ctx = { currentTime: 0 }
-  ctx.createGain = () => ({ gain: fakeParam(1), connect(to) { this.to = to } })
-  ctx.createBiquadFilter = () => ({ type: '', frequency: fakeParam(350), connect(to) { this.to = to } })
-  ctx.createMediaElementSource = (el) => ({ connect(to) { el.source = to } })
-  return { ctx, master: { name: 'master' } }
+  return { muted: false, ctx: new Proxy({}, { get(_, k) { throw new Error(`a song touched the AudioContext: ${String(k)}`) } }), master: new Proxy({}, { get(_, k) { throw new Error(`a song touched the master bus: ${String(k)}`) } }) }
 }
 function fakeElements() {
   const els = []
   const createElement = (url) => {
     const el = {
-      src: url, preload: '', currentTime: 0, paused: true, ended: false, error: null, plays: 0,
+      src: url, preload: '', currentTime: 0, volume: 1, paused: true, ended: false, error: null, plays: 0,
       play() { this.paused = false; this.ended = false; this.plays++; return Promise.resolve() },
       pause() { this.paused = true },
     }
@@ -99,7 +87,7 @@ const make = (seed = 1) => {
   const music = new Music({ engine, createElement: f.createElement, random: mulberry(seed) })
   // `world` stands in for clock.seconds, a room's hour from long before she came.
   const m = { engine, music, ...f, world: 5000 }
-  m.step = (pool, indoors = false, lead = null) => { engine.ctx.currentTime += STEP; m.world += STEP; music.update(STEP, { pool, indoors, seconds: m.world, lead }) }
+  m.step = (pool, indoors = false, lead = null) => { m.world += STEP; music.update(STEP, { pool, indoors, seconds: m.world, lead }) }
   /** Steps in `pool` until a song plays or `limit` seconds pass: the seconds it took, or null. */
   m.until = (pool, limit, indoors = false, lead = null) => {
     for (let s = STEP; s <= limit + 1e-9; s += STEP) { m.step(pool, indoors, lead); if (music.playing !== null) return s }
@@ -107,7 +95,7 @@ const make = (seed = 1) => {
   }
   return m
 }
-const gainOf = (m) => m.music.playing.track.gain.gain
+const near = (a, b) => Math.abs(a - b) < 1e-3
 
 console.log('player')
 {
@@ -126,28 +114,36 @@ console.log('player')
 
   const m = make(7)
   m.until('forest-day', PAUSE_S[1] + 1)
-  const el = m.els[0], track = m.music.playing.track
+  const el = m.els[0]
   check(el.plays === 1 && !el.paused && el.currentTime === 0, 'the song plays from its start')
-  check(gainOf(m).value === LEVEL && LEVEL === 0.25, 'at quarter volume')
-  check(el.source === track.gain && track.gain.to === m.music.room && m.music.room.to === m.music.muffle && m.music.muffle.to === m.music.fader && m.music.fader.to === m.engine.master, 'through its own gain, the room gain, the muffle and the fader, onto the master bus')
-  check(m.music.fader.gain.value === 1, 'the fader starts open')
-  const half = MUSIC_VOLUMES.find((v) => v.name === '50%').gain
-  m.music.setVolume(half)
-  check(LEVEL * m.music.fader.gain.value === 0.125, 'the Music row at 50% plays a song at 0.125')
-  m.music.setVolume(MUSIC_VOLUMES.find((v) => v.name === 'Off').gain)
-  check(m.music.fader.gain.value === 0 && !el.paused, 'Off silences the song without stopping it')
-  m.music.setVolume(1)
-  check(new Music({ engine: fakeEngine(), createElement: fakeElements().createElement, volume: half }).fader.gain.value === half, 'a Music made after the row is set starts at its volume')
+  check(el.volume === LEVEL && LEVEL === 0.25, 'at quarter volume')
   const w = m.music.wire()
   check(w[0] === 'forest-day' && w[1] === m.music.playing.song && Math.abs(w[2] - m.world) < 1e-6, 'its wire names the pool, the song and the world second it started')
+  const half = MUSIC_VOLUMES.find((v) => v.name === '50%').gain
+  m.music.setVolume(half)
+  m.step('forest-day')
+  check(el.volume === 0.125, 'the Music row at 50% plays a song at 0.125')
+  m.music.setVolume(MUSIC_VOLUMES.find((v) => v.name === 'Off').gain)
+  m.step('forest-day')
+  check(el.volume === 0 && !el.paused, 'Off silences the song without stopping it')
+  m.music.setVolume(1)
+  m.engine.muted = true
+  m.step('forest-day')
+  check(el.volume === 0 && !el.paused, 'the Sound row mutes the song without stopping it')
+  m.engine.muted = false
+  m.step('forest-day')
+  check(el.volume === LEVEL, 'and unmuted it comes back at its level')
+  const late = make(2)
+  late.music.setVolume(half)
+  late.until('caverns', PAUSE_S[1] + 1)
+  check(late.els[0].volume === 0.125, 'a song started after the row is set starts at its volume')
 
-  // Indoors: muffled and quieter, still playing; out again: open.
+  // Indoors: quieter, still playing; out again: back to level.
   for (let i = 0; i < 20; i++) m.step('forest-day', true)
   check(!el.paused && m.music.playing !== null, 'going indoors does not stop the song')
-  check(m.music.room.gain.value === INDOOR_GAIN && INDOOR_GAIN === 0.7, 'indoors is 30% quieter')
-  check(m.music.muffle.frequency.value === INDOOR_LP && INDOOR_LP < OPEN_LP / 4, 'indoors is low-passed', `${INDOOR_LP} Hz`)
-  m.step('forest-day', false)
-  check(m.music.room.gain.value === 1 && m.music.muffle.frequency.value === OPEN_LP, 'back out, the song opens up again')
+  check(near(el.volume, LEVEL * INDOOR_GAIN) && INDOOR_GAIN === 0.7, 'indoors is 30% quieter', el.volume.toFixed(4))
+  for (let i = 0; i < 20; i++) m.step('forest-day', false)
+  check(near(el.volume, LEVEL), 'back out, the song returns to its level', el.volume.toFixed(4))
 
   // The song ends: a fresh silence, then another.
   el.ended = true
@@ -159,19 +155,20 @@ console.log('player')
   // A pool change mid-song: a fade over FADE_OUT_S, the element paused when it lands.
   const playing = m.music.playing.track
   m.step('forest-night')
-  const ramp = playing.gain.gain.log.at(-1)
-  check(m.music.playing === null && ramp.op === 'ramp' && ramp.v === 0 && Math.abs(ramp.t - m.engine.ctx.currentTime - FADE_OUT_S) < 1e-9 && FADE_OUT_S === 10, 'a change of pool fades the song to nothing over 10 s')
-  for (let s = 0; s < FADE_OUT_S - 1; s += STEP) m.step('forest-night')
+  check(m.music.playing === null && FADE_OUT_S === 10, 'a change of pool stops the song being the playing one')
+  for (let i = 0; i < FADE_OUT_S / 2 / STEP; i++) m.step('forest-night')
+  check(near(playing.el.volume, LEVEL / 2), 'and fades it to half at 5 s of the 10', playing.el.volume.toFixed(4))
+  for (let s = 0; s < FADE_OUT_S / 2 - 1; s += STEP) m.step('forest-night')
   check(!playing.el.paused, 'the song sounds on through its fade')
   for (let s = 0; s < 1.5; s += STEP) m.step('forest-night')
-  check(playing.el.paused, 'and is paused when the fade lands')
+  check(playing.el.paused && playing.el.volume === 0, 'and is paused, silent, when the fade lands')
   const after = m.until('forest-night', PAUSE_S[1] + 1)
   check(after !== null && after >= PAUSE_S[0] - FADE_OUT_S - 2 && m.music.playing.pool === 'forest-night', 'a silence follows the fade, then a song from the new pool')
 
-  // Indoors is a muffle, not a pool: a town's song plays on through the door, and may start there.
+  // Indoors is a level, not a pool: a town's song plays on through the door, and may start there.
   const h = make(3)
   h.until('human-town-day', PAUSE_S[1] + 1, true)
-  check(h.music.playing !== null && h.music.playing.pool === 'human-town-day' && h.music.room.gain.value === INDOOR_GAIN, 'a song may start indoors, muffled')
+  check(h.music.playing !== null && h.music.playing.pool === 'human-town-day' && near(h.els[0].volume, LEVEL * INDOOR_GAIN), 'a song may start indoors, quieter')
   for (let i = 0; i < 50; i++) h.step('human-town-day', false)
   check(h.music.playing !== null, 'walking out of the house keeps the town\'s song')
   h.step('forest-day')
@@ -204,7 +201,7 @@ console.log('following the owner')
   const now = { pool: 'human-town-day', song: 1, startS: b.world + 0.15 }
   b.step('human-town-day', false, now)
   check(b.music.playing?.song === 1 && b.music.playing.startS === now.startS && b.els.at(-1).currentTime <= LATE_S, 'the owner\'s song starts for her on the owner\'s second')
-  check(gainOf(b).value === LEVEL, 'joined on time, it starts at full level rather than fading in')
+  check(b.els.at(-1).volume === LEVEL, 'joined on time, it starts at full level rather than fading in')
   for (let i = 0; i < 30; i++) b.step('human-town-day', false, now)
   check(b.els.at(-1).plays === 1, 'and is not restarted while the owner goes on playing it')
 
@@ -220,9 +217,13 @@ console.log('following the owner')
   c.step('forest-day', false, mid)
   check(c.music.playing === null, 'outside the owner\'s pool, its song is not heard')
   c.step('human-town-day', false, mid)
-  const joined = c.els.at(-1), g = gainOf(c).log
+  const joined = c.els.at(-1)
   check(c.music.playing?.song === 0 && Math.abs(joined.currentTime - (c.world - mid.startS)) < 1e-6 && joined.currentTime > 60, 'walking in mid-song, she hears it at the owner\'s second', `${joined.currentTime.toFixed(2)} s in`)
-  check(g.at(-2).op === 'set' && g.at(-2).v === 0 && g.at(-1).op === 'ramp' && g.at(-1).v === LEVEL && Math.abs(g.at(-1).t - g.at(-2).t - FADE_IN_S) < 1e-9, `and it fades in over ${FADE_IN_S} s`)
+  const silentAtFirst = joined.volume === 0
+  for (let i = 0; i < FADE_IN_S / 2 / STEP; i++) c.step('human-town-day', false, mid)
+  const halfway = joined.volume
+  for (let i = 0; i < FADE_IN_S / STEP; i++) c.step('human-town-day', false, mid)
+  check(silentAtFirst && near(halfway, LEVEL / 2) && joined.volume === LEVEL, `and it fades in over ${FADE_IN_S} s`, halfway.toFixed(4))
 
   // Out and back in while it plays: faded out, then faded in again where the owner is.
   c.step('forest-day', false, mid)

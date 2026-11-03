@@ -165,6 +165,8 @@ export class SoundEngine {
     this.ctx = ctx
     this.master = ctx.createGain()
     this.master.connect(ctx.destination)
+    // The songs play outside this graph (music.js) and read this for the Sound row.
+    this.muted = false
     this.air = ctx.createGain()
     this.walls = ctx.createBiquadFilter()
     this.walls.type = 'lowpass'
@@ -279,6 +281,7 @@ export class SoundEngine {
 
   /** Whole-scene mute/unmute; the quest panel's `sound` row. */
   setMuted(muted) {
+    this.muted = muted
     setParam(this.master.gain, muted ? 0 : 1, this.ctx.currentTime, 0.05)
   }
 

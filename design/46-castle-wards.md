@@ -10,10 +10,10 @@ Wardable ways: room-room doors, outer doors, bridges, outstairs with a door, and
 
 - Spine: the bridge edges (Tarjan) on the entry-summit route with a wardable gem on her side. 5 or more are needed. Every one must be opened, so `toSummit` is at least the spine count.
 - Detours: up to 10 wards in all. They are the loop edges whose shutting adds the most metres to her walks to the summit and the dungeon, while the castle stays whole.
-- Books: one per ward, plus one 30% of the time. Each goes in a room of a dominator cell of its ward's gem cell, matched by Kuhn; dead ends score first, then distance from other books and gems.
+- Books: one per ward, matched by Kuhn to a room of a dominator cell of its ward's gem cell; dead ends score first, then distance from other books and gems. Then a spare, in the free room with the fewest dominator cells, and a second spare 30% of the time.
 
 A book's code opens any one ward, once, so the keys are fungible. `wardSearch` checks every set of opened wards (at most 2^10 states):
-- in each reachable state, the books in reach outnumber the wards opened, and some shut ward's gem is in reach;
+- in each reachable state, the books in reach outnumber the wards opened, by two wherever two gems are in reach (the gate's `slack`), and some shut ward's gem is in reach;
 - in the final state, every used node is reached.
 
 Rope and barred edges are left out of reach. A castle whose plans give no spine of 5 fails `stats.ok`, and `layers/castles.js` redraws its seed.
@@ -31,9 +31,9 @@ Drawing: `render/castle-wards.js` `WardSet` draws, as children of the interior m
 - the octahedral gem, 0.45 m out on the gem side;
 - the books: two glowing pages bearing black rune cells cut from the world's own far cards (`render/rune-atlas.js`; the frog, which has no card, is photographed through the same baker), hovering 1.2-1.45 m up and turned to her.
 
-Interaction: the trigger or a click on a gem opens `ui/rune-panel.js`. It has three slots over the ten runes, plus Clear and Close. The third rune either opens the ward on the first unspent book with that code, or bursts the ward and does 10 damage (main.js `pressRunes`).
+Interaction: the trigger or a click on a gem opens `ui/rune-panel.js`, but only from the gem's side of the membrane (`CastleWards.gemOn`), as the search assumes. It has three slots over the ten runes, plus Clear and Close. The third rune either opens the ward on the first unspent book with that code, or bursts the ward and does 10 damage (main.js `pressRunes`).
 
-Persistence: the loot ledger holds ward i at bit 20 + i and book j at bit 40 + j, under the castle's `k` place. `openCastle` re-applies these through `Castles.setWards`.
+Persistence: the loot ledger holds ward i at bit 20 + i and book j at bit 40 + j, under the castle's `k` place. `openCastle` re-applies these through `Castles.setWards`. While she is inside, a ledger merge from the relay plays the opening of any ward another player opened (main.js `catchUpCastle`), and closes her rune panel on it. `pressRunes` refuses a ward the ledger already holds open, so no second code is spent on it. Two players pressing within one round trip can still each spend a code, since the relay arbitrates bits, not wards.
 
 Folk: while wards are shut, folk warn her and ask her to unknot them, and warm as they open (see Gratitude and gifts). Inside folk keep to their chambers, so none stand behind a ward.
 

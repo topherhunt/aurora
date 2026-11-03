@@ -18,6 +18,7 @@ import { jeer, swordWarning } from './talk/armed.js'
 import { DialogPanel } from './ui/dialog-panel.js'
 import { ghostSays } from './talk/ghost.js'
 import { CastleChat } from './talk/castle.js'
+import { standing } from './talk/castle-ways.js'
 
 export const TALK = {
   // Metres, at her scale: whom a hail reaches, and past which a conversation is over.
@@ -206,6 +207,13 @@ export class Conversations {
       }
     }
     return this.log.state(q.id) !== 'done' || (this.scold !== null && this.scold.ghost === q.id)
+  }
+
+  /** What castle folk `c` needs to place themselves and point the way (CastleChat `ctx.ways`): the castle's name is its hideout's label, 'this castle' when no town hides there. */
+  _castleWays(c) {
+    const { site, lay } = c, hide = this.world.hideouts.find((h) => h !== null && h.kind === 'castle' && h.site === site.id)
+    const towns = this.world.towns.map((t) => ({ name: t.name, x: t.town.x, z: t.town.z })).sort((a, b) => Math.hypot(a.x - site.x, a.z - site.z) - Math.hypot(b.x - site.x, b.z - site.z)).slice(0, 3)
+    return { lay, yaw: site.yaw, at: standing(lay, c.spec), name: hide === undefined ? 'this castle' : hide.label, x: site.x, z: site.z, towns }
   }
 
   /** Whether she is neither talking nor has someone coming to her. */
@@ -412,7 +420,7 @@ export class Conversations {
       if (warmth < RAPPORT.fed) this.rapport.warm(p.mind.id, RAPPORT.fed - warmth)
     }
     this._hold(p)
-    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms, wards: this.castle().wards(p.c.site) }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
+    const chat = p.kind === 'castle' ? new CastleChat(p.mind, { rooms: p.c.rooms, wards: this.castle().wards(p.c.site), ways: this._castleWays(p.c) }, { approached, salt: this.salt++ }) : new Chat(p.mind, this._ctx(p, p.mind), { trusted, busy: this._busy(p), approached, salt: this.salt++ })
     const [lo, hi] = TALK.answer
     this.chat = { p, chat, closing: null, trusted, answerAt: approached ? this.now : this.now + lo + Math.random() * (hi - lo) }
     this.grid.reset()

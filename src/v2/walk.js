@@ -288,3 +288,12 @@ export class WalkSurface {
     return null
   }
 }
+
+/** Where a teleport lob that crossed into something at `end`, clear just before at `back`, sets her: on the tread of a stair, one
+ * block to the lob (into its side or the wall over it), else on the highest ground at or a hair above the crossing, read at `back`.
+ * Inside a crate, a bed or a wall the floor's top is buried in one span with the box, and the column there gives the storey under it. */
+export function lobLanding(walk, back, end, k) {
+  const ground = walk.heightAt(back.x, back.z, end.y - walk.reach + 0.05 * k)
+  const tread = walk.stairAt(end.x, end.y, end.z) !== null ? walk.stairAt(end.x, end.y, end.z) : walk.stairAt(back.x, ground + 0.01, back.z)
+  return tread !== null ? { x: end.x, y: tread, z: end.z } : { x: back.x, y: ground, z: back.z }
+}

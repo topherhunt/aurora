@@ -33,8 +33,10 @@ import { walkTalks } from './lib/talk-walk.mjs'
 import { CastleChat, VIEW, WARD_TALK, allCastleLines, castleTemper, wardTier } from '../src/v2/talk/castle.js'
 import { GIFT, GIFT_KINDS, allGiftLines, giftSays, offerable, planGifts } from '../src/v2/talk/castle-gifts.js'
 import { allCastleBodies, castleNews, tellCastle } from '../src/v2/talk/castle-news.js'
-import { maidSays } from '../src/v2/render/castle-folk.js'
+import { maidSays, insideCast, outsideCast } from '../src/v2/render/castle-folk.js'
+import { places, route, steps, standing, hereName, roleName, shutEdges, townWay, bearing } from '../src/v2/talk/castle-ways.js'
 import { castleLayout } from '../src/v2/castles/layout.js'
+import { roomPlan } from '../src/v2/castles/furnish.js'
 import { COMMON } from '../src/v2/talk/gossip.js'
 import { mulberry32 } from '../src/sim/mathx.js'
 
@@ -295,7 +297,10 @@ const hctx = ctxAt(fire(world.townOf(heir)))
 check(!new Conversation(heir, hctx).menu().some((c) => c.topic === `deliver:${gq.id}`), 'the heir offers no word from the ghost before she has met it')
 const ask0 = ghostSays(gq, hctx.log, world)
 check(hctx.log.state(gq.id) === 'accepted' && ask0.text.includes(gq.words[0]) && ask0.text.includes(heir.name) && ask0.text.includes(gq.ghost.name), 'met, the ghost names itself and gives her its words for the heir', ask0.text)
-check(ghostSays(gq, hctx.log, world).text.includes(gq.words[0]) && hctx.log.state(gq.id) === 'accepted', 'met again, it reminds her of the words')
+const keepAt = world.hideouts[gq.town], heirTown = world.townOf(heir), errandWay = `${heirTown.name} is ${gq.bond}, ${townWay(keepAt, heirTown.town)} of this castle`
+const ask1 = ghostSays(gq, hctx.log, world)
+check(ask0.text.includes(errandWay), 'the ghost\'s first telling names the heir\'s town and its bearing and distance from the castle', ask0.text)
+check(ask1.text.includes(errandWay) && ask1.text.includes(gq.words[0]) && ask1.text.includes(heirTown.name) && hctx.log.state(gq.id) === 'accepted', 'met again, the ghost tells the whole errand again: the heir, the heir\'s town, the way there and the words', ask1.text)
 const hc = new Conversation(heir, hctx)
 check(hc.menu().some((c) => c.topic === `deliver:${gq.id}` && c.label.includes(gq.ghost.name)), 'the heir offers a "word from" the ghost by name', hc.menu().filter((c) => c.topic.startsWith('deliver:')).map((c) => c.label).join(' / '))
 const recall = hc.say(`deliver:${gq.id}`)
@@ -1013,11 +1018,18 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
 {
   const moments = JSON.parse(readFileSync('public/sounds/voice/moments.json', 'utf8')).human
   const long = allCastleLines().filter((t) => captionRows(t) > CAPTION.rows)
+  const YAW = 0.7, wardsAt = (open, total, mask = (1 << open) - 1) => ({ open, total, mask })
+  const nearTowns = (lay) => world.towns.slice(0, 3).map((t) => ({ name: t.name, x: t.town.x, z: t.town.z }))
+  // The ways ctx for castle `lay` and the folk `who`: where that kind of person stands in it.
+  const waysFor = (lay, who) => {
+    const spec = [...insideCast(lay), ...outsideCast(lay, { yaw: YAW }, null)].find((q) => q.who === who) ?? { who: 'yard' }
+    return { lay, yaw: YAW, at: standing(lay, spec), name: 'the old castle', x: 0, z: 0, towns: nearTowns(lay) }
+  }
   check(long.length === 0, `no castle line runs past the caption's ${CAPTION.rows} rows`, `${long.length}: ${long[0]}`)
   const unvoiced = [], urged = new Set(), ghosts = []
   for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) for (let salt = 0; salt < 40; salt++) {
     const id = `castle:1:${who}:${salt}`
-    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17, wards: [{ open: 0, total: 6 }, { open: 2, total: 6 }, { open: 4, total: 6 }, { open: 6, total: 6 }][salt % 4] }, { approached: salt % 4 === 0, salt })
+    const chat = new CastleChat({ id, name: who, who, castle: 1, ...castleTemper(who, id) }, { rooms: 17, wards: [wardsAt(0, 6), wardsAt(2, 6), wardsAt(4, 6), wardsAt(6, 6)][salt % 4], ways: waysFor(castleLayout(1), who) }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
     for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
     for (const l of lines) {
@@ -1029,7 +1041,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   }
   const said = (wards, who, salt) => {
     const id = `castle:2:${who}:${salt}`
-    const chat = new CastleChat({ id, name: who, who, castle: 2, ...castleTemper(who, id) }, { rooms: 17, wards }, { approached: salt % 4 === 0, salt })
+    const chat = new CastleChat({ id, name: who, who, castle: 2, ...castleTemper(who, id) }, { rooms: 17, wards: wardsAt(wards.open, wards.total), ways: waysFor(castleLayout(2), who) }, { approached: salt % 4 === 0, salt })
     const lines = [chat.open()]
     for (const { topic } of chat.menu()) if (!chat.ended) lines.push(chat.ask(chat.parting === null ? topic : NEXT.topic))
     if (!chat.ended) lines.push(chat.ask('bye'))
@@ -1055,9 +1067,75 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const lay = castleLayout(1)
   check(maidSays(lay, false, true, 'shut').includes('locked down') && maidSays(lay, false, true, 'shut').includes('dungeons') && !maidSays(lay, false, true, 'all').includes('locked down') && /owe it all/.test(maidSays(lay, false, true, 'all')) && /Nearly the whole keep/.test(maidSays(lay, false, true, 'most')) && /Some of the wards/.test(maidSays(lay, false, true, 'some')), 'the kitchen maid tells of the keep by how many wards are open, and still tells her tale', '')
   let threw = false
-  try { new CastleChat({ id: 'castle:3:lord:0', name: 'x', who: 'lord', castle: 3, ...castleTemper('lord', 'castle:3:lord:0') }, { rooms: 17 }) } catch { threw = true }
+  try { new CastleChat({ id: 'castle:3:lord:0', name: 'x', who: 'lord', castle: 3, ...castleTemper('lord', 'castle:3:lord:0') }, { rooms: 17, ways: waysFor(castleLayout(3), 'lord') }) } catch { threw = true }
   check(threw, 'a castle chat built without its wards fails explicitly', '')
   threw = false
+  try { new CastleChat({ id: 'castle:3:lord:0', name: 'x', who: 'lord', castle: 3, ...castleTemper('lord', 'castle:3:lord:0') }, { rooms: 17, wards: wardsAt(1, 5) }) } catch { threw = true }
+  check(threw, 'a castle chat built without its ways fails explicitly', '')
+  threw = false
+  try { new CastleChat({ id: 'castle:3:lord:0', name: 'x', who: 'lord', castle: 3, ...castleTemper('lord', 'castle:3:lord:0') }, { rooms: 17, wards: { open: 1, total: 5 }, ways: waysFor(castleLayout(3), 'lord') }) } catch { threw = true }
+  check(threw, 'a castle chat whose wards carry no open mask fails explicitly', '')
+  threw = false
+
+  // Ways: where am I, and the way to a room, grounded in the real layout.
+  const sure = (id, ways, wards, salt = 0, accuracy = 1) => {
+    const mind = { id, name: 'x', who: 'guard', castle: 1, ...castleTemper('guard', id) }
+    mind.traits.accuracy = accuracy
+    mind.mood = 'plain'
+    return new CastleChat(mind, { rooms: 17, wards, ways }, { salt })
+  }
+  const SEED_WAY = 215679, wl = castleLayout(SEED_WAY), wplan = roomPlan(wl)
+  const hallRoom = wplan.chambers.find((c) => c.role === 'hall'), throneRoom = wplan.chambers.find((c) => c.role === 'throne')
+  const inHall = { lay: wl, yaw: YAW, at: { node: hallRoom.node, chamber: hallRoom }, name: 'the old castle', x: 0, z: 0, towns: nearTowns(wl) }
+  const open = wardsAt(wl.wards.length, wl.wards.length)
+  const menuTopics = sure('castle:1:guard:1', inHall, open).menu().map((c) => c.topic)
+  check(['where:here', 'way:throne', 'way:hall', 'way:chapel', 'way:library', 'way:bedchamber', 'way:dungeon', 'way:summit', 'way:court', 'way:gate', 'way:town:0', 'way:town:1', 'way:town:2'].filter((t) => !t.startsWith('way:chapel') && !t.startsWith('way:library') && !t.startsWith('way:bedchamber') || places(wl).some((p) => t === `way:${p.id}`)).every((t) => menuTopics.includes(t)) && menuTopics.at(-1) === 'bye', 'the castle menu offers where-am-I and a way to each room, door and nearby town the castle has, before goodbye', menuTopics.join(' '))
+  const hereSaid = sure('castle:1:guard:1', inHall, open).ask('where:here').text
+  check(hereSaid.includes('the hall and kitchen') && hereSaid.includes('the ground floor') && hereSaid.includes(nearTowns(wl)[0].name), `asked where she is in castle ${SEED_WAY}'s hall, an exact guard names the hall, its floor and the nearest town`, hereSaid)
+  const inThrone = { ...inHall, at: { node: throneRoom.node, chamber: throneRoom } }
+  const thereSaid = sure('castle:1:guard:1', inThrone, open).ask('where:here').text
+  check(thereSaid.includes('the throne room') && thereSaid.includes(throneRoom.k === 0 ? 'the ground floor' : hereName(wl, YAW, inThrone.at).split(', ')[1]), `and in the throne room, on the throne room's own storey`, thereSaid)
+  const path = route(wl, hallRoom.node, new Set([throneRoom.node]), shutEdges(wl, open.mask)), spoken = steps(YAW, path)
+  const way = sure('castle:1:guard:1', inHall, open).ask('way:throne').text
+  const net = spoken.reduce((n, s) => n + s.floors, 0)
+  check(way.startsWith('The throne room? Go ') && way.includes(spoken[0].text) && net === throneRoom.node.k - hallRoom.node.k && /\b(up|down) (one|two|three|four) floors?\b/.test(way), `from castle ${SEED_WAY}'s hall an exact guard names the throne room and gives its real first step and storey change`, `${way} | route ${spoken.map((s) => s.text).join(' | ')}`)
+  const muddled = sure('castle:1:guard:2', inHall, open, 0, 0.1).ask('way:throne').text
+  const unknown = Array.from({ length: 60 }, (_, salt) => sure('castle:1:guard:2', inHall, open, salt, 0).ask('way:throne').text).find((t) => !t.includes('Go '))
+  check(unknown !== undefined && unknown.startsWith('The throne room? '), 'a guard who knows nothing of the way says so instead of inventing a route', unknown)
+  check(muddled.startsWith('The throne room? ') && (muddled.includes('Go ') ? muddled.includes(spoken[0].text) : true), 'a muddled guard still starts with the real first step, never a made-up one', muddled)
+  const townSaid = sure('castle:1:guard:1', inHall, open).ask('way:town:0').text, t0 = nearTowns(wl)[0]
+  check(townSaid.startsWith(`${t0.name}? Go `) && townSaid.includes('out through the gate') && townSaid.includes(`Then it is ${townWay(inHall, t0)}.`), 'the way to a town leads out through the gate, then gives that town\'s real bearing and distance from the castle', townSaid)
+  let shutCase = null
+  for (let seed = 1; seed <= 200 && shutCase === null; seed++) {
+    const l = castleLayout(seed), cut = shutEdges(l, 0), pl = places(l), start = l.nodes.find((n) => n.kind === 'court')
+    if (l.wards === null) continue
+    const p = pl.find((q) => route(l, start, q.goals, new Set()) !== null && route(l, start, q.goals, cut) === null)
+    if (p !== undefined) shutCase = { l, p }
+  }
+  check(shutCase !== null, 'some castle has a room a shut ward cuts off from the court', '')
+  if (shutCase !== null) {
+    const { l, p } = shutCase, court = l.nodes.find((n) => n.kind === 'court')
+    const ctx = { lay: l, yaw: YAW, at: { node: court, chamber: null }, name: 'the old castle', x: 0, z: 0, towns: nearTowns(l) }
+    const blocked = sure('castle:1:guard:3', ctx, wardsAt(0, l.wards.length, 0)).ask(`way:${p.id}`).text
+    const cleared = sure('castle:1:guard:3', ctx, wardsAt(l.wards.length, l.wards.length)).ask(`way:${p.id}`).text
+    check(/ward/i.test(blocked) && blocked.includes('Break it first') && !blocked.includes('Go ') && cleared.includes('Go '), `with the wards shut, the way to ${p.label} in castle ${l.seed} is blocked by a ward; with them open it is a route`, `${blocked} || ${cleared}`)
+  }
+  const unfit = [], plain = []
+  for (let seed = 1; seed <= 60; seed++) for (const who of ['lord', 'steward', 'cook', 'maid', 'servant', 'guard', 'watch', 'gate', 'yard', 'traveller', 'lore']) {
+    const l = castleLayout(seed), ways = waysFor(l, who)
+    if (l.wards === null) continue
+    for (const acc of [0.05, 0.6, 1]) {
+      const fresh = () => sure(`castle:${seed}:${who}:${acc}`, ways, wardsAt(seed % 2 ? 0 : l.wards.length, l.wards.length), seed, acc)
+      for (const { topic } of fresh().menu()) {
+        if (!topic.startsWith('way:') && topic !== 'where:here') continue
+        const t = fresh().ask(topic).text
+        if (captionRows(t) > CAPTION.rows) unfit.push(`${seed} ${who} ${topic}: ${t}`)
+        if (/undefined|NaN|—/.test(t)) plain.push(`${seed} ${who} ${topic}: ${t}`)
+      }
+    }
+  }
+  check(unfit.length === 0, 'in 60 castles every folk\'s where-am-I and way answer fits the caption', `${unfit.length}: ${unfit[0]}`)
+  check(plain.length === 0, 'and none says "undefined", "NaN" or an em dash', plain[0])
   try { wardTier(8, 7) } catch { threw = true }
   check(threw, 'more wards open than there are fails explicitly', '')
 
@@ -1119,7 +1197,7 @@ check(walked.refer.length === 0, 'sending her on to someone else is voiced as a 
   const hedged = told.filter(([, t]) => HEDGED.test(t))
   const clumsy = told.find(([, t]) => CLUMSY.test(t) || /\ba [aeiou]/i.test(t))
   check(hedged.length > 0 && clumsy === undefined && hedged.every(([x, t]) => hedgeTrue(x, t)), 'castle gossip never says "a owl", stacks two leads or hedges between a question and its answer, and a muddled teller\'s second thought names the true detail', clumsy?.[1] ?? hedged.find(([x, t]) => !hedgeTrue(x, t))?.[1] ?? hedged[0]?.[1])
-  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17, wards: { open: 5, total: 5 } }, { salt: 7 })
+  const sent = new CastleChat({ id: 'castle:1:guard:7', name: 'guard', who: 'guard', castle: 1, ...castleTemper('guard', 'castle:1:guard:7') }, { rooms: 17, wards: wardsAt(5, 5), ways: waysFor(castleLayout(1), 'guard') }, { salt: 7 })
   sent.open()
   let pushed = null
   for (let i = 0; i < 20 && sent.parting === null; i++) pushed = sent.ask(sent.menu().find((c) => c.topic !== 'bye').topic)

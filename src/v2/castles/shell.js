@@ -9,6 +9,8 @@ import { CASTLE, LADDER } from './layout.js'
 import { courtProps, roofProps, roomProps, roomPlan, PARTITION } from './furnish.js'
 import { SEG, SHAFT, shaftsOf, SPIRAL } from './spiral.js'
 import { castleWindows, faceShade, interiorLight, PANE } from './light.js'
+import { Mesher as HouseMesher, frame, kit } from '../render/interior.js'
+import { bedMesh } from '../render/town-interior.js'
 
 const C = CASTLE.cell, H = CASTLE.storey, S = CASTLE.scale, V = CASTLE.tall
 // Metres of mesh per stone tile (public/buildings/castle_stone.webp, about 30 cm courses).
@@ -570,6 +572,21 @@ const HIGH = new Set(['chandelier', 'banner', 'tapestry', 'herbs', 'sconce', 'sh
 
 /** A furnish.js prop record drawn from primitives in its own frame: u along its width, v along its depth (its back at -d/2),
  * y up from its floor. Everything is planks but the well's stone. */
+export const BED_TOP = 0.55
+/** The house bed (render/town-interior.js bedMesh) in prop o's place, its headboard at -v, drawn flat into m's slots and light. */
+function houseBed(m, o, posts) {
+  const M = { grain: new HouseMesher(), linen: new HouseMesher() }, rng = mulberry32(Math.abs(Math.floor(o.x * 61.3 + o.z * 89.9)) + 1)
+  const col = { wood: m.tint(DARKWOOD), mattress: m.tint(CLOTH.map((v) => v * 0.8), 0.05), blanket: m.tint(dye(o), 0.08), linen: m.tint(CLOTH, 0.05) }
+  bedMesh(M, kit(rng), frame(o.x, o.y, o.z, o.yaw + Math.PI), { wid: o.w, len: o.d, top: BED_TOP, posts, pillows: o.w > 1.2 ? 2 : 1, coarse: true }, col)
+  for (const [H, slot] of [[M.grain, WOOD_SLOT], [M.linen, CLOTH_SLOT]]) m.with(slot, () => {
+    const P = (i) => [H.pos[i * 3], H.pos[i * 3 + 1], H.pos[i * 3 + 2]], N = (i) => [H.nrm[i * 3], H.nrm[i * 3 + 1], H.nrm[i * 3 + 2]]
+    for (let t = 0; t < H.idx.length; t += 3) {
+      const [a, b, c] = [H.idx[t], H.idx[t + 1], H.idx[t + 2]]
+      m.face([P(a), P(b), P(c)], [0, 1, 2].map((k) => N(a)[k] + N(b)[k] + N(c)[k]), [H.tint[a * 3], H.tint[a * 3 + 1], H.tint[a * 3 + 2]])
+    }
+  })
+}
+
 export function prop(m, o) {
   const c = Math.cos(o.yaw), s = Math.sin(o.yaw)
   let W = (u, y, v) => [o.x + u * c + v * s, o.y + y, o.z - u * s + v * c]
@@ -637,7 +654,7 @@ export function prop(m, o) {
       case 'bench': blk(-w, 0.4, -d, w, 0.47, d, wood); for (const u of [-w + 0.15, w - 0.15]) blk(u - 0.05, 0, -d + 0.05, u + 0.05, 0.4, d - 0.05, DARKWOOD); break
       case 'table': case 'longtable': blk(-w, 0.74, -d, w, 0.82, d, wood); legs(w - 0.12, d - 0.12, 0.74, 0.05, DARKWOOD); break
       case 'stool': blk(-w, 0.42, -d, w, 0.47, d, wood); blk(-0.05, 0, -0.05, 0.05, 0.42, 0.05, DARKWOOD); break
-      case 'bed': blk(-w, 0, -d, w, 0.35, d, DARKWOOD); blk(-w + 0.05, 0.35, -d + 0.1, w - 0.05, 0.5, d - 0.05, m.tint(CLOTH, 0.12)); blk(-w, 0, -d, w, 0.95, -d + 0.08, DARKWOOD); blk(-w + 0.15, 0.5, -d + 0.15, w - 0.15, 0.6, -d + 0.45, m.tint(CLOTH, 0.05)); break
+      case 'bed': houseBed(m, o, false); break
       case 'chest': blk(-w, 0, -d, w, 0.5, d, wood); blk(-w - 0.02, 0.5, -d - 0.02, w + 0.02, 0.6, d + 0.02, DARKWOOD); blk(-0.08, 0.32, d, 0.08, 0.5, d + 0.03, GOLD); break
       case 'rack':
         for (const u of [-w + 0.05, w - 0.05]) blk(u - 0.05, 0, -0.05, u + 0.05, 1.6, 0.05, DARKWOOD)
@@ -791,15 +808,7 @@ export function prop(m, o) {
         blk(-0.02, 3.69, -0.02, 0.02, H * V - 0.25, 0.02, IRON)
         for (const [u, v] of [[-0.45, -0.45], [0.45, -0.45], [0.45, 0.45], [-0.45, 0.45]]) prism(u, v, 3.66, 3.88, 0.03, 4, CLOTH)
         break
-      case 'fourposter': {
-        const cloth = m.tint(dye(o), 0.08)
-        legs(w - 0.03, d - 0.03, 2.24, 0.05, DARKWOOD)
-        blk(-w, 0.2, -d, w, 0.4, d, DARKWOOD); blk(-w, 0.4, -d, w, 1.3, -d + 0.08, DARKWOOD)
-        blk(-w + 0.05, 0.4, -d + 0.05, w - 0.05, 0.6, d - 0.05, m.tint(CLOTH, 0.05)); blk(-w + 0.04, 0.45, -d + 0.6, w - 0.04, 0.62, d - 0.04, cloth)
-        blk(-w + 0.15, 0.6, -d + 0.12, w - 0.15, 0.72, -d + 0.42, m.tint(CLOTH, 0.05))
-        blk(-w - 0.04, 2.2, -d - 0.04, w + 0.04, 2.3, d + 0.04, cloth, true)
-        break
-      }
+      case 'fourposter': houseBed(m, o, true); break
       case 'wardrobe':
         blk(-w, 0, -d, w, 1.95, d, DARKWOOD); blk(-w - 0.04, 1.92, -d + 0.01, w + 0.04, 2.0, d + 0.04, DARKWOOD)
         blk(-0.015, 0.1, d - 0.01, 0.015, 1.85, d + 0.015, IRON)
@@ -1154,8 +1163,21 @@ export function interiorGeometries(lay) {
         }
         if (hole) for (const [j, sg] of w.st.spur ? [[SPIRAL.steps, -1]] : [[hole.lo, 1], [SPIRAL.steps, -1]]) { const a = hole.a0 + hole.hand * j * SEG; rim(c, ring(a, Rh), [-Math.sin(a) * sg * hole.hand, 0, Math.cos(a) * sg * hole.hand]) }
       })
-      // The top storey's ceiling; below it the next storey's floor slab is the ceiling.
-      if (!low && n.k === n.sec.floors - 1) m.box(ix0, y + SH - 0.3, iz0, ix1, y + SH, iz1, m.tint(INNER), true)
+      // The ceiling is the next storey's floor slabs; the top storey's is stone of its own. Where the storey above is split, the
+      // strip between its rooms' inset slabs is stone too, a centimetre under them and lapping 30 cm in under their edges: edges
+      // shared exactly would meet only at common corners, and the warp opens a crack along the rest.
+      if (!low) {
+        const up = lay.nodes.filter((u) => u.kind === 'room' && u.sec === n.sec && u.k === n.k + 1)
+        if (!up.length) m.box(ix0, y + SH - 0.3, iz0, ix1, y + SH, iz1, m.tint(INNER), true)
+        const over = up.map((u) => [(lay.X(u.x0) + INSET) * S, (lay.Z(u.z0) + INSET) * S, (lay.X(u.x0 + u.w) - INSET) * S, (lay.Z(u.z0 + u.d) - INSET) * S])
+        const cuts = (lo, hi, i) => [...new Set([lo, hi, ...over.flatMap((r) => [r[i], r[i + 2]]).filter((v) => v > lo && v < hi)])].sort((p, q) => p - q)
+        const cx = cuts(ix0, ix1, 0), cz = cuts(iz0, iz1, 1), lid = m.tint(INNER), LAP = 0.3
+        if (up.length) for (let i = 0; i + 1 < cx.length; i++) for (let j = 0; j + 1 < cz.length; j++) {
+          const mx = (cx[i] + cx[i + 1]) / 2, mz = (cz[j] + cz[j + 1]) / 2
+          if (over.some((r) => mx > r[0] && mx < r[2] && mz > r[1] && mz < r[3])) continue
+          m.box(Math.max(ix0, cx[i] - LAP), y + SH - 0.31, Math.max(iz0, cz[j] - LAP), Math.min(ix1, cx[i + 1] + LAP), y + SH - 0.02, Math.min(iz1, cz[j + 1] + LAP), lid, true)
+        }
+      }
       const doors = mine.flatMap((e) => e.doors).filter((d) => d.axis === 'x' ? Math.abs(d.x - ex[0]) < 1e-6 || Math.abs(d.x - ex[2]) < 1e-6 : Math.abs(d.z - ex[1]) < 1e-6 || Math.abs(d.z - ex[3]) < 1e-6)
       const wall = m.tint(INNER), top = y + (low ? 1.4 : SH - 0.3)
       if (n.sec.round) {

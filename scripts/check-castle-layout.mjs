@@ -9,7 +9,8 @@
 // collision that throws (over a wide seed sweep) or passes the walk's span cap, a castle without its doors, spirals and rope, or a
 // dungeon whose chest she can reach without unlocking its door, or cannot reach with it, or that is over its triangle budget; wards
 // outside 5-10, two on one way, fewer than 5 she must open to reach the summit, a ward order that leaves her facing a gem with no
-// unspent code, or two runebooks sharing a code.
+// unspent code, or two runebooks sharing a code; a tower top short of its archery racks, too few runebooks up on tower tops, or one
+// a prop or the way up keeps her from.
 // What this can NOT check: whether the castle reads as a castle, or the maze is fun. That needs eyes, in gen-castle.html.
 
 import { readFileSync } from 'node:fs'
@@ -21,7 +22,7 @@ import { SEG, SHAFT, SPIRAL, shaftsOf } from '../src/v2/castles/spiral.js'
 import { castleSolids, exteriorSpans, interiorSpans, spiralTreadAt, SPANS, SPAN_CAP } from '../src/v2/castles/solids.js'
 import { dungeonPlan } from '../src/v2/castles/dungeon.js'
 import { dungeonGeometry } from '../src/v2/castles/dungeon-mesh.js'
-import { courtProps, dungeonProps, roomPlan, roomProps } from '../src/v2/castles/furnish.js'
+import { courtProps, dungeonProps, roofFrame, roofProps, roomPlan, roomProps } from '../src/v2/castles/furnish.js'
 import { courtGlow, GLOW } from '../src/v2/castles/glow.js'
 import { FOLK_CHAT, FOLK_SAYS, folkMoment, insideCast, maidSays, outsideCast } from '../src/v2/render/castle-folk.js'
 import { fits } from '../src/v2/talk/caption.js'
@@ -48,15 +49,68 @@ const routeOk = (l) => {
   return es.every((e, i) => l.edges.includes(e) && new Set([e.a, e.b]).has(ns[i]) && new Set([e.a, e.b]).has(ns[i + 1]))
 }
 check(good.every(routeOk), 'the route runs entry to summit along chosen edges')
-check(good.every((l) => l.wards.length >= WARDS.min && l.wards.length <= WARDS.max && l.books.length >= l.wards.length), 'a passing castle has 5-10 wards and a runebook for each', good.filter((l) => !(l.wards.length >= WARDS.min && l.wards.length <= WARDS.max)).map((l) => `${l.seed}:${l.wards.length}`).slice(0, 5).join(' '))
+check(good.every((l) => l.wards.length >= WARDS.min && l.wards.length <= WARDS.max && l.books.length > l.wards.length), 'a passing castle has 5-10 wards, a runebook for each and a spare', good.filter((l) => !(l.wards.length >= WARDS.min && l.wards.length <= WARDS.max)).map((l) => `${l.seed}:${l.wards.length}`).slice(0, 5).join(' '))
 check(good.every((l) => new Set(l.wards.map((w) => w.edge)).size === l.wards.length), 'no two wards guard the same way')
 const searched = good.map((l) => [l, wardSearch(l.nodes, l.edges, l.nodes.find((n) => n.kind === 'entry'), l.nodes.find((n) => n.kind === 'summit'), l.wards, l.books)])
 const stuckWards = searched.filter(([, r]) => !r.ok).map(([l]) => l.seed)
 check(stuckWards.length === 0, 'in every order she opens wards, she knows an unspent code for a gem she can reach, and ends with every room open', stuckWards.slice(0, 5).join(' '))
+const tight = good.filter((l) => !wardSearch(l.nodes, l.edges, l.nodes.find((n) => n.kind === 'entry'), l.nodes.find((n) => n.kind === 'summit'), l.wards, l.books, 2).ok).map((l) => l.seed)
+check(tight.length === 0, 'in every order she opens wards, wherever she has a choice of gems she has a code to spare', tight.slice(0, 5).join(' '))
 const shortWards = searched.filter(([, r]) => r.toSummit < WARDS.min).map(([l, r]) => `${l.seed}:${r.toSummit}`)
 check(shortWards.length === 0, 'every order she opens wards in opens at least 5 before the summit', shortWards.slice(0, 5).join(' '))
 check(good.every((l) => new Set(l.books.map((b) => b.code.join())).size === l.books.length && l.books.every((b) => new Set(b.code).size === 3)), 'every runebook has its own code of three different runes')
 check(good.every((l) => { const top = l.nodes.find((n) => n.kind === 'summit'); return l.nodes.every((n) => n === top || n.pos[1] < top.pos[1]) }), 'the summit is the highest node')
+
+// Tower tops: she must be able to stand on `y` at (x, z), head clear, at her 0.3 m radius.
+const standable = (ex, x, z, y) => [[0, 0], [0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3], [0.21, 0.21], [-0.21, 0.21], [0.21, -0.21], [-0.21, -0.21]].every(([u, v]) => {
+  const n = exteriorSpans(ex, x + u, z + v)
+  let floor = false
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(SPANS.HI[i] - y) < 0.15) floor = true
+    else if (SPANS.HI[i] > y + 0.25 && SPANS.LO[i] < y + 1.6) return false
+  }
+  return floor
+})
+const roofNodes = (l) => l.nodes.filter((n) => n.kind === 'roof' && !n.unused)
+const unarmed = [], noSeat = [], unread = []
+let tops = 0, seats = 0
+for (const l of good) {
+  const props = roofProps(l), sol = castleSolids(l)
+  for (const n of roofNodes(l)) {
+    tops++
+    const f = roofFrame(l, n), here = props.filter((o) => o.y === f.y && o.x > f.rect[0] && o.x < f.rect[2] && o.z > f.rect[1] && o.z < f.rect[3])
+    if (!['bowrack', 'arrows'].every((k) => here.some((o) => o.kind === k))) unarmed.push(`${l.seed}:${n.id}`)
+    const seat = here.some((o) => o.kind === 'chair')
+    if (seat) seats++
+    if (!seat && !f.round) noSeat.push(`${l.seed}:${n.id}`)
+  }
+  sol.portals.books.forEach((b, j) => {
+    if (!b.roof) return
+    const n = l.books[j].node, f = roofFrame(l, n), ways = f.round || f.small ? f.portals : f.portals.slice(4), G = 0.15, y = f.y, seen = new Set(), todo = []
+    const key = (i, k) => `${i},${k}`
+    for (const [x, z] of ways) for (let a = -5; a <= 5; a++) for (let c = -5; c <= 5; c++) {
+      const i = Math.round(x / G) + a, k = Math.round(z / G) + c
+      if (!seen.has(key(i, k)) && Math.hypot(a, c) <= 5 && standable(sol.ex, i * G, k * G, y)) { seen.add(key(i, k)); todo.push([i, k]) }
+    }
+    if (!todo.length) unread.push(`${l.seed}:${n.id} no way onto it stands clear`)
+    while (todo.length) {
+      const [i, k] = todo.pop()
+      for (const [a, c] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const p = i + a, q = k + c
+        if (seen.has(key(p, q)) || !standable(sol.ex, p * G, q * G, y)) continue
+        seen.add(key(p, q)); todo.push([p, q])
+      }
+    }
+    const reach = Math.min(...[...seen].map((s) => { const [i, k] = s.split(',').map(Number); return Math.hypot(i * G - b.at[0], k * G - b.at[2]) }))
+    if (!(reach < 0.7) || Math.abs(b.at[1] - y - 1.3) > 0.2) unread.push(`${l.seed}:${n.id} ${reach.toFixed(2)} m off, ${(b.at[1] - y).toFixed(2)} m up`)
+  })
+}
+const roofShare = good.filter((l) => l.books.some((b) => b.node.kind === 'roof')).length / good.length
+check(!unarmed.length, `every used roof has two kinds of archery rack (${tops} roofs)`, unarmed.slice(0, 8).join(' '))
+check(!noSeat.length, `every square roof has a chair (chairs on ${seats} of ${tops})`, noSeat.slice(0, 8).join(' '))
+check(roofShare >= 0.85, 'most castles hide a runebook on a tower top', `${(roofShare * 100).toFixed(0)}% of castles`)
+check(good.every((l) => l.books.every((b) => b.node.kind === 'room' || (b.node.kind === 'roof' && !b.node.unused))), 'a runebook lies only in a room or on a used roof')
+check(!unread.length, 'she can walk from a way up to within reach of every tower-top runebook, at reading height', unread.slice(0, 8).join(' | '))
 
 // A door belongs on the boundary of each room it joins.
 const onRoom = (l, d, n) => n.kind !== 'room' || (d.axis === 'x'
@@ -112,7 +166,7 @@ for (const l of good.slice(0, 12)) {
 }
 // Looking up from anywhere on the floor through a doorway (on the room's side of an outer door's leaves), the first face overhead
 // must face down: a box's missing bottom shows the sky through its culled top. Walls are left out, which a vertical ray grazes.
-const leaky = []
+const leaky = [], openRoof = []
 for (const l of good.slice(0, 12)) {
   const warp = interiorWarp(l), SH = CASTLE.storey * CASTLE.tall, byK = new Map()
   for (const { k, geometry: g } of interiorGeometries(l)) {
@@ -134,8 +188,21 @@ for (const l of good.slice(0, 12)) {
       if (up === null || up.ny > -0.5) leaky.push(`${l.seed}:k${k}@${o.map((v) => v.toFixed(1))}`)
     }
   }
+  // Every square room's ceiling, off a 40 cm grid clear of its walls and spiral squares: where the storey above is split in two,
+  // their inset slabs leave a strip between them that the room below must roof itself.
+  const wells = shaftsOf(l).storeys.map((st) => [st.x, st.z]), S = CASTLE.scale
+  for (const n of l.nodes) if (n.kind === 'room' && !n.sec.round) {
+    const tris = [...byK.get(n.k), ...(byK.get(n.k + 1) || [])], y = n.k * SH + SH - 1
+    for (let x = (l.X(n.x0) + 0.75) * S; x < (l.X(n.x0 + n.w) - 0.75) * S; x += 0.4) for (let z = (l.Z(n.z0) + 0.75) * S; z < (l.Z(n.z0 + n.d) - 0.75) * S; z += 0.4) {
+      if (wells.some(([a, b]) => Math.abs(x - a) < SPIRAL.square + 0.3 && Math.abs(z - b) < SPIRAL.square + 0.3)) continue
+      const o = warp(x, y, z)
+      const roof = tris.some(({ ny, t }) => { if (ny > -0.5 || t.every((p) => p[0] < o[0]) || t.every((p) => p[0] > o[0]) || t.every((p) => p[2] < o[2]) || t.every((p) => p[2] > o[2])) return false; const h = rayHit(o, [0, 1, 0], ...t); return h !== null && h > 0 && h < 1.2 })
+      if (!roof) openRoof.push(`${l.seed}:${n.id}@${o[0].toFixed(1)},${o[2].toFixed(1)}`)
+    }
+  }
 }
 check(leaky.length === 0, 'every doorway has stone facing down over it', `${leaky.length} leaks ${leaky.slice(0, 4).join(' ')}`)
+check(openRoof.length === 0, "every square room's ceiling is stone overhead, where the storey above is split as well", `${openRoof.length} open ${openRoof.slice(0, 4).join(' ')}`)
 
 // A rug or carpet reaching into a shaft's cell lies in its stone: no rug corner or edge midpoint within a shaft storey's box.
 const airRugs = []
@@ -442,7 +509,7 @@ function walkDungeon(l, it) {
   for (let c = 0; c < g.W * g.D; c++) if (!Number.isNaN(g.lo[c])) air++
   return { reached, share: seen.size / 4 / air }
 }
-let dungeonOpen = [], dungeonShut = [], dungeonShare = 1, dungeonTri = 0
+let dungeonOpen = [], dungeonShut = [], dungeonShare = 1, dungeonTri = 0, footOpen = []
 for (const l of good.slice(0, 20)) {
   const sol = castleSolids(l)
   sol.it.unlocked = false
@@ -451,8 +518,20 @@ for (const l of good.slice(0, 20)) {
   const w = walkDungeon(l, sol.it)
   if (!w.reached) dungeonShut.push(l.seed)
   dungeonShare = Math.min(dungeonShare, w.share)
-  dungeonTri = Math.max(dungeonTri, tri(dungeonGeometry(l).geometry))
+  const dg = dungeonGeometry(l).geometry
+  dungeonTri = Math.max(dungeonTri, tri(dg))
+  // The stair foot runs out under the ground room's walls, past its slab: off the well's square, stone is overhead at the slab.
+  const g = dungeonPlan(l), [fi0, fj0, fi1, fj1] = g.foot.cells, warp = interiorWarp(l)
+  const lid = [dg, interiorGeometries(l).find((s) => s.k === 0).geometry].flatMap(({ position: p }) => Array.from({ length: p.length / 9 }, (_, i) => [0, 1, 2].map((j) => [p[i * 9 + j * 3], p[i * 9 + j * 3 + 1], p[i * 9 + j * 3 + 2]])))
+    .filter((t) => Math.abs(t[0][0] - g.foot.x) < 7 && Math.abs(t[0][2] - g.foot.z) < 7)
+  for (let i = fi0; i < fi1; i++) for (let j = fj0; j < fj1; j++) {
+    const x = g.x0 + i + 0.5, z = g.z0 + j + 0.5
+    if (Math.max(Math.abs(x - g.foot.x), Math.abs(z - g.foot.z)) < SPIRAL.square + 0.5) continue
+    const o = warp(x, -1, z)
+    if (!lid.some((t) => { const h = rayHit(o, [0, 1, 0], ...t); return h !== null && h > 0 && h < 1.2 })) footOpen.push(`${l.seed}@${x},${z}`)
+  }
 }
+check(footOpen.length === 0, "a dungeon's stair foot is roofed out to its walls", footOpen.slice(0, 5).join(' '))
 check(dungeonOpen.length === 0, 'a dungeon\'s chest is out of reach while its door is locked', dungeonOpen.slice(0, 5).join(' '))
 check(dungeonShut.length === 0 && dungeonShare > 0.85, 'unlocked, she walks from the stair foot to its chest and most of the maze', `worst ${(dungeonShare * 100).toFixed(0)}% walked ${dungeonShut.slice(0, 5).join(' ')}`)
 check(dungeonTri < 25000, 'a dungeon stays under 25k triangles', `worst ${dungeonTri}`)

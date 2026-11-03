@@ -1,6 +1,6 @@
 // Her talk with a castle's folk (design/44-castles.md §Garrison): a few topics by who they are, the castle's gossip told each their
-// own way (castle-news.js), a mood's asides (quirks.js), the summit's view pressed on her by most of them, and the summit guard's tall tales. Its lines are `Conversation._line`'s shape, so conversations.js voices
-// and shows them as a townsperson's. Three-free.
+// own way (castle-news.js), where she is and the way to a room or a town (castle-ways.js), a mood's asides (quirks.js), the summit's view pressed on her by most of them,
+// and the summit guard's tall tales. Its lines are `Conversation._line`'s shape, so conversations.js voices and shows them as a townsperson's. Three-free.
 
 import { mulberry32 } from '../../sim/mathx.js'
 import { hash32 } from '../../sim/score.js'
@@ -8,13 +8,16 @@ import { strHash } from './speak.js'
 import { fits } from './caption.js'
 import { QUIRKS, quirkLines } from './quirks.js'
 import { castleNews, tellCastle, allCastleBodies } from './castle-news.js'
-import { heardOf, nothingMore, NEWS_CLIPS } from './gossip.js'
+import { heardOf, nothingMore, cap, NEWS_CLIPS } from './gossip.js'
 import { NEXT } from './grid.js'
 import { allGiftLines } from './castle-gifts.js'
+import { ASKED, places, route, shutEdges, steps, hereName, sectionName, townWay } from './castle-ways.js'
 
 export const CASTLE_TALK = {
   // Questions answered before they send her off; the summit guard never tires of her.
   patience: { lore: 40, guard: 4, rest: 5 },
+  // A way asked is known at this base plus `know` times their accuracy; under `clear` accuracy they give only the first step, and under `sure` they cannot place the town's bearing.
+  way: { base: 0.4, know: 0.6, clear: 0.45, sure: 0.35 },
   // Odds a greeting, or an answer about the castle, goes on to the summit's view.
   view: 0.55,
   // Odds a greeting, and a goodbye once any ward is open, is about the wards (WARD_TALK).
@@ -192,6 +195,13 @@ export function allCastleLines() {
   return out
 }
 
+// What they say of a way they cannot give: they do not know it, know only its start, or know a ward holds it.
+const DUNNO = ['Never been. Ask someone else.', 'I could not say. This place is a maze.', "Don't ask me. I only know my own corner.", 'No idea, truly. I keep to my post.']
+const MUDDLE = ['After that? I lose the thread.', 'And then, er... I forget the rest.', 'Then it gets muddled. Ask again up there.']
+const HERE = ['You are standing in it.', 'You are in it now. Look about.']
+const NEAR = ['Close. On this very floor, through a door or two.', 'Very near. Try the next room over.']
+const SHUT = ['A ward holds the way shut, by', 'The way is warded shut, by', 'You cannot pass the ward by']
+
 const ghostTale = (of, then) => `Old stories say the dungeon is haunted by the forlorn ghost of ${of}. ${then}`
 
 /**
@@ -199,10 +209,15 @@ const ghostTale = (of, then) => `Old stories say the dungeon is haunted by the f
  * `menu()` the sentences she may say. `ctx.rooms` counts the castle's rooms, `ctx.wards` its `{ open, total }` wards (wardTier); `approached` whether they came to her.
  */
 export class CastleChat {
-  constructor(mind, { rooms, wards }, { approached = false, salt = 0 } = {}) {
-    if (wards === undefined || wards === null) throw new Error(`CastleChat: ${mind.id} needs ctx.wards as { open, total }`)
+  constructor(mind, { rooms, wards, ways }, { approached = false, salt = 0 } = {}) {
+    if (wards === undefined || wards === null) throw new Error(`CastleChat: ${mind.id} needs ctx.wards as { open, total, mask }`)
+    if (!Number.isInteger(wards.mask)) throw new Error(`CastleChat: ${mind.id} needs ctx.wards.mask, the bitmask of opened wards`)
+    if (ways === undefined || ways === null) throw new Error(`CastleChat: ${mind.id} needs ctx.ways from castle-ways.js (lay, yaw, at, name, x, z, towns)`)
     this.mind = mind
     this.rooms = rooms
+    this.ways = ways
+    this.places = places(ways.lay)
+    this.shut = shutEdges(ways.lay, wards.mask)
     this.tier = wardTier(wards.open, wards.total)
     this.approached = approached
     this.rand = mulberry32(hash32(strHash(mind.id), salt))
@@ -249,6 +264,9 @@ export class CastleChat {
     const chips = [['self', ['Tell me about', 'yourself.']], ['castle', ['Tell me about', 'this castle.']], ['news', ['Any news?']]]
     if (this.mind.who === 'lore') chips.push(['tale', ['Tell me', 'a tale.']], ['ghost', ['Is the dungeon', 'haunted?']], ['count', ['How big', 'is this castle?']], ['view', ['What can you', 'see from here?']])
     else chips.push(['see', ['Is there anything', 'worth seeing?']])
+    chips.push(['where:here', ['Where', 'am I?']])
+    for (const p of this.places) chips.push([`way:${p.id}`, ['How do I get to', `${p.label}?`]])
+    this.ways.towns.forEach((t, i) => chips.push([`way:town:${i}`, ['How do I get to', `${t.name}?`]]))
     chips.push(['bye', ['Goodbye.']])
     return chips.map(([topic, path]) => ({ topic, label: path.join(' '), path }))
   }
@@ -308,7 +326,51 @@ export class CastleChat {
       const [d, t] = this._pick(TALE.did)
       return line(`${this._pick(TALE.open)} ${this._pick(TALE.who)} ${d}, ${t}`, 'talk-gesture', { moment: 'answer.sure' })
     }
+    if (topic === 'where:here') return this._where()
+    if (topic.startsWith('way:')) return this._way(topic.slice(4))
     throw new Error(`CastleChat: no answer for ${topic}`)
+  }
+
+  /** Where they and she stand: the room and storey, the castle, and the nearest town's bearing when they can place it. */
+  _where() {
+    const { lay, yaw, at, name, towns } = this.ways
+    const here = `You are ${hereName(lay, yaw, at)} of ${name}.`
+    const sure = this.mind.traits.accuracy >= CASTLE_TALK.way.sure
+    const town = towns.length === 0 ? '' : sure ? ` ${towns[0].name} lies ${townWay(this.ways, towns[0])}.` : ` ${towns[0].name} is somewhere down the hill.`
+    return line(this._mood(fits(here + town) ? here + town : here, 'aside'), 'talk-point', { moment: 'answer.sure' })
+  }
+
+  /** The way to place `id` (castle-ways.js places, or `town:<i>`): a spoken route over the real layout, muddled, unknown or blocked by a shut ward as they are. */
+  _way(id) {
+    const { lay, yaw, at, towns } = this.ways, acc = this.mind.traits.accuracy
+    const town = id.startsWith('town:') ? towns[Number(id.slice(5))] : null
+    if (id.startsWith('town:') && town === undefined) throw new Error(`CastleChat: no town ${id}`)
+    const place = town === null ? this.places.find((p) => p.id === id) : { label: town.name, goals: new Set([lay.nodes.find((n) => n.kind === 'entry')]) }
+    if (place === undefined) throw new Error(`CastleChat: no place ${id}`)
+    const lead = `${cap(place.label)}? `, W = CASTLE_TALK.way
+    const said = (text, moment, gesture = 'talk-point') => line(this._mood(text, 'aside'), gesture, { moment })
+    if (town !== null && at.node.kind === 'entry') {
+      if (this.rand() >= W.base + W.know * acc) return said(lead + this._pick(DUNNO), 'answer.unknown', 'talk-shrug')
+      return said(`${lead}Follow the road. It is ${townWay(this.ways, town)}.`, 'answer.sure')
+    }
+    if (town === null && place.goals.has(at.node)) {
+      const own = at.chamber !== null && (!ASKED.includes(id) || at.chamber.role !== id)
+      return said(lead + this._pick(own ? NEAR : HERE), 'answer.sure')
+    }
+    if (this.rand() >= W.base + W.know * acc) return said(lead + this._pick(DUNNO), 'answer.unknown', 'talk-shrug')
+    const path = route(lay, at.node, place.goals, this.shut)
+    if (path === null) {
+      const free = route(lay, at.node, place.goals, new Set()), i = free.edges.findIndex((e) => this.shut.has(e))
+      return said(`${lead}${this._pick(SHUT)} ${sectionName(yaw, free.nodes[i])}. Break it first.`, 'answer.sure')
+    }
+    const tail = town === null ? '' : ` Then it is ${townWay(this.ways, town)}.`
+    const sp = steps(yaw, path).map((s) => s.text)
+    if (acc < W.clear && sp.length > 1) return said(`${lead}Go ${sp[0]}.${tail} ${this._pick(MUDDLE)}`, 'answer.hedge', 'talk-gesture')
+    for (let n = sp.length; n >= 1; n--) {
+      const text = `${lead}Go ${sp.slice(0, n).join(', then ')}.${tail}`
+      if (fits(text)) return said(text, 'answer.sure')
+    }
+    throw new Error(`CastleChat: the way to ${id} from ${at.node.id} does not fit the caption: ${lead}${sp.join(', then ')}`)
   }
 }
 
