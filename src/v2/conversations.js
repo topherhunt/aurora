@@ -17,6 +17,7 @@ import { Voices } from './audio/voices.js'
 import { aimedAt } from './talk/aim.js'
 import { jeer, swordWarning } from './talk/armed.js'
 import { DialogPanel } from './ui/dialog-panel.js'
+import { roadHail } from './talk/road.js'
 import { ghostSays } from './talk/ghost.js'
 import { CastleChat } from './talk/castle.js'
 import { standing } from './talk/castle-ways.js'
@@ -32,8 +33,8 @@ export const TALK = {
   wordsPerS: 3,
   // Mouth height over the feet, of their height.
   mouth: 0.9,
-  // Seconds between looks for someone to come to her; how near they must be, how close they come, how long they wait, and how long before the same one is asked again; the odds a castle guard comes.
-  approach: { every: 6, m: 12, come: 1.4, wait: 15, again: 300, castle: 0.35 },
+  // Seconds between looks for someone to come to her; how near they must be, how close they come, how long they wait, and how long before the same one is asked again; the odds a castle guard comes, and a traveller on the road.
+  approach: { every: 6, m: 12, come: 1.4, wait: 15, again: 300, castle: 0.35, road: 0.5 },
   // Her with a sword in town: seconds between looks for a passer-by to jeer, within `m` m, each at most once an `again`.
   jeer: { every: 4, m: 6, again: 90 },
   // Seconds past which a pair's next turn is a fresh conversation.
@@ -149,7 +150,7 @@ export class Conversations {
     return {
       world: this.world, rapport: this.rapport, quests: this.quests, log: this.log, epoch, from: { x: p.c.pose.x, z: p.c.pose.z }, hour: this.hour, known: this.known,
       pack: this.pack, wants, inWorkshop: mind !== null && this._inWorkshop(p, mind), inShop: mind !== null && this._inShop(p, mind), armed: p.kind === 'town' && this.pack.holds('sword'),
-      wronged: leaf && this.wrongs.wronged(), witness: leaf && witness !== null ? this.village[witness].id : null,
+      wronged: leaf && this.wrongs.wronged(), witness: leaf && witness !== null ? this.village[witness].id : null, trip: p.kind === 'town' || p.kind === 'road' ? p.trip : null,
     }
   }
 
@@ -277,7 +278,7 @@ export class Conversations {
     return mind
   }
 
-  /** Townsperson `id` of alive town `t`, or null for a traveller, who has no mind. */
+  /** Townsperson `id` of alive town `t`, or null for a guest, whose mind is of its home town. */
   _townMind(t, id) {
     const entry = this.world.towns[t]
     if (entry.town !== this.townsfolk.towns[t]) throw new Error(`Conversations: town ${t} is not the townsfolk's`)
@@ -289,13 +290,13 @@ export class Conversations {
     return this.room === null ? null : this.room.residents
   }
 
-  /** Everyone drawn near enough to talk to: `{ kind, c, mind, t, res }`, `res` the residents `c` is one of, else null. */
+  /** Everyone drawn near enough to talk to: `{ kind, c, mind, t, res, trip }`, `res` the residents `c` is one of, else null, and `trip` (speak.js ctx) one's who is away from home. Travellers on the road are their home towns' folk, kind 'road'. */
   _people(into) {
     if (this.room !== null) {
       const { residents: res, t } = this.room
       for (const c of res.talkers([])) {
         const mind = t === null ? this._leafkin(c.id, res.room.index) : this._townMind(t, c.id)
-        if (mind !== null) into.push({ kind: t === null ? 'village' : 'town', c, mind, t, res })
+        if (mind !== null) into.push({ kind: t === null ? 'village' : 'town', c, mind, t, res, trip: null })
       }
       return into
     }
@@ -303,9 +304,13 @@ export class Conversations {
       for (const [t, { life }] of this.townsfolk.alive) {
         for (const c of life.all) {
           if (!c.puppet || c.missing || (c.hidden && c.greet === null)) continue
-          const mind = this._townMind(t, c.id)
-          if (mind !== null) into.push({ kind: 'town', c, mind, t, res: null })
+          const mind = this._townMind(t, c.id) ?? (c.origin === null ? null : this.world.folk(c.origin.town, c.origin.body))
+          if (mind !== null) into.push({ kind: 'town', c, mind, t, res: null, trip: mind.town === t ? null : { to: t, arrived: true } })
         }
+      }
+      for (const { c, j, k } of this.townsfolk.road.values()) {
+        if (!c.puppet || (c.hidden && c.greet === null)) continue
+        into.push({ kind: 'road', c, mind: this.world.folk(j.from, this.townsfolk.journeys.bodies[j.members[k].body]), t: null, res: null, trip: { to: j.to, arrived: false } })
       }
     }
     if (this.villagers) for (const c of this.villagers.all) if (c.puppet && !c.hidden) into.push({ kind: 'village', c, mind: this.village[c.id], res: null })
@@ -458,7 +463,7 @@ export class Conversations {
   }
 
   _busy(p) {
-    if (p.res !== null) return false
+    if (p.res !== null || p.kind === 'road') return false
     return p.kind === 'town' ? p.c.state === 'work' || p.c.job !== null : !FREE.has(p.c.state)
   }
 
@@ -489,7 +494,7 @@ export class Conversations {
   _say(p, line, head) {
     if (p.res !== null) p.res.gesture(p.c, line.gesture, line.toward)
     else if (p.kind === 'castle') this.castle().gesture(p.c, line.gesture, this.now)
-    else if (p.kind === 'town') this.townsfolk.gesture(p.c, line.gesture, this.now, line.toward)
+    else if (p.kind === 'town' || p.kind === 'road') this.townsfolk.gesture(p.c, line.gesture, this.now, line.toward)
     else this.villagers.gesture(p.c.id, line.gesture, this.now, line.toward)
     if (this.picker === null || this.voices === null && !this._voices()) return
     const tier = p.kind === 'village' ? leafkinTier(this.chat.trusted, this.rapport.standing(p.mind.id)) : 'native'
@@ -536,20 +541,20 @@ export class Conversations {
   _hold(p) {
     if (p.res !== null) p.res.hold(p.c)
     else if (p.kind === 'castle') this.castle().hold(p.c)
-    else if (p.kind === 'town') this.townsfolk.hold(p.c, this.now)
+    else if (p.kind === 'town' || p.kind === 'road') this.townsfolk.hold(p.c, this.now)
     else this.villagers.hold(p.c.id, this.now)
   }
 
   _unhold(p) {
     if (p.res !== null) p.res.release(p.c)
     else if (p.kind === 'castle') this.castle().release(p.c)
-    else if (p.kind === 'town') this.townsfolk.release(p.c, this.now)
+    else if (p.kind === 'town' || p.kind === 'road') this.townsfolk.release(p.c, this.now)
     else this.villagers.release(p.c.id)
   }
 
   // -- one who comes to her ------------------------------------------------------------------------------------
 
-  /** Now and then someone near her and free -- a leafkin only if it trusts her -- comes over, if they want something of her or are the friendly sort. Each is asked once an `again` about the item in her hand, and once about nothing. With a sword in her hand in town, only a guard comes, once a visit, to warn her off it. A castle guard comes at `castle` odds, once an `again`. */
+  /** Now and then someone near her and free -- a leafkin only if it trusts her -- comes over, if they want something of her or are the friendly sort. Each is asked once an `again` about the item in her hand, and once about nothing. With a sword in her hand in town, only a guard comes, once a visit, to warn her off it. A castle guard comes at `castle` odds, once an `again`, and a traveller at `road` odds: afoot it walks over, and a rider pulls up where it is. */
   _approach(head, scale) {
     const A = TALK.approach
     const armed = this.pack.holds('sword')
@@ -560,6 +565,15 @@ export class Conversations {
         this.asked.set(id, this.now + A.again)
         if (Math.random() >= A.castle) continue
         this.castle().approach(c, A.come * scale)
+        this.coming = { p, until: Infinity, hailed: false, warn: false }
+        return
+      }
+      if (p.kind === 'road') {
+        if (c.greet !== null || c.lag || Math.hypot(c.pose.x - head.x, c.pose.z - head.z) > A.m * scale || (this.alone.get(id) ?? -Infinity) > this.now || (this.asked.get(id) ?? -Infinity) > this.now) continue
+        this.asked.set(id, this.now + A.again)
+        if (Math.random() >= A.road) continue
+        if (c.mount !== null) this.townsfolk.hold(c, this.now)
+        else this.townsfolk.approach(c, this.now, A.come * scale)
         this.coming = { p, until: Infinity, hailed: false, warn: false }
         return
       }
@@ -589,12 +603,13 @@ export class Conversations {
   /** The one coming to her: hails her once there and waits; left waiting, goes back to what it was doing. */
   _wait(head) {
     const { p } = this.coming
-    const greet = p.res !== null ? (p.res.held(p.c) ? { at: p.res.arrived(p.c) ? 0 : Infinity } : null) : p.kind === 'town' || p.kind === 'castle' ? p.c.greet : this.villagers.talking.get(p.c.id)
+    const greet = p.res !== null ? (p.res.held(p.c) ? { at: p.res.arrived(p.c) ? 0 : Infinity } : null) : p.kind === 'town' || p.kind === 'road' || p.kind === 'castle' ? p.c.greet : this.villagers.talking.get(p.c.id)
     if (!greet) { this.coming = null; return }
     if (!this.coming.hailed && greet.at !== Infinity) {
       this.coming.hailed = true
       this.coming.until = this.now + TALK.approach.wait
       if (this.coming.warn) this._remark(p, swordWarning(p.mind, Math.random()), head)
+      else if (p.kind === 'road') this._remark(p, roadHail(Math.random()), head)
       else if (this.picker !== null && (this.voices !== null || this._voices())) {
         const pick = this.picker.pick(p.mind, 'hail.attention', { now: this.now, force: true })
         if (pick !== null) this.voices.say(pick, this._heard(p.c), TALK.approach.come, { outside: this._outside(p) })

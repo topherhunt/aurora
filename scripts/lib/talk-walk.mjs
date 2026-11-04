@@ -41,11 +41,12 @@ export function walkTalks(world, seed, n, hear) {
     const held = rand() < 0.3 ? pick(Object.keys(have).concat([null])) ?? null : null
     const rapport = new Rapport()
     rapport.warm(mind.id, rand() * 0.8 - 0.2)
+    const trip = !isLeaf && mind.cls !== 'child' && rand() < 0.3 ? { to: (mind.town + 1) % world.towns.length, arrived: rand() < 0.3 } : null
     const ctx = {
-      world, rapport, quests: questsFor(world, epoch), log: new QuestLog(), epoch, from: town ? { x: town.x, z: town.z } : { x: 0, z: 0 }, hour, known: new Set(),
-      pack: stubPack(have), wants: held, inWorkshop: rand() < 0.5, inShop: rand() < 0.5, armed: false, wronged: false, witness: null,
+      world, rapport, quests: questsFor(world, epoch), log: new QuestLog(), epoch, from: town ? { x: town.x + 400 * (trip === null ? 0 : 1), z: town.z } : { x: 0, z: 0 }, hour, known: new Set(),
+      pack: stubPack(have), wants: held, inWorkshop: rand() < 0.5, inShop: rand() < 0.5, armed: false, wronged: false, witness: null, trip,
     }
-    const who = `${mind.name} the ${mind.body}${town ? ` of ${world.townOf(mind).name}` : ''} (${isLeaf ? 'leafkin' : mind.quirk.need ?? mind.quirk.kind}; ${hour}h${ctx.inWorkshop ? ' workshop' : ''}${ctx.inShop ? ' shop' : ''}${held ? ` holding ${held}` : ''})`
+    const who = `${mind.name} the ${mind.body}${town ? ` of ${world.townOf(mind).name}` : ''} (${isLeaf ? 'leafkin' : mind.quirk.need ?? mind.quirk.kind}; ${hour}h${ctx.inWorkshop ? ' workshop' : ''}${ctx.inShop ? ' shop' : ''}${held ? ` holding ${held}` : ''}${trip ? ' on the road' : ''})`
     try {
       const chat = new Chat(mind, ctx, { busy: rand() < 0.3, approached: rand() < 0.25, salt: i })
       let line = chat.open()

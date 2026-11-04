@@ -35,7 +35,7 @@ const epoch = 3
 const quests = questsFor(world, epoch)
 const ctxFor = (mind, hour) => ({
   world, rapport: new Rapport(), quests, log: new QuestLog(), epoch, from: { x: 0, z: 0 }, hour, known: new Set(),
-  pack: stubPack({}), wants: null, inWorkshop: false, inShop: false, armed: false, wronged: false, witness: null,
+  pack: stubPack({}), wants: null, inWorkshop: false, inShop: false, armed: false, wronged: false, witness: null, trip: null,
 })
 const people = world.towns.flatMap((t) => t.minds).filter((m) => m.kind === 'human')
 const tally = new Map()

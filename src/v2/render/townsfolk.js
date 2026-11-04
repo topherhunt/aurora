@@ -444,8 +444,8 @@ export class TownLife {
       state: 'inside', hidden: true, at: 0, route: [], wp: 0, then: 'stand', dest: 0,
       hold: 0, talked: 0, voice: 0, partner: null, seat: null, phase: '',
       clip: 'idle', left: 0, dur: 0, cycle: 0, cue: 0, speed: 0, from: -1,
-      // A traveller's: its job's steps, the strider it sits, the hop on or off (0 afoot, 1 in the saddle) between the ground point `hopA` and the saddle `hopB`, and its own body under a journey member's borrowed one.
-      guest, job: null, mount: null, hop: 0, phop: 0, hopA: null, hopB: null, own: null, planned: false,
+      // A traveller's: where a guest comes from (`{ town, body }`, null for a resident), its job's steps, the strider it sits, the hop on or off (0 afoot, 1 in the saddle) between the ground point `hopA` and the saddle `hopB`, and its own body under a journey member's borrowed one.
+      guest, origin: null, job: null, mount: null, hop: 0, phop: 0, hopA: null, hopB: null, own: null, planned: false,
       // Its trade (layers/trades.js castFolk), the town.works index it keeps or null, and its class (TRADES.roles); a guest is a traveller.
       trade: null, work: null, role: guest ? 'travel' : 'folk',
     }
@@ -487,7 +487,7 @@ export class TownLife {
       c.planned = false
       c.rs = hash32(this.seed, c.id, index)
       // A guest keeps no trace of last chapter's visit, or a town woken late differs from one watched.
-      if (c.guest) { Object.assign(c, { state: 'away', hidden: true, x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, heading: 0, ph: 0, aim: 0 }); continue }
+      if (c.guest) { Object.assign(c, { state: 'away', hidden: true, origin: null, x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, heading: 0, ph: 0, aim: 0 }); continue }
       const door = this.graph.nodes[c.home]
       c.x = c.px = door.x
       c.z = c.pz = door.z
@@ -546,6 +546,7 @@ export class TownLife {
       if (here.has(body) && spare.length > 0) body = spare[(rand() * spare.length) | 0]
       here.add(body)
       this._become(c, { ...member, body })
+      c.origin = { town: j.from, body: J.bodies[member.body] }
       this.plan.push({ tick: tickAfter(j.t1), kind: j.ride ? 'ridein' : 'walkin', c, j, k })
     })
     this.plan.sort((p, q) => p.tick - q.tick)
@@ -1544,7 +1545,7 @@ export class Townsfolk {
       }
     }
     if (this.striders) {
-      this._road(seconds, head, dt, drawn, mounts)
+      this._road(feet, seconds, head, dt, drawn, mounts)
       if (!parts.people) drawn.length = 0
       if (!parts.striders) mounts.length = 0
       mounts.sort((a, b) => a.dist - b.dist)
@@ -1967,10 +1968,12 @@ export class Townsfolk {
    * The travellers between towns within `road.m` of her, each member where
    * journeys.js `at` says, until the town it left or reaches has it: a town
    * alive holds its departures until they are off (TownLife.holding), and its
-   * arrivals from t1.
+   * arrivals from t1. One stopped by her falls `r.late` seconds behind that
+   * timetable, then makes it up at `greet.catchUp` pace; it stays drawn past
+   * `road.m` and t1 until it is let go.
    */
-  _road(seconds, head, dt, drawn, mounts) {
-    const R = TOWNSFOLK.road, J = this.journeys
+  _road(feet, seconds, head, dt, drawn, mounts) {
+    const R = TOWNSFOLK.road, J = this.journeys, G = TOWNSFOLK.greet
     if (seconds >= this.roadAt) {
       this.roadAt = seconds + R.every
       const keep = new Set()
@@ -1983,40 +1986,51 @@ export class Townsfolk {
           if (!this.road.has(key)) this.road.set(key, this._traveller(j, k, member))
         })
       }
-      for (const [key, r] of this.road) if (!keep.has(key)) this._drop(key, r)
+      for (const [key, r] of this.road) if (!keep.has(key) && r.c.greet === null && Math.hypot(r.c.pose.x - head.x, r.c.pose.z - head.z) > R.m) this._drop(key, r)
     }
     for (const [key, r] of this.road) {
       const { j, k, c } = r
       const src = this.alive.get(j.from)
-      if (seconds >= j.t1 || seconds < j.t0) { this._drop(key, r); continue }
+      if (c.greet !== null || c.lag) r.late += dt
+      else if (r.late > 0) r.late = Math.max(0, r.late - dt * (G.catchUp - 1))
+      const when = seconds - r.late
+      if (when >= j.t1 || seconds < j.t0) { this._drop(key, r); continue }
       c.hidden = src !== undefined && (!src.life.caught || src.life.holding.has(j.id))
-      J.at(j, k, seconds, r.at)
+      J.at(j, k, when, r.at)
     }
     for (const r of this.road.values()) {
-      const { c, m } = r, pose = c.pose, at = r.at
+      const { c, m, j } = r, pose = c.pose, at = r.at
       // Out to its own side (JOURNEYS.lane's) past another journey's traveller ahead, both reckoned on their lanes, so neither passes through the other.
       const sx = -Math.sin(at.heading), sz = -Math.cos(at.heading), mine = this._roadR(r)
       let want = 0
       for (const o of this.road.values()) {
-        if (o.j === r.j || o.c.hidden) continue
+        if (o.c.hidden || (o.j === r.j && o.late === 0 && r.late === 0)) continue
         const dx = o.at.x - at.x, dz = o.at.z - at.z, ahead = dx * Math.cos(at.heading) - dz * Math.sin(at.heading)
         if (ahead <= 0 || ahead > R.ahead) continue
         const lat = dx * sx + dz * sz, clear = mine + this._roadR(o)
         if (Math.abs(lat) < clear) want = Math.max(want, lat + clear)
       }
       r.side = r.fresh ? want : r.side + (want - r.side) * Math.min(1, dt / R.ease)
-      pose.x = at.x + sx * r.side
-      pose.z = at.z + sz * r.side
-      pose.y = this.walk.heightAt(pose.x, pose.z, r.fresh ? -Infinity : pose.y)
-      this._shove(c, dt)
+      c.x = c.px = at.x + sx * r.side
+      c.z = c.pz = at.z + sz * r.side
+      c.y = c.py = this.walk.heightAt(c.x, c.z, r.fresh ? -Infinity : c.y)
       const s = swing(pose.heading, at.heading)
-      pose.heading = r.fresh ? at.heading : pose.heading + Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
+      c.heading = c.ph = r.fresh ? at.heading : pose.heading + Math.sign(s) * Math.min(Math.abs(s), TURN_RATE * dt)
+      if (r.fresh) Object.assign(pose, { x: c.x, y: c.y, z: c.z, heading: c.heading })
       r.fresh = false
+      this._pose(c, 1, feet, seconds, dt)
+      if (r.late > 0 && c.greet === null && !c.lag) {
+        pose.speed = j.speed * G.catchUp
+        pose.scale = G.catchUp
+      }
       c.dist = Math.hypot(pose.x - head.x, pose.y - head.y, pose.z - head.z)
       if (!c.hidden || c.puppet) drawn.push(c)
       if (!m) continue
-      Object.assign(m.pose, { x: pose.x, y: pose.y, z: pose.z, heading: pose.heading })
-      m.gone = c.hidden
+      if (m.held !== null) this._poseMount(m, 1)
+      else {
+        Object.assign(m.pose, { x: pose.x, y: pose.y, z: pose.z, heading: pose.heading, clip: 'walk', speed: pose.speed, cue: 0 })
+        m.gone = c.hidden
+      }
       m.dist = c.dist
       if (!m.gone || m.puppet) mounts.push(m)
     }
@@ -2027,14 +2041,17 @@ export class Townsfolk {
     const size = body.heightM * (1 + TOWNSFOLK.sizeVar * member.size)
     const c = this._entity({ id: this.ids++, body: b, size, k: size / body.height, hidden: false, mount: null })
     c.pace = j.ride ? 1 : j.speed / (body.gait.walk * c.k)
-    Object.assign(c.pose, { clip: j.ride ? 'ride' : 'walk', speed: j.speed, cue: 0, from: -1, scale: 1, hop: j.ride ? 1 : 0 })
+    const clip = j.ride ? 'ride' : 'walk', hop = j.ride ? 1 : 0
+    Object.assign(c, { x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0, heading: 0, ph: 0, hop, phop: hop, clip, speed: j.speed, cue: 0, from: -1, state: clip, job: null })
+    Object.assign(c.pose, { clip, speed: j.speed, cue: 0, from: -1, scale: 1, hop })
     let m = null
     if (j.ride) {
-      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null, held: null }, mountFields(striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296), hash32(this.seed, j.from, j.to, Math.round(j.t0), k, 0x71a7)))
+      const base = striderSize(hash32(this.seed, j.from, j.to, Math.round(j.t0), k) / 4294967296)
+      m = Object.assign({ id: this.ids++, state: 'ridden', rider: c, key: null, held: null, base }, mountFields(base, hash32(this.seed, j.from, j.to, Math.round(j.t0), k, 0x71a7)))
       Object.assign(m.pose, { clip: 'walk', speed: j.speed })
       c.mount = m
     }
-    return { j, k, c, m, at: {}, fresh: true, side: 0 }
+    return { j, k, c, m, at: {}, fresh: true, side: 0, late: 0 }
   }
 
   /** A traveller's half-width on the road: its strider's if it rides. */

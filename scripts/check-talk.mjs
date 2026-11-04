@@ -27,6 +27,8 @@ import { LK } from '../src/v2/talk/leafkin.js'
 import { AIM, aimedAt } from '../src/v2/talk/aim.js'
 import * as trade from '../src/v2/talk/trade.js'
 import { jeer, swordWarning } from '../src/v2/talk/armed.js'
+import { ROAD, allTales, roadHail } from '../src/v2/talk/road.js'
+import { fits } from '../src/v2/talk/caption.js'
 import { quirkLines, allQuirkLines } from '../src/v2/talk/quirks.js'
 import { ITEMS } from '../src/v2/items.js'
 import { CAPTION, captionRows } from '../src/v2/talk/caption.js'
@@ -89,7 +91,7 @@ const stubPack = (have = {}, slots = 12) => {
     remove(k, c = 1) { if ((n[k] ?? 0) < c) return false; n[k] -= c; return true },
   }
 }
-const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), pack: stubPack(), wants: null, inWorkshop: false, inShop: false, armed: false, wronged: false, witness: null, ...more })
+const ctxAt = (from, more = {}) => ({ world, rapport: new Rapport(), quests, log: new QuestLog(), epoch: EPOCH, from, hour: 12, known: new Set(), pack: stubPack(), wants: null, inWorkshop: false, inShop: false, armed: false, wronged: false, witness: null, trip: null, ...more })
 const fire = (t) => ({ x: t.town.x, z: t.town.z })
 // A mind with some traits pinned, for testing one lever at a time.
 const as = (m, traits) => ({ ...m, traits: { ...m.traits, ...traits } })
@@ -1332,6 +1334,50 @@ console.log('homebody minds')
   check(a.id === homebodyMind(12345, 130, 1).id && a.name === homebodyMind(12345, 130, 1).name, 'a homebody is the same leafkin every session')
   check(a.id !== homebodyMind(12345, 131, 1).id && !leaf.some((m) => m.id === a.id), 'and no other leafkin')
   check(new Chat(a, ctxAt({ x: 0, z: 0 }), { trusted: true }).open().text.length > 0, 'and answers when hailed')
+}
+
+// On the road (road.js).
+{
+  const home = world.towns.find((t) => t.minds.some((m) => m.cls === 'travel'))
+  const to = world.towns[(home.index + 1) % world.towns.length]
+  const mind = home.minds.find((m) => m.cls === 'travel')
+  const mid = { x: (home.town.x + to.town.x) / 2, z: (home.town.z + to.town.z) / 2 }
+  const trip = { to: to.index, arrived: false }
+  const talk = (more = {}, m = mind) => new Conversation(as(m, STRAIGHT), ctxAt(mid, { trip, ...more }))
+  const paths = talk().menu().map((c) => c.topic)
+  check(['road:tale', 'road:from', 'road:to', 'road:around', 'road:go'].every((t) => paths.includes(t)), 'a traveller is asked of the road')
+  check(!paths.some((t) => t === 'talk:town' || t === 'nice:town' || t === 'where:home' || t.startsWith('where:title:')), 'and nothing that only someone at home could answer')
+  check(!new Conversation(as(mind, STRAIGHT), ctxAt(mid)).menu().some((c) => c.topic.startsWith('road:')), 'one at home is not asked of the road')
+  const from = talk().say('road:from'), bound = talk().say('road:to')
+  check(from.text.includes(home.name) && from.claim.x === home.town.x && from.gesture === 'talk-point', 'they name their home town and point back at it', from.text)
+  check(bound.text.includes(to.name) && bound.claim.x === to.town.x && bound.gesture === 'talk-point', 'they name where they are bound and point at it', bound.text)
+  const inn = talk({ trip: { to: to.index, arrived: true } }).say('road:to')
+  check(inn.text.includes(to.name) && inn.gesture !== 'talk-point', 'arrived, they are bound nowhere further', inn.text)
+  check(world.towns.every((t) => t.minds.every((m) => world.folk(t.index, m.body) === m)), 'a body names one person of its town, so a journey member names its traveller')
+  for (const [topic, label] of [['road:around', 'around them'], ['road:go', 'where to go']]) {
+    const c = talk({ hour: 20 }), lines = []
+    for (let i = 0; i < 8; i++) lines.push(c.say(topic))
+    const spent = lines.findIndex((l) => l.claim === null)
+    check(spent > 0 && lines.slice(0, spent).every((l) => l.gesture === 'talk-point' && l.claim !== null), `they point out ${label}, then have no more`, `${spent} of ${lines[0].text}`)
+    check(new Set(lines.slice(0, spent).map((l) => l.text)).size === spent && lines.every((l) => fits(l.text)), `each once, and each in a caption (${label})`)
+  }
+  const c = talk(), tales = []
+  for (let i = 0; i < ROAD.tales + 2; i++) tales.push(c.say('road:tale'))
+  check(new Set(tales.slice(0, ROAD.tales).map((l) => l.text)).size === ROAD.tales && !tales[0].text.includes('{town}'), `one telling holds ${ROAD.tales} different tall tales`, tales[0].text)
+  check(tales.slice(ROAD.tales).every((l) => l.moment === 'answer.spent'), 'and then they run dry')
+  const over = allTales(world.towns.map((t) => t.name)).filter((t) => !fits(t))
+  check(over.length === 0, 'every tale fits a caption told at its longest, in the longest town name', over[0] ?? '')
+  const stories = new Set(Array.from({ length: 40 }, (_, i) => new Conversation(as(world.towns[i % world.towns.length].minds[0], STRAIGHT), ctxAt(mid, { trip })).say('road:tale').text.split('.').slice(1).join('.')))
+  check(stories.size > 8, 'different folk tell different tales', `${stories.size} of 40`)
+  const voiced = [...['from', 'to', 'around', 'go', 'tale'].map((a) => talk().say(`road:${a}`)), talk().opener()]
+  check(voiced.every((l) => l.moment !== undefined && !/^talk\.(home|town)/.test(l.moment)), 'a traveller on the road never voices a home clip', voiced.map((l) => l.moment).join(' '))
+  const hello = talk().opener()
+  check(hello.text.includes(to.name) || hello.text === 'What is it?', 'a stranger on the road says where they are bound', hello.text)
+  check(['x', 'y', 'z'].every((_, i) => fits(roadHail(i / 3).text) && roadHail(i / 3).moment === 'hail.attention') && roadHail(0.999).text.length > 0, 'a traveller calling out has a voice clip for it')
+  check(new Chat(mind, ctxAt(mid, { trip }), { approached: true }).open().text.length > 0, 'one who came over has something to say')
+  let threw = false
+  try { new Conversation(as(mind, STRAIGHT), ctxAt(mid)).say('road:from') } catch { threw = true }
+  check(threw, 'asking one at home of their road is a bug, not a shrug')
 }
 
 console.log(failures === 0 ? '\nall talk checks pass' : `\n${failures} talk check(s) FAILED`)

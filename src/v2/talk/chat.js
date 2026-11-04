@@ -105,8 +105,9 @@ export class Chat {
     return { ...opener, text: fits(both) ? both : lead.text, unlocks: lead.unlocks, about: lead.about }
   }
 
-  /** A fact of lore they know, sometimes of a thing she has never heard of, or null. */
+  /** A tall tale from one away from home (road.js); else a fact of lore they know, sometimes of a thing she has never heard of, or null. */
   _rumour() {
+    if (this.conv.ctx.trip !== null) return this.conv.say('road:tale', true)
     const topics = [...OPEN_TOPICS, ...Object.keys(TOPICS).filter((t) => TOPICS[t].gated)]
     const rumour = this.conv.say(`lore:${pick(this._roll('rumour'), topics)}`, true)
     if (rumour.claim === null) return null

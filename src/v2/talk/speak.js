@@ -10,6 +10,7 @@ import { LK, lkLine } from './leafkin.js'
 import { dress } from './words.js'
 import { fits } from './caption.js'
 import * as trade from './trade.js'
+import * as road from './road.js'
 import { armedRefusal } from './armed.js'
 import { QUIRKS, quirkLines } from './quirks.js'
 import { heardOf, nothingMore, NEWS_CLIPS } from './gossip.js'
@@ -111,7 +112,7 @@ const pickBy = (r, list) => list[Math.min(list.length - 1, (r * list.length) | 0
 
 /** A conversation between her and one person: `menu()` lists the chips, `say(topic)` and `tell(belief)` return lines. */
 export class Conversation {
-  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, hour, known (Set of what she has heard of, from anyone: lore topics, and `person:<id>`), pack (count/freeLarge/add/remove/held), wants (the kind of her held item they want, or null), inWorkshop (the smith is at his forge), inShop (the alchemist is at his shop), armed (she holds a sword in a town), wronged (a glade she wronged, trust.js), witness (the leafkin id who saw it, or null) }`, `from` where the speaker stands, `hour` the clock's 0..24. `salt` tells this talk from her others with them. */
+  /** `ctx`: `{ world, rapport, quests (Map id -> quest), log (QuestLog), epoch, from: { x, z }, hour, known (Set of what she has heard of, from anyone: lore topics, and `person:<id>`), pack (count/freeLarge/add/remove/held), wants (the kind of her held item they want, or null), inWorkshop (the smith is at his forge), inShop (the alchemist is at his shop), armed (she holds a sword in a town), wronged (a glade she wronged, trust.js), witness (the leafkin id who saw it, or null), trip (`{ to, arrived }` for one away from home: the town index they are bound for, and whether they have reached it; else null) }`, `from` where the speaker stands, `hour` the clock's 0..24. `salt` tells this talk from her others with them. */
   constructor(mind, ctx, salt = 0) {
     if (typeof ctx.hour !== 'number') throw new Error('Conversation: ctx.hour is required')
     for (const m of ['count', 'freeLarge', 'add', 'remove', 'held']) if (typeof ctx.pack?.[m] !== 'function') throw new Error(`Conversation: ctx.pack.${m} is required`)
@@ -119,6 +120,7 @@ export class Conversation {
     for (const k of ['inWorkshop', 'inShop', 'armed']) if (typeof ctx[k] !== 'boolean') throw new Error(`Conversation: ctx.${k} must be a boolean`)
     if (typeof ctx.wronged !== 'boolean') throw new Error('Conversation: ctx.wronged must be a boolean')
     if (ctx.witness !== null && typeof ctx.witness !== 'string') throw new Error('Conversation: ctx.witness must be an id or null')
+    if (ctx.trip !== null && typeof ctx.trip?.to !== 'number') throw new Error('Conversation: ctx.trip must be { to, arrived } or null')
     this.mind = mind
     this.ctx = ctx
     this.salt = salt
@@ -144,6 +146,8 @@ export class Conversation {
     // Keys of the town stories (town-news.js) told in this talk, and whether the missing child has been.
     this.toldNews = new Set()
     this.toldMissing = false
+    // How far through their road talk this conversation is (road.js): the facts of the place and the advice given, the tales told.
+    this.road = { around: 0, go: 0, tales: new Set() }
   }
 
   get leafkin() {
@@ -239,11 +243,16 @@ export class Conversation {
   /** What she may say: `{ topic, label, path }`, `path` the fragments the dialog grid (grid.js) builds it from. Gated lore shows once she has heard of it (`ctx.known`). */
   menu() {
     const nice = this._niceties()
-    const chips = [...trade.chips(this), ...this._followUps(), ...nice.lead]
+    const chips = [...trade.chips(this), ...this._followUps(), ...road.chips(this), ...nice.lead]
     chips.push(['talk:self', ['Tell me about', 'yourself.']], ['talk:needs', ['Do you', 'need anything?']], ...nice.rest)
     if (!this.leafkin) {
-      chips.push(['talk:town', ['Tell me about', 'this town.']], ['talk:news', ['Any', 'news?']], ['where:here', ['Where', 'am I?']], ['where:home', ['Where', 'do you live?']])
-      for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, ['Where', 'is the', `${title === 'potionmaster' ? 'potion master' : title}?`]])
+      const home = this.ctx.trip === null
+      if (home) chips.push(['talk:town', ['Tell me about', 'this town.']])
+      chips.push(['talk:news', ['Any', 'news?']], ['where:here', ['Where', 'am I?']])
+      if (home) {
+        chips.push(['where:home', ['Where', 'do you live?']])
+        for (const title of Object.keys(TITLES)) chips.push([`where:title:${title}`, ['Where', 'is the', `${title === 'potionmaster' ? 'potion master' : title}?`]])
+      }
       if (!trade.isSmith(this.mind)) chips.push(['where:gear', ['Where can I get', 'weapons, armour', 'and gear?']])
     }
     for (const t of Object.keys(TOPICS)) if (!TOPICS[t].gated || this.ctx.known.has(t)) chips.push([`lore:${t}`, LORE_PATH[t]])
@@ -271,8 +280,10 @@ export class Conversation {
     if (sad !== null) lead.push(['nice:sorry', ['I hope', `${sad.name} is found.`]])
     const child = mind.cls === 'child'
     const rest = [['nice:work', child ? ['What are', 'you up to today?'] : ['How is', 'the work going?']]]
-    if (!child) rest.push(['nice:life', ['How long have', 'you lived here?']])
-    rest.push(['nice:town', ['This is', 'a lovely town.']])
+    if (this.ctx.trip === null) {
+      if (!child) rest.push(['nice:life', ['How long have', 'you lived here?']])
+      rest.push(['nice:town', ['This is', 'a lovely town.']])
+    }
     if (this.heardWork && !child) rest.push(['nice:craft', ['You do', 'fine work.']])
     if (this.ask > 0) rest.push(['nice:leave', ["I won't", 'keep you.']])
     return { lead, rest }
@@ -447,6 +458,7 @@ export class Conversation {
     const [head, ...rest] = topic.split(':')
     const arg = rest.join(':')
     if (head === 'shop' || head === 'trade') return trade.say(this, head, arg)
+    if (head === 'road') return road.say(this, arg)
     if (head === 'talk') return this._talk(arg)
     if (head === 'where') return this._where(arg)
     if (head === 'ask') return this._askAbout(arg)
@@ -527,6 +539,10 @@ export class Conversation {
     const tone = this.tone
     if (tone === 'curt') return this._greet('What is it?', 'talk-shrug', { moment: 'greet.curt' })
     if (tone === 'cheery') this.ctx.known.add(`person:${this.mind.id}`)
+    if (this.ctx.trip !== null) {
+      const { text, about } = road.greeting(this, tone)
+      return this._greet(text, 'wave', { moment: 'greet.stranger', about })
+    }
     return this._greet(tone === 'cheery' ? `Well met, stranger! I'm ${this.mind.name}.` : 'Well met, stranger.', 'wave', { moment: 'greet.stranger' })
   }
 

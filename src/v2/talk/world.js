@@ -73,6 +73,13 @@ export class TalkWorld {
     return m
   }
 
+  /** The one of town `index`'s folk in body `body`: a town holds at most one of each. */
+  folk(index, body) {
+    const m = this.towns[index].minds.find((o) => o.body === body)
+    if (m === undefined) throw new Error(`TalkWorld: town ${index} has no ${body}`)
+    return m
+  }
+
   townOf(mind) {
     return this.towns[mind.town]
   }
